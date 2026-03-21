@@ -2,14 +2,32 @@
 
 ## Overview
 
-mosaiQTL is a Python package for QTL mapping in multiparent populations
-(CC, DO, MAGIC, heterogeneous stocks), designed as a hub for multiple
-mapping frameworks unified by a shared genotype probability backbone.
+mosaiQTL is a Python package for QTL mapping in multiparent populations,
+designed as a hub for multiple mapping frameworks unified by a shared
+genotype probability backbone.
 
-The package supports haplotype-based, SNP-based, and cell-level models
-under a common eigendecomposition-accelerated mixed model engine, with
-extensions for dispersion QTL, genotype–environment interaction, trans
-mapping, and splicing QTL.
+The package is parametric on population structure: the user specifies
+$J$ founder strains, the set of derived lines, and the number of
+replicates. Any multiparent design is supported — CC ($J = 8$),
+DO ($J = 8$, outbred), MAGIC ($J = 4$, $8$, or $19$), heterogeneous
+stocks, or custom crosses. The Collaborative Cross 8-founder population
+serves as the proof-of-concept application.
+
+For single-cell data, mosaiQTL supports three complementary scan
+resolutions as first-class modes, each answering a different biological
+question from the same dataset:
+
+| Mode | Resolution | Question |
+|------|-----------|----------|
+| **Pseudobulk lineage** | Aggregate related cell types (e.g., all myonuclei) | Does haplotype affect expression in this cell program? |
+| **Pseudobulk subtype** | Single cell type (e.g., type2b only) | Does haplotype affect expression specifically in this subtype? |
+| **Cell-level** (NEBULA-LN, vQTL) | Individual cells | Does haplotype affect expression *noise* within this cell type? |
+
+Pseudobulking at a chosen cell-identity level is not a compromise — it
+is the highest-powered scan for lineage-level effects and produces the
+primary eGene catalog. Cell-level modeling answers questions that
+pseudobulking structurally cannot (dispersion QTL, within-subject
+heterogeneity).
 
 ---
 
@@ -113,20 +131,23 @@ extensions last.
 ### A. Additive Haplotype (implemented ✓)
 
 The default framework, matching miQTL `scan.h2lmm()`. At each locus
-$\ell$, the genetic predictor is the $J - 1$ founder haplotype
+$\ell$, the genetic predictor is the $(J - 1)$-column founder haplotype
 probability matrix (dropping one founder for identifiability):
 
 $$\mathbf{G}_\ell = \mathbf{H}_\ell^{(-J)} \in \mathbb{R}^{n \times (J-1)}$$
 
 where $\mathbf{H}_\ell \in [0, 1]^{n \times J}$ contains the
 probability that subject $i$ carries founder $f$'s haplotype at locus
-$\ell$, with $\sum_{f=1}^{J} H_{i\ell f} = 1$. For CC/DO mice,
-$J = 8$ and $q = 7$.
+$\ell$, with $\sum_{f=1}^{J} H_{i\ell f} = 1$. The number of founders
+$J$ and which founder to drop are user-specified at scan time.
 
-**Test:** $F(7, \; n - p - 7)$ — tests whether *any* founder has
-a differential effect.
+**Test:** $F(J - 1, \; n - p - (J - 1))$ — tests whether *any* founder
+has a differential effect.
 
-**Cost:** $O(n \cdot 7^2)$ per locus.
+**Cost:** $O(n \cdot (J-1)^2)$ per locus.
+
+**Proof-of-concept:** For CC/DO mice, $J = 8$, $q = 7$, drop WSB/EiJ
+by convention. For a 4-way MAGIC, $J = 4$, $q = 3$.
 
 ### B. Biallelic SNP Association (design matrix swap)
 
@@ -153,24 +174,24 @@ SNPs (matching qtl2 SNP association scans, Broman et al. 2019).
 ### C. Full Diplotype Model (design matrix swap)
 
 For heterozygous populations (DO mice, F$_1$ hybrids), model all
-$\binom{J}{2} + J = 36$ unordered diplotype states:
+$\binom{J}{2} + J$ unordered diplotype states:
 
-$$\mathbf{G}_\ell = \mathbf{P}_\ell^{(-1)} \in \mathbb{R}^{n \times 35}$$
+$$\mathbf{G}_\ell = \mathbf{P}_\ell^{(-1)} \in \mathbb{R}^{n \times (d-1)}$$
 
-where $P_{i\ell d}$ is the probability that subject $i$ carries
-diplotype $d$ (founder pair $f_1 / f_2$) at locus $\ell$.
+where $d = \binom{J}{2} + J$ and $P_{i\ell d}$ is the probability that
+subject $i$ carries diplotype $d$ (founder pair $f_1 / f_2$) at locus
+$\ell$.
 
-**Test:** $F(35, \; n - p - 35)$ — captures dominance and epistatic
-interactions between founder alleles.
+**Test:** $F(d - 1, \; n - p - (d - 1))$ — captures dominance and
+epistatic interactions between founder alleles.
 
-**Proximity:** Design matrix swap only. The LMM engine handles
-arbitrary $q$. For CC inbred lines this is unnecessary (homozygous),
-but becomes essential for DO or F$_2$ populations.
+**Proof-of-concept:** For CC/DO with $J = 8$: $d = 36$, $q = 35$.
+For a 4-way cross: $d = 10$, $q = 9$.
 
 ### D. Allelic Series / Merge Analysis (contrast matrix)
 
 Test whether subsets of founders share effects. Instead of the full
-$J - 1 = 7$ df haplotype test, define a grouping
+$(J - 1)$ df haplotype test, define a grouping
 $\mathcal{S} = \{S_1, S_2, \ldots, S_k\}$ that partitions founders
 into $k$ functional classes, then:
 
@@ -180,15 +201,15 @@ where $\mathbf{C} \in \{0, 1\}^{J \times (k-1)}$ is the contrast
 matrix mapping founders to groups (dropping one group for
 identifiability), and $q = k - 1$.
 
-**Example:** Group wild-derived founders (CAST, PWK, WSB) vs. classical
-lab strains (A/J, B6, 129, NOD, NZO) → $k = 2$, $q = 1$:
+**Example (CC, $J = 8$):** Group wild-derived founders (CAST, PWK, WSB)
+vs. classical lab strains (A/J, B6, 129, NOD, NZO) → $k = 2$, $q = 1$:
 
 $$g_{i\ell} = H_{i\ell,\text{CAST}} + H_{i\ell,\text{PWK}} + H_{i\ell,\text{WSB}}$$
 
 **Proximity:** Matrix multiply $\mathbf{H}_\ell \mathbf{C}$ before
 passing to `fit_lmm_at_locus()`. Enumerate candidate groupings
 programmatically using the Stirling partition numbers
-$S(8, k)$ for $k = 2, \ldots, 7$.
+$S(J, k)$ for $k = 2, \ldots, J - 1$.
 
 **Use case:** Increase power when the true allelic series has fewer
 than 8 distinct effect levels, which is biologically common
@@ -317,7 +338,7 @@ $$\mathbf{y} = \mathbf{H}_\ell^{(-J)} \boldsymbol{\beta} + \left(\mathbf{H}_\ell
 where $\mathbf{e}$ is the environment vector (e.g., sex coded as 0/1)
 and $\odot$ denotes element-wise product broadcast across columns.
 
-**Test:** $F(J - 1, \; n - p - 2(J-1))$ on
+**Test:** $F(J - 1, \; n - p - 2(J - 1))$ on
 $\boldsymbol{\delta} = \mathbf{0}$.
 
 **Proximity:** Append $\mathbf{H}_\ell^{(-J)} \odot \mathbf{e}$ to the
@@ -393,38 +414,55 @@ where $s(i)$ maps animal $i$ to its strain genotype.
 ## VII. Data Flow
 
 ```
-h5ad (cells × genes)
+h5ad (cells × genes, with cell-type annotations)
   ↓
-io.load_sc_data()                    → count matrix + subject IDs + covariates
+Cell-identity resolution choice:
+  ├─ lineage level (e.g., all myonuclei = type1 + type2a + type2b + type2x)
+  ├─ subtype level (e.g., type2b only)
+  └─ cell level (no aggregation — NEBULA-LN / vQTL)
   ↓
-nebula_ln.precompute_sufficient_stats() → S_i, T_i, n_i per subject
+┌───────────────────────────────────────────────────────────────┐
+│ PSEUDOBULK PATH (lineage or subtype)                         │
+│   aggregate counts per sample × chosen cell identity         │
+│   → TMM normalize → log-CPM → RINT per gene                 │
+│   → scan.scan_h2lmm()  [highest power for mean eQTL]        │
+└───────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│ CELL-LEVEL PATH (no pseudobulking)                           │
+│   nebula_ln.precompute_sufficient_stats()                    │
+│   → nebula_ln.fit_nebula_ln()  [mean eQTL on raw counts]    │
+│   → vqtl.scan_vqtl()  [dispersion eQTL — requires cells]   │
+└───────────────────────────────────────────────────────────────┘
   ↓
-genome_cache.load()                  → H_ℓ ∈ ℝ^{48 × 8} per locus
+genome_cache.load()                  → H_ℓ ∈ ℝ^{n × J} per locus
   ↓
 kinship.calc_kinship_loco()          → {chr: K^{(-c)}} + eigendecompositions
   ↓
-scan.scan_h2lmm()       → cis-eQTL:  LOD, p, γ (founder effects)
+scan.scan_h2lmm()       → cis-eQTL:  LOD, p, γ (J−1 founder effects)
 vqtl.scan_vqtl()        → vQTL:      LOD for dispersion effect
-gxe.scan_gxe()          → GxE:       LOD for haplotype × sex interaction
+gxe.scan_gxe()          → GxE:       LOD for haplotype × environment
 trans.scan_trans()       → trans:     genome-wide LOD
 sqtl.scan_sqtl()        → sQTL:      LOD for splicing effect
 snp_scan.scan_snp()     → SNP assoc: LOD per imputed variant
-merge.scan_merge()      → allelic:   LOD per candidate grouping
+merge.scan_merge()      → allelic:   LOD per candidate founder grouping
 ```
 
 ---
 
-## VIII. Compute Cost Estimates (type2b myonuclei, ~480 subjects)
+## VIII. Compute Cost Estimates
 
-| Step | Per gene | 20k genes |
-|------|----------|-----------|
-| Precompute sufficient stats ($S_i$, $T_i$, $n_i$) | ~0.5 s | ~2.8 hr |
-| Kinship eigendecomposition (19 LOCO) | one-time | ~30 s |
-| Additive haplotype scan (1000 loci/chr, $q=7$) | ~0.1 s/locus | ~5.5 hr |
-| SNP association scan (10k SNPs/chr, $q=1$) | ~0.01 s/locus | ~5.5 hr |
-| Score test scan (1000 loci/chr) | ~0.02 s/locus | ~1.1 hr |
-| NEBULA-LN scan (1000 loci/chr) | ~2 s/locus | ~110 hr |
-| Two-stage vQTL (LMM on $\log \hat{\phi}$) | ~0.1 s/locus | ~5.5 hr |
+Benchmarked at $n = 48$ (CC proof-of-concept, $J = 8$). Costs scale as
+$O(n (J-1)^2)$ per locus for the additive haplotype model, and
+$O(n q^2)$ in general for any design matrix with $q$ genetic parameters.
+
+| Step | Per gene ($n = 48$) | 20k genes | Notes |
+|------|---------------------|-----------|-------|
+| REML $h^2$ estimation (19 chr) | 8.9 ms | 3 min | once per chr per gene |
+| Additive haplotype scan (1k loci/chr) | 0.57 s | 3.2 hr | $q = J - 1$ |
+| SNP association scan (10k SNPs/chr) | 0.19 s | 1.1 hr | $q = 1$ |
+| Two-stage vQTL | 0.57 s | 3.2 hr | same LMM engine |
+| NEBULA-LN (cell-level, $\sim 200$ CPS) | ~38 s | ~210 hr | SLURM parallel |
+| PGMM (Poisson-gamma, closed-form) | ~1.9 s | ~10.5 hr | no cell-level $\phi$ |
 
 NEBULA-LN is ~20× slower than LMM per locus. The two-stage vQTL uses
 the cheap LMM scan on pre-estimated $\hat{\phi}$, making it the
