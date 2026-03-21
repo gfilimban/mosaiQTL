@@ -87,27 +87,26 @@ def align_samples(sample_ids_a, sample_ids_b):
 
 
 def drop_colinear_founders(h_matrix, tol=1e-8):
-    """drop one founder column to avoid collinearity.
+    """drop last founder column to avoid collinearity.
 
-    haplotype probability matrices have 8 columns summing to 1,
-    so one column is redundant. we drop the last founder (wsbj
-    by convention) and return 7 columns.
+    haplotype probability matrices have J columns summing to 1,
+    so one column is redundant. we drop the last founder and
+    return J-1 columns. the user controls which founder is last
+    via the ordering in their genome cache.
 
     parameters
     ----------
-    h_matrix : np.ndarray (n_samples, 8)
+    h_matrix : np.ndarray (n_samples, j)
         founder haplotype probabilities at one locus
     tol : float
         tolerance for detecting perfect collinearity
 
     returns
     -------
-    np.ndarray (n_samples, 7)
+    np.ndarray (n_samples, j-1)
         reduced haplotype matrix with last column dropped
     """
-    if h_matrix.shape[1] == 8:
-        return h_matrix[:, :7]
-    return h_matrix
+    return h_matrix[:, :-1]
 
 
 def safe_log(x, floor=1e-300):

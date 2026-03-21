@@ -164,7 +164,7 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null,
     y_rot : np.ndarray (n,)
         rotated phenotype
     h_rot : np.ndarray (n, q)
-        rotated haplotype design matrix (7 founders, drop-one)
+        rotated haplotype design matrix (j-1 founders after dropping one)
     x_rot : np.ndarray (n, p)
         rotated covariate matrix (including intercept)
     eigvals : np.ndarray (n,)
@@ -179,7 +179,7 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null,
     LMMResult
     """
     n = len(y_rot)
-    q = h_rot.shape[1]  # number of haplotype effects (7)
+    q = h_rot.shape[1]  # number of haplotype effects (j-1)
     p = x_rot.shape[1]  # number of covariate columns
 
     # weight vector from null h²
