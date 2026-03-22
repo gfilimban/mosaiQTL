@@ -11,6 +11,8 @@ setup(
         'numpy>=1.21',
         'scipy>=1.7',
         'pandas>=1.3',
+        'matplotlib>=3.5',
+        'seaborn>=0.12',
         'edgepython>=0.1',
     ],
     extras_require={

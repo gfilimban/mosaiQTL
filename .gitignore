@@ -43,3 +43,4 @@ validation/r_output/
 # slurm
 slurm-*.out
 logs/
+validation/qc_plots/

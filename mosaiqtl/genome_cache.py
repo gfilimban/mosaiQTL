@@ -234,18 +234,19 @@ class GenomeCache:
     def from_happy_dir(cache_dir, model='additive'):
         """load genome cache from happy directory format.
 
-        each locus is stored as an .rds file containing an
-        n_subjects × n_founders matrix of haplotype probabilities.
-        directory structure: cache_dir/chr{c}/marker_name.rds
+        real structure (from founders_f1_genomecache.ipynb):
+          cache_dir/additive/chr{c}/data/*.RData
+        each .rdata file contains a 48 × 8 matrix saved via save().
 
-        requires rpy2 for reading rds files.
+        requires rpy2 for reading .rdata files.
 
         parameters
         ----------
         cache_dir : str
             path to happy genome cache root directory
+            (e.g., 'output/genomecache')
         model : str
-            'additive' (8 founders) or 'full' (36 diplotypes)
+            'additive' (j founders) or 'full' (diplotypes)
 
         returns
         -------
@@ -257,16 +258,22 @@ class GenomeCache:
             numpy2ri.activate()
         except ImportError:
             raise ImportError(
-                'rpy2 required for reading happy .rds files. '
+                'rpy2 required for reading happy .rdata files. '
                 'install with: pip install rpy2'
             )
 
-        # discover chromosomes
-        chr_dirs = sorted(glob.glob(os.path.join(cache_dir, 'chr*')))
+        # real cache structure: cache_dir/additive/chr{c}/data/*.RData
+        model_dir = os.path.join(cache_dir, model)
+        if not os.path.isdir(model_dir):
+            # fallback: cache_dir might already be the model directory
+            model_dir = cache_dir
+
+        # discover chromosome directories
+        chr_dirs = sorted(glob.glob(os.path.join(model_dir, 'chr*')))
         if not chr_dirs:
-            # try without 'chr' prefix
-            chr_dirs = sorted(glob.glob(os.path.join(cache_dir, '*')))
-            chr_dirs = [d for d in chr_dirs if os.path.isdir(d)]
+            raise FileNotFoundError(
+                f'no chr* directories found in {model_dir}'
+            )
 
         data = {}
         sample_ids = None
@@ -275,47 +282,62 @@ class GenomeCache:
         for chr_dir in chr_dirs:
             chrom = os.path.basename(chr_dir).replace('chr', '')
 
-            # find rds files for the specified model
-            rds_files = sorted(glob.glob(
-                os.path.join(chr_dir, f'*{model}*.rds')
-            ))
-            if not rds_files:
-                rds_files = sorted(glob.glob(
-                    os.path.join(chr_dir, '*.rds')
-                ))
+            # data subdirectory contains the .rdata files
+            data_dir = os.path.join(chr_dir, 'data')
+            if not os.path.isdir(data_dir):
+                # fallback: .rdata files directly in chr dir
+                data_dir = chr_dir
 
-            if not rds_files:
-                logger.warning(f'no rds files found in {chr_dir}')
+            # find .rdata files (case-insensitive)
+            rdata_files = sorted(
+                glob.glob(os.path.join(data_dir, '*.RData')) +
+                glob.glob(os.path.join(data_dir, '*.rdata'))
+            )
+
+            if not rdata_files:
+                logger.warning(f'no .rdata files found in {data_dir}')
                 continue
 
             locus_ids = []
             positions = []
             prob_list = []
 
-            for rds_path in rds_files:
+            for rdata_path in rdata_files:
                 # extract locus name from filename
                 locus_name = os.path.splitext(
-                    os.path.basename(rds_path)
+                    os.path.basename(rdata_path)
                 )[0]
                 locus_ids.append(locus_name)
 
-                # read rds matrix
-                mat = np.array(ro.r.readRDS(rds_path))
+                # load() not readRDS() — .rdata files contain a named
+                # object saved via save() in r. load() returns the
+                # object names; we extract the matrix from the env.
+                env = ro.r['new.env']()
+                ro.r['load'](rdata_path, envir=env)
+                obj_names = list(ro.r['ls'](envir=env))
+
+                if not obj_names:
+                    logger.warning(f'empty .rdata file: {rdata_path}')
+                    continue
+
+                # first object should be the haplotype prob matrix
+                mat = np.array(ro.r['get'](obj_names[0], envir=env))
 
                 # extract sample ids and founder names from first file
                 if sample_ids is None:
-                    rownames = ro.r.readRDS(rds_path).rownames
-                    if rownames is not None:
-                        sample_ids = list(rownames)
-                    colnames = ro.r.readRDS(rds_path).colnames
-                    if colnames is not None:
-                        founders = list(colnames)
+                    r_obj = ro.r['get'](obj_names[0], envir=env)
+                    rn = ro.r['rownames'](r_obj)
+                    cn = ro.r['colnames'](r_obj)
+                    if rn != ro.NULL:
+                        sample_ids = list(rn)
+                    if cn != ro.NULL:
+                        founders = list(cn)
 
                 prob_list.append(mat)
-
-                # position: try to extract from locus name
-                # (numeric suffix after last underscore)
                 positions.append(0.0)
+
+            if not prob_list:
+                continue
 
             # stack into 3d array: (n_loci, n_subjects, n_founders)
             probs_3d = np.stack(prob_list, axis=0)
@@ -327,7 +349,6 @@ class GenomeCache:
             }
 
         if sample_ids is None:
-            # fallback: generate numeric ids
             n_subjects = probs_3d.shape[1]
             sample_ids = [f'subject_{i}' for i in range(n_subjects)]
 

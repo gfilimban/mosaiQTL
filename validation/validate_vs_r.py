@@ -398,7 +398,7 @@ def validate_scan(genome_cache, pheno_df, true_params):
     assert peak['lod'] > 2.0, f'peak lod too low: {peak["lod"]:.2f}'
 
     logger.info('scan validation passed ✓')
-    return True
+    return scan_result  # return result for qc plotting (truthy = passed)
 
 
 def validate_dispersion(genome_cache, counts, subject_ids, lib_sizes):
@@ -418,7 +418,7 @@ def validate_dispersion(genome_cache, counts, subject_ids, lib_sizes):
         f'median φ={np.nanmedian(phi_hat[valid]):.4f}'
     )
     logger.info('dispersion estimation validation passed ✓')
-    return True
+    return subjects, phi_hat  # return for qc plotting (truthy = passed)
 
 
 def validate_vqtl(genome_cache, counts, subject_ids, lib_sizes, sc_params):
@@ -480,13 +480,61 @@ def run_all_validations():
 
     export_for_r(gc, pheno_df, 'validation/r_data')
 
+    # run validations (some return objects for qc plotting)
     results = {}
     results['kinship'] = validate_kinship(gc)
     results['k_expansion'] = validate_k_expansion(gc, pheno_df)
-    results['scan'] = validate_scan(gc, pheno_df, true_params)
-    results['dispersion'] = validate_dispersion(gc, counts, sids, libs)
+
+    scan_result = validate_scan(gc, pheno_df, true_params)
+    results['scan'] = bool(scan_result)
+
+    disp_result = validate_dispersion(gc, counts, sids, libs)
+    results['dispersion'] = bool(disp_result)
+
     results['vqtl'] = validate_vqtl(gc, counts, sids, libs, sc_params)
 
+    # generate qc plots
+    logger.info('\n=== generating qc plots ===')
+    try:
+        from mosaiqtl.plotting import plot_validation_panel
+        from mosaiqtl import kinship as kin_module
+
+        k_loco = kin_module.calc_kinship(gc, method='loco')
+        k_chr1 = k_loco['1']
+
+        # get true phi from simulation for dispersion scatter
+        phi_true = None
+        phi_estimated = None
+        if disp_result:
+            subjects_est, phi_estimated = disp_result
+            # reconstruct true phi from sc_params
+            h_causal = gc.get_locus(
+                sc_params['causal_chrom'], sc_params['causal_locus_idx']
+            )
+            base_phi = 0.5
+            disp_effect = 0.8
+            phi_true_48 = base_phi * np.exp(
+                disp_effect * h_causal[:, sc_params['causal_founder']]
+            )
+            # align to estimated subjects
+            from mosaiqtl.utils import align_samples
+            idx_est, idx_gc, _ = align_samples(subjects_est, gc.sample_ids)
+            phi_true = phi_true_48[idx_gc]
+            phi_estimated = phi_estimated[idx_est]
+
+        plot_validation_panel(
+            scan_result=scan_result,
+            k_matrix=k_chr1,
+            genome_cache=gc,
+            true_params=true_params,
+            phi_estimated=phi_estimated,
+            phi_true=phi_true,
+            save_dir='validation/qc_plots',
+        )
+    except Exception as e:
+        logger.warning(f'qc plot generation failed: {e}')
+
+    # summary
     logger.info('\n=== validation summary ===')
     all_ok = True
     for mod, ok in results.items():

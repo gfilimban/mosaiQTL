@@ -19,7 +19,7 @@ for NB fitting infrastructure.
 
 | Module | What it does | R reference | Notes |
 |--------|-------------|-------------|-------|
-| `genome_cache` | Read/write HAPPY genome cache (HDF5) | HAPPY / qtl2 probs | HDF5 path works; `.RData` loader needs fix (`load()` not `readRDS()`) |
+| `genome_cache` | Read/write HAPPY genome cache (HDF5 + `.RData`) | HAPPY / qtl2 probs | HDF5 and `.RData` via `load()` both working |
 | `kinship` | LOCO kinship + eigendecomposition | `qtl2::calc_kinship()` | Correct structure; pending cross-validation against R output |
 | `lmm` | Eigendecomposition-accelerated LMM | `miQTL::lmmbygls()` | F-test per locus; pending covariate residualization optimization |
 | `scan` | Genome-wide haplotype scan orchestrator | `miQTL::scan.h2lmm()` | LMM path only; model dispatch (`model='nb'`) not yet implemented |
@@ -30,7 +30,6 @@ for NB fitting infrastructure.
 
 | Module | Issue | Plan |
 |--------|-------|------|
-| `genome_cache` | `from_happy_dir()` uses `readRDS()` but real cache uses `load()` | Fix to use rpy2 `load()` or native `.RData` reader |
 | `scan` | K expansion (48 to n) validated but not wired into scan loop | Integrate for replicate-aware Path B |
 
 ### Planned
@@ -114,6 +113,13 @@ Current validation results (5/5 passing):
 - scan: causal QTL localized to correct chromosome (LOD=14.36)
 - dispersion: per-subject phi correlates 0.84 with truth
 - vqtl: dispersion QTL detected on correct chromosome
+
+QC plots are generated automatically in `validation/qc_plots/`:
+- `lod_profile.png` — genome-wide manhattan plot with peak annotation
+- `kinship_heatmap.png` — LOCO kinship matrix with founder/F1/CC blocks
+- `founder_effects.png` — per-founder allele effects at peak locus
+- `pvalue_qq.png` — QQ plot with genomic inflation factor
+- `dispersion_scatter.png` — estimated vs true per-subject overdispersion
 
 To compare against R outputs (requires R with miQTL installed):
 ```bash
