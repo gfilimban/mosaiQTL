@@ -105,6 +105,8 @@ cat('  pheno_48:', nrow(pheno_48), 'strains x', ncol(pheno_48), 'columns\n')
 n_pcs         <- 10
 cis_window_mb <- 0.5
 results_list  <- list()
+effects_list  <- list()
+h2_list       <- list()
 
 for (gene in gene_names) {
   cat('  scanning:', gene, '\n')
@@ -149,6 +151,7 @@ for (gene in gene_names) {
 
     pos_vals <- pmap$pos_mb[match(scan_result$loci, pmap$locus)]
 
+    # per-locus results
     results_list[[paste(gene, scan_chr, sep = '_')]] <- data.frame(
       gene_id = gene,
       locus   = scan_result$loci,
@@ -158,6 +161,30 @@ for (gene in gene_names) {
       lod     = scan_result$LOD,
       stringsAsFactors = FALSE
     )
+
+    # allele effects at peak locus for this gene-chr pair
+    peak_idx <- which.max(scan_result$LOD)
+    if (!is.null(scan_result$allele.effects) && length(peak_idx) > 0) {
+      effects <- scan_result$allele.effects[peak_idx, ]
+      effects_list[[paste(gene, scan_chr, sep = '_')]] <- data.frame(
+        gene_id  = gene,
+        chr      = scan_chr,
+        locus    = scan_result$loci[peak_idx],
+        founder  = names(effects),
+        effect   = as.numeric(effects),
+        stringsAsFactors = FALSE
+      )
+    }
+
+    # h2 under null
+    if (!is.null(scan_result$h2)) {
+      h2_list[[paste(gene, scan_chr, sep = '_')]] <- data.frame(
+        gene_id = gene,
+        chr     = scan_chr,
+        h2_null = scan_result$h2,
+        stringsAsFactors = FALSE
+      )
+    }
   }
 }
 
@@ -177,6 +204,24 @@ write.csv(results_all,
 write.csv(lead_per_gene,
           file.path(output_dir, 'lead_per_gene.csv'),
           row.names = FALSE)
+
+# save allele effects
+if (length(effects_list) > 0) {
+  effects_all <- do.call(rbind, effects_list)
+  rownames(effects_all) <- NULL
+  write.csv(effects_all,
+            file.path(output_dir, 'allele_effects.csv'),
+            row.names = FALSE)
+}
+
+# save h2 estimates
+if (length(h2_list) > 0) {
+  h2_all <- do.call(rbind, h2_list)
+  rownames(h2_all) <- NULL
+  write.csv(h2_all,
+            file.path(output_dir, 'h2_null.csv'),
+            row.names = FALSE)
+}
 
 cat('\n[results]\n')
 for (i in seq_len(nrow(lead_per_gene))) {

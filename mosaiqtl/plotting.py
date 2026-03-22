@@ -7,6 +7,7 @@ founder colors follow the cc palette convention.
 """
 
 import numpy as np
+import os
 import matplotlib
 matplotlib.use('Agg')  # non-interactive backend for headless use
 import matplotlib.pyplot as plt
@@ -331,12 +332,203 @@ def plot_dispersion_vs_truth(phi_estimated, phi_true, save_path=None):
     return fig, ax
 
 
+# ----------------------------------------------------------------
+# cross-language comparison (mosaiqtl vs miqtl/r)
+# ----------------------------------------------------------------
+
+def plot_lod_correlation(py_scan_result, r_results_csv, save_path=None):
+    """scatter of mosaiqtl lod vs miqtl lod at every shared locus.
+
+    parameters
+    ----------
+    py_scan_result : ScanResult
+        mosaiqtl scan output
+    r_results_csv : str
+        path to r validation scan_results.csv
+    save_path : str or None
+    """
+    import pandas as pd
+    set_style()
+
+    py_df = py_scan_result.to_dataframe()
+    r_df = pd.read_csv(r_results_csv)
+
+    # merge on locus_id
+    merged = py_df.merge(r_df, left_on='locus_id', right_on='locus',
+                         suffixes=('_py', '_r'))
+
+    if len(merged) == 0:
+        logger.warning('no shared loci between python and r results')
+        return None, None
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+
+    ax.scatter(merged['lod_r'], merged['lod_py'], s=12, alpha=0.6,
+               color='#4f6eaf', edgecolors='none', rasterized=True)
+
+    # diagonal
+    lims = [0, max(merged['lod_r'].max(), merged['lod_py'].max()) * 1.1]
+    ax.plot(lims, lims, '--', color='#d83026', linewidth=1, label='$y = x$')
+
+    # correlation
+    corr = np.corrcoef(merged['lod_r'], merged['lod_py'])[0, 1]
+    max_diff = np.max(np.abs(merged['lod_py'] - merged['lod_r']))
+    ax.text(0.05, 0.95,
+            f'$r$ = {corr:.6f}\nmax $|\\Delta|$ = {max_diff:.4f}\n$n$ = {len(merged)}',
+            transform=ax.transAxes, fontsize=10, va='top')
+
+    ax.set_xlim(left=0)
+    ax.set_ylim(bottom=0)
+    ax.set_xlabel('miQTL LOD (R)')
+    ax.set_ylabel('mosaiQTL LOD (Python)')
+    ax.set_title('cross-language LOD comparison')
+    ax.legend(fontsize=9)
+    sns.despine()
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        logger.info(f'saved: {save_path}')
+    return fig, ax
+
+
+def plot_lod_difference(py_scan_result, r_results_csv, save_path=None):
+    """residual plot: lod difference (python - r) by genomic position.
+
+    parameters
+    ----------
+    py_scan_result : ScanResult
+    r_results_csv : str
+    save_path : str or None
+    """
+    import pandas as pd
+    set_style()
+
+    py_df = py_scan_result.to_dataframe()
+    r_df = pd.read_csv(r_results_csv)
+
+    merged = py_df.merge(r_df, left_on='locus_id', right_on='locus',
+                         suffixes=('_py', '_r'))
+
+    if len(merged) == 0:
+        return None, None
+
+    fig, ax = plt.subplots(figsize=(12, 3))
+
+    diff = merged['lod_py'] - merged['lod_r']
+
+    # color by chromosome
+    chromosomes = sorted(merged['chromosome'].unique(),
+                         key=lambda x: int(x) if x.isdigit() else 99)
+    palette = ['#4f6eaf', '#c0bfbf']
+    colors = [palette[chromosomes.index(c) % 2] for c in merged['chromosome']]
+
+    ax.scatter(range(len(diff)), diff, c=colors, s=8, alpha=0.6,
+               edgecolors='none', rasterized=True)
+    ax.axhline(y=0, color='#d83026', linewidth=0.8, linestyle='--')
+
+    # annotate stats
+    ax.text(0.98, 0.95,
+            f'mean $\\Delta$ = {diff.mean():.4f}\n'
+            f'sd $\\Delta$ = {diff.std():.4f}\n'
+            f'max $|\\Delta|$ = {np.abs(diff).max():.4f}',
+            transform=ax.transAxes, fontsize=9, va='top', ha='right')
+
+    ax.set_ylim(bottom=min(-0.1, diff.min() * 1.2),
+                top=max(0.1, diff.max() * 1.2))
+    ax.set_xlabel('locus index')
+    ax.set_ylabel('$\\Delta$ LOD (Python $-$ R)')
+    ax.set_title('LOD residuals: mosaiQTL vs miQTL')
+    sns.despine()
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        logger.info(f'saved: {save_path}')
+    return fig, ax
+
+
+def plot_founder_effects_comparison(py_scan_result, genome_cache,
+                                     r_effects_csv, save_path=None):
+    """side-by-side founder effects at peak: python vs r.
+
+    parameters
+    ----------
+    py_scan_result : ScanResult
+    genome_cache : GenomeCache
+    r_effects_csv : str
+        path to r allele_effects.csv
+    save_path : str or None
+    """
+    import pandas as pd
+    set_style()
+
+    # python: peak locus effects
+    peak = py_scan_result.peak_locus()
+    chr_mask = py_scan_result.chromosomes == peak['chromosome']
+    chr_indices = np.where(chr_mask)[0]
+    peak_idx = chr_indices[np.argmax(py_scan_result.lod[chr_mask])]
+    py_betas = py_scan_result.betas[peak_idx]
+
+    j_minus_1 = len(py_betas)
+    founder_names = genome_cache.founders[:j_minus_1]
+    ref_founder = genome_cache.founders[-1]
+
+    py_all = np.append(py_betas, 0.0)
+    all_names = list(founder_names) + [ref_founder]
+
+    # r: read effects for the same gene and peak locus
+    r_effects = None
+    if os.path.exists(r_effects_csv):
+        r_df = pd.read_csv(r_effects_csv)
+        # match the peak locus
+        r_match = r_df[r_df['locus'] == peak['locus_id']]
+        if len(r_match) > 0:
+            r_effects = r_match.set_index('founder')['effect']
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    x = np.arange(len(all_names))
+    width = 0.35
+
+    # python bars
+    colors_py = [FOUNDER_COLORS.get(n, '#888888') for n in all_names]
+    ax.bar(x - width / 2, py_all, width, color=colors_py,
+           edgecolor='white', linewidth=0.5, label='mosaiQTL (Python)')
+
+    # r bars (if available)
+    if r_effects is not None:
+        r_all = np.array([r_effects.get(n, 0.0) for n in all_names])
+        ax.bar(x + width / 2, r_all, width, color=colors_py,
+               edgecolor='#444444', linewidth=0.5, alpha=0.5,
+               label='miQTL (R)')
+
+    ax.axhline(y=0, color='#444444', linewidth=0.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(all_names, rotation=45, ha='right', fontsize=10)
+    ax.set_ylabel('founder effect ($\\hat{\\beta}_f$)')
+    ax.set_title(f'founder effects comparison at peak (chr{peak["chromosome"]})')
+    ax.legend(fontsize=9)
+    sns.despine()
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        logger.info(f'saved: {save_path}')
+    return fig, ax
+
+
 def plot_validation_panel(scan_result, k_matrix, genome_cache,
                           true_params=None, phi_estimated=None,
                           phi_true=None, save_dir='validation/qc_plots'):
     """generate full qc panel for validation.
 
-    saves individual pngs to save_dir.
+    generates two sets of plots:
+      1. internal qc (always): lod profile, kinship, founder effects,
+         qq plot, dispersion scatter
+      2. cross-language comparison (if r output exists): lod correlation,
+         lod residuals, founder effects comparison
+
+    also exports python scan results as csv for r comparison.
 
     parameters
     ----------
@@ -348,38 +540,71 @@ def plot_validation_panel(scan_result, k_matrix, genome_cache,
     phi_true : np.ndarray or None
     save_dir : str
     """
-    import os
+    import pandas as pd
     os.makedirs(save_dir, exist_ok=True)
 
-    # 1. lod profile
+    # --- export python results for r comparison ---
+    py_df = scan_result.to_dataframe()
+    py_csv = os.path.join(save_dir, 'py_scan_results.csv')
+    py_df.to_csv(py_csv, index=False)
+    logger.info(f'exported python scan results: {py_csv}')
+
+    # also export h2 per chromosome
+    if hasattr(scan_result, 'h2_null') and scan_result.h2_null:
+        h2_rows = [{'chromosome': c, 'h2_null': h}
+                    for c, h in scan_result.h2_null.items()]
+        pd.DataFrame(h2_rows).to_csv(
+            os.path.join(save_dir, 'py_h2_null.csv'), index=False
+        )
+
+    # --- 1. internal qc plots (always generated) ---
     plot_lod_profile(
         scan_result, true_params=true_params,
         save_path=os.path.join(save_dir, 'lod_profile.png')
     )
-
-    # 2. kinship heatmap
     plot_kinship_heatmap(
         k_matrix, sample_ids=list(genome_cache.sample_ids),
         save_path=os.path.join(save_dir, 'kinship_heatmap.png')
     )
-
-    # 3. founder effects at peak
     plot_founder_effects(
         scan_result, genome_cache,
         save_path=os.path.join(save_dir, 'founder_effects.png')
     )
-
-    # 4. qq plot
     plot_pvalue_qq(
         scan_result,
         save_path=os.path.join(save_dir, 'pvalue_qq.png')
     )
-
-    # 5. dispersion scatter (if vqtl data available)
     if phi_estimated is not None and phi_true is not None:
         plot_dispersion_vs_truth(
             phi_estimated, phi_true,
             save_path=os.path.join(save_dir, 'dispersion_scatter.png')
+        )
+
+    # --- 2. cross-language comparison (if r output available) ---
+    r_output_dir = os.path.join(os.path.dirname(save_dir), 'r_data', 'r_output')
+    r_scan_csv = os.path.join(r_output_dir, 'scan_results.csv')
+    r_effects_csv = os.path.join(r_output_dir, 'allele_effects.csv')
+
+    if os.path.exists(r_scan_csv):
+        logger.info('r output detected — generating cross-language comparison plots')
+
+        plot_lod_correlation(
+            scan_result, r_scan_csv,
+            save_path=os.path.join(save_dir, 'cross_lod_correlation.png')
+        )
+        plot_lod_difference(
+            scan_result, r_scan_csv,
+            save_path=os.path.join(save_dir, 'cross_lod_residuals.png')
+        )
+        if os.path.exists(r_effects_csv):
+            plot_founder_effects_comparison(
+                scan_result, genome_cache, r_effects_csv,
+                save_path=os.path.join(save_dir, 'cross_founder_effects.png')
+            )
+    else:
+        logger.info(
+            f'no r output at {r_scan_csv} — skipping cross-language plots. '
+            f'run: Rscript validation/r_reference/run_validation.R validation/r_data/'
         )
 
     plt.close('all')
