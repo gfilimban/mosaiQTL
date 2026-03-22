@@ -25,7 +25,7 @@ biological interpretation:
 import numpy as np
 import pandas as pd
 import logging
-from . import nebula_ln as nebula_module
+from . import nb as nb_module
 from . import scan as scan_module
 from .utils import rint
 
@@ -42,7 +42,7 @@ class VQTLResult:
     phi_estimates : np.ndarray (n_subjects,)
         per-subject overdispersion estimates used as phenotype
     phi_method : str
-        estimation method ('moments' or 'nebula_ln')
+        estimation method ('moments' or 'nb')
     gene_id : str
         gene name
     mean_scan_result : ScanResult or None
@@ -94,7 +94,7 @@ def estimate_dispersion_per_subject(counts, subject_ids, library_sizes=None,
         per-subject overdispersion estimates (nan if insufficient cells)
     """
     # precompute sufficient statistics
-    suff = nebula_module.precompute_sufficient_stats(
+    suff = nb_module.precompute_sufficient_stats(
         counts, subject_ids, library_sizes
     )
 
@@ -252,7 +252,7 @@ def scan_vqtl(counts, subject_ids, genome_cache,
     mean_scan = None
     if also_scan_mean:
         # compute pseudobulk mean as phenotype
-        suff = nebula_module.precompute_sufficient_stats(
+        suff = nb_module.precompute_sufficient_stats(
             counts, subject_ids, library_sizes
         )
         mean_expr = suff['mean_count'][idx_phi]

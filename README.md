@@ -30,7 +30,6 @@ for NB fitting infrastructure.
 
 | Module | Issue | Plan |
 |--------|-------|------|
-| `nebula_ln` | Loglikelihood term1 approximation has ~3000% error | Replace with edgePython `glm_sc_fit()` wrapper |
 | `genome_cache` | `from_happy_dir()` uses `readRDS()` but real cache uses `load()` | Fix to use rpy2 `load()` or native `.RData` reader |
 | `scan` | K expansion (48 to n) validated but not wired into scan loop | Integrate for replicate-aware Path B |
 
@@ -38,8 +37,8 @@ for NB fitting infrastructure.
 
 | Module | What it will do | Depends on |
 |--------|----------------|------------|
-| `nb_glm` | NB GLM score test wrapping edgePython `glm_fit()` + `estimate_disp()` | edgePython integration |
-| `gxe` | Genotype x environment (haplotype x sex) interaction scan | `nb_glm` or `lmm` |
+| `nb` | Wire edgePython `glm_fit()` + `estimate_disp()` into per-locus score test | edgePython integration (scaffold exists) |
+| `gxe` | Genotype x environment (haplotype x sex) interaction scan | `nb` or `lmm` |
 | `trans` | Genome-wide trans-eQTL scan with per-locus LOCO | `scan` + model dispatch |
 | `sqtl` | Splicing QTL via PSI phenotypes | `scan` + junction quantification |
 | `merge` | Allelic series / founder grouping contrasts | `scan` + Stirling enumeration |
@@ -52,7 +51,7 @@ for NB fitting infrastructure.
 |-------------|-------|--------|
 | Residualize covariates before per-locus scan | `lmm.py` | ~7x speedup per locus |
 | Streaming kinship (don't load full 3D tensor) | `kinship.py` | Scales to DO (n > 500) |
-| Saddlepoint approximation for NB score test p-values | `nb_glm.py` | Accurate tail p-values |
+| Saddlepoint approximation for NB score test p-values | `nb.py` | Accurate tail p-values |
 
 ## Installation
 

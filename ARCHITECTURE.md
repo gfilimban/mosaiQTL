@@ -55,9 +55,8 @@ mosaiqtl/
   __init__.py
   genome_cache.py     # read/write HAPPY genome cache (RDS, HDF5)
   kinship.py          # kinship: overall, LOCO, eigen decomposition
-  nb_glm.py           # NB GLM scan: wraps edgePython dispersion + IRLS
+  nb.py               # all NB models: wraps edgePython (pseudobulk + cell-level)
   lmm.py              # LMM engine: eigendecomposition trick (miQTL port)
-  nebula_ln.py        # cell-level: wraps edgePython glm_sc_fit + our scan
   scan.py             # genome-wide scan orchestrator (model-agnostic dispatch)
   vqtl.py             # dispersion vQTL: two-stage and joint approaches
   gxe.py              # genotype × environment interaction QTL (planned)
@@ -85,10 +84,10 @@ scratch. edgePython provides:
 | TMM normalization | `calc_norm_factors()` | pseudobulk preprocessing |
 | Common + trended + tagwise $\phi$ | `estimate_disp()` | NB GLM null model (§I Model A) |
 | Empirical Bayes shrinkage (WLEB) | `estimate_tagwise_disp()` | per-gene $\phi$ stabilization |
-| NB GLM fitting (IRLS) | `glm_fit()` | null model per gene |
+| NB GLM fitting (IRLS) | `glm_fit()` | `nb.py` — pseudobulk scan |
 | Quasi-likelihood F-test | `glm_ql_ftest()` | alternative to score test |
-| NEBULA-LN mixed model | `glm_sc_fit()` | cell-level eQTL (§I Model C) |
-| Cell-level dispersion shrinkage | `shrink_sc_disp()` | cell-level $\phi$ estimation |
+| NEBULA-LN mixed model | `glm_sc_fit()` | `nb.py` — cell-level scan |
+| Cell-level dispersion shrinkage | `shrink_sc_disp()` | `nb.py` — cell-level $\phi$ estimation |
 
 mosaiQTL provides what edgePython does *not*:
 
@@ -96,7 +95,7 @@ mosaiQTL provides what edgePython does *not*:
 |-----------|----------------|-------------------|
 | $J$-founder haplotype design matrix | `genome_cache.py` | multiparent population structure |
 | LOCO kinship + eigendecomposition | `kinship.py` | population structure correction |
-| Haplotype score test at each locus | `nb_glm.py`, `scan.py` | $\mathbf{H}_\ell^{(-J)}$ plugged into NB/LMM |
+| Haplotype score test at each locus | `nb.py`, `scan.py` | $\mathbf{H}_\ell^{(-J)}$ plugged into NB/LMM |
 | Dispersion vQTL (two-stage) | `vqtl.py` | per-subject $\hat{\phi}_i$ → LMM scan |
 | GxE interaction scan | `gxe.py` | $\mathbf{H}_\ell \times$ environment |
 | Trans-eQTL genome-wide scan | `trans.py` | all-chr × all-gene with LOCO |
@@ -123,7 +122,7 @@ infrastructure, and the same scan loop. They differ only in the
 likelihood function and link. The user selects the model at scan time
 via `model='nb'`, `model='lmm'`, or `model='nb_lmm'`.
 
-### Model A — Negative Binomial GLM (primary, `nb_glm.py`)
+### Model A — Negative Binomial GLM (primary, `nb.py`)
 
 For pseudobulked raw counts with $n$ replicate-level observations (not
 collapsed genotype means). This is the recommended default for
@@ -230,7 +229,7 @@ null $h^2$ is estimated once per chromosome via REML.
 
 $$\text{LOD}_\ell = \frac{n - p}{2} \log_{10} \left( \frac{\text{RSS}_0}{\text{RSS}_1} \right), \qquad F_\ell = \frac{(\text{RSS}_0 - \text{RSS}_1) / q}{\text{RSS}_1 / (n - p - q)}$$
 
-### Model C — NB-LMM / NEBULA-LN (cell-level, `nebula_ln.py`)
+### Model C — NB-LMM / NEBULA-LN (cell-level, `nb.py`)
 
 For cell-level counts without pseudobulking. Uses edgePython's
 `glm_sc_fit()` + `shrink_sc_disp()` for the NB-gamma mixed model
@@ -550,8 +549,8 @@ Cell-identity resolution choice:
 └───────────────────────────────────────────────────────────────┘
 ┌───────────────────────────────────────────────────────────────┐
 │ CELL-LEVEL PATH (no pseudobulking)                           │
-│   nebula_ln.precompute_sufficient_stats()                    │
-│   → nebula_ln.fit_nebula_ln()  [mean eQTL on raw counts]    │
+│   nb.precompute_sufficient_stats()                    │
+│   → nb.scan_nb (cell-level mode)()  [mean eQTL on raw counts]    │
 │   → vqtl.scan_vqtl()  [dispersion eQTL — requires cells]   │
 └───────────────────────────────────────────────────────────────┘
   ↓

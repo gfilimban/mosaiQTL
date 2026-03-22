@@ -28,7 +28,7 @@ from mosaiqtl.genome_cache import GenomeCache, CC_FOUNDERS
 from mosaiqtl import kinship as kin_module
 from mosaiqtl import lmm as lmm_module
 from mosaiqtl import scan as scan_module
-from mosaiqtl import nebula_ln as nebula_module
+from mosaiqtl import nb as nb_module
 from mosaiqtl import vqtl as vqtl_module
 from mosaiqtl.utils import rint
 
