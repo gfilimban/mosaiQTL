@@ -3,8 +3,25 @@
 ## Overview
 
 mosaiQTL is a Python package for QTL mapping in multiparent populations,
-designed as a hub for multiple mapping frameworks unified by a shared
+designed as a generalizable, model-agnostic hub unified by a shared
 genotype probability backbone.
+
+The user controls three orthogonal choices at scan time:
+
+| Choice | Options | Default |
+|--------|---------|---------|
+| **Statistical model** | NB GLM, LMM (Gaussian), NB-LMM (mixed) | NB GLM |
+| **Phenotype input** | raw counts, normalized expression, collapsed genotype means | raw counts (replicate-aware) |
+| **Aggregation level** | lineage pseudobulk, subtype pseudobulk, cell-level | user-specified |
+
+The **negative binomial GLM on raw pseudobulk counts** is the primary
+mode: it respects the count nature of the data, uses all $n$ replicate
+observations (not collapsed genotype means), includes biological
+covariates (sex, batch), and models library size as an offset. The
+**LMM on RINT-transformed expression** exists as the miQTL-equivalent
+port for validation and backward compatibility, not as the recommended
+default. The **NB-LMM** (NEBULA-LN) operates at cell-level resolution
+for questions that pseudobulking cannot answer.
 
 The package is parametric on population structure: the user specifies
 $J$ founder strains, the set of derived lines, and the number of
@@ -38,9 +55,10 @@ mosaiqtl/
   __init__.py
   genome_cache.py     # read/write HAPPY genome cache (RDS, HDF5)
   kinship.py          # kinship: overall, LOCO, eigen decomposition
-  lmm.py              # fast LMM engine (eigendecomposition trick)
+  nb_glm.py           # NB GLM engine: score test + deviance (primary model)
+  lmm.py              # LMM engine: eigendecomposition trick (miQTL port)
   nebula_ln.py        # NEBULA-LN: NB-gamma mixed model for cell-level data
-  scan.py             # genome-wide scan orchestrator (≈ scan.h2lmm)
+  scan.py             # genome-wide scan orchestrator (model-agnostic dispatch)
   vqtl.py             # dispersion vQTL: two-stage and joint approaches
   gxe.py              # genotype × environment interaction QTL (planned)
   trans.py            # trans-eQTL genome-wide scan (planned)
@@ -57,11 +75,70 @@ validation/           # cross-language validation against R miQTL/qtl2
 
 ---
 
-## I. Core Linear Mixed Model
+## I. Statistical Models
 
-All mapping frameworks in mosaiQTL share a common LMM engine. The
-general model for $n$ subjects, phenotype $\mathbf{y}$, and genetic
-predictor $\mathbf{G}_\ell$ at locus $\ell$ is:
+All models in mosaiQTL share the same haplotype probability backbone
+$\mathbf{H}_\ell \in [0, 1]^{n \times J}$, the same kinship
+infrastructure, and the same scan loop. They differ only in the
+likelihood function and link. The user selects the model at scan time
+via `model='nb'`, `model='lmm'`, or `model='nb_lmm'`.
+
+### Model A — Negative Binomial GLM (primary, `nb_glm.py`)
+
+For pseudobulked raw counts with $n$ replicate-level observations (not
+collapsed genotype means). This is the recommended default for
+count-based phenotypes.
+
+$$Y_i \sim \text{NB}(\mu_i, \; \phi)$$
+
+$$\log \mu_i = \mathbf{h}_{i(\ell)}^\top \boldsymbol{\gamma} + \mathbf{x}_i^\top \boldsymbol{\alpha} + \log L_i$$
+
+| Symbol | Dimension | Description |
+|--------|-----------|-------------|
+| $Y_i$ | scalar | Raw pseudobulk UMI count for sample $i$ |
+| $\mu_i$ | scalar | Expected count |
+| $\phi$ | scalar | Overdispersion ($\text{Var} = \mu + \phi \mu^2$) |
+| $\mathbf{h}_{i(\ell)}$ | $(J-1) \times 1$ | Founder haplotype probs for sample $i$ at locus $\ell$ |
+| $\boldsymbol{\gamma}$ | $(J-1) \times 1$ | Founder effects on expression (log-fold change) |
+| $\mathbf{x}_i$ | $p \times 1$ | Covariates (intercept, sex, batch, expression PCs) |
+| $L_i$ | scalar | Library size (total UMI for sample $i$), used as offset |
+
+The NB GLM operates on all $n$ replicate samples directly. For the CC
+proof-of-concept, $n \approx 418$ (48 genotypes $\times$ ~8.7 replicates),
+sex is a covariate, and the kinship structure is handled by including
+expression PCs or by an explicit random effect (see Model C).
+
+**Test:** Score test (efficient) or likelihood ratio test (more powerful):
+
+The **score test** evaluates the gradient of the log-likelihood at the
+null ($\boldsymbol{\gamma} = \mathbf{0}$). For the NB log-likelihood
+$\ell(\boldsymbol{\gamma})$:
+
+$$T_\ell^{\text{score}} = \mathbf{U}(\hat{\boldsymbol{\theta}}_0)^\top \mathcal{I}(\hat{\boldsymbol{\theta}}_0)^{-1} \mathbf{U}(\hat{\boldsymbol{\theta}}_0) \sim \chi^2(J-1)$$
+
+where $\mathbf{U}$ is the score vector and $\mathcal{I}$ is the Fisher
+information, both evaluated at the null MLE $\hat{\boldsymbol{\theta}}_0$.
+The null model is fit once per gene; per-locus evaluation requires only
+matrix products against the haplotype design matrix.
+
+The **LRT** fits both null and alternative models:
+
+$$\Lambda_\ell = 2 \left[ \ell(\hat{\boldsymbol{\theta}}_1) - \ell(\hat{\boldsymbol{\theta}}_0) \right] \sim \chi^2(J-1)$$
+
+More powerful than the score test but requires per-locus IRLS convergence.
+
+**Dispersion estimation:** Gene-wise $\phi$ estimated once under the null
+model via Cox-Reid adjusted profile likelihood (matching edgeR's approach),
+then held fixed during the genome scan.
+
+**Phenotype input:** Raw pseudobulk UMI counts (integers). No RINT, no
+log-CPM transformation. Library size $L_i$ enters as a known offset.
+
+### Model B — Linear Mixed Model (miQTL port, `lmm.py`)
+
+For RINT-transformed or normalized expression. This is the direct port
+of miQTL `scan.h2lmm()` / qtl2 `scan1()`, provided for validation and
+backward compatibility.
 
 $$\mathbf{y} = \mathbf{G}_\ell \boldsymbol{\gamma} + \mathbf{X} \boldsymbol{\alpha} + \mathbf{u} + \boldsymbol{\varepsilon}$$
 
@@ -69,64 +146,43 @@ $$\mathbf{u} \sim \mathcal{N}(\mathbf{0},\; \sigma^2_g \mathbf{K}), \qquad \bold
 
 | Symbol | Dimension | Description |
 |--------|-----------|-------------|
-| $\mathbf{y}$ | $n \times 1$ | Phenotype vector (one gene, RINT-transformed) |
-| $\mathbf{G}_\ell$ | $n \times q$ | Genetic predictor at locus $\ell$ (depends on framework; see §II) |
+| $\mathbf{y}$ | $n \times 1$ | Phenotype vector (RINT or normalized expression) |
+| $\mathbf{G}_\ell$ | $n \times q$ | Genetic predictor at locus $\ell$ (see §II) |
 | $\boldsymbol{\gamma}$ | $q \times 1$ | Genetic effects to be tested |
-| $\mathbf{X}$ | $n \times p$ | Covariate design matrix (intercept, sex, batch, PCs) |
-| $\boldsymbol{\alpha}$ | $p \times 1$ | Covariate effects (nuisance) |
+| $\mathbf{X}$ | $n \times p$ | Covariate design matrix |
 | $\mathbf{K}$ | $n \times n$ | Kinship matrix (LOCO) |
 | $\sigma^2_g$ | scalar | Polygenic genetic variance |
 | $\sigma^2_e$ | scalar | Residual variance |
 
-Defining heritability $h^2 = \sigma^2_g / (\sigma^2_g + \sigma^2_e)$
-and ratio $\delta = h^2 / (1 - h^2)$, the covariance of $\mathbf{y}$
-under the null ($\boldsymbol{\gamma} = \mathbf{0}$) is:
+**Phenotype input:** RINT-transformed log-CPM (continuous), or collapsed
+genotype means for validation against R miQTL output. The LMM can operate
+on either $n$ replicates (with expanded $\tilde{\mathbf{K}}_{n \times n}$)
+or 48 genotype means (with the native $\mathbf{K}_{48 \times 48}$).
 
-$$\text{Var}(\mathbf{y}) = \sigma^2_e \left( \delta \mathbf{K} + \mathbf{I}_n \right)$$
+**Eigendecomposition acceleration (Kang et al. 2008):** specific to the
+LMM. Precompute the spectral decomposition $\mathbf{K} = \mathbf{U}
+\mathbf{D} \mathbf{U}^\top$ once per LOCO chromosome. Rotating all
+terms by $\mathbf{U}^\top$ diagonalizes the covariance, reducing each
+per-locus fit from $O(n^3)$ to $O(nq^2)$ weighted least squares. The
+null $h^2$ is estimated once per chromosome via REML.
 
-### Eigendecomposition Acceleration (Kang et al. 2008)
+**Test:** $F$-test on RSS ratio:
 
-Precompute the spectral decomposition of the kinship matrix once per
-LOCO chromosome:
+$$\text{LOD}_\ell = \frac{n - p}{2} \log_{10} \left( \frac{\text{RSS}_0}{\text{RSS}_1} \right), \qquad F_\ell = \frac{(\text{RSS}_0 - \text{RSS}_1) / q}{\text{RSS}_1 / (n - p - q)}$$
 
-$$\mathbf{K} = \mathbf{U} \mathbf{D} \mathbf{U}^\top$$
+### Model C — NB-LMM / NEBULA-LN (cell-level, `nebula_ln.py`)
 
-where $\mathbf{D} = \text{diag}(d_1, \ldots, d_n)$ are eigenvalues and
-$\mathbf{U}$ is the orthogonal eigenvector matrix. Rotating all terms
-by $\mathbf{U}^\top$:
-
-$$\mathbf{y}^* = \mathbf{U}^\top \mathbf{y}, \quad \mathbf{G}^*_\ell = \mathbf{U}^\top \mathbf{G}_\ell, \quad \mathbf{X}^* = \mathbf{U}^\top \mathbf{X}$$
-
-The covariance becomes diagonal:
-
-$$\text{Var}(\mathbf{y}^*) = \sigma^2_e \, \text{diag}(\delta d_1 + 1, \ldots, \delta d_n + 1)$$
-
-This reduces each per-locus fit from $O(n^3)$ matrix inversion to
-$O(n q^2)$ weighted least squares. The null $h^2$ is estimated once per
-chromosome via REML profile likelihood optimization over $h^2 \in (0, 1)$.
-
-### Test Statistics
-
-The **LOD score** compares the alternative (with $\mathbf{G}_\ell$) to
-the null (without) via the ratio of weighted residual sums of squares:
-
-$$\text{LOD}_\ell = \frac{n - p}{2} \log_{10} \left( \frac{\text{RSS}_0}{\text{RSS}_1} \right)$$
-
-The **$F$-test** provides a $p$-value under the null:
-
-$$F_\ell = \frac{(\text{RSS}_0 - \text{RSS}_1) / q}{\text{RSS}_1 / (n - p - q)} \sim F(q, \; n - p - q)$$
-
-where $q$ is the number of genetic parameters being tested (varies by
-framework — see §II).
+For cell-level counts without pseudobulking. See §III for full specification.
 
 ---
 
-## II. Mapping Frameworks
+## II. Genetic Predictor Frameworks
 
-Each framework plugs into the same LMM engine by defining
-$\mathbf{G}_\ell$ and $q$ differently. They are ordered below by
-proximity to the current implementation — trivial swaps first, larger
-extensions last.
+All three models share the same haplotype probability backbone. The
+frameworks below define how $\mathbf{G}_\ell$ (or equivalently
+$\mathbf{h}_{i(\ell)}$ in the NB GLM) is constructed at each locus.
+They are model-agnostic — any framework can be used with any of
+Models A, B, or C.
 
 ### A. Additive Haplotype (implemented ✓)
 

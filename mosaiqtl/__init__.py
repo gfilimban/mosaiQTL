@@ -1,9 +1,9 @@
 """
-mosaiqtl — haplotype-based qtl mapping for multiparent populations
+mosaiqtl — model-agnostic haplotype-based qtl mapping for multiparent populations
 
-maps eqtl, vqtl, gxe, trans, and sqtl in founder-mosaic populations
-(cc, do, magic) with nebula-ln cell-level negative binomial modeling
-for single-cell data.
+supports nb glm (primary), gaussian lmm (miqtl port), and nb-lmm (nebula-ln)
+on raw counts, normalized expression, or collapsed genotype means. user
+specifies j founders, aggregation level, and statistical model at scan time.
 """
 
 __version__ = '0.1.0'

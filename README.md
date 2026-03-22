@@ -1,11 +1,13 @@
 # mosaiQTL
 
-Haplotype-based QTL mapping for multiparent populations (CC, DO, MAGIC),
-with NEBULA-LN cell-level negative binomial modeling for single-cell eQTL,
-dispersion vQTL, GxE interaction, trans, and splicing QTL mapping.
+Model-agnostic haplotype-based QTL mapping for multiparent populations
+(CC, DO, MAGIC), with NB GLM as the primary engine for count-based
+phenotypes and NEBULA-LN for cell-level single-cell modeling.
 
 A Python port of [miQTL](https://github.com/gkeele/miqtl) /
-[R/qtl2](https://kbroman.org/qtl2/) extended to single-cell resolution.
+[R/qtl2](https://kbroman.org/qtl2/) generalized to support negative
+binomial, Gaussian LMM, and NB mixed models on raw counts, normalized
+expression, or collapsed genotype means.
 
 ## Status
 
@@ -15,6 +17,7 @@ A Python port of [miQTL](https://github.com/gkeele/miqtl) /
 |--------|--------|--------------|
 | `genome_cache` | ✓ validated | HAPPY genome cache |
 | `kinship` | ✓ validated | `qtl2::calc_kinship()` |
+| `nb_glm` | planned | `edgeR` / `jaxQTL` NB engine |
 | `lmm` | ✓ validated | `miQTL::lmmbygls()` |
 | `scan` | ✓ validated | `miQTL::scan.h2lmm()` |
 | `vqtl` | ✓ validated | *novel — no R equivalent* |
@@ -40,19 +43,30 @@ pip install -e ".[full]"
 ```python
 import mosaiqtl as mq
 
-# load haplotype probabilities (48 genotypes × 8 founders per locus)
+# load haplotype probabilities (n_genotypes × J founders per locus)
 gc = mq.genome_cache.GenomeCache.from_hdf5('genomecache.h5')
 
 # compute loco kinship + eigendecomposition
 k_loco = mq.kinship.calc_kinship(gc, method='loco')
 k_decomp = mq.kinship.decomp_kinship(k_loco)
 
-# scan one gene
+# primary mode: nb glm on raw pseudobulk counts (replicate-aware)
 result = mq.scan.scan_h2lmm(
-    phenotype=y,             # rint'd expression (48 strain means)
+    phenotype=counts,          # raw pseudobulk umi counts (n_samples,)
     genome_cache=gc,
-    covariates=x,            # intercept + pcs
+    covariates=x,              # intercept + sex + batch + pcs
     kinship_decomp=k_decomp,
+    model='nb',                # negative binomial glm (default)
+    phenotype_id='my_gene',
+)
+
+# alternative: lmm on rint'd expression (miqtl-equivalent validation)
+result_lmm = mq.scan.scan_h2lmm(
+    phenotype=y_rint,          # rint'd log-cpm (48 genotype means or n replicates)
+    genome_cache=gc,
+    covariates=x,
+    kinship_decomp=k_decomp,
+    model='lmm',              # linear mixed model
     phenotype_id='my_gene',
 )
 

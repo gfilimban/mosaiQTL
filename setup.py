@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name='mosaiqtl',
     version='0.1.0',
-    description='haplotype-based qtl mapping for multiparent populations with nebula-ln single-cell modeling',
+    description='model-agnostic haplotype-based qtl mapping for multiparent populations',
     packages=find_packages(),
     python_requires='>=3.9',
     install_requires=[
