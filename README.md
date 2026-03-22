@@ -94,11 +94,20 @@ framework, all mapping models, and planned extensions.
 
 ## References
 
+- Pachter, L. (2026). Differential analysis of genomics count data with edge*. *bioRxiv*. [doi:10.64898/2026.02.16.706223](https://doi.org/10.64898/2026.02.16.706223)
 - He, L. et al. (2021). *Commun. Biol.* 4:629. [NEBULA](https://doi.org/10.1038/s42003-021-02146-6)
 - Kang, H.M. et al. (2008). *Genetics* 178:1709. [eigendecomposition LMM](https://doi.org/10.1534/genetics.107.080101)
 - Keele, G.R. et al. (2020). *PLOS Genet.* 16:e1008537. [miQTL](https://doi.org/10.1371/journal.pgen.1008537)
 - Broman, K.W. et al. (2019). *Genetics* 211:495. [R/qtl2](https://doi.org/10.1534/genetics.118.301595)
 
+## Dependencies
+
+mosaiQTL uses [edgePython](https://github.com/pachterlab/edgePython)
+(Pachter 2026) for NB GLM fitting, TMM normalization, empirical Bayes
+dispersion shrinkage (WLEB), and NEBULA-LN mixed model infrastructure.
+The haplotype probability backbone, kinship engine, LMM port, vQTL,
+and multi-framework scan orchestration are original to mosaiQTL.
+
 ## License
 
-MIT
+GPL-3.0 (compatible with edgePython's GPL-3.0 license)

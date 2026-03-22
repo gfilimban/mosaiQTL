@@ -55,9 +55,9 @@ mosaiqtl/
   __init__.py
   genome_cache.py     # read/write HAPPY genome cache (RDS, HDF5)
   kinship.py          # kinship: overall, LOCO, eigen decomposition
-  nb_glm.py           # NB GLM engine: score test + deviance (primary model)
+  nb_glm.py           # NB GLM scan: wraps edgePython dispersion + IRLS
   lmm.py              # LMM engine: eigendecomposition trick (miQTL port)
-  nebula_ln.py        # NEBULA-LN: NB-gamma mixed model for cell-level data
+  nebula_ln.py        # cell-level: wraps edgePython glm_sc_fit + our scan
   scan.py             # genome-wide scan orchestrator (model-agnostic dispatch)
   vqtl.py             # dispersion vQTL: two-stage and joint approaches
   gxe.py              # genotype × environment interaction QTL (planned)
@@ -72,6 +72,46 @@ mosaiqtl/
 tests/                # unit tests with small simulated datasets
 validation/           # cross-language validation against R miQTL/qtl2
 ```
+
+### Hybrid Dependency Architecture
+
+mosaiQTL uses [edgePython](https://github.com/pachterlab/edgePython)
+(Pachter 2026) as its NB engine, rather than reimplementing the negative
+binomial fitting, dispersion estimation, and NEBULA-LN likelihood from
+scratch. edgePython provides:
+
+| Component | edgePython function | Used by mosaiQTL in |
+|-----------|--------------------|--------------------|
+| TMM normalization | `calc_norm_factors()` | pseudobulk preprocessing |
+| Common + trended + tagwise $\phi$ | `estimate_disp()` | NB GLM null model (§I Model A) |
+| Empirical Bayes shrinkage (WLEB) | `estimate_tagwise_disp()` | per-gene $\phi$ stabilization |
+| NB GLM fitting (IRLS) | `glm_fit()` | null model per gene |
+| Quasi-likelihood F-test | `glm_ql_ftest()` | alternative to score test |
+| NEBULA-LN mixed model | `glm_sc_fit()` | cell-level eQTL (§I Model C) |
+| Cell-level dispersion shrinkage | `shrink_sc_disp()` | cell-level $\phi$ estimation |
+
+mosaiQTL provides what edgePython does *not*:
+
+| Component | mosaiQTL module | Novel contribution |
+|-----------|----------------|-------------------|
+| $J$-founder haplotype design matrix | `genome_cache.py` | multiparent population structure |
+| LOCO kinship + eigendecomposition | `kinship.py` | population structure correction |
+| Haplotype score test at each locus | `nb_glm.py`, `scan.py` | $\mathbf{H}_\ell^{(-J)}$ plugged into NB/LMM |
+| Dispersion vQTL (two-stage) | `vqtl.py` | per-subject $\hat{\phi}_i$ → LMM scan |
+| GxE interaction scan | `gxe.py` | $\mathbf{H}_\ell \times$ environment |
+| Trans-eQTL genome-wide scan | `trans.py` | all-chr × all-gene with LOCO |
+| Splicing QTL (PSI phenotype) | `sqtl.py` | junction-level haplotype test |
+| Allelic series / merge analysis | `merge.py` | founder grouping contrasts |
+| LMM port of miQTL | `lmm.py` | validation against R reference |
+
+The boundary is clean: edgePython handles *how to fit an NB model*;
+mosaiQTL handles *what to test* (which haplotype, at which locus, under
+which genetic model, with which kinship correction).
+
+**Validation against miQTL remains necessary** for all haplotype-specific
+code — the kinship, eigendecomposition, per-locus design matrix
+construction, LOD computation, and founder effect estimation are
+mosaiQTL-native and must match R miQTL output numerically.
 
 ---
 
@@ -128,8 +168,28 @@ $$\Lambda_\ell = 2 \left[ \ell(\hat{\boldsymbol{\theta}}_1) - \ell(\hat{\boldsym
 More powerful than the score test but requires per-locus IRLS convergence.
 
 **Dispersion estimation:** Gene-wise $\phi$ estimated once under the null
-model via Cox-Reid adjusted profile likelihood (matching edgeR's approach),
-then held fixed during the genome scan.
+model using edgePython's three-stage empirical Bayes pipeline:
+
+1. **Common** $\phi$: single value across all genes (starting point)
+2. **Trended** $\tilde{\phi}_g$: smooth function of mean expression
+   (captures the mean-variance relationship)
+3. **Tagwise** $\hat{\phi}_g^{\text{shrunk}}$: per-gene estimate shrunk
+   toward the trend via weighted likelihood empirical Bayes (WLEB):
+
+$$\hat{\phi}_g^{\text{shrunk}} = \frac{d_0 \tilde{\phi}_g + d_g \hat{\phi}_g^{\text{raw}}}{d_0 + d_g}$$
+
+where $d_0$ is the prior degrees of freedom and $d_g$ is the residual
+df for gene $g$. This is edgePython's `estimate_disp()` — identical to
+edgeR's Cox-Reid adjusted profile likelihood approach.
+
+The shrunk $\hat{\phi}_g$ is held fixed during the per-locus genome scan.
+This stabilizes p-values for low-count genes without introducing bias
+for the haplotype effect test.
+
+**Note on vQTL:** This gene-level shrinkage operates across *genes*
+(borrowing information from genes with similar mean expression), not
+across *subjects*. It does not compress the between-subject dispersion
+variation that the vQTL scan is designed to detect.
 
 **Phenotype input:** Raw pseudobulk UMI counts (integers). No RINT, no
 log-CPM transformation. Library size $L_i$ enters as a known offset.
@@ -172,7 +232,12 @@ $$\text{LOD}_\ell = \frac{n - p}{2} \log_{10} \left( \frac{\text{RSS}_0}{\text{R
 
 ### Model C — NB-LMM / NEBULA-LN (cell-level, `nebula_ln.py`)
 
-For cell-level counts without pseudobulking. See §III for full specification.
+For cell-level counts without pseudobulking. Uses edgePython's
+`glm_sc_fit()` + `shrink_sc_disp()` for the NB-gamma mixed model
+fitting and cell-level dispersion shrinkage, with mosaiQTL providing
+the haplotype design matrix $\mathbf{H}_\ell^{(-J)}$ at each locus.
+
+See §III for full model specification.
 
 ---
 
@@ -544,7 +609,9 @@ For every module, the validation script:
 | LOD scores per locus | ✓ validated | `miQTL::scan.h2lmm()` |
 | Dispersion $\hat{\phi}$ estimation | ✓ validated | moment estimator |
 | vQTL scan | ✓ validated | two-stage on simulated data |
-| NEBULA-LN $\sigma^2$, $\phi$ | planned | `nebula::nebula()` |
+| NB GLM dispersion (edgePython) | planned | `edgePython::estimate_disp()` vs `edgeR` |
+| NB GLM score test | planned | `edgePython::glm_fit()` + custom score |
+| NEBULA-LN $\sigma^2$, $\phi$ | planned | `edgePython::glm_sc_fit()` vs `nebula::nebula()` |
 | Permutation $p$-values | planned | `miQTL` permutation scan |
 | SNP association | planned | `qtl2::scan1snps()` |
 | Merge analysis | planned | manual contrast validation |
@@ -553,6 +620,9 @@ For every module, the validation script:
 
 ## X. References
 
+- Pachter, L. (2026). Differential analysis of genomics count data with
+  edge*. *bioRxiv*.
+  [doi:10.64898/2026.02.16.706223](https://doi.org/10.64898/2026.02.16.706223)
 - He, L. et al. (2021). NEBULA: fast negative binomial mixed model for
   multi-subject single-cell data. *Commun. Biol.* 4:629.
   [doi:10.1038/s42003-021-02146-6](https://doi.org/10.1038/s42003-021-02146-6)
@@ -577,3 +647,11 @@ For every module, the validation script:
 - King, E.G. et al. (2014). Bayesian modeling of haplotype effects in
   multiparent populations. *Genetics* 198:139–156.
   [doi:10.1534/genetics.114.166249](https://doi.org/10.1534/genetics.114.166249)
+- Robinson, M.D. & Smyth, G.K. (2008). Small-sample estimation of
+  negative binomial dispersion, with applications to SAGE data.
+  *Biostatistics* 9:321–332.
+  [doi:10.1093/biostatistics/kxm030](https://doi.org/10.1093/biostatistics/kxm030)
+- McCarthy, D.J., Chen, Y. & Smyth, G.K. (2012). Differential expression
+  analysis of multifactor RNA-Seq experiments with respect to biological
+  variation. *Nucleic Acids Res.* 40:4288–4297.
+  [doi:10.1093/nar/gks042](https://doi.org/10.1093/nar/gks042)

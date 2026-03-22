@@ -6,4 +6,4 @@ on raw counts, normalized expression, or collapsed genotype means. user
 specifies j founders, aggregation level, and statistical model at scan time.
 """
 
-__version__ = '0.1.0'
+__version__ = '0.2.0'
