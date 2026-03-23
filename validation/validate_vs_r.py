@@ -59,11 +59,13 @@ if not os.path.exists(pheno_path):
     log.error('run_validation.R exports this automatically')
     sys.exit(1)
 
-pheno_48 = pd.read_csv(pheno_path, index_col=0)   # rownames = subject.name
-pheno_48.index.name = 'subject.name'
-pheno_48 = pheno_48.reset_index()
-log.info(f'pheno_48: {pheno_48.shape[0]} strains × {pheno_48.shape[1]} cols')
 
+pheno_48 = pd.read_csv(pheno_path, index_col=0) # rownames = subject.name
+if 'subject.name' not in pheno_48.columns:
+    pheno_48.index.name = 'subject.name'
+    pheno_48 = pheno_48.reset_index()
+else:
+    pheno_48 = pheno_48.reset_index(drop=True)
 # ── load genome cache ──────────────────────────────────────────────────────────
 if not os.path.isdir(cache_dir):
     log.error(f'genome cache not found: {cache_dir}')
