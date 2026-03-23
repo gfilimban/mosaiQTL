@@ -41,7 +41,7 @@ args   = parser.parse_args()
 chr_id = args.chr
 
 # ── load r reference lod scores ───────────────────────────────────────────────
-lod_r_path = os.path.join(val_dir, 'lod_r.csv')
+lod_r_path = os.path.join(val_dir, 'results', 'lod_r.csv')
 if not os.path.exists(lod_r_path):
     log.error(f'lod_r.csv not found at {lod_r_path}')
     log.error('run first: Rscript validation/r_reference/run_validation.R')
