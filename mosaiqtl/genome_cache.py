@@ -254,13 +254,13 @@ class GenomeCache:
         """
         try:
             import rpy2.robjects as ro
-            from rpy2.robjects import numpy2ri
-            numpy2ri.activate()
         except ImportError:
             raise ImportError(
                 'rpy2 required for reading happy .rdata files. '
                 'install with: pip install rpy2'
             )
+        # numpy2ri.activate() removed — deprecated in rpy2 >= 3.5
+        # np.array(r_object) works directly without a converter
 
         # real cache structure: cache_dir/additive/chr{c}/data/*.RData
         model_dir = os.path.join(cache_dir, model)
