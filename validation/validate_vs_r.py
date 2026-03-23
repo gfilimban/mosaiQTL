@@ -28,9 +28,10 @@ logging.basicConfig(level=logging.INFO, format='%(name)s | %(message)s')
 log = logging.getLogger('validate')
 
 # ── paths ─────────────────────────────────────────────────────────────────────
-base_dir   = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl'
+base_dir   = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
+pkg_dir   = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
 cache_dir  = os.path.join(base_dir, 'output', 'genomecache')
-val_dir    = os.path.join(base_dir, 'output', 'validation')  # where run_validation.R writes
+val_dir    = os.path.join(pkg_dir, 'validation')  # where run_validation.R writes
 pmap_path  = os.path.join(base_dir, 'input',  'pmap.csv')
 
 # ── args ──────────────────────────────────────────────────────────────────────
@@ -41,7 +42,7 @@ args   = parser.parse_args()
 chr_id = args.chr
 
 # ── load r reference lod scores ───────────────────────────────────────────────
-lod_r_path = os.path.join(val_dir, 'results', 'lod_r.csv')
+lod_r_path = os.path.join(val_dir, 'r_data', 'lod_r.csv')
 if not os.path.exists(lod_r_path):
     log.error(f'lod_r.csv not found at {lod_r_path}')
     log.error('run first: Rscript validation/r_reference/run_validation.R')
