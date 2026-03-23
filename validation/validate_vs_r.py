@@ -29,7 +29,7 @@ log = logging.getLogger('validate')
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 base_dir   = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
-pkg_dir   = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
+pkg_dir   = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl'
 cache_dir  = os.path.join(base_dir, 'output', 'genomecache')
 val_dir    = os.path.join(pkg_dir, 'validation')  # where run_validation.R writes
 pmap_path  = os.path.join(base_dir, 'input',  'pmap.csv')
