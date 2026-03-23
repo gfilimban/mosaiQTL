@@ -24,11 +24,12 @@ cat('[init] reading simulated data from:', data_dir, '\n')
 
 # ── read phenotype ────────────────────────────────────────────────────────────
 pheno_df <- read.csv(file.path(data_dir, 'pheno_df.csv'),
-                     stringsAsFactors = FALSE)
+                     stringsAsFactors = FALSE, check.names = FALSE)
 cat('  pheno_df:', nrow(pheno_df), 'samples\n')
 
 # ── read physical map ──────────────────────────────────────────────────────────
-pmap <- read.csv(file.path(data_dir, 'pmap.csv'), stringsAsFactors = FALSE)
+pmap <- read.csv(file.path(data_dir, 'pmap.csv'), stringsAsFactors = FALSE,
+                 check.names = FALSE)
 colnames(pmap)[colnames(pmap) == 'marker'] <- 'locus'
 colnames(pmap)[colnames(pmap) == 'pos']    <- 'pos_mb'
 rownames(pmap) <- pmap$locus
@@ -39,7 +40,7 @@ k_files <- list.files(k_dir, pattern = 'kinship_chr.*\\.csv', full.names = TRUE)
 kinship_loco <- list()
 for (kf in k_files) {
   chrom <- gsub('.*kinship_chr(.*)\\.csv', '\\1', kf)
-  k_mat <- as.matrix(read.csv(kf, row.names = 1))
+  k_mat <- as.matrix(read.csv(kf, row.names = 1, check.names = FALSE))
   kinship_loco[[chrom]] <- k_mat
 }
 cat('  loaded kinship for chromosomes:', paste(names(kinship_loco), collapse = ', '), '\n')
@@ -56,7 +57,7 @@ temp_cache <- file.path(output_dir, 'genomecache', 'additive')
 
 for (chrom in chromosomes) {
   df <- read.csv(file.path(hap_dir, paste0('chr', chrom, '.csv')),
-                 stringsAsFactors = FALSE)
+                 stringsAsFactors = FALSE, check.names = FALSE)
 
   if (is.null(founders)) {
     # founder names = columns after locus, pos_mb, subject
@@ -101,6 +102,37 @@ rownames(pheno_48) <- pheno_48$subject.name
 
 cat('  pheno_48:', nrow(pheno_48), 'strains x', ncol(pheno_48), 'columns\n')
 
+# diagnostic: verify name consistency across data structures
+cat('\n[diagnostic] name consistency check:\n')
+cat('  pheno_48 subject.name (first 5): ',
+    paste(head(pheno_48$subject.name, 5), collapse = ', '), '\n')
+cat('  kinship rownames (first 5):      ',
+    paste(head(rownames(kinship_loco[['1']]), 5), collapse = ', '), '\n')
+
+# check genome cache
+test_cache_dir <- file.path(genomecache_path, 'additive', 'chr1', 'data')
+if (dir.exists(test_cache_dir)) {
+  test_rdata <- list.files(test_cache_dir)[1]
+  test_env <- new.env()
+  load(file.path(test_cache_dir, test_rdata), envir = test_env)
+  test_mat <- test_env[[ls(test_env)[1]]]
+  cat('  cache rownames (first 5):         ',
+      paste(head(rownames(test_mat), 5), collapse = ', '), '\n')
+  cat('  cache dims:                       ',
+      paste(dim(test_mat), collapse = ' x '), '\n')
+
+  # check overlap
+  overlap <- intersect(pheno_48$subject.name, rownames(test_mat))
+  cat('  name overlap (pheno vs cache):    ', length(overlap), '/',
+      nrow(pheno_48), '\n')
+  if (length(overlap) == 0) {
+    cat('  *** WARNING: no overlapping names — scans will fail\n')
+  }
+} else {
+  cat('  cache dir not found: ', test_cache_dir, '\n')
+}
+cat('\n')
+
 # ── scan each gene per chromosome ─────────────────────────────────────────────
 n_pcs         <- 10
 cis_window_mb <- 0.5
@@ -142,7 +174,7 @@ for (gene in gene_names) {
         return.allele.effects = TRUE
       ),
       error = function(e) {
-        message('  scan failed: ', gene, ' chr', scan_chr, ' - ', e$message)
+        cat('  *** scan failed:', gene, 'chr', scan_chr, '-', e$message, '\n')
         NULL
       }
     )
@@ -189,6 +221,21 @@ for (gene in gene_names) {
 }
 
 # ── combine and save ─────────────────────────────────────────────────────────
+if (length(results_list) == 0) {
+  cat('\n[error] no scan results collected — all scans failed.\n')
+  cat('  diagnostic info:\n')
+  cat('  pheno_48 subject.names: ', paste(head(pheno_48$subject.name, 5), collapse = ', '), '...\n')
+  cat('  k_chr rownames: ', paste(head(rownames(kinship_loco[['1']]), 5), collapse = ', '), '...\n')
+  # check if cache loci exist
+  test_cache <- file.path(genomecache_path, 'additive', 'chr1', 'data')
+  if (dir.exists(test_cache)) {
+    cat('  cache loci (chr1): ', paste(head(list.files(test_cache), 3), collapse = ', '), '...\n')
+  } else {
+    cat('  cache dir not found: ', test_cache, '\n')
+  }
+  stop('no results to combine')
+}
+
 results_all           <- do.call(rbind, results_list)
 rownames(results_all) <- NULL
 

@@ -138,16 +138,17 @@ def simulate_replicated_phenotype(genome_cache, causal_chrom='1',
 
     # build replicate sample table (4m + 4f per strain)
     rows = []
-    for strain in ALL_48_STRAINS:
+    for s_idx, strain in enumerate(ALL_48_STRAINS):
+        # batch varies by strain (mimics real sequencing batches)
+        strain_batch = f'batch{(s_idx % 3) + 1}'
         for rep in range(REPS_PER_STRAIN):
             sex = 'M' if rep < 4 else 'F'
-            batch = f'batch{(rep % 3) + 1}'
             sample_id = f'{strain}_{sex}_{rep:02d}'
             rows.append({
                 'sample_id': sample_id,
                 'subject.name': strain,
                 'sex': sex,
-                'batch': batch,
+                'batch': strain_batch,
             })
 
     pheno_df = pd.DataFrame(rows)
