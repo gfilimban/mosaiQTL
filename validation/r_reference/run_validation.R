@@ -37,9 +37,11 @@ if (dir.exists(lib_path)) {
 # ── args ──────────────────────────────────────────────────────────────────────
 args     <- commandArgs(trailingOnly = TRUE)
 scan_chr <- if (length(args) >= 1) args[1] else '8'
-n_genes  <- if (length(args) >= 2) as.integer(args[2]) else 5
+# n_genes: optional cap for quick testing; omit or set to Inf to scan all genes
+n_genes  <- if (length(args) >= 2) as.integer(args[2]) else Inf
 
-message('[init] chr=', scan_chr, '  n_genes=', n_genes)
+message('[init] chr=', scan_chr,
+        '  n_genes=', if (is.infinite(n_genes)) 'all' else n_genes)
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 # data_dir: where real pipeline outputs live (from founders_f1_genomecache.ipynb)
@@ -49,7 +51,7 @@ pkg_dir  <- '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igv
 
 genomecache_path <- file.path(data_dir, 'output', 'genomecache')
 kinship_path     <- file.path(data_dir, 'output', 'kinship_loco.rds')
-pheno_48_path    <- file.path(data_dir, 'output', 'pheno_48.rds')
+pheno_48_path    <- file.path(data_dir, 'output', 'results', 'pheno_48.rds')
 pheno_df_path    <- file.path(data_dir, 'output', 'pheno_df.rds')
 pmap_path        <- file.path(data_dir, 'input',  'pmap.csv')
 gtf_path         <- file.path(data_dir, 'input',  'gencode.vM32.gtf.gz')
@@ -185,15 +187,25 @@ for (gene in gene_names) {
     stringsAsFactors = FALSE
   )
 
-  if (!is.null(scan_result$allele.effects)) {
+  ae <- scan_result$allele.effects
+  if (!is.null(ae) && length(scan_result$LOD) > 0) {
     peak_idx <- which.max(scan_result$LOD)
-    effects  <- scan_result$allele.effects[peak_idx, ]
-    effects_list[[gene]] <- data.frame(
-      gene_id = gene, chr = scan_chr,
-      locus   = scan_result$loci[peak_idx],
-      founder = names(effects), effect = as.numeric(effects),
-      stringsAsFactors = FALSE
-    )
+    # allele.effects can be a matrix (n_loci x 8) or named vector (single locus)
+    if (is.matrix(ae) && nrow(ae) >= peak_idx) {
+      effects <- ae[peak_idx, ]
+    } else if (!is.matrix(ae)) {
+      effects <- ae
+    } else {
+      effects <- NULL
+    }
+    if (!is.null(effects)) {
+      effects_list[[gene]] <- data.frame(
+        gene_id = gene, chr = scan_chr,
+        locus   = scan_result$loci[min(peak_idx, length(scan_result$loci))],
+        founder = names(effects), effect = as.numeric(effects),
+        stringsAsFactors = FALSE
+      )
+    }
   }
 }
 
