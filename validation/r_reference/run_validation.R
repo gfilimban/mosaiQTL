@@ -1,32 +1,28 @@
 # run_validation.R
 # cross-language validation of mosaiqtl against r miqtl
 #
-# this script is a direct derivative of scan_eqtl.R — same inputs, same
-# scan.h2lmm() call, same parameters. the only difference is scope:
-# it runs on a small subset of genes and one chromosome, then exports
-# lod scores for comparison against mosaiqtl python output.
+# a scoped derivative of scan_eqtl.R — same inputs, same scan.h2lmm()
+# call, same parameters. runs on a small gene/chromosome subset and
+# exports lod scores for comparison against mosaiqtl python output.
 #
-# since the pipeline has already produced all real data outputs, this
-# script reads them directly:
-#   output/pheno_48.rds      — 48-strain means (pre-collapsed, no rebuild needed)
-#   output/kinship_loco.rds  — one 48×48 loco matrix per chromosome
-#   output/genomecache/      — happy genome cache, additive model
-#   input/pmap.csv           — physical map (marker, chr, pos_mb)
-#   input/gencode.vM32.gtf.gz — gene tss coordinates (optional; falls back to
-#                               midpoint if absent, e.g. when running locally)
+# inputs (real pipeline outputs from founders_f1_genomecache.ipynb):
+#   $data_dir/genomecache/       — happy genome cache, additive model
+#   $data_dir/kinship_loco.rds   — one 48×48 loco matrix per chromosome
+#   $data_dir/pheno_48.rds       — pre-collapsed 48-strain means
+#   $data_dir/pheno_df.rds       — fallback if pheno_48.rds absent
 #
-# outputs:
-#   output/validation/lod_r.csv          — lod + p_value per gene × locus
-#   output/validation/lead_loci.csv      — top locus per gene
-#   output/validation/allele_effects.csv — per-founder effects at peak locus
+# outputs (written to validation/r_data/ inside mosaiqtl package):
+#   lod_r.csv          — lod + p_value per gene × locus
+#   lead_loci.csv      — top locus per gene
+#   allele_effects.csv — per-founder effects at peak locus
+#   pheno_48_used.csv  — exact pheno_48 slice used (for python alignment)
 #
-# usage (on crsp):
+# usage:
 #   Rscript validation/r_reference/run_validation.R [chr] [n_genes]
 #   Rscript validation/r_reference/run_validation.R 8 5
-#
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── library paths (identical to scan_eqtl.R) ─────────────────────────────────
+# ── library paths ─────────────────────────────────────────────────────────────
 lib_path <- '/data/homezvol2/gfilimba/R/x86_64-pc-linux-gnu-library/4.4'
 if (dir.exists(lib_path)) {
   .libPaths(c(lib_path, .libPaths()))
@@ -35,36 +31,48 @@ if (dir.exists(lib_path)) {
   library(rtracklayer, lib.loc = lib_path)
 } else {
   library(miqtl); library(dplyr)
+  if (requireNamespace('rtracklayer', quietly = TRUE)) library(rtracklayer)
 }
 
 # ── args ──────────────────────────────────────────────────────────────────────
-args    <- commandArgs(trailingOnly = TRUE)
+args     <- commandArgs(trailingOnly = TRUE)
 scan_chr <- if (length(args) >= 1) args[1] else '8'
 n_genes  <- if (length(args) >= 2) as.integer(args[2]) else 5
 
 message('[init] chr=', scan_chr, '  n_genes=', n_genes)
 
-# ── paths (identical to scan_eqtl.R) ─────────────────────────────────────────
-base_dir         <- '/share/crsp/lab/seyedam/gfilimba/projects/igvf_8cube/short-read/data/gastroc'
-genomecache_path <- file.path(base_dir, 'output', 'genomecache')
-kinship_path     <- file.path(base_dir, 'output', 'kinship_loco.rds')
-pheno_48_path    <- file.path(base_dir, 'output', 'pheno_48.rds')  # pre-built by pipeline
-pheno_df_path    <- file.path(base_dir, 'output', 'pheno_df.rds')  # fallback if pheno_48 absent
-gtf_path         <- file.path(base_dir, 'input',  'gencode.vM32.gtf.gz')
-pmap_path        <- file.path(base_dir, 'input',  'pmap.csv')
-output_dir       <- file.path(base_dir, 'output', 'validation')
+# ── paths ─────────────────────────────────────────────────────────────────────
+# data_dir: where real pipeline outputs live (from founders_f1_genomecache.ipynb)
+# pkg_dir:  mosaiqtl package root — outputs always go to validation/r_data/ here
+data_dir <- '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
+pkg_dir  <- '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl'
+
+genomecache_path <- file.path(data_dir, 'output', 'genomecache')
+kinship_path     <- file.path(data_dir, 'output', 'kinship_loco.rds')
+pheno_48_path    <- file.path(data_dir, 'output', 'pheno_48.rds')
+pheno_df_path    <- file.path(data_dir, 'output', 'pheno_df.rds')
+pmap_path        <- file.path(data_dir, 'input',  'pmap.csv')
+gtf_path         <- file.path(data_dir, 'input',  'gencode.vM32.gtf.gz')
+output_dir       <- file.path(pkg_dir,  'validation', 'r_data')
+
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+message('[paths]')
+message('  data:   ', data_dir)
+message('  output: ', output_dir)
 
 # ── load inputs ───────────────────────────────────────────────────────────────
-message('[load] reading inputs...')
+message('[load]')
 
-# pheno_48 — pre-collapsed by pipeline; use directly if it exists, otherwise
-# rebuild from pheno_df the same way scan_eqtl.R does it
+# pheno_48 — use pre-built file if present; otherwise collapse pheno_df the
+# same way scan_eqtl.R does (aggregate mean per strain, tapply first for batch)
 if (file.exists(pheno_48_path)) {
   pheno_48 <- readRDS(pheno_48_path)
-  message('  pheno_48 loaded: ', nrow(pheno_48), ' strains × ', ncol(pheno_48), ' cols')
+  # ensure rownames are set to subject.name for kinship indexing
+  if (!identical(rownames(pheno_48), pheno_48$subject.name))
+    rownames(pheno_48) <- pheno_48$subject.name
+  message('  pheno_48.rds: ', nrow(pheno_48), ' strains × ', ncol(pheno_48), ' cols')
 } else {
-  message('  pheno_48.rds not found — collapsing pheno_df (same as scan_eqtl.R)')
+  message('  pheno_48.rds absent — collapsing pheno_df (same as scan_eqtl.R)')
   pheno_df       <- readRDS(pheno_df_path)
   pheno_df$batch <- as.character(pheno_df$batch)
   pheno_df$sex   <- as.character(pheno_df$sex)
@@ -80,25 +88,25 @@ if (file.exists(pheno_48_path)) {
   message('  pheno_48 built: ', nrow(pheno_48), ' strains × ', ncol(pheno_48), ' cols')
 }
 
-# kinship — identical to scan_eqtl.R
+# kinship — 48×48 loco, strain labels as rownames
 kinship_loco <- readRDS(kinship_path)
-k_chr <- kinship_loco[[scan_chr]]
+k_chr        <- kinship_loco[[scan_chr]]
 message('  kinship chr', scan_chr, ': ', paste(dim(k_chr), collapse = ' × '))
 
-# pmap — identical column rename from scan_eqtl.R
+# pmap — same column rename as scan_eqtl.R
 pmap_flat <- read.csv(pmap_path, stringsAsFactors = FALSE)
 colnames(pmap_flat)[colnames(pmap_flat) == 'marker'] <- 'locus'
 colnames(pmap_flat)[colnames(pmap_flat) == 'pos']    <- 'pos_mb'
-# strip .RData suffix if present — scan.h2lmm() appends it; double extension = file not found
-pmap_flat$locus    <- sub('\\.RData$', '', pmap_flat$locus)
+pmap_flat$locus    <- sub('\\.RData$', '', pmap_flat$locus)  # strip suffix if present
 rownames(pmap_flat) <- pmap_flat$locus
 chr_loci <- pmap_flat[pmap_flat$chr == scan_chr, ]
 message('  pmap chr', scan_chr, ': ', nrow(chr_loci), ' loci')
 
-# gene tss — from gtf if present (same as scan_eqtl.R); otherwise chr midpoint fallback
-if (file.exists(gtf_path)) {
-  gtf       <- as.data.frame(import(gtf_path))
-  gtf_genes <- gtf[gtf$type == 'gene', ]
+# gene tss — from gtf (same as scan_eqtl.R) with chr midpoint fallback
+use_gtf <- FALSE
+if (file.exists(gtf_path) && requireNamespace('rtracklayer', quietly = TRUE)) {
+  gtf        <- as.data.frame(rtracklayer::import(gtf_path))
+  gtf_genes  <- gtf[gtf$type == 'gene', ]
   gene_annot <- data.frame(
     gene_id = gtf_genes$gene_name,
     chr     = gsub('^chr', '', as.character(gtf_genes$seqnames)),
@@ -107,54 +115,48 @@ if (file.exists(gtf_path)) {
     stringsAsFactors = FALSE
   )
   gene_annot <- gene_annot[gene_annot$chr == scan_chr, ]
+  use_gtf    <- TRUE
   message('  gtf genes on chr', scan_chr, ': ', nrow(gene_annot))
-  use_gtf <- TRUE
 } else {
-  message('  gtf not found — using chr midpoint as tss proxy (ok for validation)')
-  use_gtf <- FALSE
+  message('  gtf not found — using chr midpoint as tss (ok for validation)')
 }
 
-# ── identify genes to scan ────────────────────────────────────────────────────
-meta_cols  <- c('subject.name', 'batch', paste0('pc', 1:10))
-all_genes  <- setdiff(colnames(pheno_48), meta_cols)
+# ── select genes ──────────────────────────────────────────────────────────────
+meta_cols <- c('subject.name', 'batch', paste0('pc', 1:10))
+all_genes <- setdiff(colnames(pheno_48), meta_cols)
 
-if (use_gtf) {
-  # real mode: same intersection as scan_eqtl.R
-  gene_names <- head(intersect(all_genes, gene_annot$gene_id), n_genes)
+gene_names <- if (use_gtf) {
+  head(intersect(all_genes, gene_annot$gene_id), n_genes)
 } else {
-  # fallback: first n_genes from pheno_48 (simulation / local)
-  gene_names <- head(all_genes, n_genes)
+  head(all_genes, n_genes)
 }
 
+if (length(gene_names) == 0) stop('[error] no genes found in pheno_48')
 message('[scan] genes: ', paste(gene_names, collapse = ', '))
 
 # ── scan loop (identical to scan_eqtl.R) ─────────────────────────────────────
-cis_window_mb <- 0.5   # ±500 kb — same as scan_eqtl.R
+cis_window_mb <- 0.5   # ±500 kb — matches scan_eqtl.R
 n_pcs         <- 10
 results_list  <- list()
 effects_list  <- list()
 
 for (gene in gene_names) {
-  # tss lookup — gtf if available, else midpoint fallback
-  if (use_gtf) {
-    gene_tss <- gene_annot$tss_mb[gene_annot$gene_id == gene][1]
-    if (is.na(gene_tss)) next
+  gene_tss <- if (use_gtf) {
+    gene_annot$tss_mb[gene_annot$gene_id == gene][1]
   } else {
-    gene_tss <- mean(chr_loci$pos_mb)
+    mean(chr_loci$pos_mb)
   }
+  if (is.na(gene_tss)) next
 
   cis_loci <- chr_loci[abs(chr_loci$pos_mb - gene_tss) <= cis_window_mb, 'locus']
   if (length(cis_loci) == 0) next
 
-  # formula — same as scan_eqtl.R (backtick-wrap, no sex, batch + pc1..pc10)
   scan_formula <- as.formula(
     paste0('`', gene, '` ~ batch + ', paste0('pc', 1:n_pcs, collapse = ' + '))
   )
 
-  message('  scanning: ', sprintf('%-25s', gene),
-          ' | ', length(cis_loci), ' loci')
+  message('  ', sprintf('%-25s', gene), ' | ', length(cis_loci), ' loci')
 
-  # scan.h2lmm() call — identical to scan_eqtl.R
   scan_result <- tryCatch(
     scan.h2lmm(
       genomecache           = genomecache_path,
@@ -169,28 +171,20 @@ for (gene in gene_names) {
       return.allele.effects = TRUE
     ),
     error = function(e) {
-      message('  scan failed: ', gene, ' — ', conditionMessage(e))
-      NULL
+      message('  scan failed: ', gene, ' — ', conditionMessage(e)); NULL
     }
   )
 
   if (is.null(scan_result)) next
 
-  # pos_mb lookup — match() instead of direct indexing (same defensive approach
-  # as scan_eqtl.R in case some cache markers are absent from pmap)
   pos_mb_vals <- pmap_flat$pos_mb[match(scan_result$loci, pmap_flat$locus)]
 
   results_list[[gene]] <- data.frame(
-    gene_id = gene,
-    locus   = scan_result$loci,
-    chr     = scan_chr,
-    pos_mb  = pos_mb_vals,
-    lod     = scan_result$LOD,
-    p_value = scan_result$p.value,
+    gene_id = gene, locus = scan_result$loci, chr = scan_chr,
+    pos_mb = pos_mb_vals, lod = scan_result$LOD, p_value = scan_result$p.value,
     stringsAsFactors = FALSE
   )
 
-  # allele effects at peak locus
   if (!is.null(scan_result$allele.effects)) {
     peak_idx <- which.max(scan_result$LOD)
     effects  <- scan_result$allele.effects[peak_idx, ]
@@ -203,25 +197,21 @@ for (gene in gene_names) {
   }
 }
 
-# ── save outputs ───────────────────────────────────────────────────────────────
-if (length(results_list) == 0)
-  stop('[error] no scan results — check errors above')
+# ── save to validation/r_data/ ────────────────────────────────────────────────
+if (length(results_list) == 0) stop('[error] no scan results — check errors above')
 
-lod_results  <- do.call(rbind, results_list); rownames(lod_results) <- NULL
-effects_all  <- if (length(effects_list) > 0) do.call(rbind, effects_list) else NULL
-
-lead_loci <- lod_results %>%
-  group_by(gene_id) %>%
-  slice_min(p_value, n = 1, with_ties = FALSE) %>%
+lod_results <- do.call(rbind, results_list); rownames(lod_results) <- NULL
+lead_loci   <- lod_results %>%
+  group_by(gene_id) %>% slice_min(p_value, n = 1, with_ties = FALSE) %>%
   ungroup() %>% as.data.frame()
 
 write.csv(lod_results, file.path(output_dir, 'lod_r.csv'),     row.names = FALSE)
 write.csv(lead_loci,   file.path(output_dir, 'lead_loci.csv'), row.names = FALSE)
-if (!is.null(effects_all))
-  write.csv(effects_all, file.path(output_dir, 'allele_effects.csv'), row.names = FALSE)
+write.csv(pheno_48,    file.path(output_dir, 'pheno_48_used.csv'))  # python alignment
 
-# also export the pheno_48 slice used here — python reads it for exact alignment
-write.csv(pheno_48, file.path(output_dir, 'pheno_48_used.csv'))
+if (length(effects_list) > 0)
+  write.csv(do.call(rbind, effects_list),
+            file.path(output_dir, 'allele_effects.csv'), row.names = FALSE)
 
 cat('\n[results]\n')
 for (i in seq_len(nrow(lead_loci))) {
@@ -230,9 +220,6 @@ for (i in seq_len(nrow(lead_loci))) {
               r$gene_id, r$chr, r$pos_mb, r$lod,
               format(r$p_value, scientific = TRUE, digits = 3)))
 }
-
 cat('\n[saved to', output_dir, ']\n')
-cat('  lod_r.csv         :', nrow(lod_results), 'rows\n')
-cat('  lead_loci.csv     :', nrow(lead_loci), 'rows\n')
-cat('  pheno_48_used.csv : for python alignment\n')
+cat('  lod_r.csv, lead_loci.csv, allele_effects.csv, pheno_48_used.csv\n')
 cat('\n[done]\n')
