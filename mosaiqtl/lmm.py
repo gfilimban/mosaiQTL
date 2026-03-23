@@ -225,14 +225,13 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null,
     rss_alt = np.sum(resid_alt ** 2 * w_inv)
 
     # --- lod score ---
-    # LOD = (n/2) * log10(rss_null / rss_alt)
-    if use_reml:
-        denom = n - p  # null df
-    else:
-        denom = n
-
+    # LOD = (log L_alt - log L_null) / log(10)
+    # under fixed h², the Σlog(δλ+1) terms cancel between alt and null,
+    # leaving LOD = n/2 * log10(RSS_null / RSS_alt)  [ML formula]
+    # using n-p (REML df) systematically deflates LOD by (n-p)/n ≈ 0.75
+    # miQTL::lmmbygls uses the ML formula — always use n here.
     if rss_alt > 0 and rss_null > rss_alt:
-        lod = (denom / 2.0) * np.log10(rss_null / rss_alt)
+        lod = (n / 2.0) * np.log10(rss_null / rss_alt)
     else:
         lod = 0.0
 
@@ -250,7 +249,8 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null,
         p_value = 1.0
 
     # --- variance components ---
-    sigma2_total = rss_alt / max(denom - q, 1)
+    # sigma2 uses REML df (n-p) — only for reporting, not for LOD
+    sigma2_total = rss_alt / max(n - p - q, 1)
     sigma2_g = h2_null * sigma2_total
     sigma2_e = (1 - h2_null) * sigma2_total
 
