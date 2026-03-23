@@ -48,7 +48,9 @@ plot_dir  = os.path.join(pkg_dir,   'validation', 'qc_plots')
 # ── args ──────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()
 parser.add_argument('--n_genes', default=None, type=int,
-                    help='cap genes per chromosome for quick testing (default: all)')
+                    help='cap genes per chromosome (default: all)')
+parser.add_argument('--n_chrs',  default=None, type=int,
+                    help='cap number of chromosomes (default: all)')
 args = parser.parse_args()
 
 # ── load r reference outputs ──────────────────────────────────────────────────
@@ -67,6 +69,8 @@ lod_r = pd.read_csv(lod_r_path)
 lod_r['chr'] = lod_r['chr'].astype(str)
 chromosomes  = sorted(lod_r['chr'].unique(),
                       key=lambda c: int(c) if c.isdigit() else 99)
+if args.n_chrs:
+    chromosomes = chromosomes[:args.n_chrs]
 n_genes_total = lod_r['gene_id'].nunique()
 log.info(f'r reference: {lod_r.shape[0]} rows | '
          f'{n_genes_total} genes | chrs: {chromosomes}')
