@@ -53,7 +53,7 @@ gene_list  = lod_r['gene_id'].unique()[:args.n_genes].tolist()
 log.info(f'r reference: {lod_r.shape[0]} rows | genes: {gene_list}')
 
 # ── load pheno_48 (exact matrix r used) ──────────────────────────────────────
-pheno_path = os.path.join(val_dir, 'pheno_48_used.csv')
+pheno_path = os.path.join(val_dir, 'r_data', 'pheno_48_used.csv')
 if not os.path.exists(pheno_path):
     log.error(f'pheno_48_used.csv not found at {pheno_path}')
     log.error('run_validation.R exports this automatically')
