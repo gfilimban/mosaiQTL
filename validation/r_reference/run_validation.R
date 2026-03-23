@@ -35,12 +35,13 @@ if (dir.exists(lib_path)) {
 }
 
 # ── args ──────────────────────────────────────────────────────────────────────
-args     <- commandArgs(trailingOnly = TRUE)
-scan_chr <- if (length(args) >= 1) args[1] else '8'
-# n_genes: optional cap for quick testing; omit or set to Inf to scan all genes
-n_genes  <- if (length(args) >= 2) as.integer(args[2]) else Inf
+args    <- commandArgs(trailingOnly = TRUE)
+# chr:     optional; default = all chromosomes (same as scan_eqtl.R which loops all)
+# n_genes: optional cap for quick testing; omit to scan all genes
+scan_chrs <- if (length(args) >= 1) args[1] else 'all'
+n_genes   <- if (length(args) >= 2) as.integer(args[2]) else Inf
 
-message('[init] chr=', scan_chr,
+message('[init] chr=', scan_chrs,
         '  n_genes=', if (is.infinite(n_genes)) 'all' else n_genes)
 
 # ── paths ─────────────────────────────────────────────────────────────────────
@@ -92,8 +93,7 @@ if (file.exists(pheno_48_path)) {
 
 # kinship — 48×48 loco, strain labels as rownames
 kinship_loco <- readRDS(kinship_path)
-k_chr        <- kinship_loco[[scan_chr]]
-message('  kinship chr', scan_chr, ': ', paste(dim(k_chr), collapse = ' × '))
+# kinship loaded per-chromosome inside the loop below
 
 # pmap — same column rename as scan_eqtl.R
 pmap_flat <- read.csv(pmap_path, stringsAsFactors = FALSE)
@@ -101,8 +101,8 @@ colnames(pmap_flat)[colnames(pmap_flat) == 'marker'] <- 'locus'
 colnames(pmap_flat)[colnames(pmap_flat) == 'pos']    <- 'pos_mb'
 pmap_flat$locus    <- sub('\\.RData$', '', pmap_flat$locus)  # strip suffix if present
 rownames(pmap_flat) <- pmap_flat$locus
-chr_loci <- pmap_flat[pmap_flat$chr == scan_chr, ]
-message('  pmap chr', scan_chr, ': ', nrow(chr_loci), ' loci')
+# chr_loci and k_chr set per-chromosome inside the loop below
+message('  pmap total loci: ', nrow(pmap_flat))
 
 # gene tss — from gtf (same as scan_eqtl.R) with chr midpoint fallback
 use_gtf <- FALSE
@@ -116,9 +116,9 @@ if (file.exists(gtf_path) && requireNamespace('rtracklayer', quietly = TRUE)) {
                      gtf_genes$start, gtf_genes$end) / 1e6,
     stringsAsFactors = FALSE
   )
-  gene_annot <- gene_annot[gene_annot$chr == scan_chr, ]
+  # gene_annot kept for all chromosomes; subset per chr inside loop
   use_gtf    <- TRUE
-  message('  gtf genes on chr', scan_chr, ': ', nrow(gene_annot))
+  message('  gtf genes loaded: ', nrow(gene_annot))
 } else {
   message('  gtf not found — using chr midpoint as tss (ok for validation)')
 }
@@ -126,25 +126,43 @@ if (file.exists(gtf_path) && requireNamespace('rtracklayer', quietly = TRUE)) {
 # ── select genes ──────────────────────────────────────────────────────────────
 meta_cols <- c('subject.name', 'batch', paste0('pc', 1:10))
 all_genes <- setdiff(colnames(pheno_48), meta_cols)
+all_genes <- head(all_genes, n_genes)
 
-gene_names <- if (use_gtf) {
-  head(intersect(all_genes, gene_annot$gene_id), n_genes)
+# chromosomes to scan — all available in kinship if not specified
+if (scan_chrs == 'all') {
+  chromosomes <- names(kinship_loco)
 } else {
-  head(all_genes, n_genes)
+  chromosomes <- strsplit(scan_chrs, ',')[[1]]
 }
+message('[scan] chromosomes: ', paste(sort(chromosomes), collapse = ', '))
+message('[scan] genes in pheno_48: ', length(all_genes))
 
-if (length(gene_names) == 0) stop('[error] no genes found in pheno_48')
-message('[scan] genes: ', paste(gene_names, collapse = ', '))
-
-# ── scan loop (identical to scan_eqtl.R) ─────────────────────────────────────
+# ── scan loop (identical to scan_eqtl.R — loops chromosomes then genes) ───────
 cis_window_mb <- 0.5   # ±500 kb — matches scan_eqtl.R
 n_pcs         <- 10
 results_list  <- list()
 effects_list  <- list()
 
-for (gene in gene_names) {
-  gene_tss <- if (use_gtf) {
-    gene_annot$tss_mb[gene_annot$gene_id == gene][1]
+for (scan_chr in chromosomes) {
+  message('\n[chr', scan_chr, ']')
+
+  k_chr    <- kinship_loco[[scan_chr]]
+  chr_loci <- pmap_flat[pmap_flat$chr == scan_chr, ]
+  message('  loci: ', nrow(chr_loci))
+
+  # genes on this chromosome (requires gtf); fall back to all genes if no gtf
+  if (use_gtf) {
+    chr_gene_annot <- gene_annot[gene_annot$chr == scan_chr, ]
+    gene_names     <- intersect(all_genes, chr_gene_annot$gene_id)
+  } else {
+    chr_gene_annot <- NULL
+    gene_names     <- all_genes
+  }
+  message('  genes: ', length(gene_names))
+
+  for (gene in gene_names) {
+    gene_tss <- if (use_gtf) {
+    chr_gene_annot$tss_mb[chr_gene_annot$gene_id == gene][1]
   } else {
     mean(chr_loci$pos_mb)
   }
@@ -157,7 +175,8 @@ for (gene in gene_names) {
     paste0('`', gene, '` ~ batch + ', paste0('pc', 1:n_pcs, collapse = ' + '))
   )
 
-  message('  ', sprintf('%-25s', gene), ' | ', length(cis_loci), ' loci')
+  if (length(gene_names) <= 20)   # only print gene names for small runs
+    message('  ', sprintf('%-25s', gene), ' | ', length(cis_loci), ' loci')
 
   scan_result <- tryCatch(
     scan.h2lmm(
@@ -181,7 +200,7 @@ for (gene in gene_names) {
 
   pos_mb_vals <- pmap_flat$pos_mb[match(scan_result$loci, pmap_flat$locus)]
 
-  results_list[[gene]] <- data.frame(
+  results_list[[paste0(gene, '_', scan_chr)]] <- data.frame(
     gene_id = gene, locus = scan_result$loci, chr = scan_chr,
     pos_mb = pos_mb_vals, lod = scan_result$LOD, p_value = scan_result$p.value,
     stringsAsFactors = FALSE
@@ -199,7 +218,7 @@ for (gene in gene_names) {
       effects <- NULL
     }
     if (!is.null(effects)) {
-      effects_list[[gene]] <- data.frame(
+      effects_list[[paste0(gene, '_', scan_chr)]] <- data.frame(
         gene_id = gene, chr = scan_chr,
         locus   = scan_result$loci[min(peak_idx, length(scan_result$loci))],
         founder = names(effects), effect = as.numeric(effects),
@@ -208,6 +227,7 @@ for (gene in gene_names) {
     }
   }
 }
+}  # end chromosome loop
 
 # ── save to validation/r_data/ ────────────────────────────────────────────────
 if (length(results_list) == 0) stop('[error] no scan results — check errors above')
