@@ -9,15 +9,15 @@ at each locus drives variation in a phenotype, mosaiQTL resolves genetic
 effects at the resolution of the original inbred lines rather than collapsing
 to biallelic SNP dosage.
 
-mosaiQTL is a Python port and extension of
-[miQTL](https://github.com/gkeele/miqtl) (Keele *et al.* 2020), an R package
-for haplotype-based QTL mapping in multiparent populations. miQTL's core scan
-engine is `scan.h2lmm()` — a Gaussian LMM that uses the
-[HAPPY](http://www.well.ox.ac.uk/~rdott/happy.html) genome cache format
-(Mott *et al.* 2000) and supports both regression on probabilities (ROP) and
-multiple imputation. mosaiQTL ports `scan.h2lmm()` to Python and extends it
-with negative binomial and NB mixed models suited for raw RNA-seq count
-phenotypes and single-nucleus data.
+mosaiQTL is informed by [miQTL](https://github.com/gkeele/miqtl) (Keele *et al.*
+2020), an R package for haplotype and SNP association in multiparent populations.
+miQTL's core contributions are the HAPPY genome cache format — a memory-efficient
+directory of per-locus `.RData` files — and `scan.h2lmm()`, a Gaussian LMM
+that operates directly on those files one locus at a time.
+mosaiQTL ports `scan.h2lmm()` to Python, adds a pure-Python 8-founder diplotype
+HMM so the HAPPY cache can be built without R, and extends the model family to
+negative binomial and NB mixed models for raw RNA-seq count phenotypes and
+single-nucleus data.
 
 Generalizes miQTL / [R/qtl2](https://kbroman.org/qtl2/) to support negative
 binomial, Gaussian LMM, and NB mixed models on raw counts, normalized
@@ -29,17 +29,16 @@ fitting infrastructure.
 
 | miQTL (R) | mosaiQTL (Python) | Notes |
 |-----------|-------------------|-------|
-| `scan.h2lmm()` | `lmm.scan_h2lmm()` | Ported; cross-validated against R |
-| `lmmbygls()` | `lmm.fit_lmm_at_locus()` | ML LOD formula; Kang 2008 eigendecomposition |
-| `calc_kinship()` (qtl2) | `kinship.calc_kinship()` | LOCO kinship; validated vs R |
+| HAPPY `.RData` cache | `genome_cache.from_happy_dir()` | direct read; miQTL native format |
 | `convert.qtl2.to.HAPPY()` | `genome_cache.from_rds()` | rpy2 bridge; reads probs_cc/founder/f1.rds |
-| HAPPY `.RData` cache | `genome_cache.from_happy_dir()` | direct read |
-| `calc_genoprob()` (qtl2) | `genome_cache.from_gigamuga()` + `hmm.py` | **R-free** diplotype HMM from raw GigaMUGA |
-| `scan.h2lmm(model='additive')` | NB GLM (`nb.py`) | **Extension**: raw count phenotypes |
-| permutation thresholds | *planned* | GEV fit |
-| parametric bootstrap CI | *planned* | positional confidence |
-| `genome.plotter.whole()` | *planned* | manhattan plot |
+| `calc_genoprob()` (qtl2) | `genome_cache.from_gigamuga()` + `hmm.py` | **R-free** diplotype HMM from raw GigaMUGA nucleotide calls |
+| `calc_kinship()` (qtl2) | `kinship.calc_kinship()` | LOCO; cross-validated vs R |
+| `scan.h2lmm()` / `lmmbygls()` | `lmm.fit_lmm_at_locus()` | ML LOD, Kang 2008 eigendecomposition; validated r≈1 vs R |
+| `collapse.genomecache()` | *planned* | collapse redundant loci |
 | multiple imputation | *not planned* | ROP only |
+| `run.threshold.scans()` | *planned* | permutation thresholds |
+| — | `nb.py` (edgePython) | **Extension**: NB GLM for count phenotypes |
+| — | NEBULA-LN | **Extension**: NB mixed model for single-cell |
 
 ## Status
 
