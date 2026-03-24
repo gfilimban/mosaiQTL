@@ -1,14 +1,13 @@
 # mosaiQTL
 
-> **mosai** — from *mosaic*, referring to the patchwork of founder haplotype
-> segments that recombination weaves together across a multiparent population.
-> Each CC, DO, or MAGIC individual carries a unique mosaic of alleles inherited
-> from *J* inbred founder strains; mosaiQTL maps which founder's segment at
-> each locus drives variation in a phenotype.
-
-Model-agnostic haplotype-based QTL mapping for multiparent populations
-(CC, DO, MAGIC), with NB GLM as the primary engine for count-based
-phenotypes and NEBULA-LN for cell-level single-cell modeling.
+**mosaic-QTL (mosaiQTL)** is a model-agnostic haplotype-based QTL mapping
+package for multiparent populations (MPP) — such as the Collaborative Cross
+(CC), Diversity Outbred (DO), and Multiparent Advanced Generation Inter-Cross
+(MAGIC) — in which each individual carries a unique mosaic of alleles inherited
+from *J* inbred founder strains. By mapping which founder's haplotype segment
+at each locus drives variation in a phenotype, mosaiQTL resolves genetic
+effects at the resolution of the original inbred lines rather than collapsing
+to biallelic SNP dosage.
 
 Generalizes [miQTL](https://github.com/gkeele/miqtl) /
 [R/qtl2](https://kbroman.org/qtl2/) to support negative binomial,
