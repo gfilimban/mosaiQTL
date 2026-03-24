@@ -231,7 +231,7 @@ class GenomeCache:
         return GenomeCache(sample_ids, founders, data)
 
     @staticmethod
-    def from_gigamuga(gigamuga_path, gmap_path, pmap_path,
+    def from_gigamuga(gigamuga_path, gmap_dir, pmap_dir,
                       cc_cols, founder_cols, f1_crosses,
                       n_founders=8, n_gen=20, error_prob=0.002):
         """build genome cache from raw GigaMUGA genotype data — no R required.
@@ -275,34 +275,48 @@ class GenomeCache:
         -------
         GenomeCache  with 48 samples, 8 founders, all chromosomes
         """
+        import glob
         import pandas as pd
-        from mosaiqtl.hmm import (calc_genoprob_cc,
-                                   build_diplotype_states,
-                                   diplotype_to_allele_probs)
+        from mosaiqtl.hmm import calc_genoprob_cc
 
-        logger.info('loading GigaMUGA data from scratch (no R)...')
+        logger.info('building genome cache from raw GigaMUGA (no R)...')
 
-        # ── read and intersect markers ─────────────────────────────────────────
-        gm = pd.read_csv(gigamuga_path, index_col=0)
-        gmap = pd.read_csv(gmap_path)
-        pmap = pd.read_csv(pmap_path)
-        if 'marker' in gmap.columns:
-            gmap = gmap.rename(columns={'marker': 'locus', 'pos': 'pos_cM'})
-        if 'marker' in pmap.columns:
-            pmap = pmap.rename(columns={'marker': 'locus', 'pos': 'pos_mb'})
+        # ── read GigaMUGA matrix ───────────────────────────────────────────────
+        gm_raw = pd.read_csv(gigamuga_path)
+        if 'marker' in gm_raw.columns:
+            gm_raw = gm_raw.set_index('marker')
+        # drop chr/pos if present — use the dedicated map files instead
+        gm_raw = gm_raw.drop(columns=[c for c in ('chr', 'pos')
+                                       if c in gm_raw.columns])
+        gm_raw = gm_raw.replace('N', '-')   # missing call code
 
-        shared = list(set(gm.index) & set(gmap['locus']) & set(pmap['locus']))
-        gm   = gm.loc[shared]
-        gmap = gmap.set_index('locus').loc[shared]
+        # ── glob and concat per-chromosome map files ───────────────────────────
+        def _load_maps(map_dir, prefix):
+            files = sorted(glob.glob(os.path.join(map_dir, f'{prefix}*.csv')))
+            if not files:
+                raise FileNotFoundError(
+                    f'no {prefix}*.csv in {map_dir}')
+            return pd.concat([pd.read_csv(fp, comment='#')
+                               for fp in files], ignore_index=True)
+
+        gmap = _load_maps(gmap_dir, 'GM_gmap')
+        pmap = _load_maps(pmap_dir, 'GM_pmap')
+        gmap.rename(columns={'marker': 'locus', 'pos': 'pos_cM'}, inplace=True)
+        pmap.rename(columns={'marker': 'locus', 'pos': 'pos_mb'}, inplace=True)
+        logger.info(f'gmap: {len(gmap)} loci | pmap: {len(pmap)} loci')
+
+        # ── intersect markers ──────────────────────────────────────────────────
+        shared = list(
+            set(gm_raw.index) & set(gmap['locus']) & set(pmap['locus']))
+        gm       = gm_raw.loc[shared]
+        gmap     = gmap.set_index('locus').loc[shared]
         pmap_idx = pmap.set_index('locus').loc[shared]
         logger.info(f'shared markers: {len(shared)}')
 
-        # replace missing codes
-        gm = gm.replace('N', '-')
-
         chrs = sorted(
-            [c for c in gmap['chr'].unique() if c not in ('Y','M')],
-            key=lambda c: int(c) if c.isdigit() else (20 if c=='X' else 99)
+            [c for c in gmap['chr'].astype(str).unique()
+             if c not in ('Y', 'M', 'MT')],
+            key=lambda c: int(c) if c.isdigit() else (20 if c == 'X' else 99)
         )
 
         # ── process per chromosome ────────────────────────────────────────────

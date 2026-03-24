@@ -4,7 +4,7 @@
 # each section writes a csv report + plots, then a final qc_summary.csv
 #
 # sections:
-#   1. haplotype probs  — from_rds() vs from_happy_dir() spot-check
+#   1. haplotype probs  — from_gigamuga() (pure Python HMM) vs from_happy_dir()
 #   2. kinship          — calc_kinship(loco) vs kinship_loco.rds
 #   3. lod scores       — fit_lmm_at_locus() vs lod_r.csv
 #
@@ -43,16 +43,39 @@ log = logging.getLogger('validate')
 miqtl_dir = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
 pkg_dir   = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl'
 
+# ── genotype inputs (fully Python-native, no R) ───────────────────────────────
+GM_CSV     = os.path.join(miqtl_dir, 'input',         'GM_ccfo_mm39.csv')
+GM_GMAP    = os.path.join(miqtl_dir, 'input', 'GM',   'gmap')   # dir of GM_gmap*.csv
+GM_PMAP    = os.path.join(miqtl_dir, 'input', 'GM',   'pmap')   # dir of GM_pmap*.csv
+
+# CC strain columns (33 strains)
+CC_COLS = ['CC001','CC002','CC003','CC004','CC005','CC006','CC007','CC008',
+           'CC009','CC010','CC011','CC012','CC013','CC015','CC017','CC018',
+           'CC024','CC025','CC028','CC029','CC030','CC032','CC036','CC037',
+           'CC038','CC041','CC043','CC057','CC060','CC062','CC065','CC071','CC074']
+
+# founders in standard qtl2 order
+FOUNDER_COLS = ['AJ','B6J','129S1J','NODJ','NZOJ','CASTJ','PWKJ','WSBJ']
+
+# F1 crosses: (sample_id, sire_founder_idx, dam_B6J_idx=1)
+# B6J is always the dam (index 1 in FOUNDER_COLS)
+F1_CROSSES = [
+    ('B6AF1J',     0, 1),   # AJ × B6J
+    ('B6129S1F1J', 2, 1),   # 129S1J × B6J
+    ('B6NODF1J',   3, 1),   # NODJ × B6J
+    ('B6NZOF1J',   4, 1),   # NZOJ × B6J
+    ('B6CASTF1J',  5, 1),   # CASTJ × B6J
+    ('B6PWKF1J',   6, 1),   # PWKJ × B6J
+    ('B6WSBF1J',   7, 1),   # WSBJ × B6J
+]
+
 paths = {
-    'probs_cc':      os.path.join(miqtl_dir, 'output', 'probs_cc.rds'),
-    'probs_founder': os.path.join(miqtl_dir, 'output', 'probs_founder.rds'),
-    'probs_f1':      os.path.join(miqtl_dir, 'output', 'probs_f1.rds'),
-    'kinship_r':     os.path.join(miqtl_dir, 'output', 'kinship_loco.rds'),
-    'cache_r':       os.path.join(miqtl_dir, 'output', 'genomecache'),
-    'pmap':          os.path.join(miqtl_dir, 'input',  'pmap.csv'),
-    'lod_r':         os.path.join(pkg_dir, 'validation', 'r_data', 'lod_r.csv'),
-    'pheno_48':      os.path.join(pkg_dir, 'validation', 'r_data', 'pheno_48_used.csv'),
-    'ae_r':          os.path.join(pkg_dir, 'validation', 'r_data', 'allele_effects.csv'),
+    'kinship_r': os.path.join(miqtl_dir, 'output', 'kinship_loco.rds'),
+    'cache_r':   os.path.join(miqtl_dir, 'output', 'genomecache'),
+    'pmap':      os.path.join(miqtl_dir, 'input',  'pmap.csv'),
+    'lod_r':     os.path.join(pkg_dir, 'validation', 'r_data', 'lod_r.csv'),
+    'pheno_48':  os.path.join(pkg_dir, 'validation', 'r_data', 'pheno_48_used.csv'),
+    'ae_r':      os.path.join(pkg_dir, 'validation', 'r_data', 'allele_effects.csv'),
 }
 val_dir  = os.path.join(pkg_dir, 'validation', 'r_data')
 plot_dir = os.path.join(pkg_dir, 'validation', 'qc_plots')
@@ -78,6 +101,10 @@ for key, path in paths.items():
         if key in ('lod_r', 'pheno_48'):
             log.error('run: Rscript validation/r_reference/run_validation.R')
         sys.exit(1)
+
+for label, path in [('GM_CSV', GM_CSV), ('GM_GMAP', GM_GMAP), ('GM_PMAP', GM_PMAP)]:
+    if not os.path.exists(path):
+        log.error(f'{label} not found: {path}'); sys.exit(1)
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 def save_csv(df, name):
@@ -107,13 +134,18 @@ plt.rcParams.update({'font.family':'sans-serif',
 qc_rows = []   # collects one dict per section for qc_summary.csv
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SECTION 1 — HAPLOTYPE PROBS (from_rds vs from_happy_dir)
+# SECTION 1 — HAPLOTYPE PROBS (from_gigamuga vs from_happy_dir)
 # ═══════════════════════════════════════════════════════════════════════════════
 section('SECTION 1 — HAPLOTYPE PROBS')
-
-cache_py = GenomeCache.from_rds(
-    paths['probs_cc'], paths['probs_founder'], paths['probs_f1'],
-    paths['pmap'], founders=CC_FOUNDERS)
+# build cache entirely in Python from raw GigaMUGA — no R required
+cache_py = GenomeCache.from_gigamuga(
+    gigamuga_path = GM_CSV,
+    gmap_dir      = GM_GMAP,
+    pmap_dir      = GM_PMAP,
+    cc_cols       = CC_COLS,
+    founder_cols  = FOUNDER_COLS,
+    f1_crosses    = F1_CROSSES,
+)
 log.info(f'Python cache: {len(cache_py.chromosomes)} chr | '
          f'{len(cache_py.sample_ids)} strains | {cache_py.n_founders} founders')
 
@@ -164,7 +196,7 @@ if cache_r:
         diff0 = h_py0[py_idx_s] - h_r0[r_idx_s]
         fig, axes = plt.subplots(1, 3, figsize=(14, 4))
         for ax, mat, title, cmap, vmin, vmax in [
-            (axes[0], h_py0,  'Python (from_rds)',    'YlOrRd', 0, 1),
+            (axes[0], h_py0,  'Python (from_gigamuga)',    'YlOrRd', 0, 1),
             (axes[1], h_r0,   'R (from_happy_dir)',   'YlOrRd', 0, 1),
             (axes[2], diff0,  'Difference (Py − R)',  'RdBu_r', None, None),
         ]:
