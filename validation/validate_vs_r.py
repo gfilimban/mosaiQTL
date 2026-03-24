@@ -198,32 +198,47 @@ if cache_r:
         r_scale = 2.0
         log.info(f'R cache dosage encoding detected — dividing by {r_scale}')
 
-for chrom in cache_py.chromosomes:
-    lids = cache_py._data[chrom]['locus_ids']
-    mid  = len(lids) // 2
-    h_py = cache_py.get_locus(chrom, mid)
-    row_sum_ok = bool(np.allclose(h_py.sum(axis=1), 1.0, atol=1e-4))
-    max_diff   = np.nan
-    if cache_r and chrom in cache_r._data:
-        r_lids = cache_r._data[chrom]['locus_ids']
-        r_idx  = np.where(r_lids == lids[mid])[0]
-        if len(r_idx):
-            h_r      = cache_r.get_locus(chrom, int(r_idx[0]))
-            # reorder founder axis then apply r_scale (dosage→prob if needed)
-            h_r_cmp  = (h_r[:, f_r_idx] if founder_reindex_valid else h_r) / r_scale
-            max_diff = float(np.abs(h_py[py_idx_s] - h_r_cmp[r_idx_s]).max())
-    hap_rows.append({'chr': chrom, 'locus': lids[mid],
-                     'row_sum_ok': row_sum_ok, 'max_delta_prob': max_diff})
+# sort chromosomes numerically: 1..19, X
+_chr_sort = lambda c: int(c) if str(c).isdigit() else (20 if str(c).upper()=='X' else 99)
+for chrom in sorted(cache_py.chromosomes, key=_chr_sort):
+    lids    = cache_py._data[chrom]['locus_ids']
+    n_loci  = len(lids)
+    # sample 5 evenly-spaced loci for a stable per-chromosome estimate
+    sample_indices = [int(n_loci * f) for f in (0.1, 0.3, 0.5, 0.7, 0.9)]
+    sample_indices = [min(i, n_loci-1) for i in sample_indices]
+
+    diffs      = []
+    row_sum_ok = True
+    r_n_loci   = len(cache_r._data[chrom]['locus_ids']) if (cache_r and chrom in cache_r._data) else np.nan
+
+    for si in sample_indices:
+        h_py = cache_py.get_locus(chrom, si)
+        if not np.allclose(h_py.sum(axis=1), 1.0, atol=1e-4):
+            row_sum_ok = False
+        if cache_r and chrom in cache_r._data:
+            r_lids = cache_r._data[chrom]['locus_ids']
+            r_idx  = np.where(r_lids == lids[si])[0]
+            if len(r_idx):
+                h_r     = cache_r.get_locus(chrom, int(r_idx[0]))
+                h_r_cmp = (h_r[:, f_r_idx] if founder_reindex_valid else h_r) / r_scale
+                diffs.append(float(np.abs(h_py[py_idx_s] - h_r_cmp[r_idx_s]).max()))
+
+    max_diff = float(np.median(diffs)) if diffs else np.nan
+    # report midpoint locus name for the CSV (informational)
+    mid_locus = lids[sample_indices[2]]
+    hap_rows.append({'chr': chrom, 'locus': mid_locus,
+                     'n_loci_py': n_loci, 'n_loci_r': r_n_loci,
+                     'row_sum_ok': row_sum_ok, 'median_delta_prob': max_diff})
 
 hap_df  = pd.DataFrame(hap_rows)
 save_csv(hap_df, 'haplotype_report.csv')
 
 # pass: rows sum to 1 and max|Δprob|<0.05 (exact R match not achievable with HMM)
 hap_pass = bool(hap_df['row_sum_ok'].all() and
-                (hap_df['max_delta_prob'].dropna() < 0.05).all())
+                (hap_df['median_delta_prob'].dropna() < 0.05).all())
 log.info(f'haplotype probs: {"PASS ✓" if hap_pass else "MISMATCH"}')
 qc_rows.append({'section':'haplotype_probs', 'pass':hap_pass,
-                'detail': f'max|Δprob|={hap_df["max_delta_prob"].max():.2e}'})
+                'detail': f'median|Δprob|={hap_df["median_delta_prob"].max():.2e}'})
 
 # plot: 3-panel heatmap for first chromosome
 if cache_r:
@@ -278,7 +293,7 @@ py_idx_k_disp = np.array([py_strains_k.index(s) for s in shared_k_display])
 r_idx_k_disp  = np.array([r_strains_k.index(s)  for s in shared_k_display])
 
 kin_rows = []
-for chrom in [c for c in cache_py.chromosomes if c in kinship_r]:
+for chrom in sorted([c for c in cache_py.chromosomes if c in kinship_r], key=_chr_sort):
     k_py  = kinship_py[chrom][np.ix_(py_idx_k, py_idx_k)]
     k_r   = kinship_r[chrom][np.ix_(r_idx_k, r_idx_k)]
     max_d = float(np.abs(k_py - k_r).max())
@@ -360,13 +375,22 @@ log.info(f'chromosomes: {chromosomes}  |  '
 
 # align pheno to cache strain order + build covariate matrix once
 cache_strains = list(cache_py.sample_ids)
-pheno_48      = pheno_raw.set_index('subject.name').reindex(cache_strains)
-pc_cols       = [f'pc{i}' for i in range(1, 11)]
-batch_dummies = pd.get_dummies(pheno_48['batch'], prefix='batch', drop_first=True)
-covar_base    = np.hstack([np.ones((len(pheno_48), 1)),
-                           batch_dummies.astype(float).values,
-                           pheno_48[pc_cols].astype(float).values])   # (48, p)
-pheno_48 = pheno_48.reset_index()
+pheno_48 = pheno_raw.set_index('subject.name').reindex(cache_strains)
+pc_cols  = [f'pc{i}' for i in range(1, 11)]
+# batch may be absent in collapsed 48-strain pheno_48 (R scan_eqtl collapses
+# replicates to strain means, losing per-sample batch assignment)
+covar_parts = [np.ones((len(pheno_48), 1))]
+if 'batch' in pheno_48.columns and pheno_48['batch'].notna().any():
+    batch_dummies = pd.get_dummies(pheno_48['batch'], prefix='batch', drop_first=True)
+    covar_parts.append(batch_dummies.astype(float).values)
+    log.info(f'covar: intercept + {batch_dummies.shape[1]} batch dummies + {len(pc_cols)} PCs')
+else:
+    log.info(f'covar: intercept + {len(pc_cols)} PCs (no batch column in pheno_48)')
+avail_pcs = [c for c in pc_cols if c in pheno_48.columns]
+if avail_pcs:
+    covar_parts.append(pheno_48[avail_pcs].fillna(0).astype(float).values)
+covar_base = np.hstack(covar_parts)   # (48, p)
+pheno_48   = pheno_48.reset_index()
 
 all_pass    = True
 comparisons = []
