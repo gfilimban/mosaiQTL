@@ -267,6 +267,16 @@ shared_k     = [s for s in py_strains_k if s in r_strains_k]
 py_idx_k     = np.array([py_strains_k.index(s) for s in shared_k])
 r_idx_k      = np.array([r_strains_k.index(s)  for s in shared_k])
 
+# reorder shared_k for display: founders → F1s (matching order) → CCs
+_f1_ids    = [f[0] for f in F1_CROSSES]
+_pref_order = FOUNDER_COLS + _f1_ids + CC_COLS
+r_set       = set(r_strains_k)
+shared_k_display = [s for s in _pref_order if s in r_set and s in py_strains_k]
+# fall back to original order for any sample not in preference list
+shared_k_display += [s for s in shared_k if s not in shared_k_display]
+py_idx_k_disp = np.array([py_strains_k.index(s) for s in shared_k_display])
+r_idx_k_disp  = np.array([r_strains_k.index(s)  for s in shared_k_display])
+
 kin_rows = []
 for chrom in [c for c in cache_py.chromosomes if c in kinship_r]:
     k_py  = kinship_py[chrom][np.ix_(py_idx_k, py_idx_k)]
@@ -287,16 +297,16 @@ log.info(f'kinship: {"PASS ✓" if kin_pass else "MISMATCH"}')
 qc_rows.append({'section':'kinship', 'pass':kin_pass,
                 'detail': f'max|ΔK|={kin_df["max_delta_K"].max():.2e}'})
 
-# plot: 3-panel kinship heatmap for first chromosome
+# plot: 3-panel kinship heatmap for first chromosome with display order
 chrom_k = kin_df['chr'].iloc[0]
 if chrom_k in kinship_py and chrom_k in kinship_r:
-    k_py0 = kinship_py[chrom_k][np.ix_(py_idx_k, py_idx_k)]
-    k_r0  = kinship_r[chrom_k][np.ix_(r_idx_k, r_idx_k)]
+    # use display-ordered indices (founders → F1s → CCs)
+    k_py0 = kinship_py[chrom_k][np.ix_(py_idx_k_disp, py_idx_k_disp)]
+    k_r0  = kinship_r[chrom_k][np.ix_(r_idx_k_disp, r_idx_k_disp)]
     dk    = k_py0 - k_r0
     ab    = max(abs(dk.min()), abs(dk.max()))
-    # genotype labels — show up to 60 samples, auto-size font
-    tick_labels = [s[:8] for s in shared_k]
-    n_samp      = len(shared_k)
+    tick_labels = shared_k_display   # full names; truncate below if needed
+    n_samp      = len(shared_k_display)
     show_ticks  = n_samp <= 60
     fs_tick     = max(5, min(8, int(200 / n_samp)))
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
@@ -327,9 +337,13 @@ ae_r     = pd.read_csv(paths['ae_r']) if os.path.exists(paths['ae_r']) else None
 
 pheno_raw = pd.read_csv(paths['pheno_48'], index_col=0)
 if 'subject.name' not in pheno_raw.columns:
-    pheno_raw.index.name = 'subject.name'; pheno_raw = pheno_raw.reset_index()
+    pheno_raw.index.name = 'subject.name'
+    pheno_raw = pheno_raw.reset_index()
 else:
     pheno_raw = pheno_raw.reset_index(drop=True)
+# R write.csv() sometimes emits subject.name both as rownames AND as a column,
+# producing duplicate rows after index reset — deduplicate before set_index
+pheno_raw = pheno_raw.drop_duplicates(subset='subject.name', keep='first').reset_index(drop=True)
 
 all_chrs = sorted(lod_r_df['chr'].unique(), key=lambda c: int(c) if c.isdigit() else 99)
 chromosomes = ([c.strip() for c in args.chr.split(',') if c.strip() in all_chrs]
@@ -369,7 +383,8 @@ for chrom in chromosomes:
 
     for gene in chr_genes:
         if gene not in pheno_48.columns: continue
-        y = pheno_48.set_index('subject.name').reindex(cache_strains)[gene].values.astype(float)
+        y = (pheno_48.drop_duplicates('subject.name').set_index('subject.name')
+             .reindex(cache_strains)[gene].values.astype(float))
         if np.all(np.isnan(y)): continue
 
         y_rot      = eigvecs.T @ y
