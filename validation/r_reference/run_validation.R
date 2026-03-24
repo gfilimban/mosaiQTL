@@ -239,7 +239,7 @@ lead_loci   <- lod_results %>%
 
 write.csv(lod_results, file.path(output_dir, 'lod_r.csv'),     row.names = FALSE)
 write.csv(lead_loci,   file.path(output_dir, 'lead_loci.csv'), row.names = FALSE)
-write.csv(pheno_48,    file.path(output_dir, 'pheno_48_used.csv'))  # python alignment
+write.csv(pheno_48,    file.path(output_dir, 'pheno_48_used.csv'), row.names = FALSE)  # python alignment
 
 if (length(effects_list) > 0)
   write.csv(do.call(rbind, effects_list),

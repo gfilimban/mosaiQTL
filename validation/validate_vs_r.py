@@ -335,14 +335,21 @@ section('SECTION 3 — LOD COMPARISON')
 lod_r_df = pd.read_csv(paths['lod_r']); lod_r_df['chr'] = lod_r_df['chr'].astype(str)
 ae_r     = pd.read_csv(paths['ae_r']) if os.path.exists(paths['ae_r']) else None
 
-pheno_raw = pd.read_csv(paths['pheno_48'], index_col=0)
-if 'subject.name' not in pheno_raw.columns:
-    pheno_raw.index.name = 'subject.name'
-    pheno_raw = pheno_raw.reset_index()
+# pheno_48_used.csv — handles three formats produced by different R write.csv() calls:
+#   (a) row.names=FALSE  → col 0 named 'subject.name', no spurious rowname col [correct]
+#   (b) default write.csv → col 0 unnamed (R rownames), 'subject.name' also a col [old bug]
+#   (c) manually edited  → col 0 named 'subject.name', same as (a)
+_raw = pd.read_csv(paths['pheno_48'])
+if _raw.columns[0] == 'subject.name':
+    pheno_raw = _raw.copy()                          # format (a) or (c)
 else:
-    pheno_raw = pheno_raw.reset_index(drop=True)
-# R write.csv() sometimes emits subject.name both as rownames AND as a column,
-# producing duplicate rows after index reset — deduplicate before set_index
+    _raw2 = pd.read_csv(paths['pheno_48'], index_col=0)
+    if 'subject.name' not in _raw2.columns:
+        _raw2.index.name = 'subject.name'            # format (b) without col
+        pheno_raw = _raw2.reset_index()
+    else:
+        pheno_raw = _raw2.reset_index(drop=True)     # format (b) with duplicate
+# deduplicate — belt-and-suspenders
 pheno_raw = pheno_raw.drop_duplicates(subset='subject.name', keep='first').reset_index(drop=True)
 
 all_chrs = sorted(lod_r_df['chr'].unique(), key=lambda c: int(c) if c.isdigit() else 99)
