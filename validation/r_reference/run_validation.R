@@ -217,7 +217,7 @@ for (scan_chr in chromosomes) {
     } else {
       effects <- NULL
     }
-    if (!is.null(effects) && length(scan_result$loci) > 0) {
+    if (!is.null(effects) && length(effects) > 0 && length(scan_result$loci) > 0) {
   effects_list[[paste0(gene, '_', scan_chr)]] <- data.frame(
         gene_id = gene, chr = scan_chr,
         locus   = scan_result$loci[min(peak_idx, length(scan_result$loci))],
