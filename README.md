@@ -9,53 +9,131 @@ at each locus drives variation in a phenotype, mosaiQTL resolves genetic
 effects at the resolution of the original inbred lines rather than collapsing
 to biallelic SNP dosage.
 
-Generalizes [miQTL](https://github.com/gkeele/miqtl) /
-[R/qtl2](https://kbroman.org/qtl2/) to support negative binomial,
-Gaussian LMM, and NB mixed models on raw counts, normalized expression,
-or collapsed genotype means. Uses
-[edgePython](https://github.com/pachterlab/edgePython) (Pachter 2026)
-for NB fitting infrastructure.
+mosaiQTL is a Python port and extension of
+[miQTL](https://github.com/gkeele/miqtl) (Keele *et al.* 2020), an R package
+for haplotype-based QTL mapping in multiparent populations. miQTL's core scan
+engine is `scan.h2lmm()` — a Gaussian LMM that uses the
+[HAPPY](http://www.well.ox.ac.uk/~rdott/happy.html) genome cache format
+(Mott *et al.* 2000) and supports both regression on probabilities (ROP) and
+multiple imputation. mosaiQTL ports `scan.h2lmm()` to Python and extends it
+with negative binomial and NB mixed models suited for raw RNA-seq count
+phenotypes and single-nucleus data.
+
+Generalizes miQTL / [R/qtl2](https://kbroman.org/qtl2/) to support negative
+binomial, Gaussian LMM, and NB mixed models on raw counts, normalized
+expression, or collapsed genotype means. Uses
+[edgePython](https://github.com/pachterlab/edgePython) (Pachter 2026) for NB
+fitting infrastructure.
+
+## Relationship to miQTL
+
+| miQTL (R) | mosaiQTL (Python) | Notes |
+|-----------|-------------------|-------|
+| `scan.h2lmm()` | `lmm.scan_h2lmm()` | Ported; cross-validated against R |
+| `lmmbygls()` | `lmm.fit_lmm_at_locus()` | ML LOD formula; Kang 2008 eigendecomposition |
+| `calc_kinship()` (qtl2) | `kinship.calc_kinship()` | LOCO kinship; validated vs R |
+| `convert.qtl2.to.HAPPY()` | `genome_cache.from_rds()` | rpy2 bridge; reads probs_cc/founder/f1.rds |
+| HAPPY `.RData` cache | `genome_cache.from_happy_dir()` | direct read |
+| `calc_genoprob()` (qtl2) | `genome_cache.from_gigamuga()` + `hmm.py` | **R-free** diplotype HMM from raw GigaMUGA |
+| `scan.h2lmm(model='additive')` | NB GLM (`nb.py`) | **Extension**: raw count phenotypes |
+| permutation thresholds | *planned* | GEV fit |
+| parametric bootstrap CI | *planned* | positional confidence |
+| `genome.plotter.whole()` | *planned* | manhattan plot |
+| multiple imputation | *not planned* | ROP only |
 
 ## Status
 
 **Under active development — pre-release (v0.2.0).**
 
-### Implemented and validated (on simulated CC data)
+### Validated
 
-| Module | What it does | R reference | Notes |
-|--------|-------------|-------------|-------|
-| `genome_cache` | Read/write HAPPY genome cache (HDF5 + `.RData`) | HAPPY / qtl2 probs | HDF5 and `.RData` via `load()` both working |
-| `kinship` | LOCO kinship + eigendecomposition | `qtl2::calc_kinship()` | Correct structure; pending cross-validation against R output |
-| `lmm` | Eigendecomposition-accelerated LMM | `miQTL::lmmbygls()` | F-test per locus; pending covariate residualization optimization |
-| `scan` | Genome-wide haplotype scan orchestrator | `miQTL::scan.h2lmm()` | LMM path only; model dispatch (`model='nb'`) not yet implemented |
-| `vqtl` | Two-stage dispersion vQTL | *novel* | Moment estimator validated (r=0.84 with truth); no shrinkage yet |
-| `utils` | RINT, sample alignment, design matrices | `miQTL::rint()` | Parametric on J founders |
+| Module | Description | Status |
+|--------|-------------|--------|
+| `genome_cache.from_rds()` | merge CC + founder + F1 diplotype probs via rpy2, collapse to additive | ✓ runs |
+| `genome_cache.from_gigamuga()` | R-free CC HMM from raw GigaMUGA nucleotide calls | ✓ runs — validation in progress |
+| `genome_cache.from_happy_dir()` | read R HAPPY `.RData` cache | ✓ validated |
+| `kinship.calc_kinship(loco)` | LOCO kinship from Python cache | cross-validating vs R |
+| `lmm.estimate_h2_null()` | REML h² on rotated phenotype | ✓ validated |
+| `lmm.fit_lmm_at_locus()` | ML LOD, F-test p-value, founder effects | ✓ validated; r≈1 vs miQTL |
+| `scan.scan_h2lmm()` | genome-wide scan orchestrator | ✓ functional |
 
-### Implemented but needs fix
+### In progress
 
-| Module | Issue | Plan |
-|--------|-------|------|
-| `scan` | K expansion (48 to n) validated but not wired into scan loop | Integrate for replicate-aware Path B |
+| Module | Issue |
+|--------|-------|
+| `from_gigamuga()` | HMM probs being compared to R qtl2 probs |
+| `kinship` | comparing Python LOCO K vs `kinship_loco.rds` |
+| `nb.py` | edgePython NB GLM integration (scaffold exists) |
 
 ### Planned
 
-| Module | What it will do | Depends on |
-|--------|----------------|------------|
-| `nb` | Wire edgePython `glm_fit()` + `estimate_disp()` into per-locus score test | edgePython integration (scaffold exists) |
-| `gxe` | Genotype x environment (haplotype x sex) interaction scan | `nb` or `lmm` |
-| `trans` | Genome-wide trans-eQTL scan with per-locus LOCO | `scan` + model dispatch |
-| `sqtl` | Splicing QTL via PSI phenotypes | `scan` + junction quantification |
-| `merge` | Allelic series / founder grouping contrasts | `scan` + Stirling enumeration |
-| `snp_scan` | Founder-imputed biallelic SNP association | `scan` + SNP dosage from H |
-| `permutation` | Genome-wide permutation thresholds (GEV fit) | `scan` |
+| Module | Description |
+|--------|-------------|
+| `permutation` | genome-wide thresholds (GEV fit), mirroring miQTL's `run.threshold.scans()` |
+| `bootstrap_ci` | positional confidence, mirroring miQTL's `run.positional.scans()` |
+| `gxe` | haplotype × environment interaction |
+| `trans` | genome-wide trans-eQTL scan |
+| `sqtl` | splicing QTL via PSI phenotypes |
+| `snp_scan` | founder-imputed biallelic SNP association |
 
-### Planned optimizations
+## Genome cache loaders
 
-| Optimization | Where | Impact |
-|-------------|-------|--------|
-| Residualize covariates before per-locus scan | `lmm.py` | ~7x speedup per locus |
-| Streaming kinship (don't load full 3D tensor) | `kinship.py` | Scales to DO (n > 500) |
-| Saddlepoint approximation for NB score test p-values | `nb.py` | Accurate tail p-values |
+mosaiQTL can build or read the haplotype probability cache three ways:
+
+```python
+from mosaiqtl.genome_cache import GenomeCache, CC_FOUNDERS
+
+# 1. R-free: raw GigaMUGA genotype CSV + genetic/physical maps
+#    runs the 8-founder diplotype HMM (forward-backward) in pure Python
+cache = GenomeCache.from_gigamuga(
+    gigamuga_path = 'input/GM_ccfo_mm39.csv',
+    gmap_dir      = 'input/GM/gmap/',   # GM_gmap1.csv, GM_gmap2.csv, ...
+    pmap_dir      = 'input/GM/pmap/',
+    cc_cols       = CC_COLS,
+    founder_cols  = FOUNDER_COLS,
+    f1_crosses    = F1_CROSSES,
+)
+
+# 2. rpy2 bridge: reads probs_cc.rds + probs_founder.rds + probs_f1.rds
+#    mirrors founders_f1_genomecache.ipynb steps 5-7
+cache = GenomeCache.from_rds(
+    probs_cc_path      = 'output/probs_cc.rds',
+    probs_founder_path = 'output/probs_founder.rds',
+    probs_f1_path      = 'output/probs_f1.rds',
+    pmap_path          = 'input/pmap.csv',
+)
+
+# 3. read R HAPPY cache (miQTL native format)
+cache = GenomeCache.from_happy_dir('output/genomecache/', model='additive')
+```
+
+## Validation
+
+Three-layer cross-language validation against R miQTL:
+
+```bash
+# prerequisite: run the R reference scan
+Rscript validation/r_reference/run_validation.R 8 20
+
+# full validation (all chromosomes, all genes)
+python validation/validate_vs_r.py
+
+# quick test
+python validation/validate_vs_r.py --chr 8 --n_genes 20
+```
+
+Validation sections:
+1. **Haplotype probs** — Python `from_gigamuga()` vs R HAPPY cache (`haplotype_report.csv`)
+2. **Kinship** — Python LOCO K vs `kinship_loco.rds` (`kinship_report.csv`)
+3. **LOD scores** — Python `fit_lmm_at_locus()` vs `scan.h2lmm()` (`gene_results.csv`)
+
+Pass thresholds: strict (r > 0.999, max|ΔLOD| < 0.01) or lenient (r > 0.990,
+relative error < 5%). With correct haplotype probs, the LMM scan achieves
+strict PASS on the majority of chr 8 genes.
+
+QC plots saved to `validation/qc_plots/`:
+`haplotype_probs.png`, `kinship_heatmap.png`, `lod_correlation.png`,
+`lod_residuals.png`, `pvalue_qq.png`, `founder_effects.png`, `gene_summary.png`
 
 ## Installation
 
@@ -63,149 +141,32 @@ for NB fitting infrastructure.
 pip install -e .
 ```
 
-For full single-cell support:
-```bash
-pip install -e ".[full]"
-```
-
-## Quick start
-
-```python
-import mosaiqtl as mq
-
-# load haplotype probabilities (n_genotypes x j founders per locus)
-gc = mq.genome_cache.GenomeCache.from_hdf5('genomecache.h5')
-
-# compute loco kinship + eigendecomposition
-k_loco = mq.kinship.calc_kinship(gc, method='loco')
-k_decomp = mq.kinship.decomp_kinship(k_loco)
-
-# current: lmm on rint'd expression (miqtl-equivalent)
-result = mq.scan.scan_h2lmm(
-    phenotype=y_rint,          # rint'd log-cpm
-    genome_cache=gc,
-    covariates=x,              # intercept + pcs
-    kinship_decomp=k_decomp,
-    phenotype_id='my_gene',
-)
-
-# coming: nb glm on raw pseudobulk counts (primary mode)
-# result = mq.scan.scan_h2lmm(
-#     phenotype=counts,        # raw pseudobulk umi counts
-#     genome_cache=gc,
-#     covariates=x,            # intercept + sex + batch + pcs
-#     kinship_decomp=k_decomp,
-#     model='nb',              # negative binomial glm
-#     phenotype_id='my_gene',
-# )
-
-peak = result.peak_locus()
-print(f'peak: chr{peak["chromosome"]} lod={peak["lod"]:.2f}')
-```
-
-## Validation
-
-Cross-language validation against R miQTL/qtl2 on simulated CC data
-(48 genotypes: 8 founders + 7 F1s + 33 CC strains, 8 replicates each):
-
-```bash
-python validation/validate_vs_r.py
-```
-
-Current validation results (5/5 passing):
-- kinship: LOCO matrices symmetric, PSD, correct founder/CC structure
-- k_expansion: 48 to 384 index replication matches R `k[strain_idx, strain_idx]`
-- scan: causal QTL localized to correct chromosome (LOD=14.36)
-- dispersion: per-subject phi correlates 0.84 with truth
-- vqtl: dispersion QTL detected on correct chromosome
-
-QC plots are generated automatically in `validation/qc_plots/`:
-- `lod_profile.png` — genome-wide manhattan plot with peak annotation
-- `kinship_heatmap.png` — LOCO kinship matrix with founder/F1/CC blocks
-- `founder_effects.png` — per-founder allele effects at peak locus
-- `pvalue_qq.png` — QQ plot with genomic inflation factor
-- `dispersion_scatter.png` — estimated vs true per-subject overdispersion
-
-To compare against R outputs (requires R with miQTL installed):
-```bash
-Rscript validation/r_reference/run_validation.R validation/r_data/
-```
-
-## Workflow
-
-mosaiQTL's scan workflow mirrors
-[edgePython](https://github.com/pachterlab/edgePython)'s differential
-expression pipeline, extended with a per-locus haplotype scan loop:
-
-```
-edgePython                          mosaiQTL addition
----                                 ---
-make_dgelist(counts)                genome_cache.load(haplotypes)
-calc_norm_factors(tmm)              kinship.calc_kinship_loco()
-estimate_disp(common+trend+tag)     kinship.decomp_kinship()
-glm_fit(null model, per gene)       |
-                                    +-- for each locus l:
-                                    |     build H_l^{(-J)} design matrix
-                                    |     score test or LRT vs null
-                                    +-- collect LOD, p, founder effects
-                                    |
-top_tags(fdr correction)            permutation thresholds (GEV)
-```
-
-For cell-level scans, the equivalent flow uses edgePython's
-`glm_sc_fit()` followed by `shrink_sc_disp()` followed by mosaiQTL's per-locus
-haplotype test.
-
-## Architecture
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full mathematical
-framework (LaTeX notation), all mapping models, and planned extensions.
-
 ## Dependencies
 
-### edgePython (hybrid dependency)
-
-mosaiQTL uses [edgePython](https://github.com/pachterlab/edgePython)
-(Pachter 2026) for:
-- NB GLM fitting (`glm_fit`, `glm_ql_fit`)
-- Dispersion estimation with empirical Bayes shrinkage (`estimate_disp`, WLEB)
-- TMM normalization (`calc_norm_factors`)
-- NEBULA-LN mixed model (`glm_sc_fit`, `shrink_sc_disp`, `glm_sc_test`)
-
-mosaiQTL provides what edgePython does not:
-- J-founder haplotype design matrix and genome cache
-- LOCO kinship with eigendecomposition acceleration
-- Per-locus haplotype score test / F-test / LRT
-- Dispersion vQTL (two-stage scan)
-- GxE, trans, sQTL, allelic series extensions
-- LMM port of miQTL for cross-language validation
-
-### Other dependencies
-
-- numpy, scipy, pandas (core)
-- h5py, scanpy, anndata (optional, for single-cell data)
-- rpy2 (optional, for reading R `.RData` genome cache files)
+- **numpy, scipy, pandas** — core
+- **rpy2** — optional, for `from_rds()` and `from_happy_dir()`
+- **edgePython** — optional, for NB GLM and NEBULA-LN
+- **h5py, scanpy, anndata** — optional, for single-cell input
 
 ## References
 
-- Pachter, L. (2026). Differential analysis of genomics count data
-  with edge\*. *bioRxiv*.
+- Keele, G.R. et al. (2020). *PLOS Genet.* 16:e1008537. **miQTL**
+  [doi:10.1371/journal.pgen.1008537](https://doi.org/10.1371/journal.pgen.1008537)
+- Mott, R. et al. (2000). *PNAS* 97:12649. **HAPPY HMM**
+  [doi:10.1073/pnas.230304397](https://doi.org/10.1073/pnas.230304397)
+- Broman, K.W. et al. (2019). *Genetics* 211:495. **R/qtl2**
+  [doi:10.1534/genetics.118.301595](https://doi.org/10.1534/genetics.118.301595)
+- Kang, H.M. et al. (2008). *Genetics* 178:1709. **Eigendecomposition LMM**
+  [doi:10.1534/genetics.107.080101](https://doi.org/10.1534/genetics.107.080101)
+- He, L. et al. (2021). *Commun. Biol.* 4:629. **NEBULA**
+  [doi:10.1038/s42003-021-02146-6](https://doi.org/10.1038/s42003-021-02146-6)
+- Pachter, L. (2026). **edgePython**
   [doi:10.64898/2026.02.16.706223](https://doi.org/10.64898/2026.02.16.706223)
-- He, L. et al. (2021). *Commun. Biol.* 4:629.
-  [NEBULA](https://doi.org/10.1038/s42003-021-02146-6)
-- Kang, H.M. et al. (2008). *Genetics* 178:1709.
-  [Eigendecomposition LMM](https://doi.org/10.1534/genetics.107.080101)
-- Keele, G.R. et al. (2020). *PLOS Genet.* 16:e1008537.
-  [miQTL](https://doi.org/10.1371/journal.pgen.1008537)
-- Broman, K.W. et al. (2019). *Genetics* 211:495.
-  [R/qtl2](https://doi.org/10.1534/genetics.118.301595)
-- McCarthy, D.J. et al. (2012). *Nucleic Acids Res.* 40:4288.
-  [edgeR GLM](https://doi.org/10.1093/nar/gks042)
 
 ## Acknowledgments
 
-Core package architecture, LMM engine, validation framework, and
-documentation developed with assistance from Claude (Anthropic).
+Core architecture, LMM engine, genome cache, HMM, and validation framework
+developed with assistance from Claude (Anthropic).
 
 ## License
 
