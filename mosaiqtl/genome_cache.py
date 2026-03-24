@@ -21,7 +21,7 @@ import logging
 logger = logging.getLogger('mosaiqtl')
 
 # default cc founder strain names (in standard order)
-CC_FOUNDERS = ['aj', 'b6j', 'c129s1j', 'castj', 'nodj', 'nzoj', 'pwkj', 'wsbj']
+CC_FOUNDERS = ['aj', 'b6j', '129s1j', 'nodj', 'nzoj', 'castj', 'pwkj', 'wsbj']
 
 
 class GenomeCache:
