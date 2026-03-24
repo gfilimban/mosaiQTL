@@ -279,26 +279,39 @@ class GenomeCache:
         ro.r(f'probs_founder <- readRDS("{probs_founder_path}")')
         ro.r(f'probs_f1      <- readRDS("{probs_f1_path}")')
 
-        # collapse 36 diplotype probs → 8 additive founder probs
-        # (genoprob_to_alleleprob mirrors what R does before the HAPPY cache)
+        # step 1: merge CC + founders + F1s as diplotype arrays (36 states)
+        #         mirrors notebook step 5: abind along sample dim, copy attrs
+        # step 2: apply genoprob_to_alleleprob() to the combined diplotype array
+        #         mirrors notebook step 6: collapses 36 → 8 additive probs
+        # important: merge first, then collapse — not the other way around.
+        # founders/F1s are stored as lists-of-chr-arrays (diplotype 36 states);
+        # applying genoprob_to_alleleprob to probs_cc alone before merging
+        # causes a dimension mismatch (8 additive vs 36 diplotype).
         ro.r('library(qtl2)')
-        ro.r('probs_cc_add <- genoprob_to_alleleprob(probs_cc)')
-
-        # merge: CC + founders + F1s — same order as notebook step 5
-        # founders and F1s are already 1-sample lists-of-chr-arrays
-        # we merge per-chromosome using abind along dim 1 (sample axis)
         ro.r('library(abind)')
         ro.r("""
-            chrs <- names(probs_cc_add)
-            probs_merged <- lapply(chrs, function(chr) {
-                cc_arr <- probs_cc_add[[chr]]
+            chrs <- names(probs_cc)
+
+            # merge all 48 genotypes per chromosome in diplotype space (36 states)
+            # same as notebook step 5: abind(cc_arr, founder_arr, f1_arr, along=1)
+            probs_combined_list <- lapply(chrs, function(chr) {
+                cc_arr      <- probs_cc[[chr]]
                 founder_arr <- do.call(abind, c(
                     lapply(probs_founder, function(x) x[[chr]]), list(along=1)))
-                f1_arr <- do.call(abind, c(
-                    lapply(probs_f1, function(x) x[[chr]]), list(along=1)))
+                f1_arr      <- do.call(abind, c(
+                    lapply(probs_f1,      function(x) x[[chr]]), list(along=1)))
                 abind(cc_arr, founder_arr, f1_arr, along=1)
             })
-            names(probs_merged) <- chrs
+            names(probs_combined_list) <- chrs
+
+            # copy qtl2 genoprob attributes from probs_cc so that
+            # genoprob_to_alleleprob() recognises the object correctly
+            attributes(probs_combined_list) <- attributes(probs_cc)
+            names(probs_combined_list)      <- chrs
+
+            # collapse 36 diplotype → 8 additive founder probs
+            # mirrors notebook step 6 (used for kinship and HAPPY cache)
+            probs_merged <- genoprob_to_alleleprob(probs_combined_list)
         """)
 
         # read physical map
