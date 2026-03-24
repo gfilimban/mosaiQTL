@@ -261,7 +261,7 @@ if cache_r:
             sns.heatmap(mat, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,
                         xticklabels=cache_py.founders, yticklabels=False,
                         cbar_kws={'shrink':0.7})
-            ax.set_title(f'{title}\nchr{chrom0} · {lids0[mid0]}')
+            ax.set_title(f'{title}\n{chrom0} · {lids0[mid0]}')
         plt.tight_layout(); save_plot(fig, 'haplotype_probs.png')
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -302,7 +302,7 @@ for chrom in sorted([c for c in cache_py.chromosomes if c in kinship_r], key=_ch
     passes = corr > 0.999 and max_d < 0.05
     kin_rows.append({'chr': chrom, 'max_delta_K': max_d, 'r': corr,
                      'pass': passes})
-    log.info(f'  chr{chrom}: max|ΔK|={max_d:.2e}  r={corr:.8f}  '
+    log.info(f'  {chrom}: max|ΔK|={max_d:.2e}  r={corr:.8f}  '
              f'{"✓" if passes else "✗"}')
 
 kin_df   = pd.DataFrame(kin_rows)
@@ -326,8 +326,8 @@ if chrom_k in kinship_py and chrom_k in kinship_r:
     fs_tick     = max(5, min(8, int(200 / n_samp)))
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     for ax, mat, title, cmap, vmin, vmax in [
-        (axes[0], k_py0, f'Python LOCO\nchr{chrom_k}',      'YlOrRd', 0, 1),
-        (axes[1], k_r0,  f'R LOCO\nchr{chrom_k}',           'YlOrRd', 0, 1),
+        (axes[0], k_py0, f'Python LOCO\n{chrom_k}',      'YlOrRd', 0, 1),
+        (axes[1], k_r0,  f'R LOCO\n{chrom_k}',           'YlOrRd', 0, 1),
         (axes[2], dk,    f'Difference\nmax|ΔK|={ab:.2e}',   'RdBu_r', -ab, ab),
     ]:
         sns.heatmap(mat, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,
@@ -399,12 +399,12 @@ py_betas    = {}
 
 for chrom in chromosomes:
     if chrom not in cache_py.chromosomes:
-        log.warning(f'chr{chrom} not in cache — skipping'); continue
+        log.warning(f'{chrom} not in cache — skipping'); continue
 
     chr_genes = lod_r_df[lod_r_df['chr'] == chrom]['gene_id'].unique().tolist()
     if args.n_genes:
         chr_genes = chr_genes[:args.n_genes]
-    log.info(f'\n[chr{chrom}] {len(chr_genes)} genes')
+    log.info(f'\n[{chrom}] {len(chr_genes)} genes')
 
     k_chr            = kinship_py[chrom]
     eigvals, eigvecs = np.linalg.eigh(k_chr)
@@ -529,7 +529,7 @@ offset = 0
 for c in chr_order:
     n_c = (comp_df['chr'] == c).sum()
     if offset: ax.axvline(offset, color='white', lw=0.5)
-    ax.text(offset + n_c/2, 0, f'chr{c}', ha='center', fontsize=7, color='#444',
+    ax.text(offset + n_c/2, 0, f'{c}', ha='center', fontsize=7, color='#444',
             transform=ax.get_xaxis_transform())
     offset += n_c
 ax.set(xlim=(0,len(diff)), xlabel='locus index', ylabel='ΔLOD (Python − R)',
@@ -583,7 +583,7 @@ if ae_r is not None and py_betas:
             ax.text(0.02, 0.97, f'r={np.corrcoef(py_eff,r_eff)[0,1]:.4f}',
                     transform=ax.transAxes, fontsize=10, va='top')
         ax.axhline(0, color='#444', lw=0.5)
-        ax.set(xticks=x, title=f'founder effects — {best}  chr{chrom_b}  {peak_loc}',
+        ax.set(xticks=x, title=f'founder effects — {best}  {chrom_b}  {peak_loc}',
                ylabel='β̂_f')
         ax.set_xticklabels(f_names, rotation=45, ha='right', fontsize=10)
         ax.legend(fontsize=9); sns.despine(); plt.tight_layout()
