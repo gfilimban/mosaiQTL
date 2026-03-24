@@ -1,5 +1,11 @@
 # mosaiQTL
 
+> **mosai** — from *mosaic*, referring to the patchwork of founder haplotype
+> segments that recombination weaves together across a multiparent population.
+> Each CC, DO, or MAGIC individual carries a unique mosaic of alleles inherited
+> from *J* inbred founder strains; mosaiQTL maps which founder's segment at
+> each locus drives variation in a phenotype.
+
 Model-agnostic haplotype-based QTL mapping for multiparent populations
 (CC, DO, MAGIC), with NB GLM as the primary engine for count-based
 phenotypes and NEBULA-LN for cell-level single-cell modeling.
