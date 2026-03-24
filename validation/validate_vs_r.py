@@ -204,30 +204,48 @@ for chrom in sorted(cache_py.chromosomes, key=_chr_sort):
     lids    = cache_py._data[chrom]['locus_ids']
     n_loci  = len(lids)
     # sample 5 evenly-spaced loci for a stable per-chromosome estimate
-    sample_indices = [int(n_loci * f) for f in (0.1, 0.3, 0.5, 0.7, 0.9)]
-    sample_indices = [min(i, n_loci-1) for i in sample_indices]
-
     diffs      = []
     row_sum_ok = True
     r_n_loci   = len(cache_r._data[chrom]['locus_ids']) if (cache_r and chrom in cache_r._data) else np.nan
 
-    for si in sample_indices:
-        h_py = cache_py.get_locus(chrom, si)
-        if not np.allclose(h_py.sum(axis=1), 1.0, atol=1e-4):
-            row_sum_ok = False
-        if cache_r and chrom in cache_r._data:
-            r_lids = cache_r._data[chrom]['locus_ids']
-            r_idx  = np.where(r_lids == lids[si])[0]
-            if len(r_idx):
-                h_r     = cache_r.get_locus(chrom, int(r_idx[0]))
-                h_r_cmp = (h_r[:, f_r_idx] if founder_reindex_valid else h_r) / r_scale
-                diffs.append(float(np.abs(h_py[py_idx_s] - h_r_cmp[r_idx_s]).max()))
+    # find markers present in BOTH Python and R caches, then sample 5 evenly
+    if cache_r and chrom in cache_r._data:
+        r_lids     = cache_r._data[chrom]['locus_ids']
+        r_lid_set  = set(r_lids)
+        shared_lids = [l for l in lids if l in r_lid_set]   # Python markers that exist in R
+        n_shared   = len(shared_lids)
+        if n_shared >= 5:
+            step   = n_shared // 5
+            sample_lids = shared_lids[::step][:5]
+        elif n_shared > 0:
+            sample_lids = shared_lids
+        else:
+            sample_lids = []
+
+        for lid in sample_lids:
+            py_i = int(np.where(lids == lid)[0][0])
+            r_i  = int(np.where(r_lids == lid)[0][0])
+            h_py = cache_py.get_locus(chrom, py_i)
+            if not np.allclose(h_py.sum(axis=1), 1.0, atol=1e-4):
+                row_sum_ok = False
+            h_r     = cache_r.get_locus(chrom, r_i)
+            h_r_cmp = (h_r[:, f_r_idx] if founder_reindex_valid else h_r) / r_scale
+            diffs.append(float(np.abs(h_py[py_idx_s] - h_r_cmp[r_idx_s]).max()))
+
+        mid_locus = sample_lids[len(sample_lids)//2] if sample_lids else lids[n_loci//2]
+    else:
+        # no R cache — just check row sums
+        for si in [int(n_loci*f) for f in (0.1,0.5,0.9)]:
+            h_py = cache_py.get_locus(chrom, min(si, n_loci-1))
+            if not np.allclose(h_py.sum(axis=1), 1.0, atol=1e-4):
+                row_sum_ok = False
+        mid_locus = lids[n_loci//2]
 
     max_diff = float(np.median(diffs)) if diffs else np.nan
-    # report midpoint locus name for the CSV (informational)
-    mid_locus = lids[sample_indices[2]]
+    n_compared = len(diffs)
     hap_rows.append({'chr': chrom, 'locus': mid_locus,
                      'n_loci_py': n_loci, 'n_loci_r': r_n_loci,
+                     'n_shared': n_compared,
                      'row_sum_ok': row_sum_ok, 'median_delta_prob': max_diff})
 
 hap_df  = pd.DataFrame(hap_rows)
@@ -259,9 +277,12 @@ if cache_r:
             (axes[2], diff0,  'Difference (Py − R)',  'RdBu_r', None, None),
         ]:
             sns.heatmap(mat, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,
-                        xticklabels=cache_py.founders, yticklabels=False,
+                        xticklabels=cache_py.founders,
+                        yticklabels=shared_s,       # sample names on y-axis
                         cbar_kws={'shrink':0.7})
             ax.set_title(f'{title}\nchr{chrom0} · {lids0[mid0]}')
+            ax.set_yticklabels(ax.get_yticklabels(), fontsize=5, fontfamily='Carlito')
+            ax.tick_params(axis='y', length=0)
         plt.tight_layout(); save_plot(fig, 'haplotype_probs.png')
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -385,7 +406,7 @@ if 'batch' in pheno_48.columns and pheno_48['batch'].notna().any():
     covar_parts.append(batch_dummies.astype(float).values)
     log.info(f'covar: intercept + {batch_dummies.shape[1]} batch dummies + {len(pc_cols)} PCs')
 else:
-    log.info(f'covar: intercept + {len(pc_cols)} PCs (no batch column in pheno_48)')
+    log.warning('batch column missing from pheno_48 — LODs will differ from R (R uses batch covariate). Re-run run_validation.R to regenerate pheno_48_used.csv')
 avail_pcs = [c for c in pc_cols if c in pheno_48.columns]
 if avail_pcs:
     covar_parts.append(pheno_48[avail_pcs].fillna(0).astype(float).values)

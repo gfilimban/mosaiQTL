@@ -239,7 +239,11 @@ lead_loci   <- lod_results %>%
 
 write.csv(lod_results, file.path(output_dir, 'lod_r.csv'),     row.names = FALSE)
 write.csv(lead_loci,   file.path(output_dir, 'lead_loci.csv'), row.names = FALSE)
-write.csv(pheno_48,    file.path(output_dir, 'pheno_48_used.csv'), row.names = FALSE)  # python alignment
+# ensure batch column is present before writing (may be absent in pre-built pheno_48.rds)
+if (!('batch' %in% colnames(pheno_48)) && exists('pheno_df')) {
+  pheno_48$batch <- tapply(pheno_df$batch, pheno_df$subject.name, `[`, 1)[pheno_48$subject.name]
+}
+write.csv(pheno_48, file.path(output_dir, 'pheno_48_used.csv'), row.names = FALSE)  # python alignment
 
 if (length(effects_list) > 0)
   write.csv(do.call(rbind, effects_list),
