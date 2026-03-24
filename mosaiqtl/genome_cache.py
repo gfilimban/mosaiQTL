@@ -231,6 +231,135 @@ class GenomeCache:
         return GenomeCache(sample_ids, founders, data)
 
     @staticmethod
+    def from_gigamuga(gigamuga_path, gmap_path, pmap_path,
+                      cc_cols, founder_cols, f1_crosses,
+                      n_founders=8, n_gen=20, error_prob=0.002):
+        """build genome cache from raw GigaMUGA genotype data — no R required.
+
+        this is the fully Python-native path: reads the GigaMUGA consensus
+        matrix CSV, runs the CC diplotype HMM (hmm.py), builds deterministic
+        founder and F1 arrays, merges all 48 genotypes, and returns a
+        GenomeCache with additive (8-founder) haplotype probabilities.
+
+        pipeline:
+          gigamuga CSV → encode A/H/B → CC HMM (forward-backward) → additive probs
+                       → deterministic founder arrays (homozygous, prob=1)
+                       → deterministic F1 arrays (heterozygous, prob=1 each parent 0.5)
+                       → GenomeCache(48 strains × 8 founders × n_loci)
+
+        this is the Python equivalent of founders_f1_genomecache.ipynb
+        steps 1-7 without calling any R functions.
+
+        parameters
+        ----------
+        gigamuga_path : str
+            path to GigaMUGA consensus matrix CSV (markers × strains)
+        gmap_path : str
+            path to gmap.csv (marker, chr, pos_cM)
+        pmap_path : str
+            path to pmap.csv (marker, chr, pos_Mb)
+        cc_cols : list of str
+            CC strain column names in gigamuga_path
+        founder_cols : list of str
+            founder strain column names (length J, in founder order)
+        f1_crosses : list of (sample_id, parent1_idx, parent2_idx) tuples
+            e.g. [('B6AF1J', 1, 0), ...] where indices are into founder_cols
+        n_founders : int
+            number of founders J (8 for CC)
+        n_gen : int
+            inbreeding generations (20 for CC)
+        error_prob : float
+            GigaMUGA genotyping error rate (0.002)
+
+        returns
+        -------
+        GenomeCache  with 48 samples, 8 founders, all chromosomes
+        """
+        import pandas as pd
+        from mosaiqtl.hmm import (calc_genoprob_cc,
+                                   build_diplotype_states,
+                                   diplotype_to_allele_probs)
+
+        logger.info('loading GigaMUGA data from scratch (no R)...')
+
+        # ── read and intersect markers ─────────────────────────────────────────
+        gm = pd.read_csv(gigamuga_path, index_col=0)
+        gmap = pd.read_csv(gmap_path)
+        pmap = pd.read_csv(pmap_path)
+        if 'marker' in gmap.columns:
+            gmap = gmap.rename(columns={'marker': 'locus', 'pos': 'pos_cM'})
+        if 'marker' in pmap.columns:
+            pmap = pmap.rename(columns={'marker': 'locus', 'pos': 'pos_mb'})
+
+        shared = list(set(gm.index) & set(gmap['locus']) & set(pmap['locus']))
+        gm   = gm.loc[shared]
+        gmap = gmap.set_index('locus').loc[shared]
+        pmap_idx = pmap.set_index('locus').loc[shared]
+        logger.info(f'shared markers: {len(shared)}')
+
+        # replace missing codes
+        gm = gm.replace('N', '-')
+
+        chrs = sorted(
+            [c for c in gmap['chr'].unique() if c not in ('Y','M')],
+            key=lambda c: int(c) if c.isdigit() else (20 if c=='X' else 99)
+        )
+
+        # ── process per chromosome ────────────────────────────────────────────
+        data   = {}
+        all_48 = cc_cols + list(founder_cols) + [f[0] for f in f1_crosses]
+
+        for chrom in chrs:
+            chr_mask   = gmap['chr'] == chrom
+            chr_loci   = gmap[chr_mask].index.tolist()
+            if not chr_loci:
+                continue
+
+            gmap_pos = gmap.loc[chr_loci, 'pos_cM'].values.astype(float)
+            pmap_pos = pmap_idx.loc[chr_loci, 'pos_mb'].values.astype(float)
+            locus_ids = np.array(chr_loci)
+
+            geno_cc       = gm.loc[chr_loci, cc_cols].values       # (n_m, n_cc)
+            geno_founders = gm.loc[chr_loci, list(founder_cols)].values  # (n_m, J)
+
+            n_markers = len(chr_loci)
+            n_48      = len(all_48)
+            probs_chr = np.zeros((n_48, n_founders, n_markers), dtype=np.float64)
+
+            # CC strains: HMM forward-backward
+            logger.info(f'  chr{chrom}: running CC HMM ({len(cc_cols)} strains, ' +
+                        f'{n_markers} markers)...')
+            probs_cc = calc_genoprob_cc(
+                geno_cc, geno_founders, gmap_pos,
+                n_founders=n_founders, n_gen=n_gen, error_prob=error_prob,
+                return_additive=True
+            )   # (n_cc, 8, n_markers)
+
+            for i, col in enumerate(cc_cols):
+                si = all_48.index(col)
+                probs_chr[si] = probs_cc[i]
+
+            # founders: deterministic homozygous (prob = 1 for self)
+            for fi, fcol in enumerate(founder_cols):
+                si = all_48.index(fcol)
+                probs_chr[si, fi, :] = 1.0
+
+            # F1s: deterministic heterozygous (0.5 each parent)
+            for sample_id, pi1, pi2 in f1_crosses:
+                si = all_48.index(sample_id)
+                probs_chr[si, pi1, :] = 0.5
+                probs_chr[si, pi2, :] = 0.5
+
+            # store as (n_loci, n_samples, n_founders) — mosaiqtl convention
+            data[str(chrom)] = {
+                'locus_ids': locus_ids,
+                'positions': pmap_pos,
+                'probs':     np.transpose(probs_chr, (2, 0, 1)),
+            }
+
+        return GenomeCache(all_48, list(founder_cols), data)
+
+    @staticmethod
     def from_rds(probs_cc_path, probs_founder_path, probs_f1_path,
                  pmap_path, founders=None):
         """build genome cache from raw qtl2 rds prob files.
@@ -321,8 +450,9 @@ class GenomeCache:
         pmap['chr'] = pmap['chr'].astype(str)
 
         # extract chromosomes and sample ids
-        chrs_r    = list(ro.r['chrs'])
-        sample_ids = list(ro.r['rownames'](ro.r['probs_merged[[1]]']))
+        # use ro.r() calls (not ro.r[]) for R expressions with [[ ]] indexing
+        chrs_r     = list(ro.r('names(probs_merged)'))
+        sample_ids = list(ro.r('rownames(probs_merged[[1]])'))
 
         data = {}
         for chrom in chrs_r:
@@ -330,19 +460,17 @@ class GenomeCache:
             locus_ids = np.array(chr_pmap['locus'].tolist())
             positions = np.array(chr_pmap['pos_mb'].tolist(), dtype=float)
 
-            # extract (n_samples, n_loci, 8) array from R
-            # R stores as (n_samples, n_founders, n_loci) — transpose needed
-            arr_r = np.array(ro.r[f'probs_merged[["{chrom}"]]'])
-            # arr_r shape: (n_samples, 8, n_loci) — R uses samples×founders×loci
+            # extract array from R — qtl2 stores as (n_samples, n_founders, n_loci)
+            arr_r = np.array(ro.r(f'probs_merged[["{chrom}"]]'))
             if arr_r.ndim == 3:
-                # transpose to (n_loci, n_samples, 8)
+                # transpose to mosaiqtl convention: (n_loci, n_samples, n_founders)
                 arr = np.transpose(arr_r, (2, 0, 1))
             else:
                 logger.warning(f'chr{chrom}: unexpected array shape {arr_r.shape}')
                 continue
 
-            # align locus order to pmap
-            r_loci = list(ro.r['dimnames'](ro.r[f'probs_merged[["{chrom}"]]'])[2])
+            # get locus ids from R dimnames (dim 3 = markers)
+            r_loci = list(ro.r(f'dimnames(probs_merged[["{chrom}"]])[[3]]'))
             if len(r_loci) == len(locus_ids):
                 pass   # assume aligned
             else:
