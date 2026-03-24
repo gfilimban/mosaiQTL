@@ -231,6 +231,128 @@ class GenomeCache:
         return GenomeCache(sample_ids, founders, data)
 
     @staticmethod
+    def from_rds(probs_cc_path, probs_founder_path, probs_f1_path,
+                 pmap_path, founders=None):
+        """build genome cache from raw qtl2 rds prob files.
+
+        reads probs_cc.rds, probs_founder.rds, probs_f1.rds and the
+        pmap.csv produced by founders_f1_genomecache.ipynb, merges
+        all 48 genotypes (33 CC + 8 founders + 7 F1s), and returns a
+        GenomeCache — exactly replicating what R does inside
+        convert.qtl2.to.HAPPY() but in Python.
+
+        this is the "from scratch" path: Python builds its own cache
+        from the raw prob arrays without reading any R-produced files
+        other than the original rds outputs of calc_genoprob().
+
+        the merging logic mirrors founders_f1_genomecache.ipynb steps 5-7:
+          - probs_cc:      qtl2 HMM output, shape (n_cc, n_diplotypes, n_loci)
+          - probs_founder: deterministic 1-sample arrays per founder
+          - probs_f1:      deterministic 1-sample arrays per F1
+
+        genoprob_to_alleleprob() is applied to collapse 36 diplotype
+        states to 8 additive founder probs, matching what R does before
+        calc_kinship() and convert.qtl2.to.HAPPY().
+
+        parameters
+        ----------
+        probs_cc_path      : str  path to probs_cc.rds
+        probs_founder_path : str  path to probs_founder.rds
+        probs_f1_path      : str  path to probs_f1.rds
+        pmap_path          : str  path to pmap.csv (marker, chr, pos in Mb)
+        founders           : list of str or None  defaults to CC_FOUNDERS
+
+        returns
+        -------
+        GenomeCache  with 48 samples, 8 founders, all chromosomes
+        """
+        import rpy2.robjects as ro
+        import pandas as pd
+
+        if founders is None:
+            founders = CC_FOUNDERS
+
+        logger.info('loading raw qtl2 prob arrays via rpy2...')
+
+        # load all three rds files into R namespace
+        ro.r(f'probs_cc      <- readRDS("{probs_cc_path}")')
+        ro.r(f'probs_founder <- readRDS("{probs_founder_path}")')
+        ro.r(f'probs_f1      <- readRDS("{probs_f1_path}")')
+
+        # collapse 36 diplotype probs → 8 additive founder probs
+        # (genoprob_to_alleleprob mirrors what R does before the HAPPY cache)
+        ro.r('library(qtl2)')
+        ro.r('probs_cc_add <- genoprob_to_alleleprob(probs_cc)')
+
+        # merge: CC + founders + F1s — same order as notebook step 5
+        # founders and F1s are already 1-sample lists-of-chr-arrays
+        # we merge per-chromosome using abind along dim 1 (sample axis)
+        ro.r('library(abind)')
+        ro.r("""
+            chrs <- names(probs_cc_add)
+            probs_merged <- lapply(chrs, function(chr) {
+                cc_arr <- probs_cc_add[[chr]]
+                founder_arr <- do.call(abind, c(
+                    lapply(probs_founder, function(x) x[[chr]]), list(along=1)))
+                f1_arr <- do.call(abind, c(
+                    lapply(probs_f1, function(x) x[[chr]]), list(along=1)))
+                abind(cc_arr, founder_arr, f1_arr, along=1)
+            })
+            names(probs_merged) <- chrs
+        """)
+
+        # read physical map
+        pmap = pd.read_csv(pmap_path)
+        if 'marker' in pmap.columns:
+            pmap = pmap.rename(columns={'marker': 'locus', 'pos': 'pos_mb'})
+        pmap['chr'] = pmap['chr'].astype(str)
+
+        # extract chromosomes and sample ids
+        chrs_r    = list(ro.r['chrs'])
+        sample_ids = list(ro.r['rownames'](ro.r['probs_merged[[1]]']))
+
+        data = {}
+        for chrom in chrs_r:
+            chr_pmap  = pmap[pmap['chr'] == chrom]
+            locus_ids = np.array(chr_pmap['locus'].tolist())
+            positions = np.array(chr_pmap['pos_mb'].tolist(), dtype=float)
+
+            # extract (n_samples, n_loci, 8) array from R
+            # R stores as (n_samples, n_founders, n_loci) — transpose needed
+            arr_r = np.array(ro.r[f'probs_merged[["{chrom}"]]'])
+            # arr_r shape: (n_samples, 8, n_loci) — R uses samples×founders×loci
+            if arr_r.ndim == 3:
+                # transpose to (n_loci, n_samples, 8)
+                arr = np.transpose(arr_r, (2, 0, 1))
+            else:
+                logger.warning(f'chr{chrom}: unexpected array shape {arr_r.shape}')
+                continue
+
+            # align locus order to pmap
+            r_loci = list(ro.r['dimnames'](ro.r[f'probs_merged[["{chrom}"]]'])[2])
+            if len(r_loci) == len(locus_ids):
+                pass   # assume aligned
+            else:
+                # subset to pmap loci that appear in the prob array
+                locus_set = set(r_loci)
+                mask = np.array([l in locus_set for l in locus_ids])
+                locus_ids = locus_ids[mask]
+                positions = positions[mask]
+                loci_idx  = {l: i for i, l in enumerate(r_loci)}
+                idx       = np.array([loci_idx[l] for l in locus_ids
+                                      if l in loci_idx])
+                arr = arr[idx]
+
+            data[chrom] = {
+                'locus_ids': locus_ids,
+                'positions': positions,
+                'probs':     arr,
+            }
+            logger.info(f'  chr{chrom}: {arr.shape[0]} loci × {arr.shape[1]} samples')
+
+        return GenomeCache(sample_ids, founders, data)
+
+    @staticmethod
     def from_happy_dir(cache_dir, model='additive'):
         """load genome cache from happy directory format.
 
