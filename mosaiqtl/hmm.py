@@ -82,20 +82,20 @@ def haldane_recomb(d_morgan):
 def transition_matrix(r, n_founders=8, n_gen=20):
     """compute diplotype transition matrix at recombination fraction r.
 
-    for CC mice (fully inbred), the transition probability from diplotype
-    (f1,f2) to (g1,g2) at a recombination fraction r is derived from
-    the 8-state haplotype Markov chain:
+    for CC mice the genetic map (from the CC consensus map) already
+    encodes the cumulative recombination from ~20 generations of
+    intercrossing. the per-interval recombination fraction r derived
+    from that map should therefore be used directly — do NOT multiply
+    by n_gen (that would inflate r by 20×, collapsing all transitions
+    toward the equilibrium distribution and destroying haplotype blocks).
 
-      P(haplotype switches from f to g) ≈ r/J (for g ≠ f)
-      P(haplotype stays at f)           ≈ 1 - r*(J-1)/J
-
-    diplotype transitions are products of two independent haplotype chains.
-    n_gen (number of generations) scales r for inbred lines.
+    n_gen is kept as a parameter for non-CC populations (e.g. DO F1s)
+    where the caller may need to adjust; for CC it should be left at 1.
 
     args:
-        r         : recombination fraction (0 to 0.5)
+        r         : per-interval recombination fraction (0 to 0.5)
         n_founders: J
-        n_gen     : number of outbreeding generations (20 for CC)
+        n_gen     : scaling factor (1 for CC with consensus map)
     returns:
         T : (n_states, n_states) transition matrix, rows sum to 1
     """
@@ -103,8 +103,8 @@ def transition_matrix(r, n_founders=8, n_gen=20):
     states, state_to_idx = build_diplotype_states(J)
     n_states = len(states)
 
-    # scale r by n_gen (CC has ~20 generations of recombination)
-    # effective per-interval recombination for inbred lines
+    # r is already the correct per-interval recombination fraction
+    # n_gen=1 for CC with consensus map; capped at 0.5
     r_eff = min(r * n_gen, 0.5)
 
     # haplotype stay / switch probabilities

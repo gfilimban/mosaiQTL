@@ -339,19 +339,69 @@ class GenomeCache:
             pmap_pos = pmap_idx.loc[chr_loci, 'pos_mb'].values.astype(float)
             locus_ids = np.array(chr_loci)
 
-            geno_cc       = gm.loc[chr_loci, cc_cols].values       # (n_m, n_cc)
-            geno_founders = gm.loc[chr_loci, list(founder_cols)].values  # (n_m, J)
+            geno_cc       = gm.loc[chr_loci, cc_cols].values         # (n_m, n_cc) nucleotides
+            geno_founders = gm.loc[chr_loci, list(founder_cols)].values  # (n_m, J) nucleotides
+
+            # ── convert nucleotide calls → A/H/B per marker ──────────────────
+            # GigaMUGA stores raw bases (T, C, A, G), H (het), N (missing).
+            # the HMM expects A=hom_allele1, H=het, B=hom_allele2.
+            # for each marker: determine allele1/allele2 from founder calls,
+            # then recode all strains. monomorphic markers → all 'A'.
+            n_m   = len(chr_loci)
+            MISS  = np.array(['-'], dtype=object)
+
+            # vectorised: founder calls as object array
+            f_str = geno_founders.astype(str)
+            miss_mask_f = np.isin(f_str, ['N', '-', 'nan', ''])
+
+            cc_str = geno_cc.astype(str)
+
+            geno_cc_abh = np.full(cc_str.shape, '-', dtype=object)
+            geno_f_abh  = np.full(f_str.shape,  '-', dtype=object)
+
+            for m in range(n_m):
+                f_calls = f_str[m][~miss_mask_f[m]]
+                unique  = list(dict.fromkeys(f_calls.tolist()))  # ordered unique
+                if len(unique) == 0:
+                    continue
+                a1 = unique[0]
+                a2 = unique[1] if len(unique) > 1 else None
+
+                # recode founders
+                for fi in range(geno_f_abh.shape[1]):
+                    g = f_str[m, fi]
+                    if g in ('N', '-', 'nan', ''):
+                        geno_f_abh[m, fi] = '-'
+                    elif g == 'H':
+                        geno_f_abh[m, fi] = 'H'
+                    elif g == a1:
+                        geno_f_abh[m, fi] = 'A'
+                    elif a2 and g == a2:
+                        geno_f_abh[m, fi] = 'B'
+
+                # recode CC strains
+                for si in range(geno_cc_abh.shape[1]):
+                    g = cc_str[m, si]
+                    if g in ('N', '-', 'nan', ''):
+                        geno_cc_abh[m, si] = '-'
+                    elif g == 'H':
+                        geno_cc_abh[m, si] = 'H'
+                    elif g == a1:
+                        geno_cc_abh[m, si] = 'A'
+                    elif a2 and g == a2:
+                        geno_cc_abh[m, si] = 'B'
 
             n_markers = len(chr_loci)
             n_48      = len(all_48)
             probs_chr = np.zeros((n_48, n_founders, n_markers), dtype=np.float64)
 
-            # CC strains: HMM forward-backward
+            # CC strains: HMM forward-backward on A/H/B encoded calls
             logger.info(f'  chr{chrom}: running CC HMM ({len(cc_cols)} strains, ' +
                         f'{n_markers} markers)...')
             probs_cc = calc_genoprob_cc(
-                geno_cc, geno_founders, gmap_pos,
-                n_founders=n_founders, n_gen=n_gen, error_prob=error_prob,
+                geno_cc_abh, geno_f_abh, gmap_pos,
+                n_founders=n_founders, n_gen=1,   # CC consensus map already encodes recombination history
+                error_prob=error_prob,
                 return_additive=True
             )   # (n_cc, 8, n_markers)
 
