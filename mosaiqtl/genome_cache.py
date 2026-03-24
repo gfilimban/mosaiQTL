@@ -282,7 +282,7 @@ class GenomeCache:
         logger.info('building genome cache from raw GigaMUGA (no R)...')
 
         # ── read GigaMUGA matrix ───────────────────────────────────────────────
-        gm_raw = pd.read_csv(gigamuga_path)
+        gm_raw = pd.read_csv(gigamuga_path, low_memory=False)
         if 'marker' in gm_raw.columns:
             gm_raw = gm_raw.set_index('marker')
         # drop chr/pos if present — use the dedicated map files instead
@@ -303,6 +303,11 @@ class GenomeCache:
         pmap = _load_maps(pmap_dir, 'GM_pmap')
         gmap.rename(columns={'marker': 'locus', 'pos': 'pos_cM'}, inplace=True)
         pmap.rename(columns={'marker': 'locus', 'pos': 'pos_mb'}, inplace=True)
+
+        # cast chr to str immediately — mixed int/str types cause == comparisons
+        # to silently fail (e.g. integer 1 != string '1')
+        gmap['chr'] = gmap['chr'].astype(str)
+        pmap['chr'] = pmap['chr'].astype(str)
         logger.info(f'gmap: {len(gmap)} loci | pmap: {len(pmap)} loci')
 
         # ── intersect markers ──────────────────────────────────────────────────
@@ -313,9 +318,9 @@ class GenomeCache:
         pmap_idx = pmap.set_index('locus').loc[shared]
         logger.info(f'shared markers: {len(shared)}')
 
+        # chr column already str — build sorted chromosome list
         chrs = sorted(
-            [c for c in gmap['chr'].astype(str).unique()
-             if c not in ('Y', 'M', 'MT')],
+            [c for c in gmap['chr'].unique() if c not in ('Y', 'M', 'MT', 'nan')],
             key=lambda c: int(c) if c.isdigit() else (20 if c == 'X' else 99)
         )
 
@@ -324,7 +329,8 @@ class GenomeCache:
         all_48 = cc_cols + list(founder_cols) + [f[0] for f in f1_crosses]
 
         for chrom in chrs:
-            chr_mask   = gmap['chr'] == chrom
+            # gmap['chr'] is already str; chrom is str from chrs list
+            chr_mask  = gmap['chr'] == chrom
             chr_loci   = gmap[chr_mask].index.tolist()
             if not chr_loci:
                 continue
