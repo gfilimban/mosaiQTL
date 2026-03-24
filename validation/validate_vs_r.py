@@ -4,7 +4,7 @@
 # each section writes a csv report + plots, then a final qc_summary.csv
 #
 # sections:
-#   1. haplotype probs  — from_gigamuga() (pure Python HMM) vs from_happy_dir()
+#   1. haplotype probs  — from_rds() vs from_happy_dir() spot-check
 #   2. kinship          — calc_kinship(loco) vs kinship_loco.rds
 #   3. lod scores       — fit_lmm_at_locus() vs lod_r.csv
 #
@@ -70,12 +70,15 @@ F1_CROSSES = [
 ]
 
 paths = {
-    'kinship_r': os.path.join(miqtl_dir, 'output', 'kinship_loco.rds'),
-    'cache_r':   os.path.join(miqtl_dir, 'output', 'genomecache'),
-    'pmap':      os.path.join(miqtl_dir, 'input',  'pmap.csv'),
-    'lod_r':     os.path.join(pkg_dir, 'validation', 'r_data', 'lod_r.csv'),
-    'pheno_48':  os.path.join(pkg_dir, 'validation', 'r_data', 'pheno_48_used.csv'),
-    'ae_r':      os.path.join(pkg_dir, 'validation', 'r_data', 'allele_effects.csv'),
+    'probs_cc':      os.path.join(miqtl_dir, 'output', 'probs_cc.rds'),
+    'probs_founder': os.path.join(miqtl_dir, 'output', 'probs_founder.rds'),
+    'probs_f1':      os.path.join(miqtl_dir, 'output', 'probs_f1.rds'),
+    'kinship_r':     os.path.join(miqtl_dir, 'output', 'kinship_loco.rds'),
+    'cache_r':       os.path.join(miqtl_dir, 'output', 'genomecache'),
+    'pmap':          os.path.join(miqtl_dir, 'input',  'pmap.csv'),
+    'lod_r':         os.path.join(pkg_dir, 'validation', 'r_data', 'lod_r.csv'),
+    'pheno_48':      os.path.join(pkg_dir, 'validation', 'r_data', 'pheno_48_used.csv'),
+    'ae_r':          os.path.join(pkg_dir, 'validation', 'r_data', 'allele_effects.csv'),
 }
 val_dir  = os.path.join(pkg_dir, 'validation', 'r_data')
 plot_dir = os.path.join(pkg_dir, 'validation', 'qc_plots')
@@ -101,10 +104,6 @@ for key, path in paths.items():
         if key in ('lod_r', 'pheno_48'):
             log.error('run: Rscript validation/r_reference/run_validation.R')
         sys.exit(1)
-
-for label, path in [('GM_CSV', GM_CSV), ('GM_GMAP', GM_GMAP), ('GM_PMAP', GM_PMAP)]:
-    if not os.path.exists(path):
-        log.error(f'{label} not found: {path}'); sys.exit(1)
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 def save_csv(df, name):
@@ -137,7 +136,8 @@ qc_rows = []   # collects one dict per section for qc_summary.csv
 # SECTION 1 — HAPLOTYPE PROBS (from_gigamuga vs from_happy_dir)
 # ═══════════════════════════════════════════════════════════════════════════════
 section('SECTION 1 — HAPLOTYPE PROBS')
-# build cache entirely in Python from raw GigaMUGA — no R required
+# build cache from raw GigaMUGA (pure Python HMM, no R required)
+log.info('mosaiqtl | building genome cache from raw GigaMUGA (no R)...')
 cache_py = GenomeCache.from_gigamuga(
     gigamuga_path = GM_CSV,
     gmap_dir      = GM_GMAP,
@@ -159,6 +159,20 @@ shared_s   = [s for s in py_strains if s in r_strains]
 py_idx_s   = [py_strains.index(s) for s in shared_s]
 r_idx_s    = [r_strains.index(s)  for s in shared_s]
 
+# build founder-axis reindex so we compare the same founders in the same columns.
+# from_gigamuga() uses FOUNDER_COLS order; from_happy_dir() may use a different
+# order. reindex cache_r founder axis to match cache_py before diffing.
+f_py = [f.upper() for f in cache_py.founders]
+f_r  = [f.upper() for f in cache_r.founders] if cache_r else []
+# map each Python founder position to the R founder position
+f_r_idx = []
+r_founders_upper = f_r
+for f in f_py:
+    # match on prefix (e.g. 'AJ' in 'AJ', 'B6J' in 'B6J', '129S1J' in '129S1J')
+    candidates = [i for i, rf in enumerate(r_founders_upper) if f in rf or rf in f]
+    f_r_idx.append(candidates[0] if candidates else None)
+founder_reindex_valid = all(x is not None for x in f_r_idx)
+
 for chrom in cache_py.chromosomes:
     lids = cache_py._data[chrom]['locus_ids']
     mid  = len(lids) // 2
@@ -170,7 +184,12 @@ for chrom in cache_py.chromosomes:
         r_idx  = np.where(r_lids == lids[mid])[0]
         if len(r_idx):
             h_r      = cache_r.get_locus(chrom, int(r_idx[0]))
-            max_diff = float(np.abs(h_py[py_idx_s] - h_r[r_idx_s]).max())
+            # reorder R founder axis to match Python before diffing
+            if founder_reindex_valid:
+                h_r_cmp = h_r[:, f_r_idx]
+            else:
+                h_r_cmp = h_r
+            max_diff = float(np.abs(h_py[py_idx_s] - h_r_cmp[r_idx_s]).max())
     hap_rows.append({'chr': chrom, 'locus': lids[mid],
                      'row_sum_ok': row_sum_ok, 'max_delta_prob': max_diff})
 
@@ -193,11 +212,12 @@ if cache_r:
     ri0    = np.where(r_l0 == lids0[mid0])[0]
     if len(ri0):
         h_r0  = cache_r.get_locus(chrom0, int(ri0[0]))
-        diff0 = h_py0[py_idx_s] - h_r0[r_idx_s]
+        h_r0_cmp = h_r0[:, f_r_idx] if founder_reindex_valid else h_r0
+        diff0 = h_py0[py_idx_s] - h_r0_cmp[r_idx_s]
         fig, axes = plt.subplots(1, 3, figsize=(14, 4))
         for ax, mat, title, cmap, vmin, vmax in [
-            (axes[0], h_py0,  'Python (from_gigamuga)',    'YlOrRd', 0, 1),
-            (axes[1], h_r0,   'R (from_happy_dir)',   'YlOrRd', 0, 1),
+            (axes[0], h_py0,  'Python (from_gigamuga)', 'YlOrRd', 0, 1),
+            (axes[1], h_r0_cmp, 'R (from_happy_dir reindexed)', 'YlOrRd', 0, 1),
             (axes[2], diff0,  'Difference (Py − R)',  'RdBu_r', None, None),
         ]:
             sns.heatmap(mat, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,

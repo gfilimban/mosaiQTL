@@ -310,11 +310,25 @@ class GenomeCache:
         pmap['chr'] = pmap['chr'].astype(str)
         logger.info(f'gmap: {len(gmap)} loci | pmap: {len(pmap)} loci')
 
-        # ── intersect markers ──────────────────────────────────────────────────
-        shared = list(
-            set(gm_raw.index) & set(gmap['locus']) & set(pmap['locus']))
+        # ── intersect markers and sort by position ────────────────────────────
+        # CRITICAL: Python set() is unordered. If we use list(set(...)) the
+        # marker order is random, meaning the HMM receives positions out of
+        # genomic order and computes wrong inter-marker recombination fractions.
+        # This scrambles haplotype blocks: wrong kinship, inflated/random LOD.
+        # Fix: sort shared markers by (chr, pos_cM) after intersecting.
+        shared_set  = set(gm_raw.index) & set(gmap['locus']) & set(pmap['locus'])
+        gmap_idx    = gmap.set_index('locus')            # index by locus name
+        gmap_shared = gmap_idx.loc[list(shared_set)].copy()
+        # sort key: integer chrs by value, X=20, others=99
+        def _chr_key(c):
+            s = str(c)
+            return int(s) if s.isdigit() else (20 if s == 'X' else 99)
+        gmap_shared['_k'] = gmap_shared['chr'].map(_chr_key)
+        gmap_shared = gmap_shared.sort_values(['_k', 'pos_cM']).drop(columns=['_k'])
+        shared      = gmap_shared.index.tolist()          # position-sorted locus names
+
         gm       = gm_raw.loc[shared]
-        gmap     = gmap.set_index('locus').loc[shared]
+        gmap     = gmap_shared                            # already indexed and sorted
         pmap_idx = pmap.set_index('locus').loc[shared]
         logger.info(f'shared markers: {len(shared)}')
 
