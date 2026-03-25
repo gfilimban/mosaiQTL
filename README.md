@@ -1,10 +1,14 @@
 # mosaiQTL
 
-**mosaiQTL** is a complete Python port of [miQTL](https://github.com/gkeele/miqtl) (Keele *et al.* 2020),
-a haplotype-based QTL mapping package for multiparent populations (MPP) including the Collaborative Cross
-(CC), Diversity Outbred (DO), and MAGIC designs. mosaiQTL is fully R-free — it builds the haplotype
-probability cache from raw GigaMUGA genotype data using a native Python HMM, runs the LMM scan in numpy/scipy,
-and extends the model family to negative binomial mixed models for direct mapping from RNA-seq count data.
+Model-agnostic QTL mapping for multiparent populations. NB GLM + LMM + NEBULA-LN on raw counts or normalized expression.
+
+mosaiQTL resolves genetic effects to $J$ inbred founder haplotypes across any number of mosaic lines —
+designed for populations where each individual genome is a unique recombinant mosaic of segments inherited
+from $J$ founders, such as the Collaborative Cross (CC, $J=8$, ~33 lines), Diversity Outbred (DO), or
+user-defined MAGIC designs. The model supports Gaussian LMM for normalized expression, NB GLM for
+pseudobulk counts, and NEBULA-LN for single-nucleus data — chosen per gene without changing the
+rest of the pipeline. Informed by [miQTL](https://github.com/gkeele/miqtl) (Keele *et al.* 2020)
+and [R/qtl2](https://kbroman.org/qtl2/) (Broman *et al.* 2019).
 
 ---
 

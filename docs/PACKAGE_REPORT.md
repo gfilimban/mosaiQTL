@@ -30,15 +30,14 @@ containing $n \times J$ haplotype probability matrices — and exposes `scan.h2l
 scan function, which estimates $\hat{h}^2$ under the null via REML and computes ML LOD scores
 across the genome.
 
-### 1.3 Why a Python port?
+### 1.3 mosaiQTL
 
-miQTL requires R, `qtl2`, and the HAPPY cache as prerequisite outputs. For snRNA-seq eQTL
-mapping — where phenotypes are raw UMI counts from thousands of genes and the model should
-be negative binomial rather than Gaussian — a Python implementation integrates naturally with
-`scanpy`, `anndata`, and the broader Python single-cell ecosystem.
-
-mosaiQTL ports miQTL to Python, adds a pure-Python 8-founder HMM so the cache is built without R,
-and extends the model family to NB GLM and NEBULA-LN NB mixed models.
+mosaiQTL is a model-agnostic QTL mapping package for multiparent populations, parametric on $J$ founders
+and any number of mosaic lines. It supports Gaussian LMM for normalized expression, NB GLM for pseudobulk
+counts, and NEBULA-LN for single-nucleus data — chosen per gene without changing the rest of the pipeline.
+A pure-Python 8-founder HMM builds the haplotype probability cache from raw GigaMUGA genotype data, and
+all scan, kinship, and LMM functions are native Python (numpy/scipy). The package is informed by
+miQTL (Keele *et al.* 2020) and R/qtl2 (Broman *et al.* 2019).
 
 ---
 
