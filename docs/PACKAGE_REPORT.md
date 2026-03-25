@@ -33,10 +33,11 @@ across the genome.
 ### 1.3 mosaiQTL
 
 mosaiQTL is a model-agnostic QTL mapping package for multiparent populations, parametric on $J$ founders
-and any number of mosaic lines. It supports Gaussian LMM for normalized expression, NB GLM for pseudobulk
-counts, and NEBULA-LN for single-nucleus data — chosen per gene without changing the rest of the pipeline.
+and any number of mosaic lines. It provides Gaussian LMM for normalized expression,
+[edgePython](https://github.com/pachterlab/edgePython)-backed NB GLM for pseudobulk counts, and
+NEBULA-LN for single-nucleus data — chosen per gene without changing the rest of the pipeline.
 A pure-Python 8-founder HMM builds the haplotype probability cache from raw GigaMUGA genotype data, and
-all scan, kinship, and LMM functions are native Python (numpy/scipy). The package is informed by
+all scan, kinship, and LMM functions are native Python (numpy/scipy). Informed by
 miQTL (Keele *et al.* 2020) and R/qtl2 (Broman *et al.* 2019).
 
 ---

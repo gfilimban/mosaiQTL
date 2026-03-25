@@ -1,14 +1,16 @@
 # mosaiQTL
 
-Model-agnostic QTL mapping for multiparent populations. NB GLM + LMM + NEBULA-LN on raw counts or normalized expression.
+mosaiQTL is a model-agnostic QTL mapping package for multiparent populations: Gaussian LMM
+for normalized expression, [edgePython](https://github.com/pachterlab/edgePython)-backed NB GLM
+for pseudobulk counts, and NEBULA-LN for single-nucleus data — chosen per gene without changing
+the rest of the pipeline.
 
-mosaiQTL resolves genetic effects to $J$ inbred founder haplotypes across any number of mosaic lines —
-designed for populations where each individual genome is a unique recombinant mosaic of segments inherited
-from $J$ founders, such as the Collaborative Cross (CC, $J=8$, ~33 lines), Diversity Outbred (DO), or
-user-defined MAGIC designs. The model supports Gaussian LMM for normalized expression, NB GLM for
-pseudobulk counts, and NEBULA-LN for single-nucleus data — chosen per gene without changing the
-rest of the pipeline. Informed by [miQTL](https://github.com/gkeele/miqtl) (Keele *et al.* 2020)
-and [R/qtl2](https://kbroman.org/qtl2/) (Broman *et al.* 2019).
+It resolves genetic effects to $J$ inbred founder haplotypes across any number of mosaic lines,
+parametric on both $J$ and population size. Designed for populations where each individual genome is
+a unique recombinant mosaic of segments inherited from $J$ founders: Collaborative Cross (CC, $J=8$,
+~33 lines), Diversity Outbred (DO), or any user-defined MAGIC design. Informed by
+[miQTL](https://github.com/gkeele/miqtl) (Keele *et al.* 2020) and
+[R/qtl2](https://kbroman.org/qtl2/) (Broman *et al.* 2019).
 
 ---
 
