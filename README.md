@@ -154,8 +154,8 @@ result = scan.scan_h2lmm(
 Rscript validation/r_reference/run_validation.R
 python validation/validate_vs_r.py
 
-# Phase 2 — full port validation (in progress)
-python validation/validate_vs_r.py --stage port
+# Phase 2 — full port validation (validate_port.py, built alongside the port)
+python validation/validate_port.py
 ```
 
 ---
