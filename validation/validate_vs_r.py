@@ -655,15 +655,22 @@ if ae_r is not None and py_betas:
                             lod_r_df['gene_id'].isin(genes_with_ae)]
                   .groupby('gene_id')['lod'].max()
                   .sort_values(ascending=False))
-    best = next((g for g in candidates.index if g in py_betas), None)
+    # find best gene: highest R LOD that has both Python betas AND R allele effects
+    best = None
+    for g in candidates.index:
+        if g not in py_betas: continue
+        # check that ae_r actually has entries for this gene
+        if not ae_r[ae_r['gene_id'] == g].empty:
+            best = g; break
     if best:
         chrom_b, peak_loc, f_names, py_eff = py_betas[best]
-        # get R effects — try Python peak locus, fall back to R's peak locus
-        r_ae = ae_r[(ae_r['gene_id'] == best) & (ae_r['locus'] == peak_loc)]
-        if r_ae.empty:
-            r_peak_loc = (lod_r_df[lod_r_df['gene_id'] == best]
-                          .loc[lod_r_df[lod_r_df['gene_id'] == best]['lod'].idxmax(), 'locus'])
-            r_ae = ae_r[(ae_r['gene_id'] == best) & (ae_r['locus'] == r_peak_loc)]
+        # use R's stored locus — ae_r records the exact locus R used
+        gene_ae = ae_r[ae_r['gene_id'] == best]
+        r_ae    = gene_ae[gene_ae['locus'] == peak_loc]
+        if r_ae.empty:   # Python and R peaked at different loci — use R's
+            r_ae = gene_ae.groupby('locus').first().reset_index()
+            r_ae = ae_r[(ae_r['gene_id'] == best) &
+                        (ae_r['locus'] == r_ae.loc[0,'locus'])]
         fig, ax = plt.subplots(figsize=(9, 4))
         x  = np.arange(len(f_names)); w = 0.35
         cf = [FOUNDER_COLORS.get(f, '#888') for f in f_names]
