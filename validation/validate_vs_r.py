@@ -150,7 +150,8 @@ log.info(f'Python cache: {len(cache_py.chromosomes)} chr | '
          f'{len(cache_py.sample_ids)} strains | {cache_py.n_founders} founders')
 
 hap_rows = []
-cache_r  = GenomeCache.from_happy_dir(paths['cache_r'], model='additive') \
+cache_r  = GenomeCache.from_happy_dir(paths['cache_r'], model='additive',
+                                       pmap_path=paths['pmap']) \
            if os.path.isdir(paths['cache_r']) else None
 
 py_strains = list(cache_py.sample_ids)

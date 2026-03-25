@@ -578,7 +578,7 @@ class GenomeCache:
         return GenomeCache(sample_ids, founders, data)
 
     @staticmethod
-    def from_happy_dir(cache_dir, model='additive'):
+    def from_happy_dir(cache_dir, model='additive', pmap_path=None):
         """load genome cache from happy directory format.
 
         real structure (from founders_f1_genomecache.ipynb):
@@ -594,6 +594,10 @@ class GenomeCache:
             (e.g., 'output/genomecache')
         model : str
             'additive' (j founders) or 'full' (diplotypes)
+        pmap_path : str or None
+            path to pmap.csv (columns: locus/marker, chr, pos_mb).
+            when provided, real physical positions are stored instead
+            of 0.0 placeholders, enabling position-based comparison.
 
         returns
         -------
@@ -606,8 +610,15 @@ class GenomeCache:
                 'rpy2 required for reading happy .rdata files. '
                 'install with: pip install rpy2'
             )
-        # numpy2ri.activate() removed — deprecated in rpy2 >= 3.5
-        # np.array(r_object) works directly without a converter
+
+        # load pmap if provided — used to attach real positions to loci
+        pmap_df = None
+        if pmap_path and os.path.isfile(pmap_path):
+            pmap_df = pd.read_csv(pmap_path)
+            if 'marker' in pmap_df.columns:
+                pmap_df = pmap_df.rename(columns={'marker': 'locus', 'pos': 'pos_mb'})
+            pmap_df['chr'] = pmap_df['chr'].astype(str)
+            pmap_df = pmap_df.set_index('locus')
 
         # real cache structure: cache_dir/additive/chr{c}/data/*.RData
         model_dir = os.path.join(cache_dir, model)
@@ -656,7 +667,11 @@ class GenomeCache:
                 )[0]
                 locus_ids.append(locus_name)
 
-                # load() not readRDS() — .rdata files contain a named
+                # real position from pmap if available, else 0.0 placeholder
+                if pmap_df is not None and locus_name in pmap_df.index:
+                    positions.append(float(pmap_df.loc[locus_name, 'pos_mb']))
+                else:
+                    positions.append(0.0)
                 # object saved via save() in r. load() returns the
                 # object names; we extract the matrix from the env.
                 env = ro.r['new.env']()
@@ -681,7 +696,6 @@ class GenomeCache:
                         founders = list(cn)
 
                 prob_list.append(mat)
-                positions.append(0.0)
 
             if not prob_list:
                 continue
