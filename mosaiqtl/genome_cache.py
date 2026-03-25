@@ -699,7 +699,7 @@ class GenomeCache:
 
         return GenomeCache(sample_ids, founders, data)
 
-    def collapse(self, criterion='euclidean', tol=0.02):
+    def collapse(self, criterion='l2.norm', tol=0.02):
         """collapse adjacent redundant loci into a single representative locus.
 
         merges consecutive loci whose haplotype probability matrices are
@@ -715,7 +715,7 @@ class GenomeCache:
 
         parameters
         ----------
-        criterion : str  'euclidean' (default) or 'allele'
+        criterion : str  'l2.norm' (default, matches miQTL) or 'allele' / 'max.category'
         tol : float  merge threshold (euclidean: l2 norm; allele: fraction
                      of strains with different most-likely allele)
 
@@ -737,7 +737,7 @@ class GenomeCache:
             run_pos   = pos[0]
 
             for i in range(1, n_loci):
-                if criterion == 'euclidean':
+                if criterion in ('l2.norm', 'euclidean'):
                     # mean l2 distance per strain across founders
                     d = float(np.mean(
                         np.linalg.norm(probs[i] - run_probs[-1], axis=1)))

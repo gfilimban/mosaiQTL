@@ -420,8 +420,8 @@ else:
         skip_section('cache_collapse', 'collapsed_cache_summary.csv missing — run port_validation.R')
     else:
         coll_r = pd.read_csv(r_csv); coll_r['chr'] = coll_r['chr'].astype(str)
-        log.info('  collapsing Python cache (euclidean tol=0.02)...')
-        cache_coll = cache_py.collapse(criterion='euclidean', tol=0.02)
+        log.info('  collapsing Python cache (l2.norm tol=0.02)...')
+        cache_coll = cache_py.collapse(criterion='l2.norm', tol=0.02)
 
         rows_c = []
         for chrom in chr_order:
@@ -459,7 +459,7 @@ else:
         ax.set(xticks=x, xticklabels=[f'chr{c}' for c in coll_df['chr']],
                xlabel='chromosome', ylabel='loci reduced (%)',
                title='cache collapse — loci reduction per chromosome\n'
-                     f'(euclidean tol=0.02, mean py={mean_py_red:.1f}%)')
+                     f'(l2.norm tol=0.02, mean py={mean_py_red:.1f}%)')
         plt.xticks(rotation=45, ha='right', fontsize=8)
         ax.legend(fontsize=9); sns.despine(); plt.tight_layout()
         save_plot(fig, 'collapse_comparison.png')

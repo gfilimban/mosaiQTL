@@ -106,70 +106,119 @@ n_pcs         <- 10
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 4 — collapse.genomecache()
+#
+# actual signature (confirmed via writeLines(deparse(body(collapse.genomecache)))):
+#   original.cache, new.cache, subjects, criterion, model, proportion.tol
+#
+# bug in miqtl: variable 'test' used before assignment when check.l2.norm()
+# or check.max.category() throws an error on the first locus pair.
+# fix: patch the function body to initialise test <- FALSE before the criterion
+# block. requires unlocking the namespace binding first.
+#
+# collapsed cache structure (from source): same as original —
+#   additive/chrN/data/*.RData  (not additive/chrN/*.RData)
 # ─────────────────────────────────────────────────────────────────────────────
 message('\n[section 4] cache collapse')
 collapsed_path <- file.path(data_dir, 'output', 'genomecache_collapsed')
+
+# patch miqtl bug: initialise 'test' before criterion check
+unlockBinding('collapse.genomecache', as.environment('package:miqtl'))
+fn_lines <- deparse(body(collapse.genomecache))
+target   <- which(grepl('if \\(criterion == "l2.norm"\\)', fn_lines))
+fn_lines <- append(fn_lines, '            test <- FALSE', after = target - 1)
+body(collapse.genomecache) <- str2lang(paste(fn_lines, collapse = '\n'))
+lockBinding('collapse.genomecache', as.environment('package:miqtl'))
+message('  miqtl bug patched: test initialised before criterion check')
+
 if (!dir.exists(collapsed_path)) {
-  message('  collapsing genomecache...')
-  # discover actual argument names at runtime to avoid version-specific errors
-  fn_args <- names(formals(collapse.genomecache))
-  message('  collapse.genomecache formals: ', paste(fn_args, collapse=', '))
-  # build call using the first two positional args (genomecache path, output dir)
-  # then add model and criterion by name only if they exist in the signature
-  call_args <- list(genomecache_path, collapsed_path)
-  if ('model'     %in% fn_args) call_args[['model']]     <- 'additive'
-  if ('criterion' %in% fn_args) call_args[['criterion']] <- 'euclidean'
-  do.call(collapse.genomecache, call_args)
+  message('  collapsing genomecache (l2.norm, proportion.tol=0.02)...')
+  collapse.genomecache(
+    original.cache  = genomecache_path,
+    new.cache       = collapsed_path,
+    subjects        = NULL,
+    criterion       = 'l2.norm',
+    model           = 'additive',
+    proportion.tol  = 0.02
+  )
   message('  collapsed cache written to: ', collapsed_path)
 } else {
   message('  using existing collapsed cache: ', collapsed_path)
 }
-# summarise loci counts per chromosome for Python comparison
-chr_dirs <- list.dirs(file.path(collapsed_path, 'additive'), full.names=FALSE, recursive=FALSE)
-collapse_summary <- data.frame(
-  chr         = sub('^chr','', chr_dirs),
-  n_loci_orig = sapply(chr_dirs, function(c) length(list.files(file.path(genomecache_path, 'additive', c, 'data')))),
-  n_loci_coll = sapply(chr_dirs, function(c) length(list.files(file.path(collapsed_path,  'additive', c, 'data'))))
-)
-write.csv(collapse_summary, file.path(output_dir, 'collapsed_cache_summary.csv'), row.names=FALSE)
+
+# count loci: both original and collapsed use additive/chrN/data/*.RData
+chr_dirs <- list.dirs(file.path(genomecache_path, 'additive'),
+                      full.names=FALSE, recursive=FALSE)
+collapse_summary <- do.call(rbind, lapply(chr_dirs, function(c) {
+  chr_label <- sub('^chr', '', c)
+  n_orig <- length(list.files(
+    file.path(genomecache_path, 'additive', c, 'data'), pattern='\\.RData$'))
+  n_coll <- length(list.files(
+    file.path(collapsed_path, 'additive', c, 'data'), pattern='\\.RData$'))
+  data.frame(chr=chr_label, n_loci_orig=n_orig, n_loci_coll=n_coll)
+}))
+write.csv(collapse_summary, file.path(output_dir, 'collapsed_cache_summary.csv'),
+          row.names=FALSE)
 message('  saved: collapsed_cache_summary.csv')
+print(collapse_summary)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 5 — permutation thresholds (generate.sample.outcomes.matrix + get.gev.thresholds)
+# SECTION 5 — permutation thresholds
+#
+# generate.sample.outcomes.matrix() calls chol() internally for BLUP sampling
+# even when method='permutation', which crashes with a non-positive-definite
+# kinship when the scan is restricted to a small cis window.
+# fix: bypass generate.sample.outcomes.matrix entirely — permute phenotype
+# labels directly in a loop and call get.gev.thresholds() on the max LODs.
+#
+# cis restriction: full-chromosome permutation scans are too slow (5000 loci
+# x 100 perms). restrict to cis window around the gene TSS.
 # ─────────────────────────────────────────────────────────────────────────────
 message('\n[section 5] permutation thresholds')
-# run a quick LMM scan on one gene to get the scan object for permutation
 thresh_gene <- all_genes[1]
 thresh_chr  <- chromosomes[1]
 k_thresh    <- kinship_loco[[thresh_chr]]
-thresh_loci <- pmap_flat[pmap_flat$chr == thresh_chr, 'locus']
-thresh_form <- as.formula(paste0('`', thresh_gene, '` ~ batch + ', paste0('pc', 1:n_pcs, collapse=' + ')))
-thresh_scan <- tryCatch(
-  scan.h2lmm(genomecache=genomecache_path, data=pheno_48,
-              pheno.id='subject.name', geno.id='subject.name',
-              formula=thresh_form, K=k_thresh, use.multi.impute=FALSE,
-              model='additive', just.these.loci=thresh_loci,
-              return.allele.effects=FALSE),
-  error=function(e) { message('  scan failed: ', e$message); NULL })
+thresh_form <- as.formula(paste0('`', thresh_gene, '` ~ batch + ',
+                                  paste0('pc', 1:n_pcs, collapse=' + ')))
 
-if (!is.null(thresh_scan)) {
-  n_perms <- 100   # small for speed; use 1000 for publication
-  set.seed(42)
-  perm_outcomes <- generate.sample.outcomes.matrix(
-    scan.object = thresh_scan, method='permutation', num.samples=n_perms)
-  perm_scans <- run.threshold.scans(
-    sim.threshold.object = perm_outcomes,
-    genomecache = genomecache_path,
-    data = pheno_48,
-    use.multi.impute = FALSE)
-  thresholds <- get.gev.thresholds(threshold.scans=perm_scans, percentile=0.95)
-  thresh_df  <- data.frame(percentile=0.95, lod_threshold=thresholds,
-                            gene=thresh_gene, chr=thresh_chr, n_perms=n_perms)
-  write.csv(thresh_df, file.path(output_dir, 'thresholds_r.csv'), row.names=FALSE)
-  message('  saved: thresholds_r.csv  threshold=', round(thresholds, 3))
+# get cis loci for this gene
+tss_thresh <- if (use_gtf) {
+  gene_annot$tss_mb[gene_annot$gene_id == thresh_gene][1]
 } else {
-  message('  WARN: threshold scan failed — thresholds_r.csv not written')
+  median(pmap_flat$pos_mb[pmap_flat$chr == thresh_chr], na.rm=TRUE)
 }
+cis_loci_thresh <- pmap_flat$locus[
+  pmap_flat$chr == thresh_chr &
+  abs(pmap_flat$pos_mb - tss_thresh) <= cis_window_mb]
+if (length(cis_loci_thresh) == 0)
+  cis_loci_thresh <- pmap_flat$locus[pmap_flat$chr == thresh_chr][1:50]
+
+message('  gene=', thresh_gene, '  chr', thresh_chr,
+        '  tss=', round(tss_thresh, 2), ' Mb  cis_loci=', length(cis_loci_thresh))
+
+n_perms <- 100
+set.seed(42)
+perm_max_lods <- numeric(n_perms)
+for (i in seq_len(n_perms)) {
+  pheno_perm <- pheno_48
+  pheno_perm[[thresh_gene]] <- sample(pheno_48[[thresh_gene]])
+  res_perm <- tryCatch(
+    scan.h2lmm(genomecache=genomecache_path, data=pheno_perm,
+                pheno.id='subject.name', geno.id='subject.name',
+                formula=thresh_form, K=k_thresh,
+                use.multi.impute=FALSE, model='additive',
+                just.these.loci=cis_loci_thresh,
+                return.allele.effects=FALSE),
+    error=function(e) NULL)
+  perm_max_lods[i] <- if (!is.null(res_perm)) max(res_perm$LOD, na.rm=TRUE) else NA_real_
+  if (i %% 25 == 0) message('  ', i, '/', n_perms)
+}
+perm_max_lods <- perm_max_lods[!is.na(perm_max_lods)]
+thresh_95 <- get.gev.thresholds(threshold.scans=perm_max_lods, percentile=0.95)
+thresh_df <- data.frame(percentile=0.95, lod_threshold=thresh_95,
+                         gene=thresh_gene, chr=thresh_chr,
+                         n_perms=length(perm_max_lods))
+write.csv(thresh_df, file.path(output_dir, 'thresholds_r.csv'), row.names=FALSE)
+message('  saved: thresholds_r.csv  threshold=', round(thresh_95, 3))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 6 — multiple imputation scan
