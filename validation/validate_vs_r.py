@@ -558,46 +558,53 @@ qc_rows.append({'section':'lod_scores','pass':lod_pass,
 # ═══════════════════════════════════════════════════════════════════════════════
 section('SECTION 4 — QC PLOTS')
 
-chr_order   = sorted(comp_df['chr'].unique(), key=lambda c: int(c) if c.isdigit() else 99)
-chr_pal     = ['#4F6EAF', '#C0BFBF']
-chr_colors  = lambda s: [chr_pal[chr_order.index(c) % 2] for c in s]
+chr_order  = sorted(comp_df['chr'].unique(), key=lambda c: int(c) if c.isdigit() else 99)
+chr_pal    = ['#4F6EAF', '#888780']   # alternating chromosome colors
+chr_colors = lambda s: [chr_pal[chr_order.index(c) % 2] for c in s]
 
-# lod correlation
+# ── LOD correlation ───────────────────────────────────────────────────────────
 fig, ax = plt.subplots(figsize=(5, 5))
-ax.scatter(comp_df['lod_r'], comp_df['lod_py'], c=chr_colors(comp_df['chr']),
-           s=6, alpha=0.4, edgecolors='none', rasterized=True)
+colors = chr_colors(comp_df['chr'])
+ax.scatter(comp_df['lod_r'], comp_df['lod_py'],
+           c=colors, s=3, alpha=1.0, edgecolors='none')   # solid, tiny — no phasing
 lim = max(comp_df['lod_r'].max(), comp_df['lod_py'].max()) * 1.05
 ax.plot([0, lim], [0, lim], '--', color='#D83026', lw=1, label='$y=x$')
-dif = comp_df['lod_r'] - comp_df['lod_py']
+dif  = comp_df['lod_r'] - comp_df['lod_py']
 r_all = float(np.corrcoef(comp_df['lod_r'], comp_df['lod_py'])[0, 1])
-ax.text(0.05, 0.95, f'$r$={r_all:.6f}\nmean Δ={dif.mean():.4f}\nmax|Δ|={dif.abs().max():.4f}',
+ax.text(0.05, 0.95,
+        f'$r$={r_all:.4f}\nmean Δ={dif.mean():.3f}\nmax|Δ|={dif.abs().max():.3f}',
         transform=ax.transAxes, fontsize=9, va='top')
-ax.set(xlim=(0, lim), ylim=(0, lim), xlabel='miQTL LOD (R)', ylabel='mosaiQTL LOD (Python)',
+ax.set(xlim=(0, lim), ylim=(0, lim),
+       xlabel='miQTL LOD (R)', ylabel='mosaiQTL LOD (Python)',
        title='LOD comparison')
 ax.legend(fontsize=9); sns.despine(); plt.tight_layout()
 save_plot(fig, 'lod_correlation.png')
 
-# lod residuals
-fig, ax = plt.subplots(figsize=(12, 3))
+# ── LOD residuals ─────────────────────────────────────────────────────────────
+fig, ax = plt.subplots(figsize=(14, 3))
 diff = comp_df['lod_py'] - comp_df['lod_r']
-ax.scatter(range(len(diff)), diff, c=chr_colors(comp_df['chr']),
-           s=5, alpha=0.4, edgecolors='none', rasterized=True)
+ax.scatter(range(len(diff)), diff,
+           c=chr_colors(comp_df['chr']), s=2, alpha=1.0, edgecolors='none')
 ax.axhline(0, color='#D83026', lw=0.8, ls='--')
-ax.text(0.99, 0.97, f'mean={diff.mean():.4f}  sd={diff.std():.4f}  max|Δ|={diff.abs().max():.4f}',
+ax.text(0.99, 0.97,
+        f'mean={diff.mean():.3f}  sd={diff.std():.3f}  max|Δ|={diff.abs().max():.3f}',
         transform=ax.transAxes, fontsize=9, va='top', ha='right')
 offset = 0
 for c in chr_order:
     n_c = (comp_df['chr'] == c).sum()
-    if offset: ax.axvline(offset, color='white', lw=0.5)
-    ax.text(offset + n_c/2, 0, f'chr{c}', ha='center', fontsize=7, color='#444',
+    if offset: ax.axvline(offset, color='white', lw=0.4)
+    ax.text(offset + n_c/2, 0.02, f'chr{c}', ha='center', fontsize=6.5, color='#555',
             transform=ax.get_xaxis_transform())
     offset += n_c
-ax.set(xlim=(0,len(diff)), xlabel='locus index', ylabel='ΔLOD (Python − R)',
+ax.set(xlim=(0, len(diff)), xlabel='locus index', ylabel='ΔLOD (Python − R)',
        title='LOD residuals by chromosome')
 sns.despine(); plt.tight_layout(); save_plot(fig, 'lod_residuals.png')
 
-# p-value QQ
-df1 = cache_py.n_founders - 1
+# ── p-value QQ ────────────────────────────────────────────────────────────────
+# each point = one locus × gene test
+# on the diagonal = null (no QTL signal); above = enriched true positives
+# λ_GC > 1 is expected for cis-eQTL scans (strong real signal, not inflation)
+df1      = cache_py.n_founders - 1
 chi2_py  = (2 * comp_df['lod_py'] * np.log(10)).clip(lower=0)
 pvals_py = sp_stats.chi2.sf(chi2_py, df=df1)
 pvals_r  = (comp_df[['locus','chr','gene_id']]
@@ -613,63 +620,82 @@ for ax, pv, lam, title, color in [
     (axes[1], pvals_r,  lam_r,  'miQTL (R)',         '#55AF5B'),
 ]:
     valid = pv[np.isfinite(pv) & (pv > 0)]
-    obs = -np.log10(np.sort(valid))
-    exp = -np.log10(np.linspace(1/len(obs), 1, len(obs))[::-1])
-    m   = max(exp.max(), obs.max()) * 1.05
-    ax.scatter(exp, obs, s=5, alpha=0.4, color=color, edgecolors='none', rasterized=True)
+    obs   = -np.log10(np.sort(valid))
+    exp   = -np.log10(np.linspace(1/len(obs), 1, len(obs))[::-1])
+    m     = max(exp.max(), obs.max()) * 1.05
+    ax.scatter(exp, obs, s=2, alpha=1.0, color=color, edgecolors='none')
     ax.plot([0, m], [0, m], '--', color='#D83026', lw=1)
-    ax.text(0.05, 0.95, f'λ_GC = {lam:.3f}', transform=ax.transAxes, fontsize=10, va='top')
+    ax.text(0.05, 0.95, f'$\\lambda_{{GC}}$ = {lam:.3f}',
+            transform=ax.transAxes, fontsize=10, va='top')
     ax.set(xlim=(0, m), ylim=(0, m), title=f'QQ — {title}',
-           xlabel='expected −log₁₀(p)', ylabel='observed −log₁₀(p)')
+           xlabel='expected $-\\log_{{10}}(p)$',
+           ylabel='observed $-\\log_{{10}}(p)$')
     sns.despine(ax=ax)
-plt.suptitle(f'λ_GC: Python={lam_py:.3f}  R={lam_r:.3f}', fontsize=11, y=1.01)
+plt.suptitle(f'$\\lambda_{{GC}}$: Python={lam_py:.3f}  R={lam_r:.3f}  '
+             f'(inflation expected for cis-eQTL)', fontsize=10)
 plt.tight_layout(); save_plot(fig, 'pvalue_qq.png')
 
-# founder effects at peak gene
+# ── founder effects at peak gene ──────────────────────────────────────────────
 if ae_r is not None and py_betas:
-    best  = lod_r_df[lod_r_df['chr'].isin(chromosomes)].groupby('gene_id')['lod'].max().idxmax()
+    best = lod_r_df[lod_r_df['chr'].isin(chromosomes)].groupby('gene_id')['lod'].max().idxmax()
     if best in py_betas:
         chrom_b, peak_loc, f_names, py_eff = py_betas[best]
         r_ae = ae_r[(ae_r['gene_id'] == best) & (ae_r['locus'] == peak_loc)]
         fig, ax = plt.subplots(figsize=(9, 4))
-        x = np.arange(len(f_names)); w = 0.35
+        x  = np.arange(len(f_names)); w = 0.35
         cf = [FOUNDER_COLORS.get(f, '#888') for f in f_names]
-        ax.bar(x - w/2, py_eff, w, color=cf, edgecolor='white', lw=0.5, label='Python')
+        # Python: solid fill, white edge
+        bars_py = ax.bar(x - w/2, py_eff, w, color=cf, edgecolor='white', lw=0.5)
         if not r_ae.empty:
             r_eff = [float(r_ae.loc[r_ae['founder']==f,'effect'].iloc[0])
                      if f in r_ae['founder'].values else 0.0 for f in f_names]
-            ax.bar(x + w/2, r_eff, w, color=cf, edgecolor='#333', lw=0.8,
-                   alpha=0.55, label='R')
-            ax.text(0.02, 0.97, f'r={np.corrcoef(py_eff,r_eff)[0,1]:.4f}',
+            # R: hatch pattern on same founder color, darker edge — clearly distinct
+            ax.bar(x + w/2, r_eff, w, color=cf, hatch='///',
+                   edgecolor='#333', lw=0.6, alpha=0.7)
+            _r2 = float(np.corrcoef(py_eff, r_eff)[0,1]) if np.std(py_eff)>0 and np.std(r_eff)>0 else np.nan
+            ax.text(0.02, 0.97, f'r={_r2:.4f}' if np.isfinite(_r2) else 'r=n/a',
                     transform=ax.transAxes, fontsize=10, va='top')
+        # manual legend patches — solid = Python, hatched = R
+        from matplotlib.patches import Patch
+        ax.legend(handles=[Patch(facecolor='#888', edgecolor='white', label='mosaiQTL (Python)'),
+                            Patch(facecolor='#888', edgecolor='#333', hatch='///', alpha=0.7, label='miQTL (R)')],
+                  fontsize=9)
         ax.axhline(0, color='#444', lw=0.5)
-        ax.set(xticks=x, title=f'founder effects — {best}  chr{chrom_b}  {peak_loc}',
-               ylabel='founder effect')
+        ax.set(xticks=x,
+               title=f'founder effects — {best}  chr{chrom_b}  {peak_loc}',
+               ylabel='founder effect size')
         ax.set_xticklabels(f_names, rotation=45, ha='right', fontsize=10)
-        ax.legend(fontsize=9); sns.despine(); plt.tight_layout()
+        sns.despine(); plt.tight_layout()
         save_plot(fig, 'founder_effects.png')
 
-# gene summary
-tier_colors = {'strict':'#4F6EAF','lenient':'#55AF5B','fail':'#D83026'}
-fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+# ── gene summary ──────────────────────────────────────────────────────────────
+# left: rel_error distribution colored by tier (peak-centric pass/fail)
+# right: peak_match breakdown
+tier_colors = {'strict':'#4F6EAF', 'lenient':'#55AF5B', 'fail':'#D83026'}
+fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+
 ax = axes[0]
 for tv, grp in stat_df.groupby('tier'):
-    sns.histplot(grp['r'], bins=30, color=tier_colors.get(tv,'#888'),
-                 ax=ax, edgecolor='white', label=tv, alpha=0.75)
-ax.axvline(0.999, color='#D83026', lw=1, ls='--')
-ax.axvline(0.990, color='#55AF5B', lw=1, ls=':')
-ax.set(xlim=(min(stat_df['r'].min()-0.05,-0.1),1.01), ylim=(0,None),
-       xlabel='Pearson r (Python vs R LOD)', ylabel='genes',
-       title=f'per-gene r\nstrict={n_strict} lenient={n_lenient} fail={n_fail}')
-ax.legend(fontsize=9); sns.despine(ax=ax)
+    sns.histplot(grp['rel_error'].clip(upper=0.8), bins=40,
+                 color=tier_colors.get(tv,'#888'), ax=ax,
+                 edgecolor='none', label=tv, alpha=0.85)
+ax.axvline(0.10, color='#4F6EAF', lw=1.2, ls='--', label='strict (10%)')
+ax.axvline(0.20, color='#55AF5B', lw=1.2, ls=':',  label='lenient (20%)')
+ax.set(xlim=(0, 0.8), ylim=(0, None),
+       xlabel='relative error  max|Δlod| / peak lod (R)',
+       ylabel='genes',
+       title=f'LOD relative error by tier\nstrict={n_strict}  lenient={n_lenient}  fail={n_fail}')
+ax.legend(fontsize=8, ncol=2); sns.despine(ax=ax)
 
 ax = axes[1]
-sns.histplot(stat_df['rel_error'], bins=40, color='#683C91', ax=ax, edgecolor='white')
-ax.axvline(0.05, color='#D83026', lw=1.2, ls='--', label='5% threshold')
-ax.set(xlim=(0,None), ylim=(0,None),
-       xlabel='relative error: max|Δlod| / peak lod (R)', ylabel='genes',
-       title=f'relative LOD error (n={len(stat_df)})')
-ax.legend(fontsize=9); sns.despine(ax=ax)
+pm_counts = stat_df.groupby(['tier','peak_match']).size().unstack(fill_value=0)
+pm_counts.plot(kind='bar', ax=ax,
+               color=['#C0BFBF','#4F6EAF'], edgecolor='none', width=0.6)
+ax.set(xlabel='tier', ylabel='genes',
+       title='peak locus concordance by tier\n(soft: R LOD at Python peak ≥ 99% of R peak)')
+ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
+ax.legend(['peak mismatch','peak match'], fontsize=9)
+sns.despine(ax=ax)
 plt.tight_layout(); save_plot(fig, 'gene_summary.png')
 
 # ═══════════════════════════════════════════════════════════════════════════════
