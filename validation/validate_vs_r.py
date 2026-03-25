@@ -266,20 +266,31 @@ if cache_r:
     r_l0   = cache_r._data[chrom0]['locus_ids']
     ri0    = np.where(r_l0 == lids0[mid0])[0]
     if len(ri0):
-        h_r0  = cache_r.get_locus(chrom0, int(ri0[0]))
+        h_r0     = cache_r.get_locus(chrom0, int(ri0[0]))
         h_r0_cmp = (h_r0[:, f_r_idx] if founder_reindex_valid else h_r0) / r_scale
-        diff0 = h_py0[py_idx_s] - h_r0_cmp[r_idx_s]
-        fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+        diff0    = h_py0[py_idx_s] - h_r0_cmp[r_idx_s]
+
+        # display order: founders → F1s → CCs (consistent with kinship heatmap)
+        _f1_ids     = [f[0] for f in F1_CROSSES]
+        _disp_order = FOUNDER_COLS + _f1_ids + CC_COLS
+        _s_set      = set(shared_s)
+        _disp_s     = [s for s in _disp_order if s in _s_set]
+        _disp_s    += [s for s in shared_s if s not in _disp_s]   # any remaining
+        _disp_idx   = [shared_s.index(s) for s in _disp_s]        # row permutation
+
+        fig, axes = plt.subplots(1, 3, figsize=(14, 6))
         for ax, mat, title, cmap, vmin, vmax in [
-            (axes[0], h_py0,  'Python (from_gigamuga)', 'YlOrRd', 0, 1),
-            (axes[1], h_r0_cmp, 'R (from_happy_dir reindexed)', 'YlOrRd', 0, 1),
-            (axes[2], diff0,  'Difference (Py − R)',  'RdBu_r', None, None),
+            (axes[0], h_py0[_disp_idx],    'Python (from_gigamuga)',       'YlOrRd', 0, 1),
+            (axes[1], h_r0_cmp[_disp_idx], 'R (from_happy_dir reindexed)', 'YlOrRd', 0, 1),
+            (axes[2], diff0[_disp_idx],    'Difference (Py − R)',          'RdBu_r', None, None),
         ]:
             sns.heatmap(mat, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,
                         xticklabels=cache_py.founders,
-                        yticklabels=shared_s,       # sample names on y-axis
-                        cbar_kws={'shrink':0.7})
+                        yticklabels=_disp_s,
+                        cbar_kws={'shrink': 0.7})
             ax.set_title(f'{title}\nchr{chrom0} · {lids0[mid0]}')
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right',
+                               fontsize=8, fontfamily='Carlito')
             ax.set_yticklabels(ax.get_yticklabels(), fontsize=5, fontfamily='Carlito')
             ax.tick_params(axis='y', length=0)
         plt.tight_layout(); save_plot(fig, 'haplotype_probs.png')
@@ -395,11 +406,12 @@ covar_parts = [np.ones((len(pheno_48), 1))]
 if 'batch' in pheno_48.columns and pheno_48['batch'].notna().any():
     batch_dummies = pd.get_dummies(pheno_48['batch'], prefix='batch', drop_first=True)
     covar_parts.append(batch_dummies.astype(float).values)
+    avail_pcs = [c for c in pc_cols if c in pheno_48.columns]
     log.info(f'covar: intercept + {batch_dummies.shape[1]} batch dummies + {len(avail_pcs)} PCs')
 else:
+    avail_pcs = [c for c in pc_cols if c in pheno_48.columns]
     log.warning('batch missing from pheno_48 — re-run run_validation.R. '
                  'Without it, LODs will differ from R.')
-avail_pcs = [c for c in pc_cols if c in pheno_48.columns]
 if avail_pcs:
     covar_parts.append(pheno_48[avail_pcs].fillna(0).astype(float).values)
 covar_base = np.hstack(covar_parts)   # (48, p)
