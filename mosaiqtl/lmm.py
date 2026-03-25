@@ -137,15 +137,26 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):
 
         return -ll
 
-    # optimize h² via bounded scalar optimization
+    # ── grid search: evaluate on 20 evenly-spaced h² values ─────────────────
+    # a pure scalar optimizer on a possibly flat REML surface often converges
+    # to the boundary (h²=0 or h²=1). miQTL uses a coarser grid first, then
+    # polishes. we do the same: evaluate on 20 points, warm-start the refiner.
+    _h2_grid  = np.linspace(0.01, 0.99, 20)
+    _ll_grid  = np.array([neg_loglik(h2) for h2 in _h2_grid])
+    _best_idx = int(np.argmin(_ll_grid))
+    _h2_start = _h2_grid[_best_idx]
+
+    # ── refine around best grid point with bounded scalar search ─────────────
+    _lo = float(_h2_grid[max(0, _best_idx - 1)])
+    _hi = float(_h2_grid[min(len(_h2_grid)-1, _best_idx + 1)])
     result = minimize_scalar(
         neg_loglik,
-        bounds=(1e-6, 1 - 1e-6),
+        bounds=(_lo, _hi),
         method='bounded',
-        options={'xatol': 1e-6}
+        options={'xatol': 1e-8}
     )
 
-    h2_opt = result.x
+    h2_opt    = float(np.clip(result.x, 1e-6, 1 - 1e-6))
     loglik_opt = -result.fun
 
     return h2_opt, loglik_opt
