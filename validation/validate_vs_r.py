@@ -164,8 +164,7 @@ log.info(f'Python founders ({len(cache_py.founders)}): {cache_py.founders}')
 if cache_r:
     log.info(f'R founders     ({len(cache_r.founders)}): {cache_r.founders}')
 
-# explicit founder axis mapping: covers single-letter A-H, short abbreviations,
-# and full qtl2 names.  order matches standard CC8 qtl2: A/J B6 129S1 NOD NZO CAST PWK WSB
+# founder axis map: single-letter A-H, short, and full qtl2 names
 _FOUNDER_PY_TO_R = {
     'AJ':     ['A', 'AJ', 'A/J'],
     'B6J':    ['B', 'B6J', 'C57BL/6J'],
@@ -371,22 +370,14 @@ section('SECTION 3 — LOD COMPARISON')
 lod_r_df = pd.read_csv(paths['lod_r']); lod_r_df['chr'] = lod_r_df['chr'].astype(str)
 ae_r     = pd.read_csv(paths['ae_r']) if os.path.exists(paths['ae_r']) else None
 
-# pheno_48_used.csv — handles three formats produced by different R write.csv() calls:
-#   (a) row.names=FALSE  → col 0 named 'subject.name', no spurious rowname col [correct]
-#   (b) default write.csv → col 0 unnamed (R rownames), 'subject.name' also a col [old bug]
-#   (c) manually edited  → col 0 named 'subject.name', same as (a)
+# read pheno_48_used.csv — handle R rownames-as-col vs row.names=FALSE
 _raw = pd.read_csv(paths['pheno_48'])
-if _raw.columns[0] == 'subject.name':
-    pheno_raw = _raw.copy()                          # format (a) or (c)
-else:
-    _raw2 = pd.read_csv(paths['pheno_48'], index_col=0)
-    if 'subject.name' not in _raw2.columns:
-        _raw2.index.name = 'subject.name'            # format (b) without col
-        pheno_raw = _raw2.reset_index()
-    else:
-        pheno_raw = _raw2.reset_index(drop=True)     # format (b) with duplicate
-# deduplicate — belt-and-suspenders
-pheno_raw = pheno_raw.drop_duplicates(subset='subject.name', keep='first').reset_index(drop=True)
+if _raw.columns[0] != 'subject.name':               # R default: rownames in col 0
+    _raw = pd.read_csv(paths['pheno_48'], index_col=0)
+    if 'subject.name' not in _raw.columns:
+        _raw.index.name = 'subject.name'
+    _raw = _raw.reset_index(drop='subject.name' in _raw.columns)
+pheno_raw = _raw.drop_duplicates('subject.name', keep='first').reset_index(drop=True)
 
 all_chrs = sorted(lod_r_df['chr'].unique(), key=lambda c: int(c) if c.isdigit() else 99)
 chromosomes = ([c.strip() for c in args.chr.split(',') if c.strip() in all_chrs]
@@ -404,9 +395,10 @@ covar_parts = [np.ones((len(pheno_48), 1))]
 if 'batch' in pheno_48.columns and pheno_48['batch'].notna().any():
     batch_dummies = pd.get_dummies(pheno_48['batch'], prefix='batch', drop_first=True)
     covar_parts.append(batch_dummies.astype(float).values)
-    log.info(f'covar: intercept + {batch_dummies.shape[1]} batch dummies + {len(pc_cols)} PCs')
+    log.info(f'covar: intercept + {batch_dummies.shape[1]} batch dummies + {len(avail_pcs)} PCs')
 else:
-    log.warning('batch column missing from pheno_48 — LODs will differ from R (R uses batch covariate). Re-run run_validation.R to regenerate pheno_48_used.csv')
+    log.warning('batch missing from pheno_48 — re-run run_validation.R. '
+                 'Without it, LODs will differ from R.')
 avail_pcs = [c for c in pc_cols if c in pheno_48.columns]
 if avail_pcs:
     covar_parts.append(pheno_48[avail_pcs].fillna(0).astype(float).values)
