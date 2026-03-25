@@ -79,6 +79,7 @@ paths = {
     'lod_r':         os.path.join(pkg_dir, 'validation', 'r_data', 'lod_r.csv'),
     'pheno_48':      os.path.join(pkg_dir, 'validation', 'r_data', 'pheno_48_used.csv'),
     'ae_r':          os.path.join(pkg_dir, 'validation', 'r_data', 'allele_effects.csv'),
+    'pmap_r':        os.path.join(pkg_dir, 'validation', 'r_data', 'pmap_r.csv'),
 }
 val_dir  = os.path.join(pkg_dir, 'validation', 'r_data')
 plot_dir = os.path.join(pkg_dir, 'validation', 'qc_plots')
@@ -97,7 +98,7 @@ args = p.parse_args()
 
 # ── check prerequisites ────────────────────────────────────────────────────────
 for key, path in paths.items():
-    if key in ('ae_r', 'cache_r'):
+    if key in ('ae_r', 'cache_r', 'pmap_r'):
         continue   # optional
     if not os.path.exists(path):
         log.error(f'{key} not found: {path}')
@@ -150,8 +151,7 @@ log.info(f'Python cache: {len(cache_py.chromosomes)} chr | '
          f'{len(cache_py.sample_ids)} strains | {cache_py.n_founders} founders')
 
 hap_rows = []
-cache_r  = GenomeCache.from_happy_dir(paths['cache_r'], model='additive',
-                                       pmap_path=paths['pmap']) \
+cache_r  = GenomeCache.from_happy_dir(paths['cache_r'], model='additive') \
            if os.path.isdir(paths['cache_r']) else None
 
 py_strains = list(cache_py.sample_ids)
@@ -224,9 +224,20 @@ for chrom in sorted(cache_py.chromosomes, key=_chr_sort):
                              int(np.where(r_lids==l)[0][0])) for l in sample_lids]
             mid_locus = sample_lids[len(sample_lids)//2]
         else:
-            # names don't overlap — match by nearest cM position
+            # names don't overlap — match by nearest Mb position using pmap_r.csv
+            # (exported by run_validation.R; avoids rpy2 dependency in genome_cache)
+            if os.path.exists(paths['pmap_r']):
+                pmap_r_df  = pd.read_csv(paths['pmap_r'])
+                pmap_r_df['chr'] = pmap_r_df['chr'].astype(str)
+                chr_pmap_r = pmap_r_df[pmap_r_df['chr']==chrom].set_index('locus')
+                # attach real Mb positions to R locus_ids
+                r_pos_real = np.array([
+                    chr_pmap_r.loc[l,'pos_mb'] if l in chr_pmap_r.index else 0.0
+                    for l in r_lids], dtype=float)
+            else:
+                r_pos_real = r_pos   # fall back to whatever is stored (may be 0.0)
             py_sample_i = [int(n_loci * f) for f in (0.1, 0.3, 0.5, 0.7, 0.9)]
-            sample_pairs = [(pi, int(np.argmin(np.abs(r_pos - py_pos[pi]))))
+            sample_pairs = [(pi, int(np.argmin(np.abs(r_pos_real - py_pos[pi]))))
                             for pi in py_sample_i]
             mid_locus = lids[py_sample_i[2]]
 

@@ -239,6 +239,10 @@ lead_loci   <- lod_results %>%
 
 write.csv(lod_results, file.path(output_dir, 'lod_r.csv'),     row.names = FALSE)
 write.csv(lead_loci,   file.path(output_dir, 'lead_loci.csv'), row.names = FALSE)
+# export pmap used in the scan — Python reads this to get real positions
+# for loci in the R HAPPY cache, eliminating the need for rpy2 in comparisons
+write.csv(pmap_flat[, c('locus','chr','pos_mb')],
+          file.path(output_dir, 'pmap_r.csv'), row.names = FALSE)
 # ensure batch column is present before writing (may be absent in pre-built pheno_48.rds)
 if (!('batch' %in% colnames(pheno_48)) && exists('pheno_df')) {
   pheno_48$batch <- tapply(pheno_df$batch, pheno_df$subject.name, `[`, 1)[pheno_48$subject.name]
