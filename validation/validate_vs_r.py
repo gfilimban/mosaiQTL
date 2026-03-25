@@ -649,73 +649,85 @@ plt.tight_layout(); save_plot(fig, 'pvalue_qq.png')
 
 # ── founder effects at peak gene ──────────────────────────────────────────────
 if ae_r is not None and py_betas:
-    best = lod_r_df[lod_r_df['chr'].isin(chromosomes)].groupby('gene_id')['lod'].max().idxmax()
-    if best in py_betas:
+    # pick the highest-LOD gene that HAS R allele effects — not just overall peak
+    genes_with_ae = set(ae_r['gene_id'].unique())
+    candidates = (lod_r_df[lod_r_df['chr'].isin(chromosomes) &
+                            lod_r_df['gene_id'].isin(genes_with_ae)]
+                  .groupby('gene_id')['lod'].max()
+                  .sort_values(ascending=False))
+    best = next((g for g in candidates.index if g in py_betas), None)
+    if best:
         chrom_b, peak_loc, f_names, py_eff = py_betas[best]
-        # try Python peak locus first; fall back to R's peak locus
+        # get R effects — try Python peak locus, fall back to R's peak locus
         r_ae = ae_r[(ae_r['gene_id'] == best) & (ae_r['locus'] == peak_loc)]
         if r_ae.empty:
-            r_peak_loc = lod_r_df[lod_r_df['gene_id'] == best].loc[
-                lod_r_df[lod_r_df['gene_id'] == best]['lod'].idxmax(), 'locus']
+            r_peak_loc = (lod_r_df[lod_r_df['gene_id'] == best]
+                          .loc[lod_r_df[lod_r_df['gene_id'] == best]['lod'].idxmax(), 'locus'])
             r_ae = ae_r[(ae_r['gene_id'] == best) & (ae_r['locus'] == r_peak_loc)]
         fig, ax = plt.subplots(figsize=(9, 4))
         x  = np.arange(len(f_names)); w = 0.35
         cf = [FOUNDER_COLORS.get(f, '#888') for f in f_names]
-        # Python: solid fill, white edge
-        bars_py = ax.bar(x - w/2, py_eff, w, color=cf, edgecolor='white', lw=0.5)
+        ax.bar(x - w/2, py_eff, w, color=cf, edgecolor='white', lw=0.5)
         if not r_ae.empty:
             r_eff = [float(r_ae.loc[r_ae['founder']==f,'effect'].iloc[0])
                      if f in r_ae['founder'].values else 0.0 for f in f_names]
-            # R: hatch pattern on same founder color, darker edge — clearly distinct
             ax.bar(x + w/2, r_eff, w, color=cf, hatch='///',
                    edgecolor='#333', lw=0.6, alpha=0.7)
-            _r2 = float(np.corrcoef(py_eff, r_eff)[0,1]) if np.std(py_eff)>0 and np.std(r_eff)>0 else np.nan
+            _r2 = (float(np.corrcoef(py_eff, r_eff)[0,1])
+                   if np.std(py_eff) > 0 and np.std(r_eff) > 0 else np.nan)
             ax.text(0.02, 0.97, f'r={_r2:.4f}' if np.isfinite(_r2) else 'r=n/a',
                     transform=ax.transAxes, fontsize=10, va='top')
-        # manual legend patches — solid = Python, hatched = R
         from matplotlib.patches import Patch
-        ax.legend(handles=[Patch(facecolor='#888', edgecolor='white', label='mosaiQTL (Python)'),
-                            Patch(facecolor='#888', edgecolor='#333', hatch='///', alpha=0.7, label='miQTL (R)')],
-                  fontsize=9)
+        ax.legend(handles=[
+            Patch(facecolor='#888', edgecolor='white', label='mosaiQTL (Python)'),
+            Patch(facecolor='#888', edgecolor='#333', hatch='///', alpha=0.7, label='miQTL (R)'),
+        ], fontsize=9)
         ax.axhline(0, color='#444', lw=0.5)
-        ax.set(xticks=x,
-               title=f'founder effects — {best}  chr{chrom_b}  {peak_loc}',
+        ax.set(xticks=x, title=f'founder effects — {best}  chr{chrom_b}  {peak_loc}',
                ylabel='founder effect size')
         ax.set_xticklabels(f_names, rotation=45, ha='right', fontsize=10)
         sns.despine(); plt.tight_layout()
         save_plot(fig, 'founder_effects.png')
 
 # ── gene summary ──────────────────────────────────────────────────────────────
-# left: rel_error distribution colored by tier (peak-centric pass/fail)
-# right: peak_match breakdown
-tier_colors = {'strict':'#4F6EAF', 'lenient':'#55AF5B', 'fail':'#D83026'}
+# left: side-by-side bars (fail / lenient / strict) showing actual counts
+# right: peak_match breakdown by tier
+tier_colors = {'strict': '#4F6EAF', 'lenient': '#55AF5B', 'fail': '#D83026'}
 fig, axes = plt.subplots(1, 2, figsize=(11, 4))
 
 ax = axes[0]
-for tv in ['fail', 'lenient', 'strict']:   # paint fail→lenient→strict so strict is on top
-    grp = stat_df[stat_df['tier']==tv]
-    if len(grp) == 0: continue
-    sns.histplot(grp['rel_error'].clip(upper=0.8), bins=40,
-                 color=tier_colors.get(tv,'#888'), ax=ax,
-                 edgecolor='none', label=f'{tv} ({len(grp)})', alpha=0.85)
-ax.axvline(0.10, color='#4F6EAF', lw=1.2, ls='--', label='strict (10%)')
-ax.axvline(0.20, color='#55AF5B', lw=1.2, ls=':',  label='lenient (20%)')
-ax.set(xlim=(0, 0.8), ylim=(0, None),
-       xlabel='relative error  max|Δlod| / peak lod (R)',
+# bin rel_error into buckets; show each tier as a separate bar group
+bins   = [0, 0.05, 0.10, 0.20, 0.40, 0.80]
+labels = ['0–5%', '5–10%', '10–20%', '20–40%', '40–80%']
+stat_df['_bin'] = pd.cut(stat_df['rel_error'].clip(upper=0.8),
+                          bins=bins, labels=labels, right=True)
+counts = (stat_df.groupby(['_bin', 'tier'], observed=True)
+          .size().unstack(fill_value=0)
+          .reindex(columns=['fail','lenient','strict'], fill_value=0))
+x_pos  = np.arange(len(labels)); w = 0.25
+for i, (tier, color) in enumerate([('fail','#D83026'),('lenient','#55AF5B'),('strict','#4F6EAF')]):
+    vals = counts[tier].values if tier in counts.columns else np.zeros(len(labels))
+    ax.bar(x_pos + (i-1)*w, vals, w, color=color, edgecolor='none',
+           label=f'{tier} ({stat_df["tier"].eq(tier).sum():,})')
+ax.axvline(0.5, color='#4F6EAF', lw=0.8, ls='--', alpha=0.5)   # strict threshold bin edge
+ax.axvline(1.5, color='#55AF5B', lw=0.8, ls='--', alpha=0.5)   # lenient threshold bin edge
+ax.set(xticks=x_pos, xticklabels=labels, xlabel='relative error (max|Δlod| / peak lod R)',
        ylabel='genes',
-       title=f'LOD relative error by tier\nstrict={n_strict}  lenient={n_lenient}  fail={n_fail}')
-ax.legend(fontsize=8, ncol=2); sns.despine(ax=ax)
+       title=f'LOD relative error by tier\nstrict={n_strict:,}  lenient={n_lenient:,}  fail={n_fail:,}')
+ax.legend(fontsize=9); sns.despine(ax=ax)
 
 ax = axes[1]
-pm_counts = stat_df.groupby(['tier','peak_match']).size().unstack(fill_value=0)
+pm_counts = stat_df.groupby(['tier','peak_match'], observed=True).size().unstack(fill_value=0)
+pm_counts = pm_counts.reindex(['fail','lenient','strict']).fillna(0)
 pm_counts.plot(kind='bar', ax=ax,
-               color=['#C0BFBF','#4F6EAF'], edgecolor='none', width=0.6)
-ax.set(xlabel='tier', ylabel='genes',
+               color=['#C0BFBF', '#4F6EAF'], edgecolor='none', width=0.6)
+ax.set(xlabel='', ylabel='genes',
        title='peak locus concordance by tier\n(soft: R LOD at Python peak ≥ 99% of R peak)')
-ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
-ax.legend(['peak mismatch','peak match'], fontsize=9)
+ax.set_xticklabels(['fail', 'lenient', 'strict'], rotation=0)
+ax.legend(['peak mismatch', 'peak match'], fontsize=9)
 sns.despine(ax=ax)
 plt.tight_layout(); save_plot(fig, 'gene_summary.png')
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # QC SUMMARY
