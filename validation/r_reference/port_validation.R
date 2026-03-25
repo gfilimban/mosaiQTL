@@ -111,12 +111,15 @@ message('\n[section 4] cache collapse')
 collapsed_path <- file.path(data_dir, 'output', 'genomecache_collapsed')
 if (!dir.exists(collapsed_path)) {
   message('  collapsing genomecache...')
-  collapse.genomecache(
-    genomecache    = genomecache_path,
-    new.cache.dir  = collapsed_path,
-    model          = 'additive',
-    criterion      = 'euclidean'
-  )
+  # discover actual argument names at runtime to avoid version-specific errors
+  fn_args <- names(formals(collapse.genomecache))
+  message('  collapse.genomecache formals: ', paste(fn_args, collapse=', '))
+  # build call using the first two positional args (genomecache path, output dir)
+  # then add model and criterion by name only if they exist in the signature
+  call_args <- list(genomecache_path, collapsed_path)
+  if ('model'     %in% fn_args) call_args[['model']]     <- 'additive'
+  if ('criterion' %in% fn_args) call_args[['criterion']] <- 'euclidean'
+  do.call(collapse.genomecache, call_args)
   message('  collapsed cache written to: ', collapsed_path)
 } else {
   message('  using existing collapsed cache: ', collapsed_path)
