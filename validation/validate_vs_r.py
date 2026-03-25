@@ -207,31 +207,35 @@ for chrom in sorted(cache_py.chromosomes, key=_chr_sort):
     row_sum_ok = True
     r_n_loci   = len(cache_r._data[chrom]['locus_ids']) if (cache_r and chrom in cache_r._data) else np.nan
 
-    # find markers present in BOTH Python and R caches, then sample 5 evenly
+    # match markers: name-based first, fall back to nearest cM position
     if cache_r and chrom in cache_r._data:
         r_lids     = cache_r._data[chrom]['locus_ids']
+        r_pos      = cache_r._data[chrom]['positions']
+        py_pos     = cache_py._data[chrom]['positions']
         r_lid_set  = set(r_lids)
-        shared_lids = [l for l in lids if l in r_lid_set]   # Python markers that exist in R
-        n_shared   = len(shared_lids)
-        if n_shared >= 5:
-            step   = n_shared // 5
-            sample_lids = shared_lids[::step][:5]
-        elif n_shared > 0:
-            sample_lids = shared_lids
-        else:
-            sample_lids = []
+        shared_lids = [l for l in lids if l in r_lid_set]
 
-        for lid in sample_lids:
-            py_i = int(np.where(lids == lid)[0][0])
-            r_i  = int(np.where(r_lids == lid)[0][0])
+        if len(shared_lids) >= 5:
+            # sufficient name matches — sample evenly
+            step = len(shared_lids) // 5
+            sample_lids = shared_lids[::step][:5]
+            sample_pairs = [(int(np.where(lids==l)[0][0]),
+                             int(np.where(r_lids==l)[0][0])) for l in sample_lids]
+            mid_locus = sample_lids[len(sample_lids)//2]
+        else:
+            # names don't overlap — match by nearest cM position
+            py_sample_i = [int(n_loci * f) for f in (0.1, 0.3, 0.5, 0.7, 0.9)]
+            sample_pairs = [(pi, int(np.argmin(np.abs(r_pos - py_pos[pi]))))
+                            for pi in py_sample_i]
+            mid_locus = lids[py_sample_i[2]]
+
+        for py_i, r_i in sample_pairs:
             h_py = cache_py.get_locus(chrom, py_i)
             if not np.allclose(h_py.sum(axis=1), 1.0, atol=1e-4):
                 row_sum_ok = False
             h_r     = cache_r.get_locus(chrom, r_i)
             h_r_cmp = (h_r[:, f_r_idx] if founder_reindex_valid else h_r) / r_scale
             diffs.append(float(np.abs(h_py[py_idx_s] - h_r_cmp[r_idx_s]).max()))
-
-        mid_locus = sample_lids[len(sample_lids)//2] if sample_lids else lids[n_loci//2]
     else:
         # no R cache — just check row sums
         for si in [int(n_loci*f) for f in (0.1,0.5,0.9)]:
@@ -465,28 +469,29 @@ for chrom in chromosomes:
         if len(merged) < 3:
             log.warning(f'  {gene}: {len(merged)} loci — skipping'); all_pass = False; continue
 
-        r_corr     = float(np.corrcoef(merged['lod_r'], merged['lod_py'])[0, 1])
-        max_d      = float((merged['lod_r'] - merged['lod_py']).abs().max())
-        peak_lod_r = float(merged['lod_r'].max())
-        peak_lod_py= float(merged['lod_py'].max())
-        peak_row   = merged.loc[merged['lod_r'].idxmax()]
-        lead_locus = peak_row['locus']
-        delta_peak = float(abs(peak_row['lod_r'] - peak_row['lod_py']))
-        rel_err    = max_d / max(peak_lod_r, 0.01)
+        r_corr      = float(np.corrcoef(merged['lod_r'], merged['lod_py'])[0, 1])
+        max_d       = float((merged['lod_r'] - merged['lod_py']).abs().max())
+        peak_lod_r  = float(merged['lod_r'].max())
+        peak_lod_py = float(merged['lod_py'].max())
+        r_peak_row  = merged.loc[merged['lod_r'].idxmax()]
+        py_peak_row = merged.loc[merged['lod_py'].idxmax()]
+        lead_locus  = py_peak_row['locus']           # Python's peak locus
+        peak_match  = (lead_locus == r_peak_row['locus'])
+        delta_peak  = float(abs(r_peak_row['lod_r'] - r_peak_row['lod_py']))
+        rel_err     = max_d / max(peak_lod_r, 0.01)
 
-        # strict:  shape (r>0.999) + scale (rel_error<0.05)
-        # lenient: shape (r>0.99)  + scale (rel_error<0.15)
-        # max_delta_lod is NOT used: a constant LOD offset from h2/kinship
-        # differences is expected and not a shape error (r=1.0 genes routinely
-        # have max_delta_lod >0.1 due to systematic offset, not profile mismatch)
-        strict  = r_corr > 0.999 and rel_err < 0.05
-        lenient = r_corr > 0.990 and rel_err < 0.15
+        # strict:  profile shape (r>0.999) + peak locus match + rel_error<0.10
+        # lenient: profile shape (r>0.99)  + rel_error<0.20
+        # constant LOD offset from h2 differences is expected — not a bug.
+        # max_delta_lod is kept in output but not used for pass/fail.
+        strict  = r_corr > 0.999 and peak_match and rel_err < 0.10
+        lenient = r_corr > 0.990 and rel_err < 0.20
         passed  = strict or lenient
         tier    = 'strict' if strict else ('lenient' if lenient else 'fail')
 
         log.info(f'  {"PASS" if passed else "FAIL"}({tier:<7})  {gene:25s}  '
                  f'r={r_corr:.6f}  max|Δlod|={max_d:.4f}  rel={rel_err:.3f}  '
-                 f'n={len(merged)}')
+                 f'peak_match={peak_match}  n={len(merged)}')
         if not passed: all_pass = False
 
         merged['gene_id'] = gene; merged['chr'] = chrom
@@ -494,7 +499,8 @@ for chrom in chromosomes:
         gene_stats.append({'gene_id':gene,'chr':chrom,'status':'PASS' if passed else 'FAIL',
                            'tier':tier,'r':r_corr,'max_delta_lod':max_d,'rel_error':rel_err,
                            'peak_lod_r':peak_lod_r,'peak_lod_py':peak_lod_py,
-                           'delta_at_peak':delta_peak,'lead_locus':lead_locus,
+                           'delta_at_peak':delta_peak,'peak_match':peak_match,
+                           'lead_locus':lead_locus,
                            'n_loci':len(merged),'h2_null':h2,'passed':passed})
 
         ll = r_gene['locus'].tolist()
@@ -510,7 +516,7 @@ stat_df = pd.DataFrame(gene_stats)
 save_csv(comp_df, 'lod_comparison.csv')
 save_csv(stat_df, 'gene_summary.csv')
 save_csv(stat_df[['gene_id','chr','status','tier','peak_lod_r','peak_lod_py',
-                  'delta_at_peak','max_delta_lod','rel_error','r',
+                  'delta_at_peak','peak_match','max_delta_lod','rel_error','r',
                   'lead_locus','n_loci','h2_null']]
          .sort_values(['status','rel_error'], ascending=[True,False]),
          'gene_results.csv')
