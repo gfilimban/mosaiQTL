@@ -1,9 +1,8 @@
 # mosaiQTL
 
-mosaiQTL is a model-agnostic QTL mapping package for multiparent populations: Gaussian LMM
-for normalized expression, [edgePython](https://github.com/pachterlab/edgePython)-backed NB GLM
-for pseudobulk counts, and NEBULA-LN for single-nucleus data — chosen per gene without changing
-the rest of the pipeline.
+mosaiQTL maps QTL in multiparent populations using Gaussian LMM for normalized expression,
+[edgePython](https://github.com/pachterlab/edgePython)-backed NB GLM for pseudobulk counts,
+and NEBULA-LN for single-nucleus data — chosen per gene without changing the rest of the pipeline.
 
 It resolves genetic effects to $J$ inbred founder haplotypes across any number of mosaic lines,
 parametric on both $J$ and population size. Designed for populations where each individual genome is
