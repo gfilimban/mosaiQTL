@@ -112,11 +112,10 @@ collapsed_path <- file.path(data_dir, 'output', 'genomecache_collapsed')
 if (!dir.exists(collapsed_path)) {
   message('  collapsing genomecache...')
   collapse.genomecache(
-    genomecache = genomecache_path,
-    output.dir  = collapsed_path,
-    model       = 'additive',
-    criterion   = 'euclidean',
-    tol         = 0.02
+    genomecache    = genomecache_path,
+    new.cache.dir  = collapsed_path,
+    model          = 'additive',
+    criterion      = 'euclidean'
   )
   message('  collapsed cache written to: ', collapsed_path)
 } else {

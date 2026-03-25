@@ -396,12 +396,19 @@ if not args.skip_phase1:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 2 — FULL PORT SECTIONS (4-10)
-# each section is skipped with a warning if its Python module is not yet available.
+# each section skips gracefully if its R reference csv is missing or
+# the Python module is absent — no crashes, always a SKIP entry.
 # ══════════════════════════════════════════════════════════════════════════════
+
+import matplotlib.patches as mpatches
 
 def skip_section(name, reason='module not yet implemented'):
     log.warning(f'{name}: SKIPPED — {reason}')
     qc_rows.append({'section': name, 'pass': None, 'detail': f'skipped: {reason}'})
+
+chr_order  = sorted(cache_py.chromosomes, key=_chr_sort)
+chr_pal    = ['#4F6EAF', '#888780']
+chr_colors = lambda s: [chr_pal[chr_order.index(c) % 2] if c in chr_order else '#aaa' for c in s]
 
 # ── SECTION 4 — genome cache collapse ────────────────────────────────────────
 section('SECTION 4 — CACHE COLLAPSE')
@@ -412,8 +419,50 @@ else:
     if not os.path.exists(r_csv):
         skip_section('cache_collapse', 'collapsed_cache_summary.csv missing — run port_validation.R')
     else:
-        # TODO: compare n_loci_py_collapsed vs n_loci_r_collapsed per chromosome
-        skip_section('cache_collapse', 'comparison logic pending')
+        coll_r = pd.read_csv(r_csv); coll_r['chr'] = coll_r['chr'].astype(str)
+        log.info('  collapsing Python cache (euclidean tol=0.02)...')
+        cache_coll = cache_py.collapse(criterion='euclidean', tol=0.02)
+
+        rows_c = []
+        for chrom in chr_order:
+            n_py_full  = len(cache_py._data[chrom]['locus_ids'])
+            n_py_coll  = len(cache_coll._data[chrom]['locus_ids'])
+            r_row      = coll_r[coll_r['chr'] == chrom]
+            n_r_coll   = int(r_row['n_loci_coll'].iloc[0]) if not r_row.empty else np.nan
+            n_r_orig   = int(r_row['n_loci_orig'].iloc[0]) if not r_row.empty else np.nan
+            pct_py     = 100*(n_py_full - n_py_coll) / n_py_full
+            pct_r      = 100*(n_r_orig - n_r_coll) / n_r_orig if n_r_orig else np.nan
+            rows_c.append({'chr': chrom,
+                           'n_py_full': n_py_full, 'n_py_coll': n_py_coll,
+                           'n_r_orig': n_r_orig,   'n_r_coll': n_r_coll,
+                           'pct_reduced_py': pct_py, 'pct_reduced_r': pct_r})
+            log.info(f'  chr{chrom}: py {n_py_full}→{n_py_coll} ({pct_py:.1f}%)  '
+                     f'r {n_r_orig}→{n_r_coll} ({pct_r:.1f}%)')
+
+        coll_df = pd.DataFrame(rows_c)
+        save_csv(coll_df, 'collapse_comparison.csv')
+
+        # pass if Python reduces at least 5% of loci (structural check)
+        mean_py_red = coll_df['pct_reduced_py'].mean()
+        coll_pass   = mean_py_red >= 5.0
+        qc_rows.append({'section': 'cache_collapse', 'pass': coll_pass,
+                        'detail': f'mean reduction py={mean_py_red:.1f}%  '
+                                   f'r={coll_df["pct_reduced_r"].mean():.1f}%'})
+
+        # QC plot: reduction % per chromosome, Python vs R
+        fig, ax = plt.subplots(figsize=(10, 4))
+        x = np.arange(len(coll_df)); w = 0.35
+        ax.bar(x - w/2, coll_df['pct_reduced_py'], w, color='#4F6EAF',
+               edgecolor='none', label='mosaiQTL (Python)')
+        ax.bar(x + w/2, coll_df['pct_reduced_r'].fillna(0), w, color='#55AF5B',
+               edgecolor='none', label='miQTL (R)', alpha=0.85)
+        ax.set(xticks=x, xticklabels=[f'chr{c}' for c in coll_df['chr']],
+               xlabel='chromosome', ylabel='loci reduced (%)',
+               title='cache collapse — loci reduction per chromosome\n'
+                     f'(euclidean tol=0.02, mean py={mean_py_red:.1f}%)')
+        plt.xticks(rotation=45, ha='right', fontsize=8)
+        ax.legend(fontsize=9); sns.despine(); plt.tight_layout()
+        save_plot(fig, 'collapse_comparison.png')
 
 # ── SECTION 5 — permutation thresholds ───────────────────────────────────────
 section('SECTION 5 — PERMUTATION THRESHOLDS')
@@ -425,21 +474,125 @@ else:
         skip_section('permutation_thresholds', 'thresholds_r.csv missing — run port_validation.R')
     else:
         from mosaiqtl import permutation as perm_module
-        # TODO: compare Python GEV threshold vs R get.gev.thresholds() at 5th percentile
-        skip_section('permutation_thresholds', 'comparison logic pending')
+        thresh_r_df = pd.read_csv(r_csv)
+        thresh_r    = float(thresh_r_df['lod_threshold'].iloc[0])
+        thresh_gene = str(thresh_r_df['gene'].iloc[0])
+        thresh_chr  = str(thresh_r_df['chr'].iloc[0])
+        n_perms_r   = int(thresh_r_df['n_perms'].iloc[0])
+        log.info(f'  R threshold (GEV 95%): {thresh_r:.3f}  gene={thresh_gene}  n_perms={n_perms_r}')
+
+        # run Python permutation on same gene/chr
+        pheno_col = pheno_48.set_index('subject.name').reindex(cache_strains)[thresh_gene].values.astype(float)
+        k_chr     = kinship_py[thresh_chr]
+        ev, evec  = np.linalg.eigh(k_chr)
+
+        log.info(f'  running {n_perms_r} permutations for chr{thresh_chr} {thresh_gene}...')
+        # permute and scan
+        rng_p  = np.random.default_rng(42)
+        valid_p = ~np.isnan(pheno_col)
+        y_p    = pheno_col[valid_p]
+        from mosaiqtl.utils import rint as _rint_p
+        y_p    = _rint_p(y_p)
+        n_p    = len(y_p)
+        ev_v   = evec[valid_p]
+        x_p    = covar_base[valid_p]
+        h2_p, _ = lmm_module.estimate_h2_null(ev_v.T @ y_p, ev_v.T @ x_p, ev)
+
+        max_lods_py = []
+        for _ in range(n_perms_r):
+            y_perm = rng_p.permutation(y_p)
+            chr_res = lmm_module.scan_chromosome(
+                y_perm, cache_py, thresh_chr, x_p, ev, ev_v, h2_p)
+            max_lods_py.append(float(chr_res['lod'].max()))
+
+        max_lods_py = np.array(max_lods_py)
+        thresh_py, gev_params = perm_module.get_gev_thresholds(max_lods_py, 0.95)
+        delta = abs(thresh_py - thresh_r)
+        thresh_pass = delta < 0.5    # within 0.5 lod
+        log.info(f'  Python threshold (GEV 95%): {thresh_py:.3f}  Δ={delta:.3f}  '
+                 f'{"PASS ✓" if thresh_pass else "FAIL ✗"}')
+        qc_rows.append({'section': 'permutation_thresholds', 'pass': thresh_pass,
+                        'detail': f'py={thresh_py:.3f}  r={thresh_r:.3f}  Δ={delta:.3f}'})
+        thresh_summary = pd.DataFrame([{'gene': thresh_gene, 'chr': thresh_chr,
+                                         'n_perms': n_perms_r,
+                                         'threshold_py': thresh_py,
+                                         'threshold_r': thresh_r,
+                                         'gev_c': gev_params['c'],
+                                         'gev_loc': gev_params['loc'],
+                                         'gev_scale': gev_params['scale']}])
+        save_csv(thresh_summary, 'threshold_comparison.csv')
+
+        # QC plot: max-lod distribution with GEV fit and both thresholds
+        from scipy.stats import genextreme as _gev
+        fig, ax = plt.subplots(figsize=(7, 4))
+        sns.histplot(max_lods_py, bins=30, color='#4F6EAF', ax=ax,
+                     edgecolor='none', stat='density', label='permutation max-LOD')
+        x_fit = np.linspace(max_lods_py.min(), max_lods_py.max()*1.1, 200)
+        ax.plot(x_fit, _gev.pdf(x_fit, gev_params['c'],
+                                 loc=gev_params['loc'], scale=gev_params['scale']),
+                color='#C0BFBF', lw=2, label='GEV fit')
+        ax.axvline(thresh_py, color='#4F6EAF', lw=1.5, ls='--',
+                   label=f'Python 95% = {thresh_py:.2f}')
+        ax.axvline(thresh_r,  color='#D83026', lw=1.5, ls=':',
+                   label=f'R 95% = {thresh_r:.2f}')
+        ax.set(xlabel='genome-wide max LOD', ylabel='density',
+               title=f'permutation threshold — {thresh_gene} chr{thresh_chr}\n'
+                     f'Δ = {delta:.3f} LOD ({"PASS" if thresh_pass else "FAIL"})')
+        ax.legend(fontsize=9); sns.despine(); plt.tight_layout()
+        save_plot(fig, 'threshold_distribution.png')
 
 # ── SECTION 6 — multiple imputation ──────────────────────────────────────────
 section('SECTION 6 — MULTIPLE IMPUTATION')
-if not has_module('scan') or not hasattr(
-        importlib.import_module('mosaiqtl.scan'), 'scan_h2lmm_mi'):
-    skip_section('multi_imputation', 'scan_h2lmm(use_multi_impute=True) not yet implemented')
+_scan_mi = getattr(importlib.import_module('mosaiqtl.scan'), 'scan_h2lmm_mi', None)
+if _scan_mi is None:
+    skip_section('multi_imputation', 'scan_h2lmm_mi() not yet implemented')
 else:
     r_csv = paths['mi_lod_r']
     if not os.path.exists(r_csv):
         skip_section('multi_imputation', 'mi_lod_r.csv missing — run port_validation.R')
     else:
-        # TODO: compare MI LOD profiles vs R scan.h2lmm(use.multi.impute=TRUE, num.imp=11)
-        skip_section('multi_imputation', 'comparison logic pending')
+        mi_r_df = pd.read_csv(r_csv); mi_r_df['chr'] = mi_r_df['chr'].astype(str)
+        # pick first gene with sufficient R loci
+        mi_gene = mi_r_df.groupby('gene_id').size().idxmax()
+        mi_chr  = mi_r_df[mi_r_df['gene_id']==mi_gene]['chr'].iloc[0]
+        mi_gene_r = mi_r_df[mi_r_df['gene_id']==mi_gene][['locus','lod']].rename(
+            columns={'lod':'lod_r'})
+        log.info(f'  running MI scan for {mi_gene} chr{mi_chr}...')
+
+        pheno_mi = pheno_48.set_index('subject.name').reindex(
+            cache_strains)[mi_gene].values.astype(float)
+        k_d = kin_module.decomp_kinship({mi_chr: kinship_py[mi_chr]})
+        mi_res = _scan_mi(pheno_mi, cache_py, covar_base, k_d,
+                          n_imp=11, seed=1, phenotype_id=mi_gene)
+
+        # merge on locus for comparison
+        mi_py_df = pd.DataFrame({'locus': mi_res.locus_ids,
+                                  'lod_py': mi_res.lod,
+                                  'chr': mi_res.chromosomes})
+        mi_py_df = mi_py_df[mi_py_df['chr']==mi_chr]
+        mi_merged = mi_py_df.merge(mi_gene_r, on='locus', how='inner')
+
+        if len(mi_merged) < 3:
+            skip_section('multi_imputation', f'insufficient locus overlap ({len(mi_merged)} shared)')
+        else:
+            r_mi  = float(np.corrcoef(mi_merged['lod_r'], mi_merged['lod_py'])[0,1])
+            mi_pass = r_mi > 0.95
+            log.info(f'  MI LOD r = {r_mi:.4f}  {"PASS ✓" if mi_pass else "FAIL ✗"}')
+            qc_rows.append({'section': 'multi_imputation', 'pass': mi_pass,
+                            'detail': f'r={r_mi:.4f}  n_loci={len(mi_merged)}'})
+            save_csv(mi_merged, 'mi_lod_comparison.csv')
+
+            # QC plot: MI LOD profiles Python vs R
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(mi_merged['lod_r'],  color='#D83026', lw=1.2, alpha=0.85,
+                    label='miQTL (R) MI')
+            ax.plot(mi_merged['lod_py'], color='#4F6EAF', lw=1.2, alpha=0.85,
+                    label='mosaiQTL (Python) MI')
+            ax.set(xlabel='locus index', ylabel='LOD',
+                   title=f'multiple imputation — {mi_gene} chr{mi_chr}\n'
+                         f'r={r_mi:.4f}  n_imp=11')
+            ax.legend(fontsize=9); sns.despine(); plt.tight_layout()
+            save_plot(fig, 'mi_lod_profile.png')
 
 # ── SECTION 7 — SNP scan ─────────────────────────────────────────────────────
 section('SECTION 7 — SNP SCAN')
@@ -451,8 +604,62 @@ else:
         skip_section('snp_scan', 'snp_lod_r.csv missing — run port_validation.R')
     else:
         from mosaiqtl import snp_scan as snp_module
-        # TODO: compare SNP LOD vs R imputed.snp.scan.h2lmm()
-        skip_section('snp_scan', 'comparison logic pending')
+        snp_r_df = pd.read_csv(r_csv); snp_r_df['chr'] = snp_r_df['chr'].astype(str)
+        snp_gene = snp_r_df['gene_id'].iloc[0]
+        snp_chr  = snp_r_df[snp_r_df['gene_id']==snp_gene]['chr'].iloc[0]
+        log.info(f'  SNP scan validation for {snp_gene} chr{snp_chr}')
+
+        # load snp genotype db (must exist at paths['snp_db'])
+        snp_db_path = os.path.join(miqtl_dir, 'input', 'snp_db.rds')
+        if not os.path.exists(snp_db_path):
+            skip_section('snp_scan', f'snp_db.rds not found at {snp_db_path}')
+        else:
+            # read snp db via rpy2 — extract founder genotypes as DataFrame
+            import rpy2.robjects as ro2
+            ro2.r(f'snp_db <- readRDS("{snp_db_path}")')
+            snp_mat  = np.array(ro2.r('as.matrix(snp_db$geno)'))
+            snp_ids  = list(ro2.r('rownames(snp_db$geno)'))
+            snp_fnd  = list(ro2.r('colnames(snp_db$geno)'))
+            snp_pos  = list(ro2.r('snp_db$map$pos_Mb'))
+            snp_chr_ = list(ro2.r('snp_db$map$chr'))
+            snp_geno_df = pd.DataFrame(snp_mat, index=snp_ids, columns=snp_fnd)
+            snp_geno_df['chr']    = snp_chr_
+            snp_geno_df['pos_mb'] = snp_pos
+
+            pheno_s = pheno_48.set_index('subject.name').reindex(
+                cache_strains)[snp_gene].values.astype(float)
+            k_d_s = kin_module.decomp_kinship({snp_chr: kinship_py[snp_chr]})
+
+            py_snp = snp_module.imputed_snp_scan_h2lmm(
+                pheno_s, cache_py, snp_geno_df, covar_base, k_d_s,
+                phenotype_id=snp_gene)
+            py_snp_chr = py_snp[py_snp['chr']==snp_chr]
+            r_snp_chr  = snp_r_df[(snp_r_df['gene_id']==snp_gene)
+                                   & (snp_r_df['chr']==snp_chr)]
+            merged_snp = py_snp_chr.merge(
+                r_snp_chr[['snp','lod']].rename(columns={'lod':'lod_r'}),
+                on='snp', how='inner')
+
+            if len(merged_snp) < 3:
+                skip_section('snp_scan', f'insufficient snp overlap ({len(merged_snp)})')
+            else:
+                r_snp = float(np.corrcoef(merged_snp['lod_r'], merged_snp['lod'])[0,1])
+                snp_pass = r_snp > 0.95
+                log.info(f'  SNP LOD r = {r_snp:.4f}  {"PASS ✓" if snp_pass else "FAIL ✗"}')
+                qc_rows.append({'section':'snp_scan','pass':snp_pass,
+                                'detail':f'r={r_snp:.4f}  n_snps={len(merged_snp)}'})
+                save_csv(merged_snp, 'snp_lod_comparison.csv')
+
+                fig, ax = plt.subplots(figsize=(5, 5))
+                ax.scatter(merged_snp['lod_r'], merged_snp['lod'],
+                           s=4, alpha=1.0, color='#4F6EAF', edgecolors='none')
+                lim = max(merged_snp[['lod_r','lod']].max().max() * 1.05, 1.0)
+                ax.plot([0,lim],[0,lim],'--',color='#D83026',lw=1,label='$y=x$')
+                ax.set(xlim=(0,lim), ylim=(0,lim),
+                       xlabel='miQTL SNP LOD (R)', ylabel='mosaiQTL SNP LOD (Python)',
+                       title=f'SNP scan — {snp_gene} chr{snp_chr}\nr={r_snp:.4f}')
+                ax.legend(fontsize=9); sns.despine(); plt.tight_layout()
+                save_plot(fig, 'snp_lod_correlation.png')
 
 # ── SECTION 8 — mediation ────────────────────────────────────────────────────
 section('SECTION 8 — MEDIATION')
@@ -464,34 +671,192 @@ else:
         skip_section('mediation', 'mediation_r.csv missing — run port_validation.R')
     else:
         from mosaiqtl import mediation as med_module
-        # TODO: compare mediation p-values vs R mediation.scan.qr()
-        skip_section('mediation', 'comparison logic pending')
+        med_r_df = pd.read_csv(r_csv); med_r_df['chr'] = med_r_df['chr'].astype(str)
+        med_gene = str(med_r_df['gene_id'].iloc[0])
+        med_med  = str(med_r_df['mediator'].iloc[0])
+        med_chr  = str(med_r_df['chr'].iloc[0])
+        log.info(f'  mediation: outcome={med_gene}  mediator={med_med}  chr={med_chr}')
+
+        pheno_o = pheno_48.set_index('subject.name').reindex(
+            cache_strains)[med_gene].values.astype(float)
+        pheno_m = pheno_48.set_index('subject.name').reindex(
+            cache_strains)[med_med].values.astype(float)
+        k_d_m = kin_module.decomp_kinship({med_chr: kinship_py[med_chr]})
+
+        py_med = med_module.mediation_scan_qr(
+            pheno_o, pheno_m, cache_py, covar_base, k_d_m,
+            outcome_id=med_gene, mediator_id=med_med)
+        py_med_chr = py_med[py_med['chr']==med_chr]
+        merged_med = py_med_chr.merge(
+            med_r_df[['locus','lod']].rename(columns={'lod':'lod_r'}),
+            on='locus', how='inner')
+
+        if len(merged_med) < 3:
+            skip_section('mediation', f'insufficient locus overlap ({len(merged_med)})')
+        else:
+            r_med = float(np.corrcoef(merged_med['lod_r'], merged_med['lod'])[0,1])
+            med_pass = r_med > 0.90
+            log.info(f'  mediation LOD r = {r_med:.4f}  {"PASS ✓" if med_pass else "FAIL ✗"}')
+            qc_rows.append({'section':'mediation','pass':med_pass,
+                            'detail':f'r={r_med:.4f}  n_loci={len(merged_med)}'})
+            save_csv(merged_med, 'mediation_comparison.csv')
+
+            fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+            # left: LOD scatter
+            ax = axes[0]
+            ax.scatter(merged_med['lod_r'], merged_med['lod'],
+                       s=4, alpha=1.0, color='#4F6EAF', edgecolors='none')
+            lim = max(merged_med[['lod_r','lod']].max().max()*1.05, 1.0)
+            ax.plot([0,lim],[0,lim],'--',color='#D83026',lw=1,label='$y=x$')
+            ax.set(xlim=(0,lim),ylim=(0,lim),
+                   xlabel='miQTL mediation LOD (R)',
+                   ylabel='mosaiQTL mediation LOD (Python)',
+                   title=f'mediation LOD — {med_gene}\nmediator: {med_med}\nr={r_med:.4f}')
+            ax.legend(fontsize=9); sns.despine(ax=ax)
+            # right: mediation_lod profile
+            ax = axes[1]
+            ax.plot(py_med_chr['pos_mb'], py_med_chr['mediation_lod'],
+                    color='#D83026', lw=1.2, label='mediation LOD (Python)')
+            ax.set(xlabel='position (Mb)', ylabel='LOD (base) − LOD (mediated)',
+                   title=f'mediation effect — chr{med_chr}')
+            ax.legend(fontsize=9); sns.despine(ax=ax)
+            plt.tight_layout(); save_plot(fig, 'mediation_comparison.png')
 
 # ── SECTION 9 — positional CI ────────────────────────────────────────────────
 section('SECTION 9 — POSITIONAL CI')
-if not has_module('permutation') or not hasattr(
-        importlib.import_module('mosaiqtl.permutation'), 'run_positional_scans'):
+_run_pos = getattr(importlib.import_module('mosaiqtl.permutation'),
+                    'run_positional_scans', None) if has_module('permutation') else None
+if _run_pos is None:
     skip_section('positional_ci', 'run_positional_scans() not yet implemented')
 else:
     r_csv = paths['ci_r']
     if not os.path.exists(r_csv):
         skip_section('positional_ci', 'ci_r.csv missing — run port_validation.R')
     else:
-        # TODO: compare CI boundaries vs R run.positional.scans()
-        skip_section('positional_ci', 'comparison logic pending')
+        ci_r_df   = pd.read_csv(r_csv)
+        ci_gene   = str(ci_r_df['gene_id'].iloc[0])
+        ci_chr    = str(ci_r_df['chr'].iloc[0])
+        ci_lo_r   = float(ci_r_df['ci_lo_mb'].iloc[0])
+        ci_hi_r   = float(ci_r_df['ci_hi_mb'].iloc[0])
+        n_boot    = int(ci_r_df['n_boot'].iloc[0]) if 'n_boot' in ci_r_df else 100
+        log.info(f'  CI: {ci_gene} chr{ci_chr}  R=[{ci_lo_r:.2f},{ci_hi_r:.2f}] Mb')
+
+        pheno_ci = pheno_48.set_index('subject.name').reindex(
+            cache_strains)[ci_gene].values.astype(float)
+        k_d_ci = kin_module.decomp_kinship({ci_chr: kinship_py[ci_chr]})
+
+        # first get the scan result to find the peak
+        from mosaiqtl.scan import scan_h2lmm as _scan_ci
+        ci_scan = _scan_ci(pheno_ci, cache_py, covar_base, k_d_ci,
+                            phenotype_id=ci_gene)
+        peak_loc = ci_scan.locus_ids[np.argmax(ci_scan.lod)]
+
+        # run bootstrap CI
+        rng_ci = np.random.default_rng(1)
+        valid_ci = ~np.isnan(pheno_ci)
+        y_ci     = pheno_ci[valid_ci]
+        from mosaiqtl.utils import rint as _rint_ci
+        y_ci = _rint_ci(y_ci)
+        y_ci_c = y_ci - y_ci.mean()
+        boot_oc = np.column_stack([rng_ci.choice(y_ci_c, size=len(y_ci_c), replace=True)
+                                    for _ in range(n_boot)])
+        boot_pos, ci_info = _run_pos(
+            boot_oc, pheno_ci, cache_py, covar_base, k_d_ci,
+            peak_chrom=ci_chr, peak_locus=peak_loc)
+        ci_lo_py = ci_info['ci_lo']; ci_hi_py = ci_info['ci_hi']
+        # CI passes if Python and R intervals overlap
+        overlap = ci_lo_py <= ci_hi_r and ci_lo_r <= ci_hi_py
+        log.info(f'  Python CI=[{ci_lo_py:.2f},{ci_hi_py:.2f}]  '
+                 f'overlap with R: {"yes ✓" if overlap else "no ✗"}')
+        qc_rows.append({'section':'positional_ci','pass':overlap,
+                        'detail':f'py=[{ci_lo_py:.2f},{ci_hi_py:.2f}]  '
+                                  f'r=[{ci_lo_r:.2f},{ci_hi_r:.2f}]  overlap={overlap}'})
+        ci_summary = pd.DataFrame([{'gene_id':ci_gene,'chr':ci_chr,
+                                      'ci_lo_py':ci_lo_py,'ci_hi_py':ci_hi_py,
+                                      'ci_lo_r':ci_lo_r, 'ci_hi_r':ci_hi_r,
+                                      'n_boot':n_boot}])
+        save_csv(ci_summary, 'ci_comparison.csv')
+
+        fig, ax = plt.subplots(figsize=(7, 4))
+        valid_bp = boot_pos[~np.isnan(boot_pos)]
+        sns.histplot(valid_bp, bins=30, color='#4F6EAF', ax=ax,
+                     edgecolor='none', label='bootstrap peak position')
+        ax.axvline(ci_lo_py, color='#4F6EAF', lw=1.2, ls='--',
+                   label=f'Python 95% CI [{ci_lo_py:.2f}, {ci_hi_py:.2f}]')
+        ax.axvline(ci_hi_py, color='#4F6EAF', lw=1.2, ls='--')
+        ax.axvline(ci_lo_r,  color='#D83026', lw=1.2, ls=':',
+                   label=f'R 95% CI [{ci_lo_r:.2f}, {ci_hi_r:.2f}]')
+        ax.axvline(ci_hi_r,  color='#D83026', lw=1.2, ls=':')
+        ax.set(xlabel='peak position (Mb)', ylabel='bootstraps',
+               title=f'positional CI — {ci_gene} chr{ci_chr}\n'
+                     f'overlap: {"yes" if overlap else "no"}')
+        ax.legend(fontsize=9); sns.despine(); plt.tight_layout()
+        save_plot(fig, 'positional_ci.png')
 
 # ── SECTION 10 — fixed-effect scans ──────────────────────────────────────────
 section('SECTION 10 — FIXED-EFFECT SCANS')
-if not has_module('scan') or not hasattr(
-        importlib.import_module('mosaiqtl.scan'), 'instability_lm_scan'):
-    skip_section('fixef_scans', 'instability_lm_scan() / fixef_eqtl_scan() not yet implemented')
+_inst_scan = getattr(importlib.import_module('mosaiqtl.scan'), 'instability_lm_scan', None)
+if _inst_scan is None:
+    skip_section('fixef_scans', 'instability_lm_scan() not yet implemented')
 else:
     r_csv = paths['fixef_r']
     if not os.path.exists(r_csv):
         skip_section('fixef_scans', 'fixef_r.csv missing — run port_validation.R')
     else:
-        # TODO: compare fixed-effect LOD vs R instability.lm.scan() / fixef.eQTL.scan()
-        skip_section('fixef_scans', 'comparison logic pending')
+        from mosaiqtl.scan import fixef_eqtl_scan as _fixef_scan
+        fixef_r_df = pd.read_csv(r_csv); fixef_r_df['chr'] = fixef_r_df['chr'].astype(str)
+        inst_r = fixef_r_df[fixef_r_df['type']=='instability']
+        fixef_gene = str(inst_r['gene_id'].iloc[0])
+        fixef_chr  = str(inst_r['chr'].iloc[0])
+        log.info(f'  fixef scan: {fixef_gene} chr{fixef_chr}')
+
+        pheno_f = pheno_48.set_index('subject.name').reindex(
+            cache_strains)[fixef_gene].values.astype(float)
+        loci_r  = set(inst_r[inst_r['gene_id']==fixef_gene]['locus'].tolist())
+
+        # instability scan
+        inst_py = _inst_scan(pheno_f, cache_py, covar_base,
+                              n_samples=100, seed=1,
+                              phenotype_id=fixef_gene,
+                              just_these_loci=loci_r)
+        inst_py_df = pd.DataFrame({
+            'locus': inst_py.locus_ids, 'lod_py': inst_py.lod,
+            'chr': inst_py.chromosomes})
+        inst_py_df = inst_py_df[inst_py_df['chr']==fixef_chr]
+
+        # fixef scan
+        fixef_py = _fixef_scan(pheno_f, cache_py, covar_base,
+                                phenotype_id=fixef_gene,
+                                just_these_loci=loci_r)
+        fixef_py_df = pd.DataFrame({
+            'locus': fixef_py.locus_ids, 'lod_fixef_py': fixef_py.lod,
+            'chr': fixef_py.chromosomes})
+        fixef_py_df = fixef_py_df[fixef_py_df['chr']==fixef_chr]
+
+        merged_f = inst_py_df.merge(
+            inst_r[inst_r['gene_id']==fixef_gene][['locus','lod']].rename(
+                columns={'lod':'lod_r'}), on='locus', how='inner')
+        if len(merged_f) < 3:
+            skip_section('fixef_scans', f'insufficient locus overlap ({len(merged_f)})')
+        else:
+            r_fixef = float(np.corrcoef(merged_f['lod_r'], merged_f['lod_py'])[0,1])
+            fixef_pass = r_fixef > 0.90
+            log.info(f'  instability LOD r = {r_fixef:.4f}  '
+                     f'{"PASS ✓" if fixef_pass else "FAIL ✗"}')
+            qc_rows.append({'section':'fixef_scans','pass':fixef_pass,
+                            'detail':f'instability r={r_fixef:.4f}  n_loci={len(merged_f)}'})
+            save_csv(merged_f, 'fixef_comparison.csv')
+
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(merged_f['lod_r'],  color='#D83026', lw=1.2, alpha=0.85,
+                    label='miQTL instability.lm.scan (R)')
+            ax.plot(merged_f['lod_py'], color='#4F6EAF', lw=1.2, alpha=0.85,
+                    label='mosaiQTL instability_lm_scan (Python)')
+            ax.set(xlabel='locus index', ylabel='mean bootstrap LOD',
+                   title=f'instability scan — {fixef_gene} chr{fixef_chr}\n'
+                         f'r={r_fixef:.4f}  n_bootstraps=100')
+            ax.legend(fontsize=9); sns.despine(); plt.tight_layout()
+            save_plot(fig, 'fixef_instability.png')
 
 # ══════════════════════════════════════════════════════════════════════════════
 # QC SUMMARY

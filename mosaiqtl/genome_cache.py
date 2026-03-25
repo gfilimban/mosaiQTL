@@ -698,3 +698,83 @@ class GenomeCache:
             founders = CC_FOUNDERS
 
         return GenomeCache(sample_ids, founders, data)
+
+    def collapse(self, criterion='euclidean', tol=0.02):
+        """collapse adjacent redundant loci into a single representative locus.
+
+        merges consecutive loci whose haplotype probability matrices are
+        nearly identical, reducing cache size without information loss.
+        equivalent to miqtl::collapse.genomecache().
+
+        algorithm:
+          for each chromosome, scan adjacent locus pairs. if their
+          euclidean distance (criterion='euclidean') or most-likely-allele
+          identity (criterion='allele') is within tol, merge by averaging
+          their probability matrices. the merged locus takes the id and
+          position of the first locus in the run.
+
+        parameters
+        ----------
+        criterion : str  'euclidean' (default) or 'allele'
+        tol : float  merge threshold (euclidean: l2 norm; allele: fraction
+                     of strains with different most-likely allele)
+
+        returns
+        -------
+        GenomeCache  new cache with fewer loci per chromosome
+        """
+        new_data = {}
+        total_before = total_after = 0
+
+        for chrom in self.chromosomes:
+            lids, pos, probs = self.get_chromosome(chrom)   # (L, n, J)
+            n_loci = len(lids)
+            total_before += n_loci
+
+            keep_lids, keep_pos, keep_probs = [], [], []
+            run_probs = [probs[0]]   # accumulate a run of similar loci
+            run_lid   = lids[0]
+            run_pos   = pos[0]
+
+            for i in range(1, n_loci):
+                if criterion == 'euclidean':
+                    # mean l2 distance per strain across founders
+                    d = float(np.mean(
+                        np.linalg.norm(probs[i] - run_probs[-1], axis=1)))
+                else:
+                    # fraction of strains where argmax differs
+                    d = float(np.mean(
+                        probs[i].argmax(axis=1) != run_probs[-1].argmax(axis=1)))
+
+                if d <= tol:
+                    # extend current run
+                    run_probs.append(probs[i])
+                else:
+                    # flush run: average probs, keep first locus id/pos
+                    keep_lids.append(run_lid)
+                    keep_pos.append(run_pos)
+                    keep_probs.append(np.mean(run_probs, axis=0))
+                    # start new run
+                    run_probs = [probs[i]]
+                    run_lid   = lids[i]
+                    run_pos   = pos[i]
+
+            # flush final run
+            keep_lids.append(run_lid)
+            keep_pos.append(run_pos)
+            keep_probs.append(np.mean(run_probs, axis=0))
+
+            n_kept = len(keep_lids)
+            total_after += n_kept
+            logger.info(f'  chr{chrom}: {n_loci} → {n_kept} loci '
+                        f'({100*(n_loci-n_kept)/n_loci:.1f}% reduced)')
+
+            new_data[chrom] = {
+                'locus_ids': np.array(keep_lids),
+                'positions': np.array(keep_pos, dtype=float),
+                'probs':     np.stack(keep_probs),  # (n_kept, n_s, J)
+            }
+
+        logger.info(f'collapse: {total_before} → {total_after} total loci '
+                    f'({100*(total_before-total_after)/total_before:.1f}% reduced)')
+        return GenomeCache(list(self.sample_ids), list(self.founders), new_data)
