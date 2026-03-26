@@ -32,15 +32,19 @@ if (dir.exists(lib_path)) {
   if (requireNamespace('rtracklayer', quietly=TRUE)) library(rtracklayer)
 }
 
-args      <- commandArgs(trailingOnly=TRUE)
-scan_chrs <- if (length(args) >= 1) args[1] else 'all'
-n_genes   <- if (length(args) >= 2) as.integer(args[2]) else Inf
+args        <- commandArgs(trailingOnly=TRUE)
+scan_chrs   <- if (length(args) >= 1) args[1] else 'all'
+n_genes     <- if (length(args) >= 2) as.integer(args[2]) else Inf
+# optional 3rd arg: 'slurm' — write per-chr outputs to r_data/chr{N}/
+# used by run_validation_slurm.sh to parallelise across chromosomes
+slurm_mode  <- length(args) >= 3 && args[3] == 'slurm'
 message('[init] chr=', scan_chrs, '  n_genes=',
-        if (is.infinite(n_genes)) 'all' else n_genes)
+        if (is.infinite(n_genes)) 'all' else n_genes,
+        if (slurm_mode) '  mode=slurm' else '')
 
 # ── paths ─────────────────────────────────────────────────────────────────────
-data_dir <- '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
-pkg_dir  <- '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl'
+data_dir <- '/share/crsp/lab/seyedam/gfilimba/projects/igvf_8cube/short-read/data/gastroc'
+pkg_dir  <- '/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl'
 
 genomecache_path <- file.path(data_dir, 'output', 'genomecache')
 kinship_path     <- file.path(data_dir, 'output', 'kinship_loco.rds')
@@ -50,7 +54,13 @@ pmap_path        <- file.path(data_dir, 'input',  'pmap.csv')
 gtf_path         <- file.path(data_dir, 'input',  'gencode.vM32.gtf.gz')
 allele_dir_path  <- file.path(data_dir, 'output', 'allele_dir')
 collapsed_path   <- file.path(data_dir, 'output', 'genomecache_collapsed')
-output_dir       <- file.path(pkg_dir, 'validation', 'port_validation', 'r_data')
+base_output_dir  <- file.path(pkg_dir, 'validation', 'port_validation', 'r_data')
+# in slurm mode each chromosome writes to its own subdir to avoid collisions
+output_dir <- if (slurm_mode && scan_chrs != 'all') {
+  file.path(base_output_dir, paste0('chr', scan_chrs))
+} else {
+  base_output_dir
+}
 dir.create(output_dir, showWarnings=FALSE, recursive=TRUE)
 message('[paths] output: ', output_dir)
 
@@ -70,9 +80,19 @@ if (file.exists(pheno_strain_path)) {
     `[`, 1)[pheno_strain$subject.name]
   rownames(pheno_strain) <- pheno_strain$subject.name
 }
+ph_sn  <- rownames(pheno_strain)
+ph_ord <- c(ph_sn[!grepl('^CC', ph_sn)],
+             ph_sn[ grepl('^CC', ph_sn)])
+pheno_strain <- pheno_strain[ph_ord, ]
 message('  pheno_strain: ', nrow(pheno_strain), ' × ', ncol(pheno_strain))
 
 kinship_loco <- readRDS(kinship_path)
+kinship_loco <- lapply(kinship_loco, function(k) {
+  sn     <- rownames(k)
+  sn_ord <- c(sn[!grepl('^CC', sn)],
+               sn[ grepl('^CC', sn)])
+  k[sn_ord, sn_ord]
+})
 pmap_flat    <- read.csv(pmap_path, stringsAsFactors=FALSE)
 colnames(pmap_flat)[colnames(pmap_flat)=='marker'] <- 'locus'
 colnames(pmap_flat)[colnames(pmap_flat)=='pos']    <- 'pos_mb'
@@ -133,11 +153,13 @@ chr_info <- do.call(rbind, lapply(chromosomes, function(c) {
   load(file.path(genomecache_path,'additive',paste0('chr',c),'map.RData'))
   load(file.path(genomecache_path,'additive',paste0('chr',c),'bp.RData'))
   data.frame(chr=c, n_loci=length(markers),
-             min_mb=min(bp/1e6), max_mb=max(bp/1e6),
+             min_mb=min(bp/1e6, na.rm=TRUE), max_mb=max(bp/1e6, na.rm=TRUE),
              stringsAsFactors=FALSE)
 }))
 founders  <- h$getFounders()
 sample_ids <- h$getSubjects()
+sample_ids <- c(sample_ids[!grepl('^CC', sample_ids)],
+                sample_ids[ grepl('^CC', sample_ids)])  
 cache_info <- list(
   chr_summary = chr_info,
   founders    = founders,
@@ -159,16 +181,19 @@ for (chr in chromosomes) {
   load(file.path(genomecache_path,'additive',paste0('chr',chr),'markers.RData'))
   load(file.path(genomecache_path,'additive',paste0('chr',chr),'bp.RData'))
   n_loci <- length(markers)
-  # sample 5 evenly-spaced loci
   idx    <- round(seq(1, n_loci, length.out=5))
   for (i in idx) {
     mat <- h$getLocusMatrix(locus=markers[i], model='additive', subjects=NULL)
+    mat <- mat[!is.na(rownames(mat)), , drop=FALSE]   # strip NA rows
     row_sums <- rowSums(mat)
     hap_rows[[length(hap_rows)+1]] <- data.frame(
       chr=chr, locus=markers[i], pos_mb=bp[i]/1e6,
-      mean_rowsum=mean(row_sums), min_rowsum=min(row_sums),
-      max_rowsum=max(row_sums), mean_max_prob=mean(apply(mat, 1, max)),
-      stringsAsFactors=FALSE)
+      mean_rowsum=mean(row_sums, na.rm=TRUE),
+      min_rowsum=unname(min(row_sums, na.rm=TRUE)),
+      max_rowsum=unname(max(row_sums, na.rm=TRUE)),
+      mean_max_prob=mean(apply(mat, 1, max), na.rm=TRUE),
+      stringsAsFactors=FALSE,
+      row.names=NULL)
   }
 }
 hap_df <- do.call(rbind, hap_rows)
@@ -213,6 +238,9 @@ for (chr in chromosomes) {
     gene_annot$gene_id[gene_annot$chr==chr]) else all_genes
   message('  chr', chr, ': ', length(gnames), ' genes  ', nrow(chr_loci), ' loci')
   for (gene in gnames) {
+    if (which(gnames == gene) %% 100 == 0)
+      message('    gene ', which(gnames == gene),  
+              '/', length(gnames))                 
     cis <- get_cis_loci(gene, chr)
     if (is.null(cis)) next
     res <- tryCatch(
