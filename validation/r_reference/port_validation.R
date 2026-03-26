@@ -51,7 +51,7 @@ pkg_dir  <- '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igv
 
 genomecache_path <- file.path(data_dir, 'output', 'genomecache')
 kinship_path     <- file.path(data_dir, 'output', 'kinship_loco.rds')
-pheno_48_path    <- file.path(data_dir, 'output', 'results', 'pheno_48.rds')
+pheno_strain_path    <- file.path(data_dir, 'output', 'results', 'pheno_strain.rds')
 pheno_df_path    <- file.path(data_dir, 'output', 'pheno_df.rds')
 pmap_path        <- file.path(data_dir, 'input',  'pmap.csv')
 gtf_path         <- file.path(data_dir, 'input',  'gencode.vM32.gtf.gz')
@@ -63,22 +63,22 @@ message('[paths] output: ', output_dir)
 
 # ── load shared inputs ────────────────────────────────────────────────────────
 message('[load]')
-if (file.exists(pheno_48_path)) {
-  pheno_48 <- readRDS(pheno_48_path)
-  if (!identical(rownames(pheno_48), pheno_48$subject.name))
-    rownames(pheno_48) <- pheno_48$subject.name
+if (file.exists(pheno_strain_path)) {
+  pheno_strain <- readRDS(pheno_strain_path)
+  if (!identical(rownames(pheno_strain), pheno_strain$subject.name))
+    rownames(pheno_strain) <- pheno_strain$subject.name
 } else {
   pheno_df  <- readRDS(pheno_df_path)
   meta_cols <- c('sample_id','subject.name','sex','batch', paste0('pc',1:10))
   gcols     <- setdiff(colnames(pheno_df), meta_cols)
-  pheno_48  <- aggregate(pheno_df[, c(gcols, paste0('pc',1:10))],
+  pheno_strain  <- aggregate(pheno_df[, c(gcols, paste0('pc',1:10))],
                          by=list(subject.name=pheno_df$subject.name),
                          FUN=mean, na.rm=TRUE)
-  pheno_48$batch     <- tapply(pheno_df$batch, pheno_df$subject.name,
-                                `[`, 1)[pheno_48$subject.name]
-  rownames(pheno_48) <- pheno_48$subject.name
+  pheno_strain$batch     <- tapply(pheno_df$batch, pheno_df$subject.name,
+                                `[`, 1)[pheno_strain$subject.name]
+  rownames(pheno_strain) <- pheno_strain$subject.name
 }
-message('  pheno_48: ', nrow(pheno_48), ' strains × ', ncol(pheno_48), ' cols')
+message('  pheno_strain: ', nrow(pheno_strain), ' strains × ', ncol(pheno_strain), ' cols')
 
 kinship_loco <- readRDS(kinship_path)
 pmap_flat    <- read.csv(pmap_path, stringsAsFactors=FALSE)
@@ -101,7 +101,7 @@ if (file.exists(gtf_path) && requireNamespace('rtracklayer', quietly=TRUE)) {
 }
 
 meta_cols   <- c('subject.name','batch', paste0('pc',1:10))
-all_genes   <- head(setdiff(colnames(pheno_48), meta_cols), n_genes)
+all_genes   <- head(setdiff(colnames(pheno_strain), meta_cols), n_genes)
 chromosomes <- if (scan_chrs=='all') names(kinship_loco) else
                strsplit(scan_chrs, ',')[[1]]
 cis_window_mb <- 0.5
@@ -159,11 +159,21 @@ if (!dir.exists(collapsed_path)) {
 
 chr_dirs <- list.dirs(file.path(genomecache_path, 'additive'),
                       full.names=FALSE, recursive=FALSE)
+# detect whether collapsed cache uses data/ subdir or flat layout per chr
+first_coll <- file.path(collapsed_path, 'additive', chr_dirs[1])
+has_data   <- dir.exists(file.path(first_coll, 'data')) &&
+  length(list.files(file.path(first_coll, 'data'), pattern='\\.RData$')) > 0
+message('  collapsed layout: ',
+        if (has_data) 'additive/chrN/data/' else 'additive/chrN/ (flat)')
 collapse_summary <- do.call(rbind, lapply(chr_dirs, function(c) {
-  n_orig <- length(list.files(
+  n_orig    <- length(list.files(
     file.path(genomecache_path, 'additive', c, 'data'), pattern='\\.RData$'))
-  n_coll <- length(list.files(
-    file.path(collapsed_path, 'additive', c, 'data'), pattern='\\.RData$'))
+  coll_base <- file.path(collapsed_path, 'additive', c)
+  n_coll    <- if (has_data) {
+    length(list.files(file.path(coll_base, 'data'), pattern='\\.RData$'))
+  } else {
+    length(list.files(coll_base, pattern='\\.RData$', recursive=FALSE))
+  }
   data.frame(chr=sub('^chr','',c), n_loci_orig=n_orig, n_loci_coll=n_coll)
 }))
 write.csv(collapse_summary, file.path(output_dir,'collapsed_cache_summary.csv'),
@@ -194,7 +204,7 @@ message('  gene=', thresh_gene, '  chr', thresh_chr,
 
 n_perms <- 100; set.seed(42); perm_lods <- numeric(n_perms)
 for (i in seq_len(n_perms)) {
-  pd <- pheno_48; pd[[thresh_gene]] <- sample(pheno_48[[thresh_gene]])
+  pd <- pheno_strain; pd[[thresh_gene]] <- sample(pheno_strain[[thresh_gene]])
   res <- tryCatch(
     scan.h2lmm(genomecache=genomecache_path, data=pd,
                 pheno.id='subject.name', geno.id='subject.name',
@@ -206,7 +216,8 @@ for (i in seq_len(n_perms)) {
   if (i %% 25 == 0) message('  ', i, '/', n_perms)
 }
 perm_lods <- perm_lods[!is.na(perm_lods)]
-thresh_95 <- get.gev.thresholds(perm_lods, percentile=0.95)
+# get.gev.thresholds expects list(max.statistics=...) not a plain numeric vector
+thresh_95 <- get.gev.thresholds(list(max.statistics=perm_lods), percentile=0.95)
 write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
                       gene=thresh_gene, chr=thresh_chr,
                       n_perms=length(perm_lods)),
@@ -226,7 +237,7 @@ for (scan_chr in chromosomes) {
     cis <- get_cis_loci(gene, scan_chr)
     if (is.null(cis)) next
     res <- tryCatch(
-      scan.h2lmm(genomecache=genomecache_path, data=pheno_48,
+      scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
                   pheno.id='subject.name', geno.id='subject.name',
                   formula=make_form(gene), K=k_chr,
                   use.multi.impute=TRUE, num.imp=11,
@@ -266,7 +277,7 @@ if (!dir.exists(allele_dir_path)) {
       if (is.null(cis)) next
       res <- tryCatch(
         imputed.snp.scan.h2lmm(
-          data=pheno_48, formula=make_form(gene), K=k_chr,
+          data=pheno_strain, formula=make_form(gene), K=k_chr,
           allele.dir=allele_dir_path, genomecache=genomecache_path,
           model='additive', chr=scan_chr, just.these.loci=cis),
         error=function(e) NULL)
@@ -303,7 +314,7 @@ if (!is.null(med_mediator)) {
   qr_obj <- tryCatch(
     extract.mediation.qr(
       genomecache = genomecache_path,
-      data        = pheno_48,
+      data        = pheno_strain,
       formula     = med_null_form,
       K           = k_chr,
       chr         = med_chr,
@@ -315,7 +326,7 @@ if (!is.null(med_mediator)) {
     med_res <- tryCatch(
       mediation.scan.qr(
         mediation.qr.object = qr_obj,
-        data                = pheno_48,
+        data                = pheno_strain,
         phenotype           = med_gene,
         chr                 = med_chr,
         id                  = 'subject.name'),
@@ -342,7 +353,7 @@ k_chr   <- kinship_loco[[ci_chr]]
 cis_ci  <- get_cis_loci(ci_gene, ci_chr)
 if (!is.null(cis_ci)) {
   ci_scan <- tryCatch(
-    scan.h2lmm(genomecache=genomecache_path, data=pheno_48,
+    scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
                 pheno.id='subject.name', geno.id='subject.name',
                 formula=make_form(ci_gene), K=k_chr,
                 use.multi.impute=FALSE, model='additive',
@@ -351,7 +362,7 @@ if (!is.null(cis_ci)) {
 
   if (!is.null(ci_scan)) {
     peak_locus <- grab.locus.from.scan(ci_scan)
-    peak_fit   <- scan.h2lmm(genomecache=genomecache_path, data=pheno_48,
+    peak_fit   <- scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
                               pheno.id='subject.name', geno.id='subject.name',
                               formula=make_form(ci_gene), K=k_chr,
                               use.multi.impute=FALSE, model='additive',
@@ -368,7 +379,7 @@ if (!is.null(cis_ci)) {
     if (!is.null(boot_obj)) {
       boot_scans <- run.positional.scans(
         sim.object=boot_obj, genomecache=genomecache_path,
-        data=pheno_48, use.multi.impute=FALSE, scan.seed=1)
+        data=pheno_strain, use.multi.impute=FALSE, scan.seed=1)
       boot_peaks <- sapply(boot_scans, function(s) s$loci[which.max(s$LOD)])
       boot_pos   <- pmap_flat$pos_mb[match(boot_peaks, pmap_flat$locus)]
       ci_df <- data.frame(
@@ -396,7 +407,7 @@ cis_fx  <- get_cis_loci(fx_gene, fx_chr)
 
 if (!is.null(cis_fx)) {
   fx_scan <- tryCatch(
-    scan.h2lmm(genomecache=genomecache_path, data=pheno_48,
+    scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
                 pheno.id='subject.name', geno.id='subject.name',
                 formula=make_form(fx_gene), K=k_chr,
                 use.multi.impute=FALSE, model='additive',

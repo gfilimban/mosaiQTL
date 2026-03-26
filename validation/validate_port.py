@@ -26,8 +26,31 @@ from mosaiqtl import kinship as kin_module
 from mosaiqtl import lmm as lmm_module
 from mosaiqtl.utils import rint as _rint, build_z_matrix
 
-logging.basicConfig(level=logging.INFO, format='%(name)s | %(message)s')
+import datetime as _dt
+
+# ── logging: detailed → file, highlights only → terminal ─────────────────────
+_ts       = _dt.datetime.now().strftime('%Y%m%d_%H%M%S')
+_log_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         'validation', 'port_validation', 'logs',
+                         f'validate_port_{_ts}.log')
+os.makedirs(os.path.dirname(_log_file), exist_ok=True)
+
 log = logging.getLogger('validate_port')
+log.setLevel(logging.DEBUG)
+
+_fh = logging.FileHandler(_log_file)
+_fh.setLevel(logging.DEBUG)
+_fh.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s'))
+log.addHandler(_fh)
+
+_sh = logging.StreamHandler(sys.stdout)
+_sh.setLevel(logging.WARNING)   # terminal: warnings + errors only
+_sh.setFormatter(logging.Formatter('%(message)s'))
+log.addHandler(_sh)
+
+def hi(msg):
+    """print a highlight line to terminal (always visible)."""
+    print(msg, flush=True)
 
 # ── args ──────────────────────────────────────────────────────────────────────
 p = argparse.ArgumentParser()
@@ -52,7 +75,7 @@ paths = {
     'cache_r':      os.path.join(miqtl_dir, 'output', 'genomecache'),
     'pmap':         os.path.join(miqtl_dir, 'input',  'pmap.csv'),
     'lod_r':        os.path.join(LMM_R, 'lod_r.csv'),
-    'pheno_48':     os.path.join(LMM_R, 'pheno_48_used.csv'),
+    'pheno_strain':     os.path.join(LMM_R, 'pheno_48_used.csv'),
     'ae_r':         os.path.join(LMM_R, 'allele_effects.csv'),
     'pmap_r':       os.path.join(LMM_R, 'pmap_r.csv'),
     'collapsed_r':  os.path.join(PORT_R, 'collapsed_cache_summary.csv'),
@@ -100,17 +123,19 @@ qc_rows   = []
 def save_csv(df, name):
     path = os.path.join(val_dir, name)
     df.to_csv(path, index=False)
-    log.info(f'  saved {name} ({len(df)} rows)')
+    log.debug(f'  saved {name} ({len(df)} rows)')
     return path
 
 def save_plot(fig, name):
     path = os.path.join(plot_dir, name)
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    log.info(f'  saved {name}')
+    log.debug(f'  saved {name}')
 
 def section(title):
-    log.info('\n' + '='*60 + f'\n{title}\n' + '='*60)
+    msg = f'\n{"="*60}\n{title}\n{"="*60}'
+    log.debug(msg)
+    hi(f'\n▶ {title}')
 
 def skip(name, reason):
     log.warning(f'{name}: SKIPPED — {reason}')
@@ -255,27 +280,27 @@ if not args.skip_phase1:
         lod_r_df = pd.read_csv(paths['lod_r']); lod_r_df['chr'] = lod_r_df['chr'].astype(str)
         ae_r     = pd.read_csv(paths['ae_r']) if os.path.exists(paths['ae_r']) else None
 
-        _raw = pd.read_csv(paths['pheno_48'])
+        _raw = pd.read_csv(paths['pheno_strain'])
         if _raw.columns[0] != 'subject.name':
-            _raw = pd.read_csv(paths['pheno_48'], index_col=0).reset_index()
-        pheno_raw = _raw.drop_duplicates('subject.name', keep='first').reset_index(drop=True)
+            _raw = pd.read_csv(paths['pheno_strain'], index_col=0).reset_index()
+        pheno_strain_raw = _raw.drop_duplicates('subject.name', keep='first').reset_index(drop=True)
 
         all_chrs    = sorted(lod_r_df['chr'].unique(), key=_chr_sort)
         chromosomes = ([c.strip() for c in args.chr.split(',')
                         if c.strip() in all_chrs]
                        if args.chr else all_chrs)
         cache_s   = list(cache_py.sample_ids)
-        pheno_48  = pheno_raw.set_index('subject.name').reindex(cache_s)
+        pheno_strain  = pheno_strain_raw.set_index('subject.name').reindex(cache_s)
 
         # build covariate matrix (intercept + batch + 10 PCs)
-        covar_parts = [np.ones((len(pheno_48),1))]
-        if 'batch' in pheno_48.columns and pheno_48['batch'].notna().any():
-            bd = pd.get_dummies(pheno_48['batch'], prefix='batch', drop_first=True)
+        covar_parts = [np.ones((len(pheno_strain),1))]
+        if 'batch' in pheno_strain.columns and pheno_strain['batch'].notna().any():
+            bd = pd.get_dummies(pheno_strain['batch'], prefix='batch', drop_first=True)
             covar_parts.append(bd.astype(float).values)
-        pcs = [c for c in [f'pc{i}' for i in range(1,11)] if c in pheno_48.columns]
-        if pcs: covar_parts.append(pheno_48[pcs].fillna(0).astype(float).values)
+        pcs = [c for c in [f'pc{i}' for i in range(1,11)] if c in pheno_strain.columns]
+        if pcs: covar_parts.append(pheno_strain[pcs].fillna(0).astype(float).values)
         covar_base = np.hstack(covar_parts)
-        pheno_48   = pheno_48.reset_index()
+        pheno_strain   = pheno_strain.reset_index()
 
         comparisons=[]; gene_stats=[]; py_betas={}; n_pass=0; n_total=0
 
@@ -290,8 +315,8 @@ if not args.skip_phase1:
             locus_ids   = cache_py._data[chrom]['locus_ids']
 
             for gene in genes:
-                if gene not in pheno_48.columns: continue
-                y = (pheno_48.drop_duplicates('subject.name')
+                if gene not in pheno_strain.columns: continue
+                y = (pheno_strain.drop_duplicates('subject.name')
                      .set_index('subject.name').reindex(cache_s)[gene]
                      .values.astype(float))
                 if np.all(np.isnan(y)): continue
@@ -571,7 +596,7 @@ else:
         n_p         = int(thresh_r['n_perms'].iloc[0])
         log.info(f'  R threshold: {thresh_r_v:.3f}  gene={thresh_gene}  chr={thresh_chr}')
 
-        pheno_col = pheno_48.set_index('subject.name').reindex(
+        pheno_col = pheno_strain.set_index('subject.name').reindex(
             cache_py.sample_ids)[thresh_gene].values.astype(float)
         k_c  = kinship_py[thresh_chr]
         ev,evc = np.linalg.eigh(k_c)
@@ -630,7 +655,7 @@ else:
         mi_chr  = mi_r[mi_r['gene_id']==mi_gene]['chr'].iloc[0]
         mi_gene_r = mi_r[mi_r['gene_id']==mi_gene][['locus','lod']].rename(columns={'lod':'lod_r'})
         log.info(f'  MI scan: {mi_gene} chr{mi_chr}')
-        pheno_mi = pheno_48.set_index('subject.name').reindex(
+        pheno_mi = pheno_strain.set_index('subject.name').reindex(
             cache_py.sample_ids)[mi_gene].values.astype(float)
         kd_mi = kin_module.decomp_kinship({mi_chr: kinship_py[mi_chr]})
         res_mi = _mi(pheno_mi, cache_py, covar_base, kd_mi, n_imp=11, seed=1,
@@ -681,9 +706,9 @@ else:
         med_med  = str(med_r['mediator'].iloc[0])
         med_chr  = str(med_r['chr'].iloc[0])
         log.info(f'  mediation: outcome={med_gene}  mediator={med_med}  chr={med_chr}')
-        pheno_o = pheno_48.set_index('subject.name').reindex(
+        pheno_o = pheno_strain.set_index('subject.name').reindex(
             cache_py.sample_ids)[med_gene].values.astype(float)
-        pheno_m = pheno_48.set_index('subject.name').reindex(
+        pheno_m = pheno_strain.set_index('subject.name').reindex(
             cache_py.sample_ids)[med_med].values.astype(float)
         kd_med = kin_module.decomp_kinship({med_chr: kinship_py[med_chr]})
         py_med = med_mod.mediation_scan_qr(
@@ -736,7 +761,7 @@ else:
         ci_hi_r = float(ci_r['ci_hi_mb'].iloc[0])
         n_boot  = int(ci_r['n_boot'].iloc[0]) if 'n_boot' in ci_r else 100
         log.info(f'  CI: {ci_gene} chr{ci_chr}  R=[{ci_lo_r:.2f},{ci_hi_r:.2f}]')
-        pheno_ci = pheno_48.set_index('subject.name').reindex(
+        pheno_ci = pheno_strain.set_index('subject.name').reindex(
             cache_py.sample_ids)[ci_gene].values.astype(float)
         kd_ci  = kin_module.decomp_kinship({ci_chr: kinship_py[ci_chr]})
         ci_res = _sh(pheno_ci, cache_py, covar_base, kd_ci, phenotype_id=ci_gene)
@@ -784,7 +809,7 @@ else:
         fx_gene = str(fx_r['gene_id'].iloc[0])
         fx_chr  = str(fx_r['chr'].iloc[0])
         log.info(f'  instability scan: {fx_gene} chr{fx_chr}')
-        pheno_f = pheno_48.set_index('subject.name').reindex(
+        pheno_f = pheno_strain.set_index('subject.name').reindex(
             cache_py.sample_ids)[fx_gene].values.astype(float)
         loci_r  = set(fx_r[fx_r['gene_id']==fx_gene]['locus'].tolist())
         inst_py = _inst(pheno_f, cache_py, covar_base,
@@ -821,13 +846,14 @@ else:
 section('QC SUMMARY')
 qc_df = pd.DataFrame(qc_rows)
 save_csv(qc_df,'qc_summary.csv')
-print()
-print('='*60)
+hi('')
+hi('='*60)
 for row in qc_rows:
     st = 'PASS' if row['pass'] is True else ('SKIP' if row['pass'] is None else 'FAIL')
-    print(f'  {st:<4}  {row["section"]:<28}  {row["detail"]}')
-print(f'  outputs: {val_dir}/')
-print('='*60)
+    hi(f'  {st:<4}  {row["section"]:<28}  {row["detail"]}')
+hi(f'  outputs: {val_dir}/')
+hi(f'  log:     {_log_file}')
+hi('='*60)
 implemented = [r for r in qc_rows if r['pass'] is not None]
 passed      = [r for r in implemented if r['pass'] is True]
 sys.exit(0 if (not implemented or len(passed)==len(implemented)) else 1)
