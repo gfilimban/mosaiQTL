@@ -558,16 +558,19 @@ section('SECTION 4 — CACHE COLLAPSE')
 if not hasattr(GenomeCache, 'collapse'):
     skip('cache_collapse', 'GenomeCache.collapse() not implemented')
 else:
-    # load R collapsed cache to get per-chromosome loci counts
-    _r_cache_path = os.path.join(miqtl_dir, 'output', 'genomecache')
-    try:
-        cache_r_coll = GenomeCache.from_happy_dir(_r_cache_path, model='additive')
-        r_loci = {c: len(cache_r_coll._data[c]['locus_ids'])
-                  for c in cache_r_coll.chromosomes}
-        log.info(f'  R collapsed cache: {sum(r_loci.values())} total loci')
-    except Exception as e:
-        cache_r_coll = None; r_loci = {}
-        log.warning(f'  R cache unavailable: {e}')
+    # load R collapsed loci counts from port_validation.R section 4
+    _r_coll_csv = load_r('collapsed_r')
+    if _r_coll_csv is not None:
+        r_loci = dict(zip(_r_coll_csv['chr'].astype(str),
+                          _r_coll_csv['n_loci_coll'].astype(int)))
+        r_orig = dict(zip(_r_coll_csv['chr'].astype(str),
+                          _r_coll_csv['n_loci_orig'].astype(int)))
+        hi(f'  R collapsed: {sum(r_loci.values())} loci '
+           f'(from {sum(r_orig.values())} original)')
+    else:
+        r_loci = {}; r_orig = {}
+        log.warning('  collapsed_cache_summary.csv missing — '
+                    'run port_validation.R section 4 first')
 
     hi('  collapsing Python cache (l2.norm tol=0.02)...')
     cache_coll = cache_py.collapse(criterion='l2.norm', tol=0.02)
@@ -576,9 +579,11 @@ else:
     for chrom in chr_order:
         n_full = len(cache_py._data[chrom]['locus_ids'])
         n_coll = len(cache_coll._data[chrom]['locus_ids'])
-        n_r    = r_loci.get(chrom, np.nan)
-        pct_py = 100*(n_full - n_coll) / n_full
-        pct_r  = 100*(n_full - n_r) / n_full if not np.isnan(n_r) else np.nan
+        n_r      = r_loci.get(chrom, np.nan)
+        n_r_orig = r_orig.get(chrom, np.nan) if r_loci else np.nan
+        pct_py   = 100*(n_full - n_coll) / n_full
+        pct_r    = (100*(n_r_orig - n_r) / n_r_orig
+                    if not np.isnan(n_r) and not np.isnan(n_r_orig) else np.nan)
         lids, pos, probs = cache_coll.get_chromosome(chrom)
         rsum_ok = np.allclose(probs.sum(axis=2), 1.0, atol=1e-4)
         rows_c.append({'chr': chrom, 'n_full': n_full,
