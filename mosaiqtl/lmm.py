@@ -1,23 +1,24 @@
 """
 mosaiqtl.lmm — linear mixed model engine
 
-implements the eigendecomposition-based fast lmm from
-kang et al. (2008, nature genetics) as used in qtl2/miqtl.
+implements the eigendecomposition-based fast LMM from
+Kang et al. (2008, Genetics) as used in qtl2/miQTL.
 
 model:
-  y = X β + Zu + ε
-  u ~ N(0, σ²_g K)
-  ε ~ N(0, σ²_e I)
+    y = H γ + X α + u + ε
+    u ~ N(0, σ²_g K)
+    ε ~ N(0, σ²_e I)
 
 after eigendecomposition K = U D U':
-  rotate everything by U':
-    y* = U'y,  X* = U'X
-  the covariance becomes diagonal:
-    Var(y*) = σ²_g D + σ²_e I = σ²_e (h²/(1-h²) D + I)
-  where h² = σ²_g / (σ²_g + σ²_e)
+    rotate: y* = U'y,  X* = U'X,  H* = U'H
+    Var(y*) = σ²_g D + σ²_e I  — diagonal, O(n) weights
+    LOD = (n/2) log10(RSS_0 / RSS_1)       [ML, matches miQTL]
+    h²   estimated once under null via REML  [matches miQTL use.par='h2.REML']
 
-this reduces the lmm to weighted least squares, solved in O(np²)
-instead of O(n³) per locus.
+matches miQTL::lmmbygls behaviour:
+  - h² optimized with scipy.optimize.minimize_scalar on [0,1] + grid safeguard
+  - brute check: compare optimized fit against h²=0 (miQTL's brute=TRUE default)
+  - LOD uses ML formula (n/2 log10 ratio), not REML
 """
 
 import numpy as np
@@ -29,26 +30,19 @@ logger = logging.getLogger('mosaiqtl')
 
 
 class LMMResult:
-    """container for lmm fit results at one locus.
+    """container for LMM fit results at one locus.
 
     attributes
     ----------
-    lod : float
-        lod score = log10(likelihood_ratio / (2 * ln(10)))
-    p_value : float
-        p-value from f-test
-    h2 : float
-        heritability estimate under alternative model
-    betas : np.ndarray
-        estimated fixed effects (haplotype + covariates)
-    sigma2_g : float
-        genetic variance component
-    sigma2_e : float
-        residual variance component
-    rss_null : float
-        residual sum of squares under null
-    rss_alt : float
-        residual sum of squares under alternative
+    lod      : float   LOD = (n/2) log10(RSS_0/RSS_1)
+    p_value  : float   F-test p-value
+    h2       : float   heritability from null model
+    betas    : np.ndarray (J-1,)  founder haplotype effects
+    sigma2_g : float   genetic variance component
+    sigma2_e : float   residual variance component
+    rss_null : float   weighted RSS under null
+    rss_alt  : float   weighted RSS under alternative
+    f_stat   : float   F statistic
     """
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
@@ -56,296 +50,197 @@ class LMMResult:
 
 
 def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):
-    """estimate heritability under the null model (no qtl effect).
+    """estimate heritability under the null model (no QTL effect).
 
-    optimizes h² by profile likelihood on a grid, then refines
-    with brent's method.
+    algorithm (matches miQTL lmmbygls):
+      1. evaluate profile (RE)ML on a 20-point h² grid [0.01, 0.99]
+      2. refine around the best grid point with Brent's method
+      3. brute check: compare against h²=0 — take whichever has
+         higher log-likelihood (miQTL's brute=TRUE safeguard)
 
     parameters
     ----------
-    y_rot : np.ndarray (n,)
-        rotated phenotype (U' y)
-    x_rot : np.ndarray (n, p)
-        rotated covariate matrix (U' X)
-    eigvals : np.ndarray (n,)
-        eigenvalues of kinship matrix
-    method : str
-        'reml' or 'ml'
+    y_rot   : np.ndarray (n,)    U'y — rotated phenotype
+    x_rot   : np.ndarray (n, p)  U'X — rotated covariates
+    eigvals : np.ndarray (n,)    eigenvalues of kinship matrix
+    method  : str  'reml' (default, matches miQTL) or 'ml'
 
     returns
     -------
-    h2 : float
-        estimated heritability (0 to 1)
-    loglik : float
-        log-likelihood at optimal h²
+    h2      : float   optimal h² ∈ (0, 1)
+    loglik  : float   log-likelihood at optimal h²
     """
     n = len(y_rot)
     p = x_rot.shape[1] if x_rot.ndim > 1 else 1
 
     def neg_loglik(h2):
-        """negative (restricted) log-likelihood as function of h²."""
-        # clamp h2 to valid range
-        h2 = np.clip(h2, 1e-6, 1 - 1e-6)
-
-        # weight vector: w_i = h² * d_i + (1 - h²)
-        # = (1 - h²) * (h²/(1-h²) * d_i + 1)
+        """negative profile (RE)ML as a function of h²."""
+        h2    = np.clip(h2, 1e-6, 1 - 1e-6)
         delta = h2 / (1 - h2)
-        w = delta * eigvals + 1.0  # weights in rotated space
-
-        # weighted least squares
-        # solve (X' W^{-1} X) β = X' W^{-1} y
+        w     = delta * eigvals + 1.0     # diagonal weights
         w_inv = 1.0 / w
-        xw = x_rot * w_inv[:, np.newaxis]  # X * diag(1/w)
-        xtw_x = xw.T @ x_rot  # X' W^{-1} X
-        xtw_y = xw.T @ y_rot  # X' W^{-1} y
-
+        xw    = x_rot * w_inv[:, None]
         try:
-            beta = np.linalg.solve(xtw_x, xtw_y)
+            beta  = np.linalg.solve(xw.T @ x_rot, xw.T @ y_rot)
         except np.linalg.LinAlgError:
-            return 1e10  # singular — return large value
-
-        # residuals
+            return 1e10
         resid = y_rot - x_rot @ beta
-
-        # weighted rss: Σ resid² / w
-        wrss = np.sum(resid ** 2 * w_inv)
-
-        # sigma² estimate
+        wrss  = float(resid @ (resid * w_inv))
+        logdet = float(np.sum(np.log(w)))
         if method == 'reml':
-            sigma2 = wrss / (n - p)
+            df     = n - p
+            sigma2 = wrss / df
+            _, ldet_xtx = np.linalg.slogdet(xw.T @ x_rot)
+            ll = -0.5 * (df*(np.log(2*np.pi*sigma2)+1) + logdet + ldet_xtx)
         else:
             sigma2 = wrss / n
-
-        # log-likelihood
-        logdet = np.sum(np.log(w))
-
-        if method == 'reml':
-            # reml: add log|X'W^{-1}X| term
-            _, logdet_xtx = np.linalg.slogdet(xtw_x)
-            ll = -0.5 * (
-                (n - p) * np.log(2 * np.pi * sigma2) +
-                logdet +
-                logdet_xtx +
-                (n - p)
-            )
-        else:
-            ll = -0.5 * (
-                n * np.log(2 * np.pi * sigma2) +
-                logdet +
-                n
-            )
-
+            ll     = -0.5 * (n*(np.log(2*np.pi*sigma2)+1) + logdet)
         return -ll
 
-    # ── grid search: evaluate on 20 evenly-spaced h² values ─────────────────
-    # a pure scalar optimizer on a possibly flat REML surface often converges
-    # to the boundary (h²=0 or h²=1). miQTL uses a coarser grid first, then
-    # polishes. we do the same: evaluate on 20 points, warm-start the refiner.
-    _h2_grid  = np.linspace(0.01, 0.99, 20)
-    _ll_grid  = np.array([neg_loglik(h2) for h2 in _h2_grid])
-    _best_idx = int(np.argmin(_ll_grid))
-    _h2_start = _h2_grid[_best_idx]
+    # ── step 1: grid search ──────────────────────────────────────────────────
+    _grid     = np.linspace(0.01, 0.99, 20)
+    _nll      = np.array([neg_loglik(h) for h in _grid])
+    _best_idx = int(np.argmin(_nll))
+    _lo = float(_grid[max(0, _best_idx - 1)])
+    _hi = float(_grid[min(len(_grid)-1, _best_idx + 1)])
 
-    # ── refine around best grid point with bounded scalar search ─────────────
-    _lo = float(_h2_grid[max(0, _best_idx - 1)])
-    _hi = float(_h2_grid[min(len(_h2_grid)-1, _best_idx + 1)])
-    result = minimize_scalar(
-        neg_loglik,
-        bounds=(_lo, _hi),
-        method='bounded',
-        options={'xatol': 1e-8}
-    )
+    # ── step 2: brent refinement ─────────────────────────────────────────────
+    res    = minimize_scalar(neg_loglik, bounds=(_lo, _hi),
+                             method='bounded', options={'xatol': 1e-8})
+    h2_opt = float(np.clip(res.x, 1e-6, 1 - 1e-6))
+    ll_opt = -float(res.fun)
 
-    h2_opt    = float(np.clip(result.x, 1e-6, 1 - 1e-6))
-    loglik_opt = -result.fun
+    # ── step 3: brute check at h²=0 (miQTL brute=TRUE) ───────────────────────
+    ll_zero = -neg_loglik(1e-6)
+    if ll_zero > ll_opt:
+        h2_opt = 1e-6
+        ll_opt = ll_zero
 
-    return h2_opt, loglik_opt
+    return h2_opt, ll_opt
 
 
-def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null,
-                      use_reml=True):
-    """fit lmm at a single locus and compute test statistic.
+def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
+    """fit LMM at a single locus and compute test statistic.
 
-    uses the pre-estimated null h² (from estimate_h2_null) as the
-    variance component, following qtl2 convention: h² is estimated
-    once under the null and held fixed during the genome scan.
+    uses null h² (from estimate_h2_null) as the fixed variance
+    component during the genome scan — same convention as miQTL.
+
+    LOD = (n/2) log10(RSS_0 / RSS_1)   [ML formula, n not n-p]
 
     parameters
     ----------
-    y_rot : np.ndarray (n,)
-        rotated phenotype
-    h_rot : np.ndarray (n, q)
-        rotated haplotype design matrix (j-1 founders after dropping one)
-    x_rot : np.ndarray (n, p)
-        rotated covariate matrix (including intercept)
-    eigvals : np.ndarray (n,)
-        eigenvalues of kinship matrix
-    h2_null : float
-        heritability from null model
-    use_reml : bool
-        use reml (True) or ml (False)
+    y_rot    : np.ndarray (n,)     U'y
+    h_rot    : np.ndarray (n, J-1) U'H  — haplotype design (one col dropped)
+    x_rot    : np.ndarray (n, p)   U'X
+    eigvals  : np.ndarray (n,)     eigenvalues of LOCO kinship
+    h2_null  : float               null heritability
+    use_reml : bool                (unused for LOD; kept for API compatibility)
 
     returns
     -------
     LMMResult
     """
     n = len(y_rot)
-    q = h_rot.shape[1]  # number of haplotype effects (j-1)
-    p = x_rot.shape[1]  # number of covariate columns
+    q = h_rot.shape[1]
+    p = x_rot.shape[1]
 
-    # weight vector from null h²
     delta = h2_null / max(1 - h2_null, 1e-10)
-    w = delta * eigvals + 1.0
+    w     = delta * eigvals + 1.0
     w_inv = 1.0 / w
 
-    # --- null model: y* = X* α ---
-    xw = x_rot * w_inv[:, np.newaxis]
-    xtw_x = xw.T @ x_rot
-    xtw_y = xw.T @ y_rot
-
+    # null model: y* = X* α
+    xw    = x_rot * w_inv[:, None]
     try:
-        beta_null = np.linalg.solve(xtw_x, xtw_y)
+        beta_null = np.linalg.solve(xw.T @ x_rot, xw.T @ y_rot)
     except np.linalg.LinAlgError:
-        return LMMResult(
-            lod=0.0, p_value=1.0, h2=h2_null,
-            betas=np.zeros(q + p), sigma2_g=0.0, sigma2_e=0.0,
-            rss_null=np.inf, rss_alt=np.inf
-        )
-
+        return LMMResult(lod=0.0, p_value=1.0, h2=h2_null, f_stat=0.0,
+                         betas=np.zeros(q), sigma2_g=0.0, sigma2_e=0.0,
+                         rss_null=np.inf, rss_alt=np.inf)
     resid_null = y_rot - x_rot @ beta_null
-    rss_null = np.sum(resid_null ** 2 * w_inv)
+    rss_null   = float(resid_null @ (resid_null * w_inv))
 
-    # --- alt model: y* = [H* X*] [γ; α] ---
-    # combine haplotype and covariate matrices
-    z_rot = np.hstack([h_rot, x_rot])  # (n, q+p)
-
-    zw = z_rot * w_inv[:, np.newaxis]
-    ztw_z = zw.T @ z_rot
-    ztw_y = zw.T @ y_rot
-
+    # alternative model: y* = [H* X*] [γ; α]
+    z_rot = np.hstack([h_rot, x_rot])
+    zw    = z_rot * w_inv[:, None]
     try:
-        beta_alt = np.linalg.solve(ztw_z, ztw_y)
+        beta_alt = np.linalg.solve(zw.T @ z_rot, zw.T @ y_rot)
     except np.linalg.LinAlgError:
-        return LMMResult(
-            lod=0.0, p_value=1.0, h2=h2_null,
-            betas=np.zeros(q + p), sigma2_g=0.0, sigma2_e=0.0,
-            rss_null=rss_null, rss_alt=rss_null
-        )
-
+        return LMMResult(lod=0.0, p_value=1.0, h2=h2_null, f_stat=0.0,
+                         betas=np.zeros(q), sigma2_g=0.0, sigma2_e=0.0,
+                         rss_null=rss_null, rss_alt=rss_null)
     resid_alt = y_rot - z_rot @ beta_alt
-    rss_alt = np.sum(resid_alt ** 2 * w_inv)
+    rss_alt   = float(resid_alt @ (resid_alt * w_inv))
 
-    # --- lod score ---
-    # LOD = (log L_alt - log L_null) / log(10)
-    # under fixed h², the Σlog(δλ+1) terms cancel between alt and null,
-    # leaving LOD = n/2 * log10(RSS_null / RSS_alt)  [ML formula]
-    # using n-p (REML df) systematically deflates LOD by (n-p)/n ≈ 0.75
-    # miQTL::lmmbygls uses the ML formula — always use n here.
+    # LOD: ML formula (n not n-p) — matches miQTL::lmmbygls
     if rss_alt > 0 and rss_null > rss_alt:
         lod = (n / 2.0) * np.log10(rss_null / rss_alt)
     else:
         lod = 0.0
 
-    # --- f-test p-value ---
-    # F = ((rss_null - rss_alt) / q) / (rss_alt / (n - p - q))
-    df1 = q  # number of haplotype parameters tested
-    df2 = n - p - q  # residual df under alt
-
+    # F-test p-value
+    df2 = n - p - q
     if df2 > 0 and rss_alt > 0:
-        f_stat = ((rss_null - rss_alt) / df1) / (rss_alt / df2)
-        f_stat = max(f_stat, 0.0)
-        p_value = 1.0 - stats.f.cdf(f_stat, df1, df2)
+        f_stat  = ((rss_null - rss_alt) / q) / (rss_alt / df2)
+        f_stat  = max(f_stat, 0.0)
+        p_value = 1.0 - stats.f.cdf(f_stat, q, df2)
     else:
-        f_stat = 0.0
+        f_stat  = 0.0
         p_value = 1.0
 
-    # --- variance components ---
-    # sigma2 uses REML df (n-p) — only for reporting, not for LOD
     sigma2_total = rss_alt / max(n - p - q, 1)
-    sigma2_g = h2_null * sigma2_total
-    sigma2_e = (1 - h2_null) * sigma2_total
-
     return LMMResult(
-        lod=lod,
-        p_value=p_value,
-        h2=h2_null,
-        betas=beta_alt[:q],  # just the haplotype effects
-        sigma2_g=sigma2_g,
-        sigma2_e=sigma2_e,
-        rss_null=rss_null,
-        rss_alt=rss_alt,
-        f_stat=f_stat,
+        lod=lod, p_value=p_value, h2=h2_null, f_stat=f_stat,
+        betas=beta_alt[:q],
+        sigma2_g=h2_null * sigma2_total,
+        sigma2_e=(1 - h2_null) * sigma2_total,
+        rss_null=rss_null, rss_alt=rss_alt,
     )
 
 
 def scan_chromosome(y, genome_cache, chrom, x_covariates,
-                    eigvals, eigvecs, h2_null, use_reml=True):
+                    eigvals, eigvecs, h2_null, use_reml=True,
+                    z_mat=None):
     """scan all loci on one chromosome.
 
     parameters
     ----------
-    y : np.ndarray (n,)
-        phenotype vector
+    y            : np.ndarray (n,)     phenotype (already RINT'd if requested)
     genome_cache : GenomeCache
-        haplotype probability data
-    chrom : str
-        chromosome to scan
-    x_covariates : np.ndarray (n, p)
-        covariate design matrix (with intercept)
-    eigvals : np.ndarray (n,)
-        eigenvalues from loco kinship for this chromosome
-    eigvecs : np.ndarray (n, n)
-        eigenvectors from loco kinship for this chromosome
-    h2_null : float
-        null heritability for this chromosome
-    use_reml : bool
-        use reml estimation
+    chrom        : str
+    x_covariates : np.ndarray (n, p)   covariate design matrix
+    eigvals      : np.ndarray (n,)     eigenvalues of n×n kinship
+    eigvecs      : np.ndarray (n, n)   eigenvectors
+    h2_null      : float
+    use_reml     : bool
+    z_mat        : np.ndarray (n, m) or None
+        if provided, haplotype probs are expanded via Z @ H_cache.
+        if None, assumes n == m (identity mapping).
 
     returns
     -------
-    dict with keys:
-        'locus_ids' : np.ndarray of str
-        'positions' : np.ndarray of float
-        'lod'       : np.ndarray of float
-        'p_value'   : np.ndarray of float
-        'betas'     : np.ndarray (n_loci, n_founders-1)
+    dict: locus_ids, positions, lod, p_value, betas
     """
     locus_ids, positions, probs = genome_cache.get_chromosome(chrom)
     n_loci = len(locus_ids)
+    nf1    = genome_cache.n_founders - 1
 
-    # rotate phenotype and covariates once per chromosome
     y_rot = eigvecs.T @ y
     x_rot = eigvecs.T @ x_covariates
 
-    # allocate output arrays
-    lod_arr = np.zeros(n_loci)
-    pval_arr = np.ones(n_loci)
-    n_founders_minus1 = genome_cache.n_founders - 1
-    betas_arr = np.zeros((n_loci, n_founders_minus1))
+    lod_arr   = np.zeros(n_loci)
+    pval_arr  = np.ones(n_loci)
+    betas_arr = np.zeros((n_loci, nf1))
 
     for l_idx in range(n_loci):
-        # get haplotype probs at this locus
-        h_l = probs[l_idx]  # (n_subjects, n_founders)
+        h_l = probs[l_idx]               # (m, J)
+        if z_mat is not None:
+            h_l = z_mat @ h_l            # (n, J)
+        h_l_red = h_l[:, :nf1]          # drop last founder
+        h_rot   = eigvecs.T @ h_l_red
+        res     = fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml)
+        lod_arr[l_idx]    = res.lod
+        pval_arr[l_idx]   = res.p_value
+        betas_arr[l_idx]  = res.betas
 
-        # drop one founder column (last = wsbj) for identifiability
-        h_l_reduced = h_l[:, :n_founders_minus1]
-
-        # rotate haplotype matrix
-        h_rot = eigvecs.T @ h_l_reduced
-
-        # fit lmm at this locus
-        result = fit_lmm_at_locus(
-            y_rot, h_rot, x_rot, eigvals, h2_null, use_reml
-        )
-
-        lod_arr[l_idx] = result.lod
-        pval_arr[l_idx] = result.p_value
-        betas_arr[l_idx] = result.betas
-
-    return {
-        'locus_ids': locus_ids,
-        'positions': positions,
-        'lod': lod_arr,
-        'p_value': pval_arr,
-        'betas': betas_arr,
-    }
+    return {'locus_ids': locus_ids, 'positions': positions,
+            'lod': lod_arr, 'p_value': pval_arr, 'betas': betas_arr}

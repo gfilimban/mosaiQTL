@@ -7,38 +7,81 @@
 
 ---
 
-## 1. Background and motivation
+## 1. Background
 
-### 1.1 The multiparent population problem
+### 1.1 Multiparent populations
 
-Inbred lines from multiparent populations (MPP) — Collaborative Cross (CC), Diversity Outbred (DO),
-MAGIC — carry chromosomes that are mosaics of segments inherited from $J = 8$ inbred founder strains.
-Unlike biallelic GWAS, MPP QTL mapping requires tracking which founder's haplotype segment drives
-phenotypic variation at each locus. The standard model is the haplotype linear mixed model (LMM):
+Collaborative Cross (CC) mice carry chromosomes that are mosaics of segments
+inherited from $J=8$ inbred founder strains. At each genomic locus $\ell$, each
+individual $i$ is characterised by a $J$-vector of haplotype probabilities
+$\mathbf{h}_{i\ell} \in [0,1]^J$, $\sum_j h_{ij\ell} = 1$, representing the
+posterior probability of descent from each founder given the observed genotype
+data. The haplotype LMM resolves genetic effects at founder resolution:
 
 $$\mathbf{y} = \mathbf{H}_\ell \boldsymbol{\gamma} + \mathbf{X}\boldsymbol{\alpha} + \mathbf{u} + \boldsymbol{\varepsilon}$$
 
-where $\mathbf{H}_\ell \in \mathbb{R}^{n \times J}$ is the matrix of founder haplotype probabilities at
-locus $\ell$, $\mathbf{u} \sim \mathcal{N}(\mathbf{0}, \sigma_g^2 \mathbf{K})$ is the polygenic
-random effect with LOCO kinship matrix $\mathbf{K}$, and $\mathbf{X}$ holds fixed covariates.
+where $\mathbf{H}_\ell \in \mathbb{R}^{n \times J}$ is the haplotype matrix at
+locus $\ell$, $\mathbf{u} \sim \mathcal{N}(\mathbf{0}, \sigma_g^2 \mathbf{K})$
+is the polygenic random effect with realised relationship matrix $\mathbf{K}$,
+$\mathbf{X}$ holds fixed covariates, and
+$\boldsymbol{\varepsilon} \sim \mathcal{N}(\mathbf{0}, \sigma_e^2 \mathbf{I})$.
 
-### 1.2 miQTL (Keele et al. 2020)
+### 1.2 Global sample design — Z-matrix formulation
 
-[miQTL](https://github.com/gkeele/miqtl) is the reference R implementation for CC/DO haplotype
-QTL mapping. It operates on the HAPPY genome cache format — a directory of per-locus `.RData` files
-containing $n \times J$ haplotype probability matrices — and exposes `scan.h2lmm()` as its core
-scan function, which estimates $\hat{h}^2$ under the null via REML and computes ML LOD scores
-across the genome.
+mosaiQTL supports the general case where $n$ phenotype observations map to $m < n$
+unique genotypes (e.g. replicated CC strains with multiple RNA-seq samples per strain).
+The mapping is encoded in a $n \times m$ matrix $\mathbf{Z}$ where $Z_{ij} = 1$ if
+observation $i$ belongs to genotype $j$:
 
-### 1.3 mosaiQTL
+$$\mathbf{H}_{n\times J} = \mathbf{Z}_{n\times m}\, \tilde{\mathbf{H}}_{m\times J}$$
 
-mosaiQTL is a model-agnostic QTL mapping package for multiparent populations, parametric on $J$ founders
-and any number of mosaic lines. It provides Gaussian LMM for normalized expression,
-[edgePython](https://github.com/pachterlab/edgePython)-backed NB GLM for pseudobulk counts, and
-NEBULA-LN for single-nucleus data — chosen per gene without changing the rest of the pipeline.
-A pure-Python 8-founder HMM builds the haplotype probability cache from raw GigaMUGA genotype data, and
-all scan, kinship, and LMM functions are native Python (numpy/scipy). Informed by
-miQTL (Keele *et al.* 2020) and R/qtl2 (Broman *et al.* 2019).
+$$\mathbf{K}_{n\times n} = \mathbf{Z}\, \tilde{\mathbf{K}}_{m\times m}\, \mathbf{Z}^\top$$
+
+When $n = m$ (one sample per genotype), $\mathbf{Z} = \mathbf{I}_m$ and all
+results are identical to the 1:1 case. This is handled transparently in every
+scan function via `build_z_matrix(sample_ids, geno_ids)` in `utils.py`.
+
+### 1.3 Eigendecomposition LMM (Kang et al. 2008)
+
+After eigendecomposition $\mathbf{K} = \mathbf{U}\mathbf{D}\mathbf{U}^\top$,
+rotate all quantities by $\mathbf{U}^\top$:
+
+$$\mathbf{y}^* = \mathbf{U}^\top \mathbf{y}, \quad
+\mathbf{X}^* = \mathbf{U}^\top \mathbf{X}, \quad
+\mathbf{H}^*_\ell = \mathbf{U}^\top \mathbf{H}_\ell$$
+
+The covariance becomes diagonal:
+
+$$\mathrm{Var}(\mathbf{y}^*) = \sigma_g^2 \mathbf{D} + \sigma_e^2 \mathbf{I}
+= \sigma_e^2\!\left(\frac{h^2}{1-h^2} \mathbf{D} + \mathbf{I}\right)
+\equiv \sigma_e^2 \mathrm{diag}(w_i)$$
+
+where $w_i = \delta\, d_i + 1$, $\delta = h^2/(1-h^2)$, and $d_i$ are the
+eigenvalues of $\mathbf{K}$. This reduces the LMM to weighted least squares,
+solved in $\mathcal{O}(np^2)$ per locus instead of $\mathcal{O}(n^3)$.
+
+### 1.4 LOD score
+
+The LOD score is computed under fixed $\hat{h}^2_0$ (estimated once under the
+null) using the ML formula, matching miQTL::lmmbygls:
+
+$$\mathrm{LOD} = \frac{n}{2}\log_{10}\frac{\mathrm{RSS}_0}{\mathrm{RSS}_1}$$
+
+where $\mathrm{RSS}_k = \sum_i (y^*_i - \hat{y}^*_{k,i})^2 / w_i$ under each
+model. Using $n$ rather than $n - p$ ensures consistent scaling with miQTL.
+
+### 1.5 REML h² estimation
+
+$h^2_0$ is estimated by profile REML at the null model ($\mathbf{H}_\ell = \mathbf{0}$):
+
+$$\ell_{\mathrm{REML}}(h^2) = -\tfrac{n-p}{2}\log(2\pi\hat\sigma^2_\mathrm{REML})
+- \tfrac{1}{2}\log|\mathbf{W}|
++ \tfrac{1}{2}\log|\mathbf{X}^\top \mathbf{W}^{-1} \mathbf{X}|
+- \tfrac{n-p}{2}$$
+
+Optimisation: 20-point grid on $h^2 \in [0.01, 0.99]$, then Brent refinement
+in the best interval. Final brute check compares against $h^2 = 0$ (matches
+miQTL's `brute=TRUE` default).
 
 ---
 
@@ -46,239 +89,241 @@ miQTL (Keele *et al.* 2020) and R/qtl2 (Broman *et al.* 2019).
 
 ### Phase 0 — initial scaffold
 
-Core modules created: `genome_cache.py`, `hmm.py`, `kinship.py`, `lmm.py`, `scan.py`, `vqtl.py`,
-`nb.py`, `plotting.py`, `utils.py`. LOD formula fixed from REML denominator ($n-p$) to ML ($n$)
-to match miQTL's `lmmbygls()`.
+Core modules created. LOD formula fixed from REML denominator ($n-p$) to ML ($n$).
 
-### Phase 1 — validation against R miQTL (complete)
+### Phase 1 — LMM validation against miQTL (complete)
 
-Full cross-language validation pipeline built in `validation/validate_vs_r.py` with four sections:
-
-1. Haplotype probability spot-check
-2. LOCO kinship comparison (r = 0.9997 vs R qtl2)
-3. Per-locus LOD score comparison (slope = 1.048 vs miQTL `scan.h2lmm()`)
-4. QC plots — Manhattan residuals, QQ, LOD correlation, gene summary, founder effects
-
-**Critical bugs fixed during Phase 1:**
+**Critical bugs fixed:**
 
 | Bug | Impact | Fix |
 |---|---|---|
-| `list(set(...))` for marker ordering | Random genomic order → HMM wrong → r(LOD) = 0.027 | Sort by `(chr, pos_cM)` after intersection |
+| `list(set(...))` marker ordering | Random order → HMM wrong → r(LOD) = 0.027 | Sort by `(chr, pos_cM)` after intersection |
 | `CC_FOUNDERS` typo `c129s1j` | Wrong founder at index 2 | `129s1j`; corrected qtl2 order |
-| `CC_FOUNDERS` order wrong | CAST/NOD/NZO swapped | `['aj','b6j','129s1j','nodj','nzoj','castj','pwkj','wsbj']` |
-| Nucleotide encoding missing | HMM received raw ACGT | Per-marker A/H/B recode from founder alleles |
-| `n_gen` scaling | $r$ inflated 20× | CC map encodes history; pass `n_gen=1` |
-| `estimate_h2_null` boundary collapse | 48% genes got $\hat{h}^2 = 0$ → LOD slope 0.696 | Grid-then-refine: 20-point grid, then `minimize_scalar` |
-| `run_validation.R` missing braces | `unexpected end of input` | Two missing `}` for gene and chromosome loops |
-| `run_validation.R` chr4 crash | `arguments imply differing number of rows: 1, 0` | Guard `!is.null(names(effects))` |
-| `pheno_48_used.csv` duplicate rows | `ValueError: cannot reindex on duplicate labels` | `row.names=FALSE` in R; `drop_duplicates` in Python |
-| `batch` column absent | `KeyError: 'batch'` | Explicit batch reconstruction before R write |
-| Haplotype pass threshold too strict | Falsely failed all chromosomes | Removed from QC gate; informational only |
-| LOD `all_pass` gate | Always fails on genome-wide scan | Majority threshold: pass ≥ 50% |
+| Founder order wrong (CAST/NOD/NZO swapped) | Wrong haplotype probs | Correct order confirmed from qtl2 |
+| Missing nucleotide A/H/B encoding | HMM received raw ACGT | Per-marker recode from founder alleles |
+| `n_gen` scaling | $r$ inflated 20× | CC map encodes history; `n_gen=1` |
+| `estimate_h2_null` boundary collapse | 48% genes at $\hat{h}^2 = 0$ | Grid-then-refine REML |
+| LOD REML formula | Systematic underestimation | ML formula $n/2 \log_{10}(\cdot)$ |
+| `run_validation.R` missing braces | Crash at parse | Two missing `}` |
+| `run_validation.R` chr4 crash | `!is.null(names(effects))` missing | Guard added |
+| `pheno_48_used.csv` duplicates | `ValueError: reindex on duplicates` | `drop_duplicates` |
+| Haplotype QC gate too strict | All chromosomes falsely fail | Informational only |
+| LOD `all_pass` gate | Always fails genome-wide | Majority ≥ 50% |
 
-**Final Phase 1 validation results (18,447 genes, 20 chromosomes):**
+**Phase 1 results (18,447 genes, 20 chromosomes):**
 
 | Metric | Value |
 |---|---|
-| Kinship Pearson r | 0.9997 |
-| Kinship max\|ΔK\| | < 0.02 (all chr) |
+| Kinship Pearson $r$ | 0.9997 |
+| Kinship max$\|\Delta K\|$ | < 0.02 |
+| LOD Pearson $r$ (all loci) | 0.943 |
 | LOD slope | 1.048 |
-| LOD Pearson r (all loci) | 0.943 |
 | Peak locus match (soft) | 91.8% |
-| Strict pass (peak\_match + rel < 10%) | 11,107 / 18,443 (60.2%) |
-| Lenient pass (peak\_match + rel < 20%) | 14,340 / 18,443 (77.8%) |
+| Strict pass ($r > 0.999$, rel $< 10\%$) | 60.2% |
+| Lenient pass ($r > 0.990$, rel $< 20\%$) | 77.8% |
 
 ### Phase 2 — full miQTL port (in progress)
 
-Implementing all remaining miQTL exported functions. See Section 4 for details.
+All missing miQTL functions implemented. Confirmed parameter signatures from
+`writeLines(deparse(formals(...)))` and `writeLines(deparse(body(...)))` in R:
+
+**Confirmed signatures:**
+
+| Function | Parameters confirmed |
+|---|---|
+| `collapse.genomecache` | `original.cache, new.cache, subjects, criterion, model, proportion.tol` |
+| `collapse.genomecache` (bug) | `test` used before assignment — patched at runtime |
+| `instability.lm.scan` | takes `simple.sample.object` (pre-generated), not phenotype |
+| `mediation.scan.qr` | takes pre-computed `mediation.qr.object` from `extract.mediation.qr()` |
+| `generate.sample.outcomes.matrix` | calls `chol()` even for `method='permutation'` — crashes on small windows |
+| `lmmbygls` | `brute=TRUE`: compare optimised $h^2$ against $h^2=0$ safeguard |
 
 ---
 
 ## 3. Module reference
 
-### 3.1 `genome_cache.py` — `GenomeCache`
+### 3.1 `utils.py`
 
-Central data structure. Stores per-chromosome haplotype probability arrays as
-`(n_loci, n_samples, n_founders)` float64 tensors alongside locus IDs and physical positions.
+| Function | Description |
+|---|---|
+| `rint(x)` | Rank-based inverse normal transformation. Equivalent to `miqtl::rint(proportion=0.5)`. Maps $x_i \to \Phi^{-1}\!\left(\frac{r_i - 3/8}{n + 1/4}\right)$ (Blom offset). |
+| `align_samples(ids_a, ids_b)` | Return index arrays for shared samples between two datasets. |
+| `build_z_matrix(sample_ids, geno_ids)` | Build $n \times m$ sample-to-genotype mapping matrix $\mathbf{Z}$. Core of the global design. |
+| `expand_kinship(K_geno, Z)` | Expand $m \times m$ kinship to $n \times n$: $\mathbf{K}_n = \mathbf{Z}\mathbf{K}_m\mathbf{Z}^\top$. |
+| `expand_probs(H_geno, Z)` | Expand $m \times J$ haplotype probs to $n \times J$: $\mathbf{H}_n = \mathbf{Z}\mathbf{H}_m$. |
+| `drop_colinear_founders(H)` | Drop last founder column (sum-to-one makes it redundant). Returns $n \times (J-1)$. |
+| `make_design_matrix(df, cols)` | Build numeric design matrix from DataFrame: intercept + numeric + one-hot categoricals. |
 
-**Class methods:**
+### 3.2 `genome_cache.py` — `GenomeCache`
+
+Stores per-chromosome haplotype arrays as $(L, m, J)$ float64 tensors.
 
 | Method | miQTL equivalent | Description |
 |---|---|---|
-| `from_gigamuga(gigamuga_path, gmap_dir, pmap_dir, cc_cols, founder_cols, f1_crosses)` | `calc_genoprob()` (qtl2) + HAPPY build | **R-free**. Reads raw GigaMUGA nucleotide CSV, encodes A/H/B per marker, runs 8-founder diplotype HMM (forward-backward), builds deterministic founder and F1 arrays, merges all 48 genotypes. Equivalent to `founders_f1_genomecache.ipynb` steps 1–7. |
-| `from_happy_dir(cache_dir, model='additive')` | HAPPY `.RData` cache | Reads miQTL-native `.RData` files via rpy2. Backwards compatibility only. |
-| `from_rds(probs_cc_path, probs_founder_path, probs_f1_path, pmap_path)` | `convert.qtl2.to.HAPPY()` | Reads qtl2 `.rds` prob arrays via rpy2, calls `genoprob_to_alleleprob()`, merges 48 genotypes. Backwards compatibility only. |
-| `from_qtl2_probs(probs_dict, map_dict, sample_ids)` | — | Accepts pre-loaded numpy arrays (e.g. from `pyreadr`). |
-| `save(path)` / `load(path)` | — | HDF5 serialization. Preferred format for fast reloading. |
-| `get_locus(chrom, idx)` | HAPPY `readRDS()` per locus | Returns `(n_samples, n_founders)` array for one locus. |
-| `chromosomes` | `names(genomecache)` | Sorted chromosome list (1–19, X). |
-| `n_loci(chrom)` | `length(genomecache[[chr]])` | Marker count per chromosome. |
+| `from_gigamuga(...)` | `calc_genoprob()` (qtl2) + HAPPY build | **R-free**. Raw GigaMUGA CSV → A/H/B encoding → 8-founder diplotype HMM → additive probs. Equivalent to `founders_f1_genomecache.ipynb`. |
+| `from_happy_dir(dir, model)` | HAPPY `.RData` cache | Reads miQTL-native `.RData` files via rpy2. Backwards compat. |
+| `from_rds(cc, founder, f1, pmap)` | `convert.qtl2.to.HAPPY()` | Reads qtl2 `.rds` arrays via rpy2. Backwards compat. |
+| `collapse(criterion, tol)` | `collapse.genomecache()` | Merge adjacent redundant loci. `criterion='l2.norm'`: $d_\ell = \frac{1}{m}\sum_i \|\mathbf{h}_{i,\ell} - \mathbf{h}_{i,\ell-1}\|_2$. Merge if $d_\ell \leq \mathrm{tol}$. |
+| `save(path)` / `load(path)` | — | HDF5 serialisation. Preferred for fast reloading. |
 
-### 3.2 `hmm.py` — 8-founder diplotype HMM
-
-Implements the HAPPY forward-backward algorithm for CC mice.
+### 3.3 `hmm.py` — 8-founder diplotype HMM
 
 | Function | Description |
 |---|---|
-| `calc_genoprob_cc(geno_matrix, founder_genos, gmap_positions, ...)` | Main entry point. Runs HMM on all CC strains for one chromosome. Returns `(n_cc, J, n_loci)` or `(n_cc, J*(J+1)/2, n_loci)` for additive/full model. |
-| `build_diplotype_states(n_founders)` | Enumerate all $J(J+1)/2 = 36$ diplotype states for $J=8$. |
-| `diplotype_to_allele_probs(diplotype_probs, n_founders)` | Collapse $36 \to 8$ additive probs: $P_f^{add} = P_{ff} + \frac{1}{2}\sum_{g \neq f}(P_{fg}+P_{gf})$. Equivalent to `genoprob_to_alleleprob()` in qtl2. |
-| `haldane_recomb(d_morgan)` | Haldane map: $r(d) = (1 - e^{-2d})/2$. |
-| `transition_matrix(r, n_founders, n_gen)` | Per-locus diplotype transition matrix for given recombination fraction and generation count. |
-| `build_emission_matrix(founder_genos, allele_codes, error_prob)` | Emission probabilities from A/H/B encoded genotype calls and founder reference alleles. |
-| `forward_backward(obs_seq, E, T_list, init_probs, log_scale)` | Log-scale forward-backward on a single CC strain. Returns posterior diplotype probabilities. |
-| `uniform_init(n_founders)` | Uniform initial state distribution ($1/J(J+1)/2$ per diplotype). |
+| `calc_genoprob_cc(geno, f_geno, gmap, ...)` | Main entry. Forward-backward on A/H/B calls per CC strain. |
+| `build_diplotype_states(J)` | Enumerate $J(J+1)/2 = 36$ diplotype states for $J=8$. |
+| `diplotype_to_allele_probs(P, J)` | Collapse $36 \to J$: $P_f^{add} = P_{ff} + \frac{1}{2}\sum_{g \neq f}(P_{fg}+P_{gf})$. Equivalent to qtl2's `genoprob_to_alleleprob()`. |
+| `haldane_recomb(d)` | $r(d) = (1 - e^{-2d})/2$ for $d$ in Morgans. |
+| `transition_matrix(r, J, n_gen)` | Per-locus diplotype transition matrix. |
+| `forward_backward(obs, E, T, init)` | Log-scale forward-backward algorithm. Returns posterior diplotype probs. |
 
-### 3.3 `kinship.py`
-
-| Function | miQTL equivalent | Description |
-|---|---|---|
-| `calc_kinship(genome_cache, method='loco')` | `calc.kinship.from.genomecache()` | LOCO realized relationship matrix. For each chromosome $c$: $K^{(-c)} = \frac{1}{2M_{-c}}\sum_{m \notin c} \mathbf{H}_m \mathbf{H}_m^T$. Returns dict of `{chrom: (n, n) array}`. |
-| `decomp_kinship(kinship_dict)` | — | Eigendecompose all LOCO matrices. Returns `EigenCache` for fast LMM rotation. |
-| `kinship_to_correlation(k_mat)` | — | Normalize kinship to correlation matrix (divide by diagonal). |
-
-### 3.4 `lmm.py`
-
-| Function / Class | miQTL equivalent | Description |
-|---|---|---|
-| `estimate_h2_null(y_rot, x_rot, eigvals, method='reml')` | `lmmbygls()` h² fitting | Profile REML optimization. Grid search on 20 $h^2$ values [0.01, 0.99] then `minimize_scalar` refinement. Prevents boundary collapse (was causing 48% of genes to get $\hat{h}^2 \approx 0$). |
-| `fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null)` | `lmmbygls()` at one locus | Fits null ($\mathbf{y}^* = \mathbf{X}^*\alpha$) and alt ($\mathbf{y}^* = [\mathbf{H}^*\ \mathbf{X}^*][\gamma;\alpha]$) in rotated space. Returns `LMMResult` with LOD, p-value, betas, RSS. LOD = $\frac{n}{2}\log_{10}(\text{RSS}_0/\text{RSS}_1)$ (ML, matching miQTL). |
-| `scan_chromosome(y, genome_cache, chrom, x_covariates, eigvals, eigvecs, h2_null)` | Inner loop of `scan.h2lmm()` | Scans all loci on one chromosome. Used by `scan_h2lmm()`. |
-| `LMMResult` | `scan.h2lmm()` return object | Dataclass: `lod`, `p_value`, `h2`, `betas`, `sigma2_g`, `sigma2_e`, `rss_null`, `rss_alt`. |
-
-### 3.5 `scan.py`
-
-| Function / Class | miQTL equivalent | Description |
-|---|---|---|
-| `scan_h2lmm(phenotype, genome_cache, covariates, kinship, chrom, cis_window, gene_pos_mb)` | `scan.h2lmm(use.multi.impute=FALSE)` | Single-gene cis-eQTL scan. Estimates $\hat{h}^2$ once under null, scans all loci in the cis-window. Returns `ScanResult`. |
-| `scan_multi_gene(phenotype_matrix, gene_ids, genome_cache, ...)` | — | Vectorized multi-gene scan. Reuses eigendecomposition across genes on the same chromosome. |
-| `ScanResult` | `scan.h2lmm()` return object | Dataclass: `lod_scores`, `loci`, `positions`, `lead_locus`, `peak_lod`, `h2_null`, `allele_effects`. |
-
-### 3.6 `nb.py` — Negative binomial GLM (Phase 3)
+### 3.4 `kinship.py`
 
 | Function | Description |
 |---|---|
-| `estimate_gene_dispersion(counts, design, lib_sizes)` | MLE dispersion $\phi$ for NB GLM via `scipy.optimize`. |
-| `fit_nb_null(counts_gene, design, dispersion, lib_sizes)` | NB GLM null model (covariates only). |
-| `score_test_at_locus(null_fit, h_locus, counts_gene, dispersion, lib_sizes)` | Score test for haplotype effect. Avoids refitting alt model — $O(n J)$ per locus vs $O(n J^2)$. |
-| `precompute_sufficient_stats(counts, subject_ids, library_sizes)` | Pre-aggregate sufficient statistics across replicates per strain for fast scan. |
+| `calc_kinship(cache, method='loco')` | LOCO realised relationship matrix. For each chr $c$: $\tilde{\mathbf{K}}^{(-c)} = \frac{1}{2M_{-c}}\sum_{\ell \notin c}\mathbf{H}_\ell \mathbf{H}_\ell^\top$. Returns `{chrom: (m,m) array}`. |
+| `decomp_kinship(K_dict)` | Eigendecompose all LOCO matrices. Returns `{chrom: {'values':, 'vectors':}}`. |
+| `kinship_to_correlation(K)` | Normalise to correlation: $C_{ij} = K_{ij}/\sqrt{K_{ii}K_{jj}}$. |
 
-### 3.7 `vqtl.py` — Variance QTL (Phase 3)
+### 3.5 `lmm.py`
 
-| Function / Class | Description |
+| Function | Description |
 |---|---|
-| `scan_vqtl(counts, subject_ids, genome_cache, ...)` | Two-stage variance QTL: (1) mean eQTL scan, (2) dispersion QTL scan on Pearson residuals from stage 1. |
-| `estimate_dispersion_per_subject(counts, subject_ids, ...)` | Per-strain NB dispersion estimates for dispersion QTL phenotype. |
-| `compare_mean_vs_dispersion(vqtl_result, lod_threshold)` | Classify loci as mean QTL, dispersion QTL, or both. |
-| `VQTLResult` | Dataclass: `mean_lod`, `dispersion_lod`, `loci`, `lead_locus_mean`, `lead_locus_disp`. |
+| `estimate_h2_null(y_rot, x_rot, eigvals, method)` | Profile REML/ML optimisation. 20-point grid + Brent refinement + $h^2=0$ brute check (matches miQTL `brute=TRUE`). |
+| `fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2)` | Null + alt weighted least squares. $\mathrm{LOD} = \frac{n}{2}\log_{10}\frac{\mathrm{RSS}_0}{\mathrm{RSS}_1}$. F-test $p$-value. |
+| `scan_chromosome(y, cache, chrom, x, ev, evc, h2, z_mat)` | Scan all loci on one chromosome. Accepts optional $\mathbf{Z}$ matrix for replicated designs. |
 
-### 3.8 `plotting.py`
-
-| Function | miQTL equivalent | Description |
-|---|---|---|
-| `plot_lod_profile(scan_result)` | `genome.plotter.whole()` | LOD score profile across cis-window. |
-| `plot_kinship_heatmap(k_matrix, sample_ids)` | — | Heatmap of kinship matrix. |
-| `plot_founder_effects(scan_result, genome_cache)` | `allele.plotter.region()` | Haplotype effect sizes per founder at peak locus. |
-| `plot_pvalue_qq(scan_result)` | — | QQ plot with $\lambda_{GC}$ annotation. |
-| `plot_lod_correlation(py_result, r_results_csv)` | — | Validation: Python vs R LOD scatter. |
-| `plot_lod_difference(py_result, r_results_csv)` | — | Validation: $\Delta$LOD residuals by chromosome. |
-| `plot_validation_panel(scan_result, k_matrix, ...)` | — | Multi-panel validation QC figure. |
-
-### 3.9 `utils.py`
+### 3.6 `scan.py`
 
 | Function | miQTL equivalent | Description |
 |---|---|---|
-| `rint(x)` | `rint()` | Rank-based inverse normal transformation. |
-| `align_samples(ids_a, ids_b)` | — | Return indices to align two sample-ID arrays. |
-| `drop_colinear_founders(h_matrix)` | — | Remove collinear haplotype columns (drops one founder). |
-| `make_design_matrix(covariates_df, formula_cols)` | — | Build covariate matrix from DataFrame with optional formula parsing. |
+| `scan_h2lmm(y, cache, X, K, sample_ids, ...)` | `scan.h2lmm(use.multi.impute=FALSE)` | Genome-wide scan. Accepts `sample_ids` for $n > m$ designs via $\mathbf{Z}$. |
+| `scan_multi_gene(Y, genes, cache, ...)` | — | Vectorised multi-gene scan sharing eigendecomposition. |
+| `grab_locus_from_scan(result)` | `grab.locus.from.scan()` | Peak locus id from `ScanResult`. |
+| `lod_drop_ci(result, chrom, drop=1.5)` | — | 1.5-LOD-drop CI: $\{\ell : \mathrm{LOD}_\ell \geq \mathrm{LOD}_{peak} - 1.5\}$. |
+| `fixef_eqtl_scan(y, cache, X, ...)` | `scan.h2lmm(locus.as.fixed=TRUE)` | OLS fixed-effect scan, no kinship. |
+| `instability_lm_scan(y, cache, X, n_samples, subsample_prop, ...)` | `instability.lm.scan()` | Bootstrap stability: $b=100$ subsamples, proportion $=0.63$. Reports mean LOD and peak proportion. |
+| `scan_h2lmm_mi(y, cache, X, K, n_imp, ...)` | `scan.h2lmm(use.multi.impute=TRUE, num.imp=n_imp)` | Multiple imputation: sample $M$ diplotype states per locus, average LOD. |
+
+### 3.7 `permutation.py`
+
+| Function | miQTL equivalent | Description |
+|---|---|---|
+| `generate_null_outcomes(result, method, n)` | `generate.sample.outcomes.matrix()` | Permute phenotype labels or bootstrap from null model. |
+| `run_threshold_scans(nulls, y, cache, ...)` | `run.threshold.scans()` | Scan all null phenotypes; collect genome-wide max LOD per permutation. |
+| `get_gev_thresholds(max_lods, pct)` | `get.gev.thresholds()` | Fit GEV to max-LOD distribution; return $p$-th percentile threshold. |
+| `run_positional_scans(boot, y, cache, peak_chr, ...)` | `run.positional.scans()` | Bootstrap CI for peak position; return per-bootstrap peak positions. |
+
+### 3.8 `snp_scan.py`
+
+| Function | miQTL equivalent | Description |
+|---|---|---|
+| `imputed_snp_scan_h2lmm(y, cache, snp_genos, ...)` | `imputed.snp.scan.h2lmm()` | Impute SNP dosage: $d_i = \sum_f h_{if} g_f$ where $g_f \in \{0,1,2\}$; LMM association with scalar predictor. |
+| `pairwise_cor_snp_scan(y, cache, snp_genos, chr, peak_snp)` | `pairwise.cor.snp.scan()` | $r^2$ LD between each SNP and a reference (for Manhattan colouring). |
+
+### 3.9 `mediation.py`
+
+| Function | miQTL equivalent | Description |
+|---|---|---|
+| `mediation_scan_qr(outcome, mediator, cache, X, K, ...)` | `mediation.scan.qr()` | Tests $\mathbf{y} \sim \mathbf{H}_\ell + \mathbf{m} + \mathbf{X} + \mathbf{u}$ vs $\mathbf{y} \sim \mathbf{m} + \mathbf{X} + \mathbf{u}$. Mediation LOD $= \mathrm{LOD}_{base} - \mathrm{LOD}_{mediated}$. |
+| `fixef_mediation_scan(outcome, mediator, cache, ...)` | `fixef.mediation.scan()` | Fixed-effect version; no kinship. |
+
+### 3.10 `nb.py` — Negative binomial GLM (Phase 3)
+
+Wraps edgePython for NB dispersion estimation and score test.
+
+| Function | Description |
+|---|---|
+| `estimate_gene_dispersion(counts, design, lib_sizes)` | MLE NB dispersion $\phi$ via edgePython empirical Bayes pipeline. |
+| `fit_nb_null(counts, design, phi, lib_sizes)` | NB GLM null model (covariates only). |
+| `score_test_at_locus(null_fit, H, counts, phi, lib_sizes)` | Score test for haplotype effect. $\mathcal{O}(nJ)$ per locus — avoids refitting alt model. |
+| `precompute_sufficient_stats(counts, subject_ids, lib_sizes)` | Aggregate sufficient stats across replicates per strain. |
+
+### 3.11 `vqtl.py` — Variance QTL (Phase 3)
+
+| Function | Description |
+|---|---|
+| `scan_vqtl(counts, subject_ids, cache, ...)` | Two-stage dispersion QTL. Stage 1: mean eQTL scan. Stage 2: dispersion QTL on Pearson residuals from stage 1. |
+| `estimate_dispersion_per_subject(counts, subject_ids, ...)` | Per-strain NB dispersion estimates as dispersion QTL phenotype. |
+| `compare_mean_vs_dispersion(result, lod_threshold)` | Classify loci: mean QTL, dispersion QTL, or both. |
+
+### 3.12 `plotting.py`
+
+| Function | miQTL equivalent | Description |
+|---|---|---|
+| `plot_lod_profile(result)` | `genome.plotter.whole()` | LOD across scan window. |
+| `plot_kinship_heatmap(K, sample_ids)` | — | Kinship matrix heatmap. |
+| `plot_founder_effects(result, cache)` | `allele.plotter.region()` | $\hat{\boldsymbol{\gamma}}$ per founder at peak locus. |
+| `plot_pvalue_qq(result)` | — | QQ with $\lambda_{GC} = \tilde{\chi}^2_\mathrm{obs} / \chi^2_{0.5,\,J-1}$. |
+| `plot_lod_correlation(py, r_csv)` | — | Validation: scatter of Python vs R LOD. |
 
 ---
 
-## 4. Phase 2 implementation plan
-
-The following miQTL functions remain to be ported. Grouped by new module:
-
-### `permutation.py` (new)
-
-Mirrors miQTL's `generate.sample.outcomes.matrix()` → `run.threshold.scans()` → `get.gev.thresholds()` pipeline.
-
-- `generate_null_outcomes(scan_result, method, n_samples, seed)` — permute phenotype labels or sample from null model
-- `run_threshold_scans(null_outcomes, genome_cache, ...)` — re-scan on each permuted phenotype
-- `get_gev_thresholds(threshold_scans, percentile)` — fit GEV distribution to per-permutation peak LOD, return threshold
-- `run_positional_scans(bootstrap_outcomes, genome_cache, ...)` — parametric bootstrap CI (`run.positional.scans`)
-
-### `scan.py` additions
-
-- `scan_h2lmm(..., use_multi_impute=True, n_imp=11)` — multiple imputation path: sample $M$ diplotype states, average LOD over imputations
-- `instability_lm_scan(...)` — fixed-effect only bootstrap stability scan
-- `fixef_eqtl_scan(...)` — fixed-effect eQTL scan (no kinship, faster)
-- `grab_locus_from_scan(scan_result)` — extract peak locus from `ScanResult`
-
-### `snp_scan.py` (new)
-
-- `imputed_snp_scan_h2lmm(genome_cache, snp_db, ...)` — impute biallelic SNP dosages from haplotype probs, run association
-- `pairwise_cor_snp_scan(...)` — compute $r^2$ LD matrix between SNPs
-
-### `mediation.py` (new)
-
-- `mediation_scan_qr(scan_result, mediator_matrix, ...)` — genome-wide mediation via QR decomposition (fast)
-- `fixef_mediation_scan(...)` — fixed-effect mediation
-
-### `genome_cache.py` additions
-
-- `GenomeCache.collapse(tol=0.02, criterion='euclidean')` — merge redundant adjacent loci (`collapse.genomecache()`)
-
-### `plotting.py` additions (Phase 2)
-
-- `manhattan(scan_result, ...)` — `genome.plotter.whole()`
-- `manhattan_region(scan_result, chrom, window_mb, ...)` — `genome.plotter.region()`
-- `allele_plotter_region(scan_result, chrom, ...)` — `allele.plotter.region()`
-- `single_chr_plotter_ci(scan_result, ci_result, ...)` — `single.chr.plotter.w.ci()`
-- `prob_heatmap(locus, genome_cache, ...)` — `prob.heatmap()`
-- `snp_manhattan(snp_scan_result, ...)` — `snp.genome.plotter.whole()`
-
----
-
-## 5. Validation structure
+## 4. Validation structure
 
 ```
 validation/
-  lmm_validation/          # Phase 1: LMM scan validation
+  lmm_validation/          Phase 1 — LMM scan vs miQTL
     r_data/
-      lod_r.csv            # R reference LOD scores (from run_validation.R)
-      gene_results.csv     # per-gene pass/fail summary
-      kinship_report.csv   # per-chromosome kinship comparison
-      haplotype_report.csv # per-chromosome haplotype spot-check
-      gene_summary.csv     # per-gene stats
-      lod_comparison.csv   # per-locus LOD_py vs LOD_r
-      qc_summary.csv       # section-level PASS/FAIL table
-    qc_plots/
-      lod_correlation.png  # scatter: mosaiQTL vs miQTL LOD
-      lod_residuals.png    # ΔLOD by chromosome
-      kinship_heatmap.png  # Python / R / difference heatmaps
-      haplotype_probs.png  # Python / R / difference heatmaps
-      pvalue_qq.png        # QQ plot with λ_GC
-      founder_effects.png  # founder β̂ comparison
-      gene_summary.png     # relative error + peak concordance by tier
-  port_validation/         # Phase 2: full port validation
-    r_data/                # (to be populated)
-    qc_plots/
+      lod_r.csv            R reference LOD scores
+      kinship_report.csv   per-chromosome kinship comparison
+      haplotype_report.csv per-chromosome haplotype spot-check
+      gene_summary.csv     per-gene pass/fail
+      lod_comparison.csv   per-locus LOD_py vs LOD_r
+      qc_summary.csv       section-level PASS/FAIL
+    qc_plots/              LOD correlation, residuals, QQ, etc.
+  port_validation/         Phase 2 — full port vs miQTL
+    r_data/                (populated by port_validation.R)
+    qc_plots/              (populated by validate_port.py)
   r_reference/
-    run_validation.R       # R reference scan (miQTL::scan.h2lmm)
-  validate_vs_r.py         # Python validation script
+    run_validation.R       R reference scan (Phase 1)
+    port_validation.R      R reference outputs (Phase 2, sections 4-10)
+  validate_vs_r.py         Phase 1 Python validation
+  validate_port.py         Phase 1 + Phase 2 Python validation
 ```
 
 **Phase 1 pass criteria:**
-- Kinship: r > 0.999 AND max|ΔK| < 0.05
-- LOD: strict = `peak_match AND rel_error < 10%`; lenient = `peak_match AND rel_error < 20%`; section passes at ≥ 50% of genes
-- Haplotype: row sums correct (delta informational only)
+- Kinship: $r > 0.999$ AND max$|\Delta K| < 0.05$
+- LOD: strict = `peak_match AND rel_error < 10%`; lenient = `peak_match AND rel_error < 20%`; pass ≥ 50% of genes
 
-**Phase 2 pass criteria (planned):**
-- Multiple imputation: LOD profile correlation between Python MI and R MI > 0.99
-- SNP scan: r > 0.99 at matched SNP positions vs `imputed.snp.scan.h2lmm()`
-- Permutation thresholds: GEV-fitted threshold within 0.1 LOD of R's threshold at 5th percentile
-- Mediation: Sobel test p-values within 1 order of magnitude of R's
+**Phase 2 pass criteria:**
+- Collapse: reduction ≥ 5%, kinship $r > 0.99$ before/after, row sums preserved
+- Permutation: GEV threshold within 0.5 LOD of R
+- MI: LOD profile $r > 0.95$ at matched loci
+- Mediation: LOD $r > 0.90$
+- CI: Python and R 95% bootstrap intervals overlap
+- Instability: LOD $r > 0.90$
+
+---
+
+## 5. Usage
+
+```python
+from mosaiqtl.genome_cache import GenomeCache
+from mosaiqtl import kinship, scan
+
+# R-free cache build
+cache = GenomeCache.from_gigamuga(
+    gigamuga_path='input/GM_ccfo_mm39.csv',
+    gmap_dir='input/GM/gmap/', pmap_dir='input/GM/pmap/',
+    cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES)
+cache.save('output/cache.h5')
+cache = GenomeCache.load('output/cache.h5')
+
+# LOCO kinship (m×m, genotype space)
+K = kinship.calc_kinship(cache, method='loco')
+
+# cis-eQTL scan — 1:1 case (n == m)
+result = scan.scan_h2lmm(phenotype=y, genome_cache=cache,
+                          covariates=X, kinship_decomp=K,
+                          phenotype_id='Slc25a3')
+
+# cis-eQTL scan — replicated case (n > m, e.g. 418 samples → 48 strains)
+result = scan.scan_h2lmm(phenotype=y_full, genome_cache=cache,
+                          covariates=X_full, kinship_decomp=K,
+                          sample_ids=subject_ids,  # maps 418 → 48
+                          phenotype_id='Slc25a3')
+```
 
 ---
 
@@ -286,25 +331,31 @@ validation/
 
 | File | Lines | Role |
 |---|---|---|
-| `mosaiqtl/genome_cache.py` | 700 | Cache build, load/save, readers |
+| `mosaiqtl/genome_cache.py` | 780 | Cache build, IO, collapse |
 | `mosaiqtl/hmm.py` | 335 | Diplotype HMM |
-| `mosaiqtl/lmm.py` | 351 | REML + ML LMM |
-| `mosaiqtl/scan.py` | 269 | Scan orchestration |
+| `mosaiqtl/lmm.py` | 220 | REML + ML LMM, brute check |
+| `mosaiqtl/scan.py` | 480 | Scan functions, Z-matrix design |
 | `mosaiqtl/kinship.py` | 178 | LOCO kinship |
+| `mosaiqtl/permutation.py` | 230 | Thresholds, CI |
+| `mosaiqtl/snp_scan.py` | 205 | SNP association |
+| `mosaiqtl/mediation.py` | 218 | Mediation scan |
 | `mosaiqtl/vqtl.py` | 329 | Variance QTL |
 | `mosaiqtl/nb.py` | 252 | NB GLM |
 | `mosaiqtl/plotting.py` | 611 | Visualisation |
-| `mosaiqtl/utils.py` | 196 | Utilities |
-| `validation/validate_vs_r.py` | 735 | Full validation script |
-| `validation/r_reference/run_validation.R` | 265 | R reference scan |
+| `mosaiqtl/utils.py` | 210 | Z matrix, RINT, alignment |
+| `validation/validate_vs_r.py` | 735 | Phase 1 validation |
+| `validation/validate_port.py` | 850 | Phase 1 + 2 validation |
+| `validation/r_reference/run_validation.R` | 267 | R reference (Phase 1) |
+| `validation/r_reference/port_validation.R` | 440 | R reference (Phase 2) |
 
 ---
 
 ## 7. References
 
-- Keele, G.R. *et al.* (2020). Implementing and evaluating a multi-ancestry multi-parent QTL mapping framework in a diversity outbred mouse population. *PLOS Genetics* 16:e1008537. [doi:10.1371/journal.pgen.1008537](https://doi.org/10.1371/journal.pgen.1008537)
-- Broman, K.W. *et al.* (2019). R/qtl2: Software for mapping quantitative trait loci with high-dimensional data and multiparent populations. *Genetics* 211:495–502. [doi:10.1534/genetics.118.301595](https://doi.org/10.1534/genetics.118.301595)
-- Mott, R. *et al.* (2000). A new method for fine-mapping quantitative trait loci in outbred animal stocks. *PNAS* 97:12649–12654. [doi:10.1073/pnas.230304397](https://doi.org/10.1073/pnas.230304397)
-- Kang, H.M. *et al.* (2008). Efficient control of population structure in model organism association mapping. *Genetics* 178:1709–1723. [doi:10.1534/genetics.107.080101](https://doi.org/10.1534/genetics.107.080101)
-- He, L. *et al.* (2021). NEBULA is a fast negative binomial mixed model for differential or co-expression analysis of large-scale multi-subject single-cell data. *Communications Biology* 4:629. [doi:10.1038/s42003-021-02146-6](https://doi.org/10.1038/s42003-021-02146-6)
-- Churchill, G.A. *et al.* (2004). The Collaborative Cross, a community resource for the genetic analysis of complex traits. *Nature Genetics* 36:1133–1137. [doi:10.1038/ng1104-1133](https://doi.org/10.1038/ng1104-1133)
+- Keele, G.R. *et al.* (2020). *PLOS Genetics* 16:e1008537 — **miQTL** [doi:10.1371/journal.pgen.1008537](https://doi.org/10.1371/journal.pgen.1008537)
+- Broman, K.W. *et al.* (2019). *Genetics* 211:495 — **R/qtl2** [doi:10.1534/genetics.118.301595](https://doi.org/10.1534/genetics.118.301595)
+- Mott, R. *et al.* (2000). *PNAS* 97:12649 — **HAPPY HMM** [doi:10.1073/pnas.230304397](https://doi.org/10.1073/pnas.230304397)
+- Kang, H.M. *et al.* (2008). *Genetics* 178:1709 — **eigendecomposition LMM** [doi:10.1534/genetics.107.080101](https://doi.org/10.1534/genetics.107.080101)
+- He, L. *et al.* (2021). *Communications Biology* 4:629 — **NEBULA** [doi:10.1038/s42003-021-02146-6](https://doi.org/10.1038/s42003-021-02146-6)
+- Churchill, G.A. *et al.* (2004). *Nature Genetics* 36:1133 — **Collaborative Cross** [doi:10.1038/ng1104-1133](https://doi.org/10.1038/ng1104-1133)
+- Pachter, L. (2026). **edgePython** [doi:10.64898/2026.02.16.706223](https://doi.org/10.64898/2026.02.16.706223)
