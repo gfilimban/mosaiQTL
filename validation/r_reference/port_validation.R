@@ -214,16 +214,16 @@ message('  total: ', n_total_orig, ' → ', n_total_coll,
 # cis-window scans. bypass: permute phenotype labels directly in a loop.
 # ─────────────────────────────────────────────────────────────────────────────
 message('\n[section 5] permutation thresholds')
-thresh_gene <- all_genes[1]
 thresh_chr  <- chromosomes[1]
+# pick first gene that has cis loci on thresh_chr (avoids gene/chr mismatch)
+thresh_gene <- NULL
+for (.g in all_genes) {
+  if (!is.null(get_cis_loci(.g, thresh_chr))) { thresh_gene <- .g; break }
+}
+if (is.null(thresh_gene)) stop('no gene with cis loci on chr', thresh_chr)
 k_thresh    <- kinship_loco[[thresh_chr]]
 thresh_form <- make_form(thresh_gene)
-
-tss_t <- if (use_gtf) gene_annot$tss_mb[gene_annot$gene_id==thresh_gene &
-             gene_annot$chr==thresh_chr][1] else
-          median(pmap_flat$pos_mb[pmap_flat$chr==thresh_chr], na.rm=TRUE)
-cis_t <- get_cis_loci(thresh_gene, thresh_chr)
-if (is.null(cis_t)) cis_t <- pmap_flat$locus[pmap_flat$chr==thresh_chr][1:50]
+cis_t       <- get_cis_loci(thresh_gene, thresh_chr)
 message('  gene=', thresh_gene, '  chr', thresh_chr,
         '  cis_loci=', length(cis_t))
 
