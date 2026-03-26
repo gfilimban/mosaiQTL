@@ -509,6 +509,37 @@ if not args.skip_phase1:
 # PHASE 2 — SECTIONS 4-10
 # ══════════════════════════════════════════════════════════════════════════════
 
+# shared phenotype + covariates for phase 2 — loaded independently of phase 1
+# so phase 2 works with or without --skip-phase1
+_pheno_path = paths['pheno_strain']
+if os.path.exists(_pheno_path):
+    _raw2 = pd.read_csv(_pheno_path)
+    if _raw2.columns[0] != 'subject.name':
+        _raw2 = pd.read_csv(_pheno_path, index_col=0).reset_index()
+    _raw2 = _raw2.drop_duplicates('subject.name', keep='first').reset_index(drop=True)
+    _cache_s = list(cache_py.sample_ids)
+    _ps = _raw2.set_index('subject.name').reindex(_cache_s)
+    _cp = [np.ones((len(_ps), 1))]
+    if 'batch' in _ps.columns and _ps['batch'].notna().any():
+        _cp.append(pd.get_dummies(_ps['batch'], prefix='batch',
+                                   drop_first=True).astype(float).values)
+    _pcs = [c for c in [f'pc{i}' for i in range(1, 11)] if c in _ps.columns]
+    if _pcs: _cp.append(_ps[_pcs].fillna(0).astype(float).values)
+    pheno_strain  = _ps.reset_index()   # rows=strains, cols=genes+meta
+    covar_base    = np.hstack(_cp)      # (n_strains, p)
+    log.info(f'phase2 pheno: {len(pheno_strain)} strains  covar: {covar_base.shape[1]} cols')
+else:
+    pheno_strain = None; covar_base = None
+    log.warning(f'pheno file missing: {_pheno_path}')
+
+def _get_y(gene):
+    """extract phenotype vector aligned to cache sample order."""
+    if pheno_strain is None or gene not in pheno_strain.columns:
+        return None
+    return (pheno_strain.drop_duplicates('subject.name')
+            .set_index('subject.name').reindex(_cache_s)[gene]
+            .values.astype(float))
+
 # helper: load R csv if present
 def load_r(key):
     p = paths[key]
@@ -594,6 +625,66 @@ else:
            ylim=(0.9, 1.01))
     ax.legend(fontsize=9); sns.despine(ax=ax)
     plt.tight_layout(); save_plot(fig, 'collapse_comparison.png')
+
+    # LOD scan: full vs collapsed cache to confirm LOD scores are preserved
+    if pheno_strain is not None:
+        lod_r_ref = pd.read_csv(paths['lod_r']) if os.path.exists(paths['lod_r']) else None
+        if lod_r_ref is not None:
+            lod_r_ref['chr'] = lod_r_ref['chr'].astype(str)
+            hi('  LOD QC: scanning full vs collapsed cache...')
+            # pick up to 6 gene×chr pairs from lod_r that exist in pheno_strain
+            _chrs_s4 = sorted(lod_r_ref['chr'].unique(), key=_chr_sort)[:3]
+            _pairs   = []
+            for _c in _chrs_s4:
+                _cg = [g for g in lod_r_ref[lod_r_ref['chr']==_c]['gene_id'].unique()
+                       if g in pheno_strain.columns][:2]
+                _pairs.extend([(g, _c) for g in _cg])
+            _pairs = _pairs[:6]
+
+            lf, lc, lr = [], [], []
+            for _gene, _chrom in _pairs:
+                _y = _get_y(_gene)
+                if _y is None or np.all(np.isnan(_y)): continue
+                _k   = kinship_py[_chrom]
+                _ev, _evc = np.linalg.eigh(_k)
+                _h2, _ = lmm_module.estimate_h2_null(
+                    _evc.T @ _rint(_y), _evc.T @ covar_base, _ev)
+                for _ca, _ls in [(cache_py, lf), (cache_coll, lc)]:
+                    _cr = lmm_module.scan_chromosome(
+                        _rint(_y), _ca, _chrom, covar_base, _ev, _evc, _h2)
+                    _ls.append(pd.DataFrame({'locus': _cr['locus_ids'],
+                                             'lod': _cr['lod'], 'gene_id': _gene}))
+                _rs = lod_r_ref[
+                    (lod_r_ref['gene_id']==_gene) &
+                    (lod_r_ref['chr']==_chrom)][['locus','lod']].rename(
+                    columns={'lod':'lod_r'})
+                lr.append(_rs.assign(gene_id=_gene))
+
+            if lf and lc and lr:
+                df_fc = pd.concat(lf).merge(pd.concat(lc), on=['locus','gene_id'],
+                                            suffixes=('_full','_coll'))
+                df_fr = pd.concat(lf).merge(pd.concat(lr), on=['locus','gene_id'])
+                r_fc  = float(np.corrcoef(df_fc['lod_full'], df_fc['lod_coll'])[0,1])
+                r_fr  = float(np.corrcoef(df_fr['lod'],      df_fr['lod_r'])[0,1])
+                hi(f'  collapse LOD QC: r(full,coll)={r_fc:.4f}  r(full,R)={r_fr:.4f}')
+
+                fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+                for ax, x, y, xl, yl, ttl in [
+                    (axes[0], df_fc['lod_full'], df_fc['lod_coll'],
+                     'LOD (full cache)', 'LOD (collapsed cache)',
+                     f'full vs collapsed  r={r_fc:.4f}'),
+                    (axes[1], df_fr['lod_r'], df_fr['lod'],
+                     'LOD (miQTL R)', 'LOD (mosaiQTL Python)',
+                     f'Python vs R reference  r={r_fr:.4f}'),
+                ]:
+                    lim = max(float(max(x.max(), y.max()))*1.05, 1.0)
+                    ax.scatter(x, y, s=4, alpha=1.0, color='#4F6EAF', edgecolors='none')
+                    ax.plot([0,lim],[0,lim],'--',color='#D83026',lw=1)
+                    ax.set(xlim=(0,lim),ylim=(0,lim),xlabel=xl,ylabel=yl,title=ttl)
+                    sns.despine(ax=ax)
+                plt.suptitle('cache collapse LOD QC', y=1.01, fontsize=11)
+                plt.tight_layout(); save_plot(fig, 'collapse_lod_comparison.png')
+
 # ── SECTION 5 — permutation thresholds ───────────────────────────────────────
 section('SECTION 5 — PERMUTATION THRESHOLDS')
 if not has_fn('permutation','get_gev_thresholds'):
@@ -611,8 +702,8 @@ else:
         n_p         = int(thresh_r['n_perms'].iloc[0])
         log.info(f'  R threshold: {thresh_r_v:.3f}  gene={thresh_gene}  chr={thresh_chr}')
 
-        pheno_col = pheno_strain.set_index('subject.name').reindex(
-            cache_py.sample_ids)[thresh_gene].values.astype(float)
+        pheno_col = _get_y(thresh_gene)
+        if pheno_col is None: skip('permutation_thresholds', f'{thresh_gene} missing'); pheno_col = np.array([])
         k_c  = kinship_py[thresh_chr]
         ev,evc = np.linalg.eigh(k_c)
         valid  = ~np.isnan(pheno_col)
@@ -670,8 +761,8 @@ else:
         mi_chr  = mi_r[mi_r['gene_id']==mi_gene]['chr'].iloc[0]
         mi_gene_r = mi_r[mi_r['gene_id']==mi_gene][['locus','lod']].rename(columns={'lod':'lod_r'})
         log.info(f'  MI scan: {mi_gene} chr{mi_chr}')
-        pheno_mi = pheno_strain.set_index('subject.name').reindex(
-            cache_py.sample_ids)[mi_gene].values.astype(float)
+        pheno_mi = _get_y(mi_gene)
+        if pheno_mi is None: skip('multi_imputation', f'{mi_gene} missing'); pheno_mi = None
         kd_mi = kin_module.decomp_kinship({mi_chr: kinship_py[mi_chr]})
         res_mi = _mi(pheno_mi, cache_py, covar_base, kd_mi, n_imp=11, seed=1,
                      phenotype_id=mi_gene)
@@ -721,10 +812,8 @@ else:
         med_med  = str(med_r['mediator'].iloc[0])
         med_chr  = str(med_r['chr'].iloc[0])
         log.info(f'  mediation: outcome={med_gene}  mediator={med_med}  chr={med_chr}')
-        pheno_o = pheno_strain.set_index('subject.name').reindex(
-            cache_py.sample_ids)[med_gene].values.astype(float)
-        pheno_m = pheno_strain.set_index('subject.name').reindex(
-            cache_py.sample_ids)[med_med].values.astype(float)
+        pheno_o = _get_y(med_gene)
+        pheno_m = _get_y(med_med)
         kd_med = kin_module.decomp_kinship({med_chr: kinship_py[med_chr]})
         py_med = med_mod.mediation_scan_qr(
             pheno_o, pheno_m, cache_py, covar_base, kd_med,
@@ -776,8 +865,7 @@ else:
         ci_hi_r = float(ci_r['ci_hi_mb'].iloc[0])
         n_boot  = int(ci_r['n_boot'].iloc[0]) if 'n_boot' in ci_r else 100
         log.info(f'  CI: {ci_gene} chr{ci_chr}  R=[{ci_lo_r:.2f},{ci_hi_r:.2f}]')
-        pheno_ci = pheno_strain.set_index('subject.name').reindex(
-            cache_py.sample_ids)[ci_gene].values.astype(float)
+        pheno_ci = _get_y(ci_gene)
         kd_ci  = kin_module.decomp_kinship({ci_chr: kinship_py[ci_chr]})
         ci_res = _sh(pheno_ci, cache_py, covar_base, kd_ci, phenotype_id=ci_gene)
         rng_ci = np.random.default_rng(1)
@@ -824,8 +912,7 @@ else:
         fx_gene = str(fx_r['gene_id'].iloc[0])
         fx_chr  = str(fx_r['chr'].iloc[0])
         log.info(f'  instability scan: {fx_gene} chr{fx_chr}')
-        pheno_f = pheno_strain.set_index('subject.name').reindex(
-            cache_py.sample_ids)[fx_gene].values.astype(float)
+        pheno_f = _get_y(fx_gene)
         loci_r  = set(fx_r[fx_r['gene_id']==fx_gene]['locus'].tolist())
         inst_py = _inst(pheno_f, cache_py, covar_base,
                         n_samples=100, seed=1, phenotype_id=fx_gene,
