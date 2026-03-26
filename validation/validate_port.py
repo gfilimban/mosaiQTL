@@ -792,16 +792,75 @@ else:
             save_plot(fig,'mi_lod_profile.png')
 
 # ── SECTION 7 — SNP scan ─────────────────────────────────────────────────────
+# Python path: imputed_snp_scan_h2lmm() takes snp_genos DataFrame directly.
+# R path:      imputed.snp.scan.h2lmm() reads allele_dir (HAPPY .RData files).
+#
+# to enable: provide a snp_genos CSV with columns:
+#   snp_id (index), chr, pos_mb, AJ, B6J, 129S1J, NODJ, NZOJ, CASTJ, PWKJ, WSBJ
+# or build allele_dir from snp_genos using snp_scan.build_allele_dir().
 section('SECTION 7 — SNP SCAN')
-if not has_fn('snp_scan','imputed_snp_scan_h2lmm'):
-    skip('snp_scan','mosaiqtl.snp_scan not available')
+_snp_genos_path = os.path.join(miqtl_dir, 'input', 'snp_genos.csv')
+if not has_fn('snp_scan', 'imputed_snp_scan_h2lmm'):
+    skip('snp_scan', 'mosaiqtl.snp_scan not available')
+elif not os.path.exists(_snp_genos_path):
+    skip('snp_scan',
+         f'snp_genos.csv not found at {_snp_genos_path}\n'
+         '         prepare with: snp_genos = pd.DataFrame(index=snp_ids, '
+         'columns=[chr,pos_mb,AJ,B6J,...]) → save to input/snp_genos.csv')
 else:
-    snp_r = load_r('snp_lod_r')
-    if snp_r is None:
-        skip('snp_scan','snp_lod_r.csv missing — run port_validation.R with allele_dir')
+    from mosaiqtl.snp_scan import imputed_snp_scan_h2lmm as _snp_scan
+    from mosaiqtl.snp_scan import read_allele_dir, build_allele_dir
+    snp_r    = load_r('snp_lod_r')
+    snp_gene = (str(snp_r['gene_id'].iloc[0]) if snp_r is not None
+                else (list(pheno_strain.columns)[0]
+                      if pheno_strain is not None else None))
+    snp_chr  = (str(snp_r['chr'].iloc[0]) if snp_r is not None
+                else (args.chr or chr_order[0]))
+    if snp_gene is None:
+        skip('snp_scan', 'no gene available')
     else:
-        skip('snp_scan','allele_dir format differs from Python snp_genos API — '
-             'manual alignment required; validation planned with VCF-based SNP input')
+        hi(f'  SNP scan: {snp_gene} chr{snp_chr}')
+        snp_genos = pd.read_csv(_snp_genos_path, index_col=0)
+        snp_genos['chr'] = snp_genos['chr'].astype(str)
+        pheno_snp = _get_y(snp_gene)
+        if pheno_snp is None:
+            skip('snp_scan', f'{snp_gene} not in phenotype file')
+        else:
+            kd_snp   = kin_module.decomp_kinship({snp_chr: kinship_py[snp_chr]})
+            snp_res  = _snp_scan(pheno_snp, cache_py, snp_genos, covar_base,
+                                 kd_snp, phenotype_id=snp_gene)
+            if snp_r is not None and not snp_res.empty:
+                snp_gene_r = snp_r[snp_r['gene_id']==snp_gene][['snp','lod']].rename(
+                    columns={'lod':'lod_r'})
+                mg_snp = snp_res.rename(columns={'lod':'lod_py'}).merge(
+                    snp_gene_r, on='snp', how='inner')
+                if len(mg_snp) >= 3:
+                    r_snp = float(np.corrcoef(mg_snp['lod_r'], mg_snp['lod_py'])[0,1])
+                    snpp  = r_snp > 0.90
+                    hi(f'  SNP LOD r={r_snp:.4f}  {"PASS" if snpp else "FAIL"}')
+                    qc_rows.append({'section':'snp_scan','pass':snpp,
+                                    'detail':f'r={r_snp:.4f}  n_snps={len(mg_snp)}'})
+                    save_csv(mg_snp, 'snp_lod_comparison.csv')
+                    fig, ax = plt.subplots(figsize=(5,5))
+                    lim = max(mg_snp[['lod_r','lod_py']].max().max()*1.05,1.0)
+                    ax.scatter(mg_snp['lod_r'], mg_snp['lod_py'],
+                               s=4, alpha=1.0, color='#4F6EAF', edgecolors='none')
+                    ax.plot([0,lim],[0,lim],'--',color='#D83026',lw=1)
+                    ax.text(0.05,0.95,f'$r$={r_snp:.4f}',
+                            transform=ax.transAxes, fontsize=9, va='top')
+                    ax.set(xlim=(0,lim),ylim=(0,lim),
+                           xlabel='miQTL SNP LOD (R)',
+                           ylabel='mosaiQTL SNP LOD (Python)',
+                           title=f'SNP scan — {snp_gene} chr{snp_chr}')
+                    sns.despine(); plt.tight_layout()
+                    save_plot(fig, 'snp_lod_comparison.png')
+                else:
+                    skip('snp_scan', f'insufficient SNP overlap ({len(mg_snp)})')
+            else:
+                save_csv(snp_res, 'snp_lod_py.csv')
+                hi(f'  SNP scan complete: {len(snp_res)} SNPs (no R reference)')
+                qc_rows.append({'section':'snp_scan','pass':None,
+                                'detail':f'py only — {len(snp_res)} SNPs'})
 
 # ── SECTION 8 — mediation ────────────────────────────────────────────────────
 section('SECTION 8 — MEDIATION')

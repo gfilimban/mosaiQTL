@@ -203,3 +203,104 @@ def pairwise_cor_snp_scan(phenotype, genome_cache, snp_genos,
     return pd.DataFrame({'snp': snp_ids, 'pos_mb': snp_pos_,
                          'r2': np.diag(corr) ** 2,
                          'r': np.diag(corr)})
+
+
+def read_allele_dir(allele_dir, founders, chrom=None):
+    """read miQTL allele_dir into a snp_genos DataFrame.
+
+    allele_dir structure (miQTL HAPPY format):
+      allele_dir/
+        chr1/
+          SNP1.RData    ← named vector of founder allele dosages (0/1/2)
+          SNP2.RData
+        chr8/
+          ...
+
+    parameters
+    ----------
+    allele_dir : str   path to allele directory
+    founders   : list  founder names in cache order
+    chrom      : str or None  if given, only load this chromosome
+
+    returns
+    -------
+    pd.DataFrame  index=snp_id, columns=founders + ['chr','pos_mb']
+    """
+    import glob, os
+    try:
+        import rpy2.robjects as ro
+    except ImportError:
+        raise ImportError('rpy2 required for reading allele_dir .RData files')
+
+    rows = []
+    chr_dirs = sorted(glob.glob(os.path.join(allele_dir, 'chr*')))
+    for chr_dir in chr_dirs:
+        c = os.path.basename(chr_dir).replace('chr', '')
+        if chrom is not None and c != str(chrom):
+            continue
+        rdata_files = sorted(glob.glob(os.path.join(chr_dir, '*.RData')))
+        for rf in rdata_files:
+            snp_id = os.path.splitext(os.path.basename(rf))[0]
+            env    = ro.r['new.env']()
+            ro.r['load'](rf, envir=env)
+            obj    = ro.r['get'](ro.r['ls'](envir=env)[0], envir=env)
+            arr    = np.array(obj, dtype=float).ravel()
+            # arr length = n_founders; map to founder names
+            row = {'snp_id': snp_id, 'chr': c, 'pos_mb': np.nan}
+            for fi, f in enumerate(founders):
+                row[f] = float(arr[fi]) if fi < len(arr) else np.nan
+            rows.append(row)
+
+    if not rows:
+        return pd.DataFrame(columns=['chr', 'pos_mb'] + list(founders))
+    df = pd.DataFrame(rows).set_index('snp_id')
+    logger.info(f'read_allele_dir: {len(df)} SNPs from {allele_dir}')
+    return df
+
+
+def build_allele_dir(snp_genos, allele_dir, pmap=None):
+    """build a miQTL-compatible allele_dir from a snp_genos DataFrame.
+
+    writes one .RData file per SNP using rpy2.
+    enables use of miqtl::imputed.snp.scan.h2lmm() with Python-prepared data.
+
+    parameters
+    ----------
+    snp_genos  : pd.DataFrame  index=snp_id, cols=founders + ['chr','pos_mb']
+    allele_dir : str   output directory path
+    pmap       : pd.DataFrame or None  optional; columns=['snp_id','chr','pos_mb']
+                 used to fill missing chr/pos_mb in snp_genos
+
+    returns
+    -------
+    str  path to allele_dir
+    """
+    import os
+    try:
+        import rpy2.robjects as ro
+        from rpy2.robjects import numpy2ri
+        numpy2ri.activate()
+    except ImportError:
+        raise ImportError('rpy2 required for building allele_dir .RData files')
+
+    os.makedirs(allele_dir, exist_ok=True)
+    founder_cols = [c for c in snp_genos.columns if c not in ('chr', 'pos_mb')]
+    n_written    = 0
+
+    for snp_id, row in snp_genos.iterrows():
+        c = str(row.get('chr', 'unknown'))
+        chr_dir = os.path.join(allele_dir, f'chr{c}')
+        os.makedirs(chr_dir, exist_ok=True)
+        rdata_path = os.path.join(chr_dir, f'{snp_id}.RData')
+        if os.path.exists(rdata_path):
+            continue
+        geno_vec = np.array([float(row.get(f, 0)) for f in founder_cols])
+        rv       = ro.FloatVector(geno_vec)
+        rv.names = ro.StrVector(founder_cols)
+        env      = ro.r['new.env']()
+        env[snp_id] = rv
+        ro.r['save'](ro.StrVector([snp_id]), file=rdata_path, envir=env)
+        n_written += 1
+
+    logger.info(f'build_allele_dir: wrote {n_written} SNP files to {allele_dir}')
+    return allele_dir
