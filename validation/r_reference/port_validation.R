@@ -43,8 +43,8 @@ message('[init] chr=', scan_chrs, '  n_genes=',
         if (slurm_mode) '  mode=slurm' else '')
 
 # ── paths ─────────────────────────────────────────────────────────────────────
-data_dir <- '/share/crsp/lab/seyedam/gfilimba/projects/igvf_8cube/short-read/data/gastroc'
-pkg_dir  <- '/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl'
+data_dir <- '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
+pkg_dir  <- '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl'
 
 genomecache_path <- file.path(data_dir, 'output', 'genomecache')
 kinship_path     <- file.path(data_dir, 'output', 'kinship_loco.rds')

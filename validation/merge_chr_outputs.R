@@ -2,7 +2,7 @@
 # combines per-chromosome CSVs from SLURM array jobs into unified files.
 # run after run_validation_slurm.sh completes all chr jobs.
 # ─────────────────────────────────────────────────────────────────────────────
-pkg_dir <- '/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl'
+pkg_dir <- '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl'
 r_data  <- file.path(pkg_dir, 'validation', 'port_validation', 'r_data')
 
 # CSVs that are per-chromosome and need stacking

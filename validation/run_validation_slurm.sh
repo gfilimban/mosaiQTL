@@ -15,8 +15,8 @@
 set -euo pipefail
 
 # ── paths ─────────────────────────────────────────────────────────────────────
-PKG_DIR="/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl"
-DATA_DIR="/share/crsp/lab/seyedam/gfilimba/projects/igvf_8cube/short-read/data/gastroc"
+PKG_DIR="/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl"
+DATA_DIR="/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl"
 R_SCRIPT="${PKG_DIR}/validation/r_reference/port_validation.R"
 MERGE_SCRIPT="${PKG_DIR}/validation/merge_chr_outputs.R"
 PY_SCRIPT="${PKG_DIR}/validation/validate_port.py"
@@ -32,8 +32,8 @@ TS=$(date +%Y%m%d_%H%M%S)
 CHRS=(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 X)
 
 # SLURM resources
-PARTITION="standard"
-ACCOUNT="seyedam_lab"
+PARTITION="standard"    # update for your HPC partition
+ACCOUNT="seyedam_lab"   # update for your HPC account
 TIME_SETUP="01:00:00"     # setup step (s1-s3, s5)
 TIME_CHR="08:00:00"       # per-chr (s4 s6 s7 s8) — conservative
 TIME_MERGE="02:00:00"     # merge + python validation

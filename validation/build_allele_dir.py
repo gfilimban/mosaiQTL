@@ -29,8 +29,8 @@ ap.add_argument('--min_maf', default=0.0, type=float,
 args = ap.parse_args()
 
 # ── paths ─────────────────────────────────────────────────────────────────────
-data_dir    = '/share/crsp/lab/seyedam/gfilimba/projects/igvf_8cube/short-read/data/gastroc'
-pkg_dir     = '/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl'
+data_dir    = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
+pkg_dir     = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl'
 gm_path     = os.path.join(data_dir, 'input', 'GM_ccfo_mm39.csv')
 pmap_path   = os.path.join(data_dir, 'input', 'pmap.csv')
 allele_dir  = os.path.join(data_dir, 'output', 'allele_dir')
