@@ -139,11 +139,15 @@ collapsed_path <- file.path(data_dir, 'output', 'genomecache_collapsed')
 
 unlockBinding('collapse.genomecache', as.environment('package:miqtl'))
 fn_lines <- deparse(body(collapse.genomecache))
+# fix 1: internal functions only accessible via ::: (not exported)
+fn_lines <- gsub('check\\.l2\\.norm\\(',      'miqtl:::check.l2.norm(',      fn_lines)
+fn_lines <- gsub('check\\.max\\.category\\(', 'miqtl:::check.max.category(', fn_lines)
+# fix 2: initialise test <- FALSE before criterion block
 target   <- which(grepl('if \\(criterion == "l2.norm"\\)', fn_lines))
 fn_lines <- append(fn_lines, '            test <- FALSE', after=target-1)
 body(collapse.genomecache) <- str2lang(paste(fn_lines, collapse='\n'))
 lockBinding('collapse.genomecache', as.environment('package:miqtl'))
-message('  miqtl collapse bug patched')
+message('  miqtl collapse patched (:::check.l2.norm + test init)')
 
 if (!dir.exists(collapsed_path)) {
   message('  collapsing (l2.norm, proportion.tol=0.02)...')
@@ -217,7 +221,12 @@ for (i in seq_len(n_perms)) {
 }
 perm_lods <- perm_lods[!is.na(perm_lods)]
 # get.gev.thresholds expects list(max.statistics=...) not a plain numeric vector
-thresh_95 <- get.gev.thresholds(list(max.statistics=perm_lods), percentile=0.95)
+# get.gev.thresholds with use.lod=TRUE reads $max.statistics$LOD
+thresh_95 <- get.gev.thresholds(
+  threshold.scans = list(max.statistics = list(LOD = perm_lods)),
+  percentile      = 0.95,
+  use.lod         = TRUE
+)
 write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
                       gene=thresh_gene, chr=thresh_chr,
                       n_perms=length(perm_lods)),
