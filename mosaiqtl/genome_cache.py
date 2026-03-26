@@ -736,11 +736,16 @@ class GenomeCache:
             run_lid   = lids[0]
             run_pos   = pos[0]
 
+            n_founders = probs.shape[2]
             for i in range(1, n_loci):
                 if criterion in ('l2.norm', 'euclidean'):
-                    # mean l2 distance per strain across founders
-                    d = float(np.mean(
-                        np.linalg.norm(probs[i] - run_probs[-1], axis=1)))
+                    # matches miqtl:::check.l2.norm exactly:
+                    #   l2_i = ||h_i,l - h_i,l-1||_2 / sqrt(J)  per strain
+                    #   merge if max_i(l2_i) <= tol  (any > tol → keep separate)
+                    diff   = probs[i] - run_probs[-1]           # (n, J)
+                    l2     = (np.linalg.norm(diff, axis=1)       # (n,)
+                              / np.sqrt(n_founders))
+                    d = float(l2.max())
                 else:
                     # fraction of strains where argmax differs
                     d = float(np.mean(
