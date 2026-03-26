@@ -329,8 +329,15 @@ if (!length(thresh_gene)) {
     if (i %% 25 == 0) message('  ', i, '/', n_perms)
   }
   perm_lods <- perm_lods[!is.na(perm_lods)]
-  thresh_95 <- get.gev.thresholds(
-    list(max.statistics=list(LOD=perm_lods)), percentile=0.95, use.lod=TRUE)
+  # get.gev.thresholds can fail when perm_lods have low variance (few cis loci)
+  # fall back to empirical quantile if GEV optim fails
+  thresh_95 <- tryCatch(
+    get.gev.thresholds(
+      list(max.statistics=list(LOD=perm_lods)), percentile=0.95, use.lod=TRUE),
+    error=function(e) {
+      message('  GEV fit failed (', e$message, ') — using empirical quantile')
+      quantile(perm_lods, 0.95, na.rm=TRUE)
+    })
   write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
                         gene=thresh_gene, chr=thresh_chr,
                         n_perms=length(perm_lods),
