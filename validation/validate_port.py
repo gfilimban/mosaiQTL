@@ -519,66 +519,81 @@ def load_r(key):
     return None
 
 # ── SECTION 4 — genome cache collapse ────────────────────────────────────────
+# R reference: genomecache_path is already collapsed (founders_f1_genomecache.ipynb
+# called collapse.genomecache() when building the cache).
+# Python: collapse() applied to our full from_gigamuga() cache.
+# Comparison: py collapsed vs R already-collapsed loci counts per chromosome.
 section('SECTION 4 — CACHE COLLAPSE')
 if not hasattr(GenomeCache, 'collapse'):
     skip('cache_collapse', 'GenomeCache.collapse() not implemented')
 else:
-    r_coll = load_r('collapsed_r')
-    log.info('  collapsing Python cache (l2.norm tol=0.02)...')
+    # load R collapsed cache to get per-chromosome loci counts
+    _r_cache_path = os.path.join(miqtl_dir, 'output', 'genomecache')
+    try:
+        cache_r_coll = GenomeCache.from_happy_dir(_r_cache_path, model='additive')
+        r_loci = {c: len(cache_r_coll._data[c]['locus_ids'])
+                  for c in cache_r_coll.chromosomes}
+        log.info(f'  R collapsed cache: {sum(r_loci.values())} total loci')
+    except Exception as e:
+        cache_r_coll = None; r_loci = {}
+        log.warning(f'  R cache unavailable: {e}')
+
+    hi('  collapsing Python cache (l2.norm tol=0.02)...')
     cache_coll = cache_py.collapse(criterion='l2.norm', tol=0.02)
+
     rows_c = []
     for chrom in chr_order:
         n_full = len(cache_py._data[chrom]['locus_ids'])
         n_coll = len(cache_coll._data[chrom]['locus_ids'])
-        pct    = 100*(n_full-n_coll)/n_full
+        n_r    = r_loci.get(chrom, np.nan)
+        pct_py = 100*(n_full - n_coll) / n_full
+        pct_r  = 100*(n_full - n_r) / n_full if not np.isnan(n_r) else np.nan
         lids, pos, probs = cache_coll.get_chromosome(chrom)
         rsum_ok = np.allclose(probs.sum(axis=2), 1.0, atol=1e-4)
-        n_r = n_r_c = np.nan
-        if r_coll is not None and not r_coll.empty and 'status' not in r_coll.columns:
-            row = r_coll[r_coll['chr']==chrom]
-            if not row.empty:
-                n_r   = int(row['n_loci_orig'].iloc[0])
-                n_r_c = int(row['n_loci_coll'].iloc[0])
-        rows_c.append({'chr':chrom,'n_full':n_full,'n_collapsed':n_coll,
-                       'pct_reduced':pct,'row_sums_ok':rsum_ok,
-                       'n_r_orig':n_r,'n_r_coll':n_r_c})
-        log.info(f'  chr{chrom}: {n_full}→{n_coll} ({pct:.1f}%)  row_sums={rsum_ok}')
+        rows_c.append({'chr': chrom, 'n_full': n_full,
+                       'n_py_collapsed': n_coll, 'n_r_collapsed': n_r,
+                       'pct_reduced_py': pct_py, 'pct_reduced_r': pct_r,
+                       'row_sums_ok': rsum_ok})
+        log.info(f'  chr{chrom}: py {n_full}→{n_coll} ({pct_py:.1f}%)'
+                 f'  r_ref={n_r} ({pct_r:.1f}%)')
     coll_df = pd.DataFrame(rows_c)
     save_csv(coll_df, 'collapse_comparison.csv')
-    # kinship stability after collapse
+
+    # kinship stability: full vs collapsed Python cache
     k_coll = kin_module.calc_kinship(cache_coll, method='loco')
     k_cors = [float(np.corrcoef(kinship_py[c].ravel(), k_coll[c].ravel())[0,1])
               for c in chr_order if c in kinship_py and c in k_coll]
     mean_k_r  = float(np.mean(k_cors)) if k_cors else 0.0
-    mean_red   = float(coll_df['pct_reduced'].mean())
-    rows_ok    = bool(coll_df['row_sums_ok'].all())
-    coll_pass  = mean_red >= 5.0 and rows_ok and mean_k_r > 0.99
-    qc_rows.append({'section':'cache_collapse','pass':coll_pass,
-                    'detail':f'py_reduction={mean_red:.1f}%  kinship_r={mean_k_r:.4f}  row_sums={rows_ok}'})
-    fig, axes = plt.subplots(1,2,figsize=(11,4))
-    ax=axes[0]
-    ax.bar(range(len(coll_df)), coll_df['pct_reduced'],
+    mean_red  = float(coll_df['pct_reduced_py'].mean())
+    rows_ok   = bool(coll_df['row_sums_ok'].all())
+    coll_pass = mean_red >= 5.0 and rows_ok and mean_k_r > 0.99
+    hi(f'  collapse: py={mean_red:.1f}%  r_ref={coll_df["pct_reduced_r"].mean():.1f}%'
+       f'  kinship_r={mean_k_r:.4f}  {"PASS" if coll_pass else "FAIL"}')
+    qc_rows.append({'section': 'cache_collapse', 'pass': coll_pass,
+                    'detail': f'py={mean_red:.1f}%  r={coll_df["pct_reduced_r"].mean():.1f}%'
+                              f'  kinship_r={mean_k_r:.4f}  row_sums={rows_ok}'})
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    ax = axes[0]
+    x = np.arange(len(coll_df)); w = 0.35
+    ax.bar(x-w/2, coll_df['pct_reduced_py'], w,
            color='#4F6EAF', edgecolor='none', label='mosaiQTL (Python)')
-    if r_coll is not None and 'status' not in (r_coll.columns if r_coll is not None else []):
-        pct_r = [(100*(row['n_r_orig']-row['n_r_coll'])/row['n_r_orig']
-                  if row['n_r_orig']>0 else 0) for _,row in coll_df.iterrows()]
-        ax.bar(np.arange(len(coll_df))+0.35, pct_r,
-               0.35, color='#55AF5B', edgecolor='none', alpha=0.85, label='miQTL (R)')
-    ax.set(xticks=range(len(coll_df)),
-           xticklabels=[f'chr{c}' for c in coll_df['chr']],
+    ax.bar(x+w/2, coll_df['pct_reduced_r'].fillna(0), w,
+           color='#55AF5B', edgecolor='none', alpha=0.85, label='miQTL (R ref)')
+    ax.set(xticks=x, xticklabels=[f'chr{c}' for c in coll_df['chr']],
            xlabel='chromosome', ylabel='loci reduced (%)',
-           title=f'cache collapse — l2.norm tol=0.02\nmean={mean_red:.1f}%')
+           title=f'cache collapse (l2.norm tol=0.02)\n'
+                 f'py={mean_red:.1f}%  r_ref={coll_df["pct_reduced_r"].mean():.1f}%')
     plt.xticks(rotation=45, ha='right', fontsize=8)
     ax.legend(fontsize=9); sns.despine(ax=ax)
-    ax=axes[1]
+    ax = axes[1]
     ax.scatter(range(len(k_cors)), k_cors, s=20, color='#4F6EAF', edgecolors='none')
     ax.axhline(0.99, color='#D83026', lw=1, ls='--', label='r=0.99')
     ax.set(xlabel='chromosome index', ylabel='kinship r (full vs collapsed)',
-           title=f'kinship preservation after collapse\nmean r={mean_k_r:.4f}',
-           ylim=(0.9,1.01))
+           title=f'kinship stability after collapse\nmean r={mean_k_r:.4f}',
+           ylim=(0.9, 1.01))
     ax.legend(fontsize=9); sns.despine(ax=ax)
-    plt.tight_layout(); save_plot(fig,'collapse_comparison.png')
-
+    plt.tight_layout(); save_plot(fig, 'collapse_comparison.png')
 # ── SECTION 5 — permutation thresholds ───────────────────────────────────────
 section('SECTION 5 — PERMUTATION THRESHOLDS')
 if not has_fn('permutation','get_gev_thresholds'):

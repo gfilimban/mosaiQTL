@@ -3,13 +3,12 @@
 # sections 1-3 (haplotype, kinship, LMM) are handled by run_validation.R.
 #
 # section map:
-#   4.  collapse.genomecache()         → collapsed_cache_summary.csv
-#   5.  permutation thresholds         → thresholds_r.csv
-#   6.  scan.h2lmm(use.multi.impute)   → mi_lod_r.csv
-#   7.  imputed.snp.scan.h2lmm()       → snp_lod_r.csv   (gated on allele.dir)
-#   8.  mediation.scan.qr()            → mediation_r.csv
-#   9.  run.positional.scans()         → ci_r.csv
-#  10.  instability.lm.scan()          → fixef_r.csv
+#   4.  permutation thresholds         → thresholds_r.csv
+#   5.  scan.h2lmm(use.multi.impute)   → mi_lod_r.csv
+#   6.  imputed.snp.scan.h2lmm()       → snp_lod_r.csv   (gated on allele.dir)
+#   7.  mediation.scan.qr()            → mediation_r.csv
+#   8.  run.positional.scans()         → ci_r.csv
+#   9.  instability.lm.scan()          → fixef_r.csv
 #
 # confirmed miQTL signatures (via writeLines(deparse(formals(...)))):
 #   collapse.genomecache: original.cache, new.cache, subjects,
@@ -128,71 +127,13 @@ make_form <- function(gene) {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 4 — collapse.genomecache()
-#
-# bug in miqtl: variable 'test' used before assignment when check.l2.norm()
-# throws an error. fixed by inserting test <- FALSE before the criterion block
-# via unlockBinding + str2lang.
-# ─────────────────────────────────────────────────────────────────────────────
-message('\n[section 4] cache collapse')
-collapsed_path <- file.path(data_dir, 'output', 'genomecache_collapsed')
-
-unlockBinding('collapse.genomecache', as.environment('package:miqtl'))
-fn_lines <- deparse(body(collapse.genomecache))
-# fix 1: internal functions only accessible via ::: (not exported)
-fn_lines <- gsub('check\\.l2\\.norm\\(',      'miqtl:::check.l2.norm(',      fn_lines)
-fn_lines <- gsub('check\\.max\\.category\\(', 'miqtl:::check.max.category(', fn_lines)
-# fix 2: initialise test <- FALSE before criterion block
-target   <- which(grepl('if \\(criterion == "l2.norm"\\)', fn_lines))
-fn_lines <- append(fn_lines, '            test <- FALSE', after=target-1)
-body(collapse.genomecache) <- str2lang(paste(fn_lines, collapse='\n'))
-lockBinding('collapse.genomecache', as.environment('package:miqtl'))
-message('  miqtl collapse patched (:::check.l2.norm + test init)')
-
-if (!dir.exists(collapsed_path)) {
-  message('  collapsing (l2.norm, proportion.tol=0.02)...')
-  collapse.genomecache(
-    original.cache = genomecache_path,
-    new.cache      = collapsed_path,
-    subjects       = NULL,
-    criterion      = 'l2.norm',
-    model          = 'additive',
-    proportion.tol = 0.02
-  )
-}
-
-chr_dirs <- list.dirs(file.path(genomecache_path, 'additive'),
-                      full.names=FALSE, recursive=FALSE)
-# detect whether collapsed cache uses data/ subdir or flat layout per chr
-first_coll <- file.path(collapsed_path, 'additive', chr_dirs[1])
-has_data   <- dir.exists(file.path(first_coll, 'data')) &&
-  length(list.files(file.path(first_coll, 'data'), pattern='\\.RData$')) > 0
-message('  collapsed layout: ',
-        if (has_data) 'additive/chrN/data/' else 'additive/chrN/ (flat)')
-collapse_summary <- do.call(rbind, lapply(chr_dirs, function(c) {
-  n_orig    <- length(list.files(
-    file.path(genomecache_path, 'additive', c, 'data'), pattern='\\.RData$'))
-  coll_base <- file.path(collapsed_path, 'additive', c)
-  n_coll    <- if (has_data) {
-    length(list.files(file.path(coll_base, 'data'), pattern='\\.RData$'))
-  } else {
-    length(list.files(coll_base, pattern='\\.RData$', recursive=FALSE))
-  }
-  data.frame(chr=sub('^chr','',c), n_loci_orig=n_orig, n_loci_coll=n_coll)
-}))
-write.csv(collapse_summary, file.path(output_dir,'collapsed_cache_summary.csv'),
-          row.names=FALSE)
-message('  saved: collapsed_cache_summary.csv')
-print(collapse_summary)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SECTION 5 — permutation thresholds
+# SECTION 4 — permutation thresholds
 #
 # generate.sample.outcomes.matrix calls chol() even for method='permutation'
 # when computing BLUP weights — crashes on near-singular kinship from small
 # cis-window scans. bypass: permute phenotype labels directly in a loop.
 # ─────────────────────────────────────────────────────────────────────────────
-message('\n[section 5] permutation thresholds')
+message('\n[section 4] permutation thresholds')
 thresh_gene <- all_genes[1]
 thresh_chr  <- chromosomes[1]
 k_thresh    <- kinship_loco[[thresh_chr]]
@@ -234,9 +175,9 @@ write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
 message('  saved: thresholds_r.csv  threshold=', round(thresh_95,3))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 6 — multiple imputation scan
+# SECTION 5 — multiple imputation scan
 # ─────────────────────────────────────────────────────────────────────────────
-message('\n[section 6] multiple imputation')
+message('\n[section 5] multiple imputation')
 mi_results <- list()
 for (scan_chr in chromosomes) {
   k_chr  <- kinship_loco[[scan_chr]]
@@ -266,12 +207,12 @@ if (length(mi_results)) {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 7 — SNP scan (gated on allele.dir existence)
+# SECTION 6 — SNP scan (gated on allele.dir existence)
 #
 # miQTL's imputed.snp.scan.h2lmm() reads founder allele calls from a
 # directory of per-allele .RData files (allele.dir), not a DataFrame.
 # ─────────────────────────────────────────────────────────────────────────────
-message('\n[section 7] snp scan')
+message('\n[section 6] snp scan')
 if (!dir.exists(allele_dir_path)) {
   message('  SKIP: allele_dir not found at ', allele_dir_path)
   message('  to enable: create allele_dir with per-allele .RData files')
@@ -304,13 +245,13 @@ if (!dir.exists(allele_dir_path)) {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 8 — mediation scan
+# SECTION 7 — mediation scan
 #
 # miQTL interface:
 #   extract.mediation.qr(genomecache, data, ...)  → qr object
 #   mediation.scan.qr(mediation.qr.object, data, phenotype=..., chr=..., ...)
 # ─────────────────────────────────────────────────────────────────────────────
-message('\n[section 8] mediation')
+message('\n[section 7] mediation')
 med_gene     <- all_genes[1]
 med_mediator <- if (length(all_genes) > 1) all_genes[2] else NULL
 med_chr      <- chromosomes[1]
@@ -354,9 +295,9 @@ if (!is.null(med_mediator)) {
 } else { message('  SKIP: need ≥ 2 genes for mediation') }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 9 — positional CI (parametric bootstrap)
+# SECTION 8 — positional CI (parametric bootstrap)
 # ─────────────────────────────────────────────────────────────────────────────
-message('\n[section 9] positional CI')
+message('\n[section 8] positional CI')
 ci_gene <- all_genes[1]; ci_chr <- chromosomes[1]
 k_chr   <- kinship_loco[[ci_chr]]
 cis_ci  <- get_cis_loci(ci_gene, ci_chr)
@@ -403,13 +344,13 @@ if (!is.null(cis_ci)) {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 10 — fixed-effect / instability scan
+# SECTION 9 — fixed-effect / instability scan
 #
 # miQTL interface:
 #   generate.simple.sample.outcomes.matrix(...) → simple.sample.object
 #   instability.lm.scan(simple.sample.object, genomecache, ...)
 # ─────────────────────────────────────────────────────────────────────────────
-message('\n[section 10] fixed-effect instability scan')
+message('\n[section 9] fixed-effect instability scan')
 fx_gene <- all_genes[1]; fx_chr <- chromosomes[1]
 k_chr   <- kinship_loco[[fx_chr]]
 cis_fx  <- get_cis_loci(fx_gene, fx_chr)
