@@ -332,54 +332,76 @@ if (!dir.exists(allele_dir_path)) {
 #   mediation.scan.qr(mediation.qr.object, data, phenotype=..., chr=..., ...)
 # ─────────────────────────────────────────────────────────────────────────────
 message('\n[section 8] mediation')
-med_gene     <- all_genes[1]
-med_mediator <- if (length(all_genes) > 1) all_genes[2] else NULL
-med_chr      <- chromosomes[1]
-if (!is.null(med_mediator)) {
-  k_chr <- kinship_loco[[med_chr]]
-  # step 1: precompute QR decompositions for all loci on this chromosome
-  # formula includes mediator as covariate — null model for mediation test
-  med_null_form <- as.formula(paste0('`', med_gene, '` ~ `', med_mediator,
-    '` + batch + ', paste0('pc', 1:n_pcs, collapse=' + ')))
-  qr_obj <- tryCatch(
-    extract.mediation.qr(
-      genomecache = genomecache_path,
-      data        = pheno_strain,
-      formula     = med_null_form,
-      chr         = med_chr,
-      id          = 'subject.name'),
-    error=function(e) { message('  extract.mediation.qr failed: ', e$message); NULL })
-
-  if (!is.null(qr_obj)) {
-    # step 2: run mediation scan using precomputed QR
-    med_res <- tryCatch(
-      mediation.scan.qr(
-        mediation.qr.object = qr_obj,
-        data                = pheno_strain,
-        phenotype           = med_gene,
-        chr                 = med_chr,
-        id                  = 'subject.name'),
-      error=function(e) { message('  mediation.scan.qr failed: ', e$message); NULL })
-
-    if (!is.null(med_res)) {
-      med_df <- data.frame(
-        gene_id=med_gene, mediator=med_mediator, chr=med_chr,
-        locus=med_res$loci,
-        pos_mb=pmap_flat$pos_mb[match(med_res$loci, pmap_flat$locus)],
-        lod=med_res$LOD, p_value=med_res$p.value, stringsAsFactors=FALSE)
-      write.csv(med_df, file.path(output_dir,'mediation_r.csv'), row.names=FALSE)
-      message('  saved: mediation_r.csv (', nrow(med_df), ' rows)')
+med_chr <- chromosomes[1]
+# pick two genes with cis loci on med_chr
+med_genes <- c()
+for (.g in all_genes) {
+  if (!is.null(get_cis_loci(.g, med_chr))) {
+    med_genes <- c(med_genes, .g)
+    if (length(med_genes) == 2) break
+  }
+}
+med_gene     <- if (length(med_genes) >= 1) med_genes[1] else NULL
+med_mediator <- if (length(med_genes) >= 2) med_genes[2] else NULL
+if (!is.null(med_gene) && !is.null(med_mediator)) {
+  k_chr   <- kinship_loco[[med_chr]]
+  cis_med <- get_cis_loci(med_gene, med_chr)
+  # step 1: scan to find peak locus — extract.mediation.qr requires a locus
+  med_base_scan <- tryCatch(
+    scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
+                pheno.id='subject.name', geno.id='subject.name',
+                formula=make_form(med_gene), K=k_chr,
+                use.multi.impute=FALSE, model='additive',
+                just.these.loci=cis_med),
+    error=function(e) NULL)
+  med_peak <- if (!is.null(med_base_scan)) grab.locus.from.scan(med_base_scan) else NULL
+  if (!is.null(med_peak)) {
+    # step 2: precompute QR at peak locus with mediator in formula
+    med_null_form <- as.formula(paste0('`', med_gene, '` ~ `', med_mediator,
+      '` + batch + ', paste0('pc', 1:n_pcs, collapse=' + ')))
+    qr_obj <- tryCatch(
+      extract.mediation.qr(
+        genomecache = genomecache_path,
+        data        = pheno_strain,
+        formula     = med_null_form,
+        locus       = med_peak,
+        chr         = med_chr,
+        id          = 'subject.name'),
+      error=function(e) { message('  extract.mediation.qr failed: ', e$message); NULL })
+    if (!is.null(qr_obj)) {
+      # step 3: run mediation scan
+      med_res <- tryCatch(
+        mediation.scan.qr(
+          mediation.qr.object = qr_obj,
+          data                = pheno_strain,
+          phenotype           = med_gene,
+          chr                 = med_chr,
+          id                  = 'subject.name'),
+        error=function(e) { message('  mediation.scan.qr failed: ', e$message); NULL })
+      if (!is.null(med_res)) {
+        med_df <- data.frame(
+          gene_id=med_gene, mediator=med_mediator, chr=med_chr,
+          locus=med_res$loci,
+          pos_mb=pmap_flat$pos_mb[match(med_res$loci, pmap_flat$locus)],
+          lod=med_res$LOD, p_value=med_res$p.value, stringsAsFactors=FALSE)
+        write.csv(med_df, file.path(output_dir,'mediation_r.csv'), row.names=FALSE)
+        message('  saved: mediation_r.csv (', nrow(med_df), ' rows)')
+      }
     }
   }
-} else { message('  SKIP: need ≥ 2 genes for mediation') }
+} else { message('  SKIP: need ≥ 2 genes with cis loci on chr', med_chr) }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 9 — positional CI (parametric bootstrap)
 # ─────────────────────────────────────────────────────────────────────────────
 message('\n[section 9] positional CI')
-ci_gene <- all_genes[1]; ci_chr <- chromosomes[1]
-k_chr   <- kinship_loco[[ci_chr]]
-cis_ci  <- get_cis_loci(ci_gene, ci_chr)
+ci_chr  <- chromosomes[1]
+ci_gene <- NULL
+for (.g in all_genes) {
+  if (!is.null(get_cis_loci(.g, ci_chr))) { ci_gene <- .g; break }
+}
+k_chr  <- kinship_loco[[ci_chr]]
+cis_ci <- if (!is.null(ci_gene)) get_cis_loci(ci_gene, ci_chr) else NULL
 if (!is.null(cis_ci)) {
   ci_scan <- tryCatch(
     scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
@@ -430,9 +452,13 @@ if (!is.null(cis_ci)) {
 #   instability.lm.scan(simple.sample.object, genomecache, ...)
 # ─────────────────────────────────────────────────────────────────────────────
 message('\n[section 10] fixed-effect instability scan')
-fx_gene <- all_genes[1]; fx_chr <- chromosomes[1]
-k_chr   <- kinship_loco[[fx_chr]]
-cis_fx  <- get_cis_loci(fx_gene, fx_chr)
+fx_chr  <- chromosomes[1]
+fx_gene <- NULL
+for (.g in all_genes) {
+  if (!is.null(get_cis_loci(.g, fx_chr))) { fx_gene <- .g; break }
+}
+k_chr  <- kinship_loco[[fx_chr]]
+cis_fx <- if (!is.null(fx_gene)) get_cis_loci(fx_gene, fx_chr) else NULL
 
 if (!is.null(cis_fx)) {
   fx_scan <- tryCatch(
