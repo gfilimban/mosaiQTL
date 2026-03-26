@@ -266,7 +266,6 @@ if (!is.null(med_mediator)) {
       genomecache = genomecache_path,
       data        = pheno_strain,
       formula     = med_null_form,
-      K           = k_chr,
       chr         = med_chr,
       id          = 'subject.name'),
     error=function(e) { message('  extract.mediation.qr failed: ', e$message); NULL })
@@ -322,8 +321,8 @@ if (!is.null(cis_ci)) {
     # samples from the fitted alternative model (with QTL effect) — uses BLUP
     boot_obj <- tryCatch(
       generate.sample.outcomes.matrix(
-        scan.object = peak_fit, model.type='alt', method='bootstrap',
-        num.samples=100, seed=1, use.REML=TRUE, use.BLUP=TRUE),
+        scan.object=peak_fit, model.type='alt', method='bootstrap',
+        num.samples=100, seed=1, use.REML=TRUE, use.BLUP=FALSE),
       error=function(e) { message('  bootstrap sampling failed: ', e$message); NULL })
 
     if (!is.null(boot_obj)) {
@@ -370,7 +369,7 @@ if (!is.null(cis_fx)) {
     # uses subsample (0.63 proportion) not bootstrap
     simple_obj <- tryCatch(
       generate.simple.sample.outcomes.matrix(
-        scan.object=fx_scan, method='subsample',
+        scan.object=fx_scan,
         subsample.prop=0.63, num.samples=100, seed=1),
       error=function(e) { message('  simple sample failed: ', e$message); NULL })
 
