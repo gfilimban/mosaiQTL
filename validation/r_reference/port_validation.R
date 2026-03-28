@@ -21,16 +21,12 @@
 #   Rscript validation/r_reference/port_validation.R [chr] [n_genes]
 #   Rscript validation/r_reference/port_validation.R 8 50
 # ─────────────────────────────────────────────────────────────────────────────
-lib_path <- '/data/homezvol2/gfilimba/R/x86_64-pc-linux-gnu-library/4.4'
-if (dir.exists(lib_path)) {
-  .libPaths(c(lib_path, .libPaths()))
-  for (pkg in c('miqtl','dplyr')) library(pkg, lib.loc=lib_path, character.only=TRUE)
-  if (requireNamespace('rtracklayer', lib.loc=lib_path, quietly=TRUE))
-    library(rtracklayer, lib.loc=lib_path)
-} else {
-  library(miqtl); library(dplyr)
-  if (requireNamespace('rtracklayer', lib.loc=lib_path, quietly=TRUE)) library(rtracklayer, lib.loc=lib_path)
-}
+# lib_path: run 'Rscript -e ".libPaths()"' in your conda env to find yours
+lib_path <- '/Users/ghassan/miniconda3/envs/bioinfo/lib/R/library'
+if (dir.exists(lib_path)) .libPaths(c(lib_path, .libPaths()))
+for (pkg in c('miqtl','dplyr')) library(pkg, character.only=TRUE)
+# no lib.loc here — .libPaths() already includes lib_path above
+if (requireNamespace('rtracklayer', quietly=TRUE)) library(rtracklayer)
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -143,9 +139,9 @@ pmap_flat$locus    <- sub('\\.RData$', '', pmap_flat$locus)
 rownames(pmap_flat) <- pmap_flat$locus
 
 message('  gtf_path exists: ', file.exists(gtf_path))
-message('  rtracklayer available: ', requireNamespace('rtracklayer', lib.loc=lib_path,  quietly=TRUE))
+message('  rtracklayer available: ', requireNamespace('rtracklayer', quietly=TRUE))
 use_gtf <- FALSE
-if (file.exists(gtf_path) && requireNamespace('rtracklayer',lib.loc=lib_path, quietly=TRUE)) {
+if (file.exists(gtf_path) && requireNamespace('rtracklayer', quietly=TRUE)) {
   gtf       <- as.data.frame(rtracklayer::import(gtf_path))
   gtf_g     <- gtf[gtf$type=='gene',]
   gene_annot <- data.frame(
@@ -306,7 +302,9 @@ for (chr in chromosomes) {
     ae <- res$allele.effects
     if (!is.null(ae) && length(res$LOD) > 0) {
       pi <- which.max(res$LOD)
-      ef <- if (is.matrix(ae)) ae[pi,] else ae
+      # clamp: ae may have fewer rows than LOD vector
+      if (is.matrix(ae)) pi <- min(pi, nrow(ae))
+      ef <- if (is.matrix(ae)) ae[pi, ] else ae
       if (!is.null(ef) && !is.null(names(ef)))
         effects_list[[paste0(gene,'_',chr)]] <- data.frame(
           gene_id=gene, chr=chr,
