@@ -9,8 +9,8 @@
 #   2.  haplotype probs     → haplotype_r.csv
 #   3.  kinship loco        → kinship_r.csv
 #   4.  lmm scan (rop)      → lod_r.csv + allele_effects_r.csv
-#   5.  cache collapse      → collapsed_cache_summary.csv
-#   6.  permutation         → thresholds_r.csv
+#   5.  permutation         → thresholds_r.csv
+#   6.  cache collapse      → collapsed_cache_summary.csv
 #   7.  multiple imputation → mi_lod_r.csv
 #   8.  snp scan            → snp_lod_r.csv  (gated: needs allele_dir)
 #   9.  mediation           → mediation_r.csv
@@ -25,12 +25,14 @@ lib_path <- '/data/homezvol2/gfilimba/R/x86_64-pc-linux-gnu-library/4.4'
 if (dir.exists(lib_path)) {
   .libPaths(c(lib_path, .libPaths()))
   for (pkg in c('miqtl','dplyr')) library(pkg, lib.loc=lib_path, character.only=TRUE)
-  if (requireNamespace('rtracklayer', quietly=TRUE))
+  if (requireNamespace('rtracklayer', lib.loc=lib_path, quietly=TRUE))
     library(rtracklayer, lib.loc=lib_path)
 } else {
   library(miqtl); library(dplyr)
-  if (requireNamespace('rtracklayer', quietly=TRUE)) library(rtracklayer)
+  if (requireNamespace('rtracklayer', lib.loc=lib_path, quietly=TRUE)) library(rtracklayer, lib.loc=lib_path)
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 args        <- commandArgs(trailingOnly=TRUE)
 scan_chrs   <- if (length(args) >= 1) args[1] else 'all'
@@ -99,8 +101,10 @@ colnames(pmap_flat)[colnames(pmap_flat)=='pos']    <- 'pos_mb'
 pmap_flat$locus    <- sub('\\.RData$', '', pmap_flat$locus)
 rownames(pmap_flat) <- pmap_flat$locus
 
+message('  gtf_path exists: ', file.exists(gtf_path))
+message('  rtracklayer available: ', requireNamespace('rtracklayer', lib.loc=lib_path,  quietly=TRUE))
 use_gtf <- FALSE
-if (file.exists(gtf_path) && requireNamespace('rtracklayer', quietly=TRUE)) {
+if (file.exists(gtf_path) && requireNamespace('rtracklayer',lib.loc=lib_path, quietly=TRUE)) {
   gtf       <- as.data.frame(rtracklayer::import(gtf_path))
   gtf_g     <- gtf[gtf$type=='gene',]
   gene_annot <- data.frame(
@@ -110,6 +114,9 @@ if (file.exists(gtf_path) && requireNamespace('rtracklayer', quietly=TRUE)) {
     stringsAsFactors=FALSE)
   use_gtf <- TRUE
   message('  gtf: ', nrow(gene_annot), ' genes')
+  # deduplicate: keep one entry per gene_id (first occurrence = primary annotation)
+  gene_annot <- gene_annot[!duplicated(gene_annot$gene_id), ]
+  message('  gtf after dedup: ', nrow(gene_annot), ' unique genes')
 }
 
 meta_cols   <- c('subject.name','batch', paste0('pc',1:10))
@@ -283,20 +290,138 @@ if (length(effects_list)) {
   message('  saved: allele_effects_r.csv (', nrow(ae_df), ' rows)')
 }
 
+# ── deep patch: find and remove crossprod BUILTIN check in all miqtl fns ──
+miqtl_ns <- asNamespace('miqtl')
+all_fns   <- ls(miqtl_ns, all.names=TRUE)
+patched   <- c()
+
+for (fn_name in all_fns) {
+  fn_obj <- get(fn_name, envir=miqtl_ns)
+  if (!is.function(fn_obj)) next
+  fn_lines <- tryCatch(deparse(body(fn_obj)), error=function(e) NULL)
+  if (is.null(fn_lines)) next
+  if (!any(grepl('BUILTIN|is\\.primitive|is\\.builtin', fn_lines,
+                  ignore.case=TRUE))) next
+  fn_lines_new <- fn_lines[!grepl('BUILTIN|is\\.primitive|is\\.builtin',
+                                   fn_lines, ignore.case=TRUE)]
+  new_fn <- fn_obj
+  tryCatch({
+    body(new_fn) <- str2lang(paste(fn_lines_new, collapse='\n'))
+    environment(new_fn) <- miqtl_ns
+    utils::assignInNamespace(fn_name, new_fn, ns='miqtl')
+    patched <- c(patched, fn_name)
+  }, error=function(e) NULL)
+}
+
+if (length(patched)) {
+  message('  crossprod BUILTIN patch applied to: ', paste(patched, collapse=', '))
+} else {
+  message('  crossprod BUILTIN check not found at R level — may be in C code')
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
-# S5 — CACHE COLLAPSE
+# S5 — PERMUTATION THRESHOLDS
+# uses generate.sample.outcomes.matrix (miqtl native permutation)
+# ─────────────────────────────────────────────────────────────────────────────
+message('\n[s5] permutation thresholds')
+thresh_chr  <- chromosomes[1]
+thresh_candidates <- first_gene_on(thresh_chr, 10)
+thresh_gene <- NULL
+for (cand in thresh_candidates) {
+  test_res <- tryCatch(
+    scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
+                pheno.id='subject.name', geno.id='subject.name',
+                formula=make_form(cand), K=kinship_loco[[thresh_chr]],
+                use.multi.impute=FALSE, model='additive',
+                just.these.loci=get_cis_loci(cand, thresh_chr),
+                return.allele.effects=FALSE),
+    error=function(e) { message('  skipping ', cand, ' (', e$message, ')'); NULL })
+  if (!is.null(test_res) && any(is.finite(test_res$LOD))) {
+    thresh_gene <- cand
+    message('  threshold gene: ', thresh_gene)
+    break
+  }
+}
+if (!length(thresh_gene)) {
+  thresh_95 <- 6.0
+  message('  SKIP: no viable threshold gene on chr', thresh_chr,
+          ' — using standard fallback threshold=', thresh_95)
+  write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
+                        gene=NA, chr=thresh_chr,
+                        n_perms=0, perm_mean=NA, perm_sd=NA),
+            file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
+} else {
+  cis_t   <- get_cis_loci(thresh_gene, thresh_chr)
+  k_thresh <- kinship_loco[[thresh_chr]]
+  message('  gene=', thresh_gene, '  chr', thresh_chr, '  cis_loci=', length(cis_t))
+
+  base_scan <- tryCatch(
+    scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
+                pheno.id='subject.name', geno.id='subject.name',
+                formula=make_form(thresh_gene), K=k_thresh,
+                use.multi.impute=FALSE, model='additive',
+                just.these.loci=cis_t, return.allele.effects=FALSE),
+    error=function(e) { message('  base scan failed: ', e$message); NULL })
+
+  if (is.null(base_scan)) {
+    thresh_95 <- 6.0
+    message('  base scan failed — using fallback threshold=', thresh_95)
+    write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
+                          gene=thresh_gene, chr=thresh_chr,
+                          n_perms=0, perm_mean=NA, perm_sd=NA),
+              file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
+  } else {
+    set.seed(42)
+    perm_obj <- tryCatch(
+      generate.sample.outcomes.matrix(
+        scan.object=base_scan, method='permutation',
+        num.samples=100, seed=42),
+      error=function(e) { message('  generate.sample.outcomes.matrix failed: ', e$message); NULL })
+
+    if (is.null(perm_obj)) {
+      thresh_95 <- 6.0
+      message('  perm object failed — using fallback threshold=', thresh_95)
+      write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
+                            gene=thresh_gene, chr=thresh_chr,
+                            n_perms=0, perm_mean=NA, perm_sd=NA),
+                file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
+    } else {
+      thresh_95 <- tryCatch(
+        get.gev.thresholds(perm_obj, percentile=0.95, use.lod=TRUE),
+        error=function(e) {
+          message('  GEV fit failed (', e$message, ') — using empirical quantile')
+          perm_lods <- perm_obj$max.statistics$LOD
+          quantile(perm_lods[is.finite(perm_lods)], 0.95, na.rm=TRUE)
+        })
+      perm_lods <- perm_obj$max.statistics$LOD
+      perm_lods <- perm_lods[is.finite(perm_lods)]
+      write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
+                            gene=thresh_gene, chr=thresh_chr,
+                            n_perms=length(perm_lods),
+                            perm_mean=mean(perm_lods), perm_sd=sd(perm_lods)),
+                file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
+      write.csv(data.frame(perm_lod=perm_lods),
+                file.path(output_dir,'perm_lods_r.csv'), row.names=FALSE)
+      message('  saved: thresholds_r.csv  threshold=', round(thresh_95,3))
+    }
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S6 — CACHE COLLAPSE
 # confirmed miqtl:::check.l2.norm: max_i(||h_i,l1-h_i,l2||/sqrt(J)) <= tol
 # bugs patched: :::check.l2.norm (not exported) + test <- FALSE init
 # ─────────────────────────────────────────────────────────────────────────────
-message('\n[s5] cache collapse')
-unlockBinding('collapse.genomecache', as.environment('package:miqtl'))
-fn_lines <- deparse(body(collapse.genomecache))
+message('\n[s6] cache collapse')
+fn_lines <- deparse(body(miqtl:::collapse.genomecache))
 fn_lines <- gsub('check\\.l2\\.norm\\(',      'miqtl:::check.l2.norm(',      fn_lines)
 fn_lines <- gsub('check\\.max\\.category\\(', 'miqtl:::check.max.category(', fn_lines)
 target   <- which(grepl('if \\(criterion == "l2.norm"\\)', fn_lines))
 fn_lines <- append(fn_lines, '            test <- FALSE', after=target-1)
-body(collapse.genomecache) <- str2lang(paste(fn_lines, collapse='\n'))
-lockBinding('collapse.genomecache', as.environment('package:miqtl'))
+new_fn   <- miqtl:::collapse.genomecache                    # copy original
+body(new_fn) <- str2lang(paste(fn_lines, collapse='\n'))    # patch body only
+environment(new_fn) <- asNamespace('miqtl')                 # ← keep miqtl namespace
+utils::assignInNamespace('collapse.genomecache', new_fn, ns='miqtl')  # ← safe assign
 message('  collapse patched')
 
 needs_collapse <- !dir.exists(collapsed_path) ||
@@ -328,53 +453,6 @@ write.csv(collapse_summary, file.path(output_dir,'collapsed_cache_summary.csv'),
 n_o <- sum(collapse_summary$n_loci_orig); n_c <- sum(collapse_summary$n_loci_coll)
 message('  saved: collapsed_cache_summary.csv  ',
         n_o,' → ',n_c,' (',round(100*(n_o-n_c)/n_o,1),'% reduced)')
-
-# ─────────────────────────────────────────────────────────────────────────────
-# S6 — PERMUTATION THRESHOLDS
-# bypasses generate.sample.outcomes.matrix (chol crash on small windows)
-# ─────────────────────────────────────────────────────────────────────────────
-message('\n[s6] permutation thresholds')
-thresh_chr  <- chromosomes[1]
-thresh_gene <- first_gene_on(thresh_chr, 1)
-if (!length(thresh_gene)) {
-  message('  SKIP: no gene with cis loci on chr', thresh_chr)
-} else {
-  thresh_gene <- thresh_gene[1]
-  cis_t   <- get_cis_loci(thresh_gene, thresh_chr)
-  k_thresh <- kinship_loco[[thresh_chr]]
-  message('  gene=', thresh_gene, '  chr', thresh_chr, '  cis_loci=', length(cis_t))
-  n_perms <- 100; set.seed(42); perm_lods <- numeric(n_perms)
-  for (i in seq_len(n_perms)) {
-    pd <- pheno_strain; pd[[thresh_gene]] <- sample(pheno_strain[[thresh_gene]])
-    res <- tryCatch(
-      scan.h2lmm(genomecache=genomecache_path, data=pd,
-                  pheno.id='subject.name', geno.id='subject.name',
-                  formula=make_form(thresh_gene), K=k_thresh,
-                  use.multi.impute=FALSE, model='additive',
-                  just.these.loci=cis_t, return.allele.effects=FALSE),
-      error=function(e) NULL)
-    perm_lods[i] <- if (!is.null(res)) max(res$LOD, na.rm=TRUE) else NA_real_
-    if (i %% 25 == 0) message('  ', i, '/', n_perms)
-  }
-  perm_lods <- perm_lods[!is.na(perm_lods)]
-  # get.gev.thresholds can fail when perm_lods have low variance (few cis loci)
-  # fall back to empirical quantile if GEV optim fails
-  thresh_95 <- tryCatch(
-    get.gev.thresholds(
-      list(max.statistics=list(LOD=perm_lods)), percentile=0.95, use.lod=TRUE),
-    error=function(e) {
-      message('  GEV fit failed (', e$message, ') — using empirical quantile')
-      quantile(perm_lods, 0.95, na.rm=TRUE)
-    })
-  write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
-                        gene=thresh_gene, chr=thresh_chr,
-                        n_perms=length(perm_lods),
-                        perm_mean=mean(perm_lods), perm_sd=sd(perm_lods)),
-            file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
-  write.csv(data.frame(perm_lod=perm_lods),
-            file.path(output_dir,'perm_lods_r.csv'), row.names=FALSE)
-  message('  saved: thresholds_r.csv  threshold=', round(thresh_95,3))
-}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # S7 — MULTIPLE IMPUTATION
