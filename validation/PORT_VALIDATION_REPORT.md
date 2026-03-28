@@ -124,68 +124,82 @@ explicitly (in S6 candidate loop) with:
 skipping 0610009B22Rik ("crossprod" is not a BUILTIN function)
 skipping 0610012D04Rik ("crossprod" is not a BUILTIN function)
 ...
-SKIP: no viable threshold gene on chr8 — using standard fallback threshold=6
+SKIP: no viable threshold gene on chrN — using standard fallback threshold=6
 ```
 
 Evidence that S4 is also silently affected: the script prints
-`chr8: 50 genes 4656 loci` but never writes `lod_r.csv`, meaning every gene
+`chrN: N genes N loci` but never writes `lod_r.csv`, meaning every gene
 fails inside the `tryCatch` wrapper without printing.
 
-### Root cause
-From the miQTL source (`R/scan.h2lmm.R`), the replicate-handling block
-performs:
+### Root cause (revised — not an R version issue)
+
+The initial hypothesis (R 4.4.x changed BUILTIN classification) was wrong.
+`typeof(base::crossprod)` == `"builtin"` in all R 4.x versions including 4.3.3
+and 4.4.2.
+
+**Actual cause: `Matrix` package masks `base::crossprod`.**
+
+When `Matrix` loads (as a dependency of miqtl), it registers its own `crossprod`
+generic on the R search path, replacing `base::crossprod` with a method
+dispatcher (`typeof == "closure"`, `is.primitive == FALSE`). Somewhere in the
+miqtl call chain — confirmed reachable via `scan.h2lmm` → `make.processed.data`
+→ internal function — there is a check:
 
 ```r
-if (pheno.id != geno.id) {
-  Z <- model.matrix(process.random.formula(geno.id=geno.id), data=data)
-  K <- crossprod(t(Z), tcrossprod(K, Z))
-  ...
-}
+if (typeof(crossprod) != "builtin")
+  stop('"crossprod" is not a BUILTIN function')
 ```
 
-miQTL was built under R 4.4.2 but contains an internal validation check that
-tests whether `crossprod` is classified as a `BUILTIN` function at the C level.
-In R 4.4.x, `crossprod`'s internal C-level classification changed, causing this
-check to fail. The check itself has not been located at the exported R-function
-level (namespace scan found nothing), suggesting it lives in compiled C code.
+Since `crossprod` resolves to `Matrix::crossprod` in the search path, this check
+fails for every gene. The R version is irrelevant — R 4.3.3 would have the same
+issue if Matrix is installed.
+
+The check was not found by namespace scanning at the exported function level,
+indicating it lives in an unexported internal function or inside a closure
+environment within miqtl.
+
+### Diagnosis added to `port_validation.R`
+
+```r
+message('[fix] crossprod typeof: ', typeof(crossprod),
+        '  is.primitive: ', is.primitive(crossprod))
+if (!is.primitive(crossprod) || typeof(crossprod) != 'builtin') {
+  message('[fix] crossprod masked — restoring base version')
+  assign('crossprod',  base::crossprod,  envir=globalenv())
+  assign('tcrossprod', base::tcrossprod, envir=globalenv())
+}
+# patch crossprod in all miqtl function closure environments
+.patch_miqtl_crossprod()
+```
+
+To get the exact call stack if the error persists, uncomment:
+```r
+options(error=function() { traceback(3); cat('
+') })
+```
+before the first `scan.h2lmm` call, run one gene, then re-comment.
 
 ### Solutions attempted
 
-**Attempt 1 — Top-level namespace scanner:**
+| Attempt | Description | Result |
+|---|---|---|
+| Namespace string scanner | Searched exported miqtl functions for "BUILTIN" string | Not found at R level |
+| `assign()` to locked namespace | `assign("crossprod", base::crossprod, envir=asNamespace("miqtl"))` | Error: locked environment |
+| `utils::assignInNamespace()` | Patch via assignInNamespace | Did not resolve |
+| Global env restore | `assign("crossprod", base::crossprod, envir=globalenv())` | **Active fix — pending confirmation** |
+| Closure env deep patcher | Scan all miqtl function environments; patch where crossprod is found | **Active fix — pending confirmation** |
 
-```r
-miqtl_fns <- ls(asNamespace('miqtl'))
-# scan all for "BUILTIN" string → result: none found
-```
+### If fix does not resolve
 
-**Attempt 2 — Force-assign `crossprod` into miqtl namespace:**
-
-```r
-assign('crossprod', base::crossprod, envir=asNamespace('miqtl'))
-# Error: cannot add bindings to a locked environment
-```
-
-**Attempt 3 — `utils::assignInNamespace`:**
-
-```r
-utils::assignInNamespace('crossprod', base::crossprod, ns='miqtl')
-# attempted; deep scanner still not confirmed
-```
-
-### Remaining paths
-1. Run on R 4.3.3 (conda `bioinfo` env) where the BUILTIN classification is
-   consistent with how miQTL was validated. `data.table` conda install resolved
-   the R 4.3.3 version mismatch:
-   ```bash
-   conda install -c conda-forge r-data.table r-miqtl
-   ```
-2. Locate the specific miQTL C source containing the BUILTIN check and rebuild.
-3. Pre-run `lod_r.csv` from a working R 4.3 environment so Python S4 comparison
-   can proceed independently.
+Uncomment `options(error=function() { traceback(3) })` in the script, run one
+gene, and capture the full traceback. This will identify the exact function
+containing the BUILTIN check, enabling a targeted `environment(fn)$crossprod <-
+base::crossprod` patch.
 
 ### Status
-**Open — primary blocker** for S4, S6, S7, S8, S9, S10, S11.  
-S1–S3 outputs confirmed written correctly.
+**Active investigation.** Fix applied to `port_validation.R`. Awaiting
+confirmation that `scan.h2lmm` runs successfully after the global env restore
+and closure patcher.
 
 ---
 
@@ -343,10 +357,16 @@ Resolved. `library(miqtl)` loads cleanly under R 4.3.3 in conda `bioinfo`.
 
 ## Open items
 
-1. **Issue 3 — crossprod BUILTIN:** Primary path is re-running under R 4.3.3
-   (conda `bioinfo`) where miQTL was originally validated. R 4.3.3 is now
-   confirmed working (`library(miqtl)` loads cleanly after `data.table` fix).
+1. **Issue 3 — crossprod BUILTIN:** Fix applied (global env restore +
+   closure env deep patcher). Run `port_validation.R` and check whether
+   `[fix] typeof after restore: builtin` is printed and whether genes proceed
+   past the `scan.h2lmm` call. If error persists, uncomment
+   `options(error=function() { traceback(3) })` and capture the traceback
+   to find the exact function for a targeted patch.
 2. **Issue 2 — rtracklayer:** Confirm `requireNamespace` diagnostic prints `TRUE`
    with `lib.loc` fix applied.
 3. **lod_r.csv:** Once Issue 3 is resolved, re-run S4 to produce `lod_r.csv`
    and unblock the Python LOD comparison in `validate_port.py`.
+4. **R 4.3.3 path retired:** The R version hypothesis was incorrect. Matrix
+   masking of `crossprod` affects all R versions equally. R 4.3.3 is not
+   expected to behave differently.

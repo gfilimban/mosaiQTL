@@ -34,6 +34,47 @@ if (dir.exists(lib_path)) {
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── crossprod diagnostic and fix ──────────────────────────────────────────────
+# root cause: Matrix::crossprod (a closure) masks base::crossprod (a builtin)
+# when Matrix loads. miqtl contains an internal check: typeof(crossprod)=="builtin"
+# that fails because crossprod resolves to the Matrix version in the search path.
+# fix: restore base::crossprod in the global env so the check passes.
+message('[fix] crossprod typeof: ', typeof(crossprod),
+        '  is.primitive: ', is.primitive(crossprod))
+if (!is.primitive(crossprod) || typeof(crossprod) != 'builtin') {
+  message('[fix] crossprod masked by ', environmentName(environment(crossprod)),
+          ' — restoring base version')
+  assign('crossprod',  base::crossprod,  envir=globalenv())
+  assign('tcrossprod', base::tcrossprod, envir=globalenv())
+  message('[fix] typeof after restore: ', typeof(crossprod))
+}
+# deep scan: try to patch within miqtl namespace as well
+.patch_miqtl_crossprod <- function() {
+  ns <- asNamespace('miqtl')
+  fns <- ls(ns, all.names=TRUE)
+  patched <- 0L
+  for (fn in fns) {
+    obj <- get(fn, envir=ns)
+    if (!is.function(obj)) next
+    env <- environment(obj)
+    if (is.null(env)) next
+    if (exists('crossprod', envir=env, inherits=FALSE)) {
+      if (!is.primitive(get('crossprod', envir=env, inherits=FALSE))) {
+        try({
+          assign('crossprod',  base::crossprod,  envir=env)
+          assign('tcrossprod', base::tcrossprod, envir=env)
+          patched <- patched + 1L
+        }, silent=TRUE)
+      }
+    }
+  }
+  if (patched > 0) message('[fix] patched crossprod in ', patched, ' miqtl function environments')
+}
+.patch_miqtl_crossprod()
+
+# enable traceback on first error for diagnosis — remove after fix confirmed
+# options(error=function() { traceback(3); cat('\n') })
+
 args        <- commandArgs(trailingOnly=TRUE)
 scan_chrs   <- if (length(args) >= 1) args[1] else 'all'
 n_genes     <- if (length(args) >= 2) as.integer(args[2]) else Inf
