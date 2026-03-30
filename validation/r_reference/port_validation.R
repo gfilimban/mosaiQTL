@@ -264,9 +264,9 @@ write.csv(kin_df, file.path(output_dir,'kinship_r.csv'), row.names=FALSE)
 for (chr in chromosomes) {
   k  <- kinship_loco[[chr]]
   sn <- rownames(k)
-  kt <- as.data.frame(k); kt$sample_id <- sn
+  kt <- data.frame(sample_id = sn, as.data.frame(k), check.names = FALSE)
   write.csv(kt, file.path(output_dir, paste0('kinship_mat_r_chr',chr,'.csv')),
-            row.names=FALSE)
+          row.names=FALSE)
 }
 message('  saved: kinship_r.csv + per-chr kinship matrices')
 
@@ -302,9 +302,13 @@ for (chr in chromosomes) {
     ae <- res$allele.effects
     if (!is.null(ae) && length(res$LOD) > 0) {
       pi <- which.max(res$LOD)
-      # clamp: ae may have fewer rows than LOD vector
-      if (is.matrix(ae)) pi <- min(pi, nrow(ae))
-      ef <- if (is.matrix(ae)) ae[pi, ] else ae
+      # ae is [founders × loci] — need columns, not rows
+      if (is.matrix(ae)) {
+        ci <- min(pi, ncol(ae))                  # ← ncol, not nrow
+        ef <- ae[, ci, drop=TRUE]                 # ← ae[, ci] not ae[ci, ]
+      } else {
+        ef <- ae
+      }
       if (!is.null(ef) && !is.null(names(ef)))
         effects_list[[paste0(gene,'_',chr)]] <- data.frame(
           gene_id=gene, chr=chr,
@@ -393,11 +397,20 @@ if (!length(thresh_gene)) {
   cis_t   <- get_cis_loci(thresh_gene, thresh_chr)
   # jitter kinship to ensure positive definiteness for Cholesky in generate.sample.outcomes.matrix
   k_thresh <- kinship_loco[[thresh_chr]]
+  complete <- complete.cases(pheno_strain[, c(thresh_gene, 'batch', paste0('pc', 1:n_pcs))])
+  pheno_thresh <- pheno_strain[complete, ]
+  # intersect with genomecache subjects so outcome vector length matches pheno exactly
+  pheno_thresh <- pheno_thresh[rownames(pheno_thresh) %in% h$getSubjects(), , drop=FALSE]
+  k_thresh <- k_thresh[rownames(pheno_thresh), rownames(pheno_thresh)]
   k_thresh <- k_thresh + diag(1e-4, nrow(k_thresh))
   message('  gene=', thresh_gene, '  chr', thresh_chr, '  cis_loci=', length(cis_t))
 
+  cache_subs <- h$getSubjects()
+  pheno_thresh <- pheno_thresh[rownames(pheno_thresh) %in% cache_subs, , drop=FALSE]
+  k_thresh     <- k_thresh[rownames(pheno_thresh), rownames(pheno_thresh)]
+
   base_scan <- tryCatch(
-    scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
+    scan.h2lmm(genomecache=genomecache_path, data=pheno_thresh,
                 pheno.id='subject.name', geno.id='subject.name',
                 formula=make_form(thresh_gene), K=k_thresh,
                 use.multi.impute=FALSE, model='additive',
@@ -427,14 +440,19 @@ if (!length(thresh_gene)) {
                             n_perms=0, perm_mean=NA, perm_sd=NA),
                 file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
     } else {
+      # re-filter pheno_thresh to exactly the subjects the permutation matrix was built on
+      # perm_obj$y.matrix rownames = subjects base_scan actually used
+      perm_subs <- rownames(perm_obj$y.matrix)
+      if (!is.null(perm_subs) && length(perm_subs) > 0) {
+        pheno_thresh <- pheno_thresh[perm_subs, , drop=FALSE]
+        k_thresh     <- k_thresh[perm_subs, perm_subs]
+      }
       # run.threshold.scans: execute permutation scans → produces max LOD distribution
       thresh_scans <- tryCatch(
-        run.threshold.scans(sim.object=perm_obj,
-          genomecache=genomecache_path, data=pheno_strain,
-          formula=make_form(thresh_gene), K=k_thresh,
-          pheno.id='subject.name', geno.id='subject.name',
-          use.multi.impute=FALSE, model='additive',
-          chr=thresh_chr, just.these.loci=cis_t),
+        run.threshold.scans(sim.threshold.object=perm_obj,
+          genomecache=genomecache_path, data=pheno_thresh,
+          use.multi.impute=FALSE,
+         chr=thresh_chr, just.these.loci=cis_t, scan.seed=1),
         error=function(e) { message('  run.threshold.scans failed: ', e$message); NULL })
       if (is.null(thresh_scans)) {
         thresh_95 <- 6.0
@@ -550,6 +568,8 @@ if (length(mi_results)) {
 # S8 — SNP SCAN (gated on allele_dir)
 # ─────────────────────────────────────────────────────────────────────────────
 message('\n[s8] snp scan')
+pheno_snp <- pheno_strain
+colnames(pheno_snp)[colnames(pheno_snp) == 'subject.name'] <- 'SUBJECT.NAME'
 if (!dir.exists(allele_dir_path)) {
   message('  SKIP: allele_dir not found at ', allele_dir_path)
   message('  build with: mosaiqtl.snp_scan.build_allele_dir(snp_genos, allele_dir_path)')
@@ -564,10 +584,10 @@ if (!dir.exists(allele_dir_path)) {
       if (is.null(cis)) next
       res <- tryCatch(
         imputed.snp.scan.h2lmm(
-          data=pheno_strain, formula=make_form(gene), K=k_chr,
+          data=pheno_snp, formula=make_form(gene), K=k_chr,
           allele.dir=allele_dir_path, genomecache=genomecache_path,
           model='additive', chr=chr, just.these.loci=cis),
-        error=function(e) NULL)
+        error=function(e) { message('  snp scan failed for ', gene, ': ', e$message); NULL })
       if (is.null(res)) next
       snp_results[[paste0(gene,'_',chr)]] <- data.frame(
         gene_id=gene, snp=names(res$LOD), chr=chr,
@@ -589,42 +609,58 @@ message('\n[s9] mediation')
 med_chr   <- chromosomes[1]
 med_genes <- first_gene_on(med_chr, 2)
 if (length(med_genes) < 2) {
-  message('  SKIP: need ≥ 2 genes with cis loci on chr', med_chr)
+  message('  SKIP: need >= 2 genes with cis loci on chr', med_chr)
 } else {
   med_gene <- med_genes[1]; med_med <- med_genes[2]
-  k_chr    <- kinship_loco[[med_chr]]
   cis_med  <- get_cis_loci(med_gene, med_chr)
-  base_scan <- tryCatch(
-    scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
-                pheno.id='subject.name', geno.id='subject.name',
-                formula=make_form(med_gene), K=k_chr,
-                use.multi.impute=FALSE, model='additive',
-                just.these.loci=cis_med),
-    error=function(e) NULL)
-  med_peak <- if (!is.null(base_scan)) grab.locus.from.scan(base_scan) else NULL
-  if (!is.null(med_peak)) {
-    med_form <- as.formula(paste0('`', med_gene, '` ~ `', med_med, '` + batch + ',
-      paste0('pc', 1:n_pcs, collapse=' + ')))
-    qr_obj <- tryCatch(
-      extract.mediation.qr(genomecache=genomecache_path, data=pheno_strain,
-        formula=med_form, locus=med_peak, chr=med_chr, id='subject.name',
+  med_cols <- c(med_gene, med_med, 'batch', paste0('pc', 1:n_pcs))
+  complete_med <- complete.cases(pheno_strain[, med_cols])
+  pheno_med <- pheno_strain[complete_med, ]
+
+  if (var(pheno_med[[med_med]], na.rm=TRUE) < 1e-10) {
+    message('  SKIP: mediator ', med_med, ' has near-zero variance')
+  } else {
+    k_med <- kinship_loco[[med_chr]]
+    k_med <- k_med[rownames(pheno_med), rownames(pheno_med)]
+
+
+    # WORKAROUND: copy mediator to a valid R column name (no leading digit)
+    pheno_med$mediator_expr <- pheno_med[[med_med]]
+
+    # scan WITHOUT mediator in model
+    base_form <- make_form(med_gene)
+    base_scan <- tryCatch(
+      scan.h2lmm(genomecache=genomecache_path, data=pheno_med,
+        pheno.id='subject.name', geno.id='subject.name',
+        formula=base_form, K=k_med,
+        use.multi.impute=FALSE, model='additive',
         just.these.loci=cis_med),
-      error=function(e) { message('  extract.mediation.qr: ', e$message); NULL })
-    if (!is.null(qr_obj)) {
-      med_res <- tryCatch(
-        mediation.scan.qr(mediation.qr.object=qr_obj, data=pheno_strain,
-          phenotype=med_gene, chr=med_chr, id='subject.name'),
-        error=function(e) { message('  mediation.scan.qr: ', e$message); NULL })
-      if (!is.null(med_res)) {
-        write.csv(data.frame(
-          gene_id=med_gene, mediator=med_med, chr=med_chr,
-          locus=med_res$loci,
-          pos_mb=pmap_flat$pos_mb[match(med_res$loci, pmap_flat$locus)],
-          lod=med_res$LOD, p_value=med_res$p.value, peak_locus=med_peak,
-          stringsAsFactors=FALSE),
-          file.path(output_dir,'mediation_r.csv'), row.names=FALSE)
-        message('  saved: mediation_r.csv')
-      }
+      error=function(e) { message('  base scan failed: ', e$message); NULL })
+
+    # scan WITH mediator as covariate
+    # use mediator_expr (safe name) instead of the raw gene name
+    med_form <- as.formula(paste0('`', med_gene, '` ~ mediator_expr + batch + ',
+        paste0('pc', 1:n_pcs, collapse=' + ')))
+    med_scan <- tryCatch(
+      scan.h2lmm(genomecache=genomecache_path, data=pheno_med,
+        pheno.id='subject.name', geno.id='subject.name',
+        formula=med_form, K=k_med,
+        use.multi.impute=FALSE, model='additive',
+        just.these.loci=cis_med),
+      error=function(e) { message('  mediated scan failed: ', e$message); NULL })
+
+    if (!is.null(base_scan) && !is.null(med_scan)) {
+      med_peak <- grab.locus.from.scan(base_scan)
+      lod_drop <- base_scan$LOD - med_scan$LOD
+      write.csv(data.frame(
+        gene_id=med_gene, mediator=med_med, chr=med_chr,
+        locus=base_scan$loci,
+        pos_mb=pmap_flat$pos_mb[match(base_scan$loci, pmap_flat$locus)],
+        lod_base=base_scan$LOD, lod_mediated=med_scan$LOD,
+        lod_drop=lod_drop, peak_locus=med_peak,
+        stringsAsFactors=FALSE),
+        file.path(output_dir,'mediation_r.csv'), row.names=FALSE)
+      message('  saved: mediation_r.csv')
     }
   }
 }
@@ -639,44 +675,74 @@ if (!length(ci_gene)) {
   message('  SKIP: no gene with cis loci on chr', ci_chr)
 } else {
   ci_gene <- ci_gene[1]
+  ci_cols <- c(ci_gene, 'batch', paste0('pc', 1:n_pcs))
+  complete_ci <- complete.cases(pheno_strain[, ci_cols])
+  pheno_ci <- pheno_strain[complete_ci, ]
   k_chr <- kinship_loco[[ci_chr]]
-  k_chr <- k_chr + diag(1e-4, nrow(k_chr))  # jitter for Cholesky stability
-  cis_ci  <- get_cis_loci(ci_gene, ci_chr)
+  k_chr <- k_chr[rownames(pheno_ci), rownames(pheno_ci)]
+  k_chr <- k_chr + diag(1e-4, nrow(k_chr))
+  cis_ci <- get_cis_loci(ci_gene, ci_chr)
+
   ci_scan <- tryCatch(
-    scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
-                pheno.id='subject.name', geno.id='subject.name',
-                formula=make_form(ci_gene), K=k_chr,
-                use.multi.impute=FALSE, model='additive',
-                just.these.loci=cis_ci),
-    error=function(e) NULL)
-  if (!is.null(ci_scan)) {
-    peak_locus <- grab.locus.from.scan(ci_scan)
-    peak_fit   <- scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
+    scan.h2lmm(genomecache=genomecache_path, data=pheno_ci,
       pheno.id='subject.name', geno.id='subject.name',
       formula=make_form(ci_gene), K=k_chr,
-      use.multi.impute=FALSE, model='additive', just.these.loci=peak_locus)
-    set.seed(1)
-    boot_obj <- tryCatch(
-      generate.sample.outcomes.matrix(scan.object=peak_fit, model.type='null',
-        method='bootstrap', num.samples=100, seed=1,
-        use.REML=TRUE, use.BLUP=FALSE),
-      error=function(e) { message('  bootstrap failed: ', e$message); NULL })
-    if (!is.null(boot_obj)) {
-      boot_scans <- run.positional.scans(sim.object=boot_obj,
-        genomecache=genomecache_path, data=pheno_strain,
-        use.multi.impute=FALSE, scan.seed=1)
-      boot_peaks <- sapply(boot_scans, function(s) s$loci[which.max(s$LOD)])
-      boot_pos   <- pmap_flat$pos_mb[match(boot_peaks, pmap_flat$locus)]
-      write.csv(data.frame(
-        gene_id=ci_gene, chr=ci_chr, peak_locus=peak_locus,
-        ci_lo_mb=quantile(boot_pos, 0.025, na.rm=TRUE),
-        ci_hi_mb=quantile(boot_pos, 0.975, na.rm=TRUE),
-        peak_lod=max(ci_scan$LOD, na.rm=TRUE),
-        n_boot=length(boot_peaks)),
-        file.path(output_dir,'ci_r.csv'), row.names=FALSE)
-      write.csv(data.frame(boot_pos=boot_pos),
-                file.path(output_dir,'boot_pos_r.csv'), row.names=FALSE)
-      message('  saved: ci_r.csv  boot_pos_r.csv')
+      use.multi.impute=FALSE, model='additive',
+      just.these.loci=cis_ci),
+    error=function(e) NULL)
+
+  if (!is.null(ci_scan)) {
+    peak_locus <- grab.locus.from.scan(ci_scan)
+
+    peak_fit <- tryCatch(
+      scan.h2lmm(genomecache=genomecache_path, data=pheno_ci,
+        pheno.id='subject.name', geno.id='subject.name',
+        formula=make_form(ci_gene), K=k_chr,
+        use.multi.impute=FALSE, model='additive',
+        just.these.loci=peak_locus),
+      error=function(e) { message('  peak_fit failed: ', e$message); NULL })
+
+    if (!is.null(peak_fit)) {
+      set.seed(1)
+      boot_obj <- tryCatch(
+        generate.sample.outcomes.matrix(scan.object=peak_fit,
+          model.type='alt', method='bootstrap',
+          num.samples=10, seed=1, use.REML=TRUE, use.BLUP=FALSE),
+        error=function(e) { message('  bootstrap failed: ', e$message); NULL })
+
+      if (!is.null(boot_obj)) {
+        boot_scans <- tryCatch(
+          run.positional.scans(sim.object=boot_obj,
+            genomecache=genomecache_path, data=pheno_ci,
+            use.multi.impute=FALSE, scan.seed=1),
+          error=function(e) { message('  positional scans failed: ', e$message); NULL })
+
+        if (!is.null(boot_scans)) {
+          # run.positional.scans returns structured object like run.threshold.scans
+          # individual scans in $full.results; fall back to top-level if flat list
+          scan_list <- if (!is.null(boot_scans$full.results)) {
+            boot_scans$full.results
+          } else {
+            boot_scans
+          }
+          boot_peaks <- sapply(scan_list, function(s) {
+            if (is.list(s) && !is.null(s$loci) && !is.null(s$LOD))
+              s$loci[which.max(s$LOD)]
+            else NA_character_
+          })
+          boot_pos   <- pmap_flat$pos_mb[match(boot_peaks, pmap_flat$locus)]
+          write.csv(data.frame(
+            gene_id=ci_gene, chr=ci_chr, peak_locus=peak_locus,
+            ci_lo_mb=quantile(boot_pos, 0.025, na.rm=TRUE),
+            ci_hi_mb=quantile(boot_pos, 0.975, na.rm=TRUE),
+            peak_lod=max(ci_scan$LOD, na.rm=TRUE),
+            n_boot=length(boot_peaks)),
+            file.path(output_dir,'ci_r.csv'), row.names=FALSE)
+          write.csv(data.frame(boot_pos=boot_pos),
+            file.path(output_dir,'boot_pos_r.csv'), row.names=FALSE)
+          message('  saved: ci_r.csv  boot_pos_r.csv')
+        }
+      }
     }
   }
 }
@@ -702,27 +768,26 @@ if (!length(fx_gene)) {
     error=function(e) NULL)
   if (!is.null(fx_scan)) {
     set.seed(1)
-    # generate.simple.sample.outcomes.matrix takes data + phenotype column name,
-    # not scan.object; proportion= not subsample.prop=
     simple_obj <- tryCatch(
       generate.simple.sample.outcomes.matrix(
-        data=pheno_strain, phenotype=fx_gene,
-        proportion=0.63, num.samples=100, seed=1),
+        scan.object=fx_scan,
+        num.samples=10, seed=1),
       error=function(e) { message('  simple sample failed: ', e$message); NULL })
     if (!is.null(simple_obj)) {
       inst_res <- tryCatch(
         instability.lm.scan(simple.sample.object=simple_obj,
-          genomecache=genomecache_path, data=pheno_strain,
-          phenotype=fx_gene, model='additive',
-          id='subject.name', seed=1, just.these.loci=cis_fx),
+          genomecache=genomecache_path, model='additive',
+          seed=1, just.these.loci=cis_fx),
         error=function(e) { message('  instability failed: ', e$message); NULL })
-      if (!is.null(inst_res)) {
+      if (!is.null(inst_res) && length(inst_res$loci) > 0) {
         write.csv(data.frame(
           gene_id=fx_gene, chr=fx_chr, locus=inst_res$loci,
           pos_mb=pmap_flat$pos_mb[match(inst_res$loci, pmap_flat$locus)],
           lod=inst_res$LOD, stringsAsFactors=FALSE),
           file.path(output_dir,'fixef_r.csv'), row.names=FALSE)
         message('  saved: fixef_r.csv (', length(inst_res$loci), ' loci)')
+      } else {
+        message('  instability scan returned empty result — skipping write')
       }
     }
   }
