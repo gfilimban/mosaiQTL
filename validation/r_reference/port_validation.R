@@ -398,16 +398,10 @@ if (!length(thresh_gene)) {
   # jitter kinship to ensure positive definiteness for Cholesky in generate.sample.outcomes.matrix
   k_thresh <- kinship_loco[[thresh_chr]]
   complete <- complete.cases(pheno_strain[, c(thresh_gene, 'batch', paste0('pc', 1:n_pcs))])
-  pheno_thresh <- pheno_strain[complete, ]
-  # intersect with genomecache subjects so outcome vector length matches pheno exactly
-  pheno_thresh <- pheno_thresh[rownames(pheno_thresh) %in% h$getSubjects(), , drop=FALSE]
+  pheno_thresh <- pheno_strain[complete & rownames(pheno_strain) %in% h$getSubjects(), ]
   k_thresh <- k_thresh[rownames(pheno_thresh), rownames(pheno_thresh)]
   k_thresh <- k_thresh + diag(1e-4, nrow(k_thresh))
   message('  gene=', thresh_gene, '  chr', thresh_chr, '  cis_loci=', length(cis_t))
-
-  cache_subs <- h$getSubjects()
-  pheno_thresh <- pheno_thresh[rownames(pheno_thresh) %in% cache_subs, , drop=FALSE]
-  k_thresh     <- k_thresh[rownames(pheno_thresh), rownames(pheno_thresh)]
 
   base_scan <- tryCatch(
     scan.h2lmm(genomecache=genomecache_path, data=pheno_thresh,
@@ -440,14 +434,12 @@ if (!length(thresh_gene)) {
                             n_perms=0, perm_mean=NA, perm_sd=NA),
                 file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
     } else {
-      # re-filter pheno_thresh to exactly the subjects the permutation matrix was built on
-      # perm_obj$y.matrix rownames = subjects base_scan actually used
-      perm_subs <- rownames(perm_obj$y.matrix)
-      if (!is.null(perm_subs) && length(perm_subs) > 0) {
-        pheno_thresh <- pheno_thresh[perm_subs, , drop=FALSE]
-        k_thresh     <- k_thresh[perm_subs, perm_subs]
-      }
-      # run.threshold.scans: execute permutation scans → produces max LOD distribution
+      # CRITICAL: refilter pheno_thresh to exactly the subjects base_scan used
+      # perm_obj$y.matrix rownames = the subjects scan.h2lmm actually kept after
+      # its internal NA/geno-id filter — this is the only reliable source of truth
+      perm_subs    <- rownames(perm_obj$y.matrix)
+      pheno_thresh <- pheno_thresh[perm_subs, , drop=FALSE]
+      k_thresh     <- k_thresh[perm_subs, perm_subs]
       thresh_scans <- tryCatch(
         run.threshold.scans(sim.threshold.object=perm_obj,
           genomecache=genomecache_path, data=pheno_thresh,
@@ -714,19 +706,14 @@ if (!length(ci_gene)) {
         boot_scans <- tryCatch(
           run.positional.scans(sim.object=boot_obj,
             genomecache=genomecache_path, data=pheno_ci,
-            use.multi.impute=FALSE, scan.seed=1),
+            model='additive', use.multi.impute=FALSE, scan.seed=1),
           error=function(e) { message('  positional scans failed: ', e$message); NULL })
 
         if (!is.null(boot_scans)) {
-          # run.positional.scans returns structured object like run.threshold.scans
-          # individual scans in $full.results; fall back to top-level if flat list
-          scan_list <- if (!is.null(boot_scans$full.results)) {
-            boot_scans$full.results
-          } else {
-            boot_scans
-          }
+          # run.positional.scans returns structured object; individual scans in $full.results
+          scan_list <- if (!is.null(boot_scans$full.results)) boot_scans$full.results else boot_scans
           boot_peaks <- sapply(scan_list, function(s) {
-            if (is.list(s) && !is.null(s$loci) && !is.null(s$LOD))
+            if (is.list(s) && !is.null(s$loci) && length(s$loci) > 0 && !is.null(s$LOD))
               s$loci[which.max(s$LOD)]
             else NA_character_
           })
@@ -770,7 +757,10 @@ if (!length(fx_gene)) {
     set.seed(1)
     simple_obj <- tryCatch(
       generate.simple.sample.outcomes.matrix(
-        scan.object=fx_scan,
+        formula=make_form(fx_gene),
+        data=pheno_strain,
+        pheno.id='subject.name',
+        method='bootstrap',
         num.samples=10, seed=1),
       error=function(e) { message('  simple sample failed: ', e$message); NULL })
     if (!is.null(simple_obj)) {
