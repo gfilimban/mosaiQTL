@@ -278,8 +278,8 @@ results_list <- list(); effects_list <- list()
 for (chr in chromosomes) {
   k_chr    <- kinship_loco[[chr]]
   chr_loci <- pmap_flat[pmap_flat$chr==chr, ]
-  gnames   <- if (use_gtf) intersect(all_genes,
-    gene_annot$gene_id[gene_annot$chr==chr]) else all_genes
+  gnames   <- if (use_gtf) head(intersect(
+    gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
   message('  chr', chr, ': ', length(gnames), ' genes  ', nrow(chr_loci), ' loci')
   for (gene in gnames) {
     if (which(gnames == gene) %% 100 == 0)
@@ -391,7 +391,9 @@ if (!length(thresh_gene)) {
             file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
 } else {
   cis_t   <- get_cis_loci(thresh_gene, thresh_chr)
+  # jitter kinship to ensure positive definiteness for Cholesky in generate.sample.outcomes.matrix
   k_thresh <- kinship_loco[[thresh_chr]]
+  k_thresh <- k_thresh + diag(1e-4, nrow(k_thresh))
   message('  gene=', thresh_gene, '  chr', thresh_chr, '  cis_loci=', length(cis_t))
 
   base_scan <- tryCatch(
@@ -425,14 +427,31 @@ if (!length(thresh_gene)) {
                             n_perms=0, perm_mean=NA, perm_sd=NA),
                 file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
     } else {
+      # run.threshold.scans: execute permutation scans → produces max LOD distribution
+      thresh_scans <- tryCatch(
+        run.threshold.scans(sim.object=perm_obj,
+          genomecache=genomecache_path, data=pheno_strain,
+          formula=make_form(thresh_gene), K=k_thresh,
+          pheno.id='subject.name', geno.id='subject.name',
+          use.multi.impute=FALSE, model='additive',
+          chr=thresh_chr, just.these.loci=cis_t),
+        error=function(e) { message('  run.threshold.scans failed: ', e$message); NULL })
+      if (is.null(thresh_scans)) {
+        thresh_95 <- 6.0
+        message('  threshold scans failed — using fallback threshold=', thresh_95)
+        write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
+                              gene=thresh_gene, chr=thresh_chr,
+                              n_perms=0, perm_mean=NA, perm_sd=NA),
+                  file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
+      } else {
       thresh_95 <- tryCatch(
-        get.gev.thresholds(perm_obj, percentile=0.95, use.lod=TRUE),
+        get.gev.thresholds(thresh_scans, percentile=0.95, use.lod=TRUE),
         error=function(e) {
           message('  GEV fit failed (', e$message, ') — using empirical quantile')
-          perm_lods <- perm_obj$max.statistics$LOD
+          perm_lods <- thresh_scans$max.statistics$LOD
           quantile(perm_lods[is.finite(perm_lods)], 0.95, na.rm=TRUE)
         })
-      perm_lods <- perm_obj$max.statistics$LOD
+      perm_lods <- thresh_scans$max.statistics$LOD
       perm_lods <- perm_lods[is.finite(perm_lods)]
       write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
                             gene=thresh_gene, chr=thresh_chr,
@@ -442,6 +461,7 @@ if (!length(thresh_gene)) {
       write.csv(data.frame(perm_lod=perm_lods),
                 file.path(output_dir,'perm_lods_r.csv'), row.names=FALSE)
       message('  saved: thresholds_r.csv  threshold=', round(thresh_95,3))
+      }  # end else thresh_scans not null
     }
   }
 }
@@ -500,8 +520,8 @@ message('\n[s7] multiple imputation')
 mi_results <- list()
 for (chr in chromosomes) {
   k_chr  <- kinship_loco[[chr]]
-  gnames <- if (use_gtf) intersect(all_genes,
-    gene_annot$gene_id[gene_annot$chr==chr]) else all_genes
+  gnames <- if (use_gtf) head(intersect(
+    gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
   for (gene in gnames) {
     cis <- get_cis_loci(gene, chr)
     if (is.null(cis)) next
@@ -537,8 +557,8 @@ if (!dir.exists(allele_dir_path)) {
   snp_results <- list()
   for (chr in chromosomes) {
     k_chr  <- kinship_loco[[chr]]
-    gnames <- if (use_gtf) intersect(all_genes,
-      gene_annot$gene_id[gene_annot$chr==chr]) else all_genes
+    gnames <- if (use_gtf) head(intersect(
+      gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
     for (gene in gnames) {
       cis <- get_cis_loci(gene, chr)
       if (is.null(cis)) next
@@ -587,7 +607,8 @@ if (length(med_genes) < 2) {
       paste0('pc', 1:n_pcs, collapse=' + ')))
     qr_obj <- tryCatch(
       extract.mediation.qr(genomecache=genomecache_path, data=pheno_strain,
-        formula=med_form, locus=med_peak, chr=med_chr, id='subject.name'),
+        formula=med_form, locus=med_peak, chr=med_chr, id='subject.name',
+        just.these.loci=cis_med),
       error=function(e) { message('  extract.mediation.qr: ', e$message); NULL })
     if (!is.null(qr_obj)) {
       med_res <- tryCatch(
@@ -617,7 +638,9 @@ ci_gene <- first_gene_on(ci_chr, 1)
 if (!length(ci_gene)) {
   message('  SKIP: no gene with cis loci on chr', ci_chr)
 } else {
-  ci_gene <- ci_gene[1]; k_chr <- kinship_loco[[ci_chr]]
+  ci_gene <- ci_gene[1]
+  k_chr <- kinship_loco[[ci_chr]]
+  k_chr <- k_chr + diag(1e-4, nrow(k_chr))  # jitter for Cholesky stability
   cis_ci  <- get_cis_loci(ci_gene, ci_chr)
   ci_scan <- tryCatch(
     scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
@@ -634,7 +657,7 @@ if (!length(ci_gene)) {
       use.multi.impute=FALSE, model='additive', just.these.loci=peak_locus)
     set.seed(1)
     boot_obj <- tryCatch(
-      generate.sample.outcomes.matrix(scan.object=peak_fit, model.type='alt',
+      generate.sample.outcomes.matrix(scan.object=peak_fit, model.type='null',
         method='bootstrap', num.samples=100, seed=1,
         use.REML=TRUE, use.BLUP=FALSE),
       error=function(e) { message('  bootstrap failed: ', e$message); NULL })
@@ -679,15 +702,19 @@ if (!length(fx_gene)) {
     error=function(e) NULL)
   if (!is.null(fx_scan)) {
     set.seed(1)
+    # generate.simple.sample.outcomes.matrix takes data + phenotype column name,
+    # not scan.object; proportion= not subsample.prop=
     simple_obj <- tryCatch(
       generate.simple.sample.outcomes.matrix(
-        scan.object=fx_scan, subsample.prop=0.63, num.samples=100, seed=1),
+        data=pheno_strain, phenotype=fx_gene,
+        proportion=0.63, num.samples=100, seed=1),
       error=function(e) { message('  simple sample failed: ', e$message); NULL })
     if (!is.null(simple_obj)) {
       inst_res <- tryCatch(
         instability.lm.scan(simple.sample.object=simple_obj,
-          genomecache=genomecache_path, model='additive',
-          seed=1, just.these.loci=cis_fx),
+          genomecache=genomecache_path, data=pheno_strain,
+          phenotype=fx_gene, model='additive',
+          id='subject.name', seed=1, just.these.loci=cis_fx),
         error=function(e) { message('  instability failed: ', e$message); NULL })
       if (!is.null(inst_res)) {
         write.csv(data.frame(

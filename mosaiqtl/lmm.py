@@ -200,21 +200,28 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
 def scan_chromosome(y, genome_cache, chrom, x_covariates,
                     eigvals, eigvecs, h2_null, use_reml=True,
                     z_mat=None):
-    """scan all loci on one chromosome.
+    """scan all loci on one chromosome — vectorized batch WLS.
+
+    replaces the per-locus python loop with a single tensor computation
+    via the frisch-waugh-lovell (fwl) theorem. all loci share the same
+    weight vector w and null model, so:
+        rss_alt[l] = rss_null - c[l]' (H_perp[l]'H_perp[l])^{-1} c[l]
+    where H_perp[l] = M_X H_t[l] (weighted H residualized on X),
+    c[l] = H_perp[l]' e0, e0 = null residual.
+
+    equivalent to qtl2::scan_pg_onechr (rcpp), now in numpy.
 
     parameters
     ----------
-    y            : np.ndarray (n,)     phenotype (already RINT'd if requested)
+    y            : np.ndarray (n,)
     genome_cache : GenomeCache
     chrom        : str
-    x_covariates : np.ndarray (n, p)   covariate design matrix
+    x_covariates : np.ndarray (n, p)
     eigvals      : np.ndarray (n,)     eigenvalues of n×n kinship
     eigvecs      : np.ndarray (n, n)   eigenvectors
     h2_null      : float
-    use_reml     : bool
+    use_reml     : bool                (unused for lod; kept for api compat)
     z_mat        : np.ndarray (n, m) or None
-        if provided, haplotype probs are expanded via Z @ H_cache.
-        if None, assumes n == m (identity mapping).
 
     returns
     -------
@@ -223,24 +230,62 @@ def scan_chromosome(y, genome_cache, chrom, x_covariates,
     locus_ids, positions, probs = genome_cache.get_chromosome(chrom)
     n_loci = len(locus_ids)
     nf1    = genome_cache.n_founders - 1
+    n      = len(y)
+    p      = x_covariates.shape[1]
+    q      = nf1
 
-    y_rot = eigvecs.T @ y
-    x_rot = eigvecs.T @ x_covariates
+    # ── shared weight vector from h² ─────────────────────────────────────────
+    delta  = h2_null / max(1.0 - h2_null, 1e-10)
+    w_sqrt = 1.0 / np.sqrt(delta * eigvals + 1.0)   # sqrt(w_inv), (n,)
 
-    lod_arr   = np.zeros(n_loci)
-    pval_arr  = np.ones(n_loci)
-    betas_arr = np.zeros((n_loci, nf1))
+    # ── null wls (once for all loci) ─────────────────────────────────────────
+    yt   = (eigvecs.T @ y) * w_sqrt                  # weighted rotated pheno
+    xt   = (eigvecs.T @ x_covariates) * w_sqrt[:,None]  # weighted rotated X
+    xtwx = xt.T @ xt                                 # (p, p)
+    try:
+        beta_null = np.linalg.solve(xtwx, xt.T @ yt)
+    except np.linalg.LinAlgError:
+        return {'locus_ids': locus_ids, 'positions': positions,
+                'lod': np.zeros(n_loci), 'p_value': np.ones(n_loci),
+                'betas': np.zeros((n_loci, nf1))}
+    e0   = yt - xt @ beta_null                       # null residual (n,)
+    rss0 = float(e0 @ e0)                            # scalar null rss
 
-    for l_idx in range(n_loci):
-        h_l = probs[l_idx]               # (m, J)
-        if z_mat is not None:
-            h_l = z_mat @ h_l            # (n, J)
-        h_l_red = h_l[:, :nf1]          # drop last founder
-        h_rot   = eigvecs.T @ h_l_red
-        res     = fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml)
-        lod_arr[l_idx]    = res.lod
-        pval_arr[l_idx]   = res.p_value
-        betas_arr[l_idx]  = res.betas
+    # ── build & rotate haplotype array (n_loci, n, J-1) ─────────────────────
+    H = probs[:, :, :nf1]                            # (n_loci, m, J-1)
+    if z_mat is not None:
+        H = np.einsum('nm,lmj->lnj', z_mat, H, optimize=True)
+    # rotate by u': H_rot[l,k,j] = sum_n eigvecs[n,k] * H[l,n,j]
+    H_t = np.einsum('nk,lnj->lkj', eigvecs, H, optimize=True)  # (n_loci, n, J-1)
+    H_t *= w_sqrt[None, :, None]                     # apply sqrt weights in-place
+
+    # ── residualize H on X via fwl ───────────────────────────────────────────
+    # xt_pinv = (X'X)^{-1} X', shape (p, n)
+    xt_pinv  = np.linalg.solve(xtwx, xt.T)           # (p, n)
+    # proj_coef[l,p,j] = sum_n xt_pinv[p,n] * H_t[l,n,j]
+    proj     = np.einsum('pn,lnj->lpj', xt_pinv, H_t, optimize=True)  # (n_loci, p, J-1)
+    H_perp   = H_t - np.einsum('np,lpj->lnj', xt, proj, optimize=True)  # (n_loci, n, J-1)
+
+    # ── gram matrices and rhs ────────────────────────────────────────────────
+    c_all = np.einsum('lnj,n->lj', H_perp, e0, optimize=True)       # (n_loci, J-1)
+    G_all = np.einsum('lnj,lnk->ljk', H_perp, H_perp, optimize=True)  # (n_loci, J-1, J-1)
+    G_all += np.eye(q)[None] * 1e-10                 # ridge for singular loci
+
+    # solve G[l] beta_h[l] = c[l] for all loci simultaneously
+    beta_h = np.linalg.solve(G_all, c_all)           # (n_loci, J-1)
+
+    # ── rss, lod, p-values ───────────────────────────────────────────────────
+    rss_red  = np.einsum('lj,lj->l', c_all, beta_h)  # (n_loci,) rss reduction
+    rss1     = np.maximum(rss0 - rss_red, 1e-30)     # (n_loci,) alt rss
+    lod_arr  = np.where(rss1 < rss0,
+                        (n / 2.0) * np.log10(rss0 / rss1), 0.0)
+
+    df2 = n - p - q
+    if df2 > 0:
+        f_stat   = np.maximum((rss0 - rss1) / q / (rss1 / df2), 0.0)
+        pval_arr = 1.0 - stats.f.cdf(f_stat, q, df2)
+    else:
+        pval_arr = np.ones(n_loci)
 
     return {'locus_ids': locus_ids, 'positions': positions,
-            'lod': lod_arr, 'p_value': pval_arr, 'betas': betas_arr}
+            'lod': lod_arr, 'p_value': pval_arr, 'betas': beta_h}
