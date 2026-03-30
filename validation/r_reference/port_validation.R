@@ -398,10 +398,16 @@ if (!length(thresh_gene)) {
   # jitter kinship to ensure positive definiteness for Cholesky in generate.sample.outcomes.matrix
   k_thresh <- kinship_loco[[thresh_chr]]
   complete <- complete.cases(pheno_strain[, c(thresh_gene, 'batch', paste0('pc', 1:n_pcs))])
-  pheno_thresh <- pheno_strain[complete & rownames(pheno_strain) %in% h$getSubjects(), ]
+  pheno_thresh <- pheno_strain[complete, ]
+  # intersect with genomecache subjects so outcome vector length matches pheno exactly
+  pheno_thresh <- pheno_thresh[rownames(pheno_thresh) %in% h$getSubjects(), , drop=FALSE]
   k_thresh <- k_thresh[rownames(pheno_thresh), rownames(pheno_thresh)]
   k_thresh <- k_thresh + diag(1e-4, nrow(k_thresh))
   message('  gene=', thresh_gene, '  chr', thresh_chr, '  cis_loci=', length(cis_t))
+
+  cache_subs <- h$getSubjects()
+  pheno_thresh <- pheno_thresh[rownames(pheno_thresh) %in% cache_subs, , drop=FALSE]
+  k_thresh     <- k_thresh[rownames(pheno_thresh), rownames(pheno_thresh)]
 
   base_scan <- tryCatch(
     scan.h2lmm(genomecache=genomecache_path, data=pheno_thresh,
@@ -434,45 +440,49 @@ if (!length(thresh_gene)) {
                             n_perms=0, perm_mean=NA, perm_sd=NA),
                 file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
     } else {
-      # CRITICAL: refilter pheno_thresh to exactly the subjects base_scan used
-      # perm_obj$y.matrix rownames = the subjects scan.h2lmm actually kept after
-      # its internal NA/geno-id filter — this is the only reliable source of truth
-      perm_subs    <- rownames(perm_obj$y.matrix)
-      pheno_thresh <- pheno_thresh[perm_subs, , drop=FALSE]
-      k_thresh     <- k_thresh[perm_subs, perm_subs]
-      thresh_scans <- tryCatch(
-        run.threshold.scans(sim.threshold.object=perm_obj,
-          genomecache=genomecache_path, data=pheno_thresh,
-          use.multi.impute=FALSE,
-         chr=thresh_chr, just.these.loci=cis_t, scan.seed=1),
-        error=function(e) { message('  run.threshold.scans failed: ', e$message); NULL })
-      if (is.null(thresh_scans)) {
-        thresh_95 <- 6.0
-        message('  threshold scans failed — using fallback threshold=', thresh_95)
-        write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
-                              gene=thresh_gene, chr=thresh_chr,
-                              n_perms=0, perm_mean=NA, perm_sd=NA),
-                  file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
-      } else {
-      thresh_95 <- tryCatch(
-        get.gev.thresholds(thresh_scans, percentile=0.95, use.lod=TRUE),
-        error=function(e) {
-          message('  GEV fit failed (', e$message, ') — using empirical quantile')
-          perm_lods <- thresh_scans$max.statistics$LOD
-          quantile(perm_lods[is.finite(perm_lods)], 0.95, na.rm=TRUE)
-        })
-      perm_lods <- thresh_scans$max.statistics$LOD
-      perm_lods <- perm_lods[is.finite(perm_lods)]
-      write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
-                            gene=thresh_gene, chr=thresh_chr,
-                            n_perms=length(perm_lods),
-                            perm_mean=mean(perm_lods), perm_sd=sd(perm_lods)),
-                file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
-      write.csv(data.frame(perm_lod=perm_lods),
-                file.path(output_dir,'perm_lods_r.csv'), row.names=FALSE)
-      message('  saved: thresholds_r.csv  threshold=', round(thresh_95,3))
-      }  # end else thresh_scans not null
+    # manual permutation loop — bypasses run.threshold.scans entirely.
+    # generate.sample.outcomes.matrix(method='permutation') stores RINT float values,
+    # but run.threshold.scans internally uses y.matrix values as integer indices to
+    # reorder the phenotype column. float RINT values near zero truncate to 0/1, producing
+    # wrong-length or zero-length vectors → replacement length error.
+    # fix: directly assign each permuted column into a copy of pheno_thresh and call
+    # scan.h2lmm ourselves — identical math, full control over dimensions.
+    perm_subs <- rownames(perm_obj$y.matrix)
+    pheno_perm_base <- pheno_thresh[perm_subs, , drop=FALSE]
+    k_perm <- k_thresh[perm_subs, perm_subs]
+    n_perms <- ncol(perm_obj$y.matrix)
+    max_lods <- numeric(n_perms)
+    message('  running ', n_perms, ' permutation scans manually...')
+    for (p_i in seq_len(n_perms)) {
+      p_data <- pheno_perm_base
+      p_data[[thresh_gene]] <- perm_obj$y.matrix[, p_i]   # insert permuted outcome
+      p_scan <- tryCatch(
+        scan.h2lmm(genomecache=genomecache_path, data=p_data,
+                    pheno.id='subject.name', geno.id='subject.name',
+                    formula=make_form(thresh_gene), K=k_perm,
+                    use.multi.impute=FALSE, model='additive',
+                    just.these.loci=cis_t),
+        error=function(e) NULL)
+      max_lods[p_i] <- if (!is.null(p_scan) && length(p_scan$LOD) > 0)
+        max(p_scan$LOD, na.rm=TRUE) else NA_real_
     }
+    perm_lods <- max_lods[is.finite(max_lods)]
+    thresh_95 <- tryCatch(
+      get.gev.thresholds(
+        list(max.statistics=list(LOD=perm_lods)),
+        percentile=0.95, use.lod=TRUE),
+      error=function(e) {
+        message('  GEV fit failed (', e$message, ') — using empirical quantile')
+        quantile(perm_lods, 0.95, na.rm=TRUE)
+      })
+    write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
+                          gene=thresh_gene, chr=thresh_chr,
+                          n_perms=length(perm_lods),
+                          perm_mean=mean(perm_lods), perm_sd=sd(perm_lods)),
+              file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
+    write.csv(data.frame(perm_lod=perm_lods),
+              file.path(output_dir,'perm_lods_r.csv'), row.names=FALSE)
+    message('  saved: thresholds_r.csv  threshold=', round(thresh_95, 3))
   }
 }
 
@@ -710,13 +720,9 @@ if (!length(ci_gene)) {
           error=function(e) { message('  positional scans failed: ', e$message); NULL })
 
         if (!is.null(boot_scans)) {
-          # run.positional.scans returns structured object; individual scans in $full.results
-          scan_list <- if (!is.null(boot_scans$full.results)) boot_scans$full.results else boot_scans
-          boot_peaks <- sapply(scan_list, function(s) {
-            if (is.list(s) && !is.null(s$loci) && length(s$loci) > 0 && !is.null(s$LOD))
-              s$loci[which.max(s$LOD)]
-            else NA_character_
-          })
+          # run.positional.scans stores peak loci in $max.statistics$peak.loci directly —
+          # use that instead of iterating $full.results which causes atomic-vector errors
+          boot_peaks <- boot_scans$max.statistics$peak.loci
           boot_pos   <- pmap_flat$pos_mb[match(boot_peaks, pmap_flat$locus)]
           write.csv(data.frame(
             gene_id=ci_gene, chr=ci_chr, peak_locus=peak_locus,
@@ -757,10 +763,7 @@ if (!length(fx_gene)) {
     set.seed(1)
     simple_obj <- tryCatch(
       generate.simple.sample.outcomes.matrix(
-        formula=make_form(fx_gene),
-        data=pheno_strain,
-        pheno.id='subject.name',
-        method='bootstrap',
+        scan.object=fx_scan,
         num.samples=10, seed=1),
       error=function(e) { message('  simple sample failed: ', e$message); NULL })
     if (!is.null(simple_obj)) {
