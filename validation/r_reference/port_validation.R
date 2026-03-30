@@ -709,7 +709,7 @@ if (!length(ci_gene)) {
       boot_obj <- tryCatch(
         generate.sample.outcomes.matrix(scan.object=peak_fit,
           model.type='alt', method='bootstrap',
-          num.samples=10, seed=1, use.REML=TRUE, use.BLUP=FALSE),
+          num.samples=100, seed=1, use.REML=TRUE, use.BLUP=FALSE),
         error=function(e) { message('  bootstrap failed: ', e$message); NULL })
 
       if (!is.null(boot_obj)) {
@@ -764,7 +764,7 @@ if (!length(fx_gene)) {
     simple_obj <- tryCatch(
       generate.simple.sample.outcomes.matrix(
         scan.object=fx_scan,
-        num.samples=10, seed=1),
+        num.samples=100, seed=1),
       error=function(e) { message('  simple sample failed: ', e$message); NULL })
     if (!is.null(simple_obj)) {
       inst_res <- tryCatch(
