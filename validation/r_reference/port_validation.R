@@ -485,6 +485,9 @@ if (!length(thresh_gene)) {
     message('  saved: thresholds_r.csv  threshold=', round(thresh_95, 3))
   }
 }
+}
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # S6 — CACHE COLLAPSE
