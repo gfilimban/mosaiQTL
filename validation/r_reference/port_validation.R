@@ -674,7 +674,6 @@ if (length(med_genes) < 2) {
         pos_mb=pmap_flat$pos_mb[match(base_scan$loci, pmap_flat$locus)],
         mediator=med_med,
         lod_base=base_scan$LOD, lod_mediated=med_scan$LOD, lod_drop=lod_drop,
-        peak_locus=med_peak,
         stringsAsFactors=FALSE),
         file.path(output_dir,'mediation_r.csv'), row.names=FALSE)
       message('  saved: mediation_r.csv')

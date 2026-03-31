@@ -302,7 +302,6 @@ A large positive drop indicates that controlling for gene $B$ explains most of t
 | `lod_base` | float | LOD without mediator covariate |
 | `lod_mediated` | float | LOD with mediator as fixed-effect covariate |
 | `lod_drop` | float | $\Delta\text{LOD} = \text{LOD}_\text{base} - \text{LOD}_\text{mediated}$ |
-| `peak_locus` | str | Peak locus from base scan |
 
 **Scientific interpretation**:
 - $\Delta\text{LOD} > 0$: partial or full mediation — genetic effect on `gene_id` is partly via `mediator` expression
