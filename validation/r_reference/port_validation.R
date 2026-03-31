@@ -390,7 +390,7 @@ if (!length(thresh_gene)) {
   message('  SKIP: no viable threshold gene on chr', thresh_chr,
           ' — using standard fallback threshold=', thresh_95)
   write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
-                        gene=NA, chr=thresh_chr,
+                        gene_id=NA, chr=thresh_chr,
                         n_perms=0, perm_mean=NA, perm_sd=NA),
             file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
 } else {
@@ -421,7 +421,7 @@ if (!length(thresh_gene)) {
     thresh_95 <- 6.0
     message('  base scan failed — using fallback threshold=', thresh_95)
     write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
-                          gene=thresh_gene, chr=thresh_chr,
+                          gene_id=thresh_gene, chr=thresh_chr,
                           n_perms=0, perm_mean=NA, perm_sd=NA),
               file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
   } else {
@@ -436,7 +436,7 @@ if (!length(thresh_gene)) {
       thresh_95 <- 6.0
       message('  perm object failed — using fallback threshold=', thresh_95)
       write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
-                            gene=thresh_gene, chr=thresh_chr,
+                            gene_id=thresh_gene, chr=thresh_chr,
                             n_perms=0, perm_mean=NA, perm_sd=NA),
                 file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
     } else {
@@ -487,12 +487,15 @@ if (!length(thresh_gene)) {
         message('  GEV fit failed (', e$message, ') — using empirical quantile')
         quantile(perm_lods, 0.95, na.rm=TRUE)
       })
+    thresh_peak_pos <- pmap_flat$pos_mb[match(
+      grab.locus.from.scan(base_scan), pmap_flat$locus)]
     write.csv(data.frame(percentile=0.95, lod_threshold=thresh_95,
-                          gene=thresh_gene, chr=thresh_chr,
+                          gene_id=thresh_gene, chr=thresh_chr,
                           n_perms=length(perm_lods),
                           perm_mean=mean(perm_lods), perm_sd=sd(perm_lods)),
               file.path(output_dir,'thresholds_r.csv'), row.names=FALSE)
-    write.csv(data.frame(perm_lod=perm_lods),
+    write.csv(data.frame(gene_id=thresh_gene, chr=thresh_chr,
+                          pos_mb=thresh_peak_pos, perm_lod=perm_lods),
               file.path(output_dir,'perm_lods_r.csv'), row.names=FALSE)
     message('  saved: thresholds_r.csv  threshold=', round(thresh_95, 3))
   }
@@ -667,7 +670,6 @@ if (length(med_genes) < 2) {
       error=function(e) { message('  mediated scan failed: ', e$message); NULL })
 
     if (!is.null(base_scan) && !is.null(med_scan)) {
-      med_peak <- grab.locus.from.scan(base_scan)
       lod_drop <- base_scan$LOD - med_scan$LOD
       write.csv(data.frame(
         gene_id=med_gene, chr=med_chr, locus=base_scan$loci,
