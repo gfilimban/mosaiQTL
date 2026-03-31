@@ -37,8 +37,10 @@ pmap_path  = os.path.join(data_dir, 'input', 'pmap.csv')   # unused; kept for sn
 allele_dir = os.path.join(data_dir, 'output', 'allele_dir')
 snp_out    = os.path.join(data_dir, 'input',  'snp_genos.csv')
 
-# founder columns in GigaMUGA CSV, in A-H HAPPY order
-FOUNDER_COLS = ['AJ', 'B6J', '129S1J', 'NODJ', 'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ']
+# founder columns in GigaMUGA CSV mapped to single-letter HAPPY codes (A-H)
+# genomecache uses A-H internally; allele files must match
+FOUNDER_COLS  = ['AJ', 'B6J', '129S1J', 'NODJ', 'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ']
+HAPPY_LETTERS = ['A',  'B',   'C',      'D',    'E',    'F',     'G',    'H']
 
 # ── load GigaMUGA ─────────────────────────────────────────────────────────────
 log.info(f'loading GigaMUGA from {gm_path}...')
@@ -108,7 +110,8 @@ if args.min_maf > 0:
 
 # ── save snp_genos.csv for validate_port.py S8 ───────────────────────────────
 snp_df = gm[['chr', 'pos_mb'] + f_cols].copy()
-snp_df[f_cols] = snp_df[f_cols].fillna(0).astype(int)  # nan (missing) -> 0 (ref)
+snp_df.columns = ['chr', 'pos_mb'] + HAPPY_LETTERS[:len(f_cols)]  # A-H to match genomecache
+snp_df[HAPPY_LETTERS[:len(f_cols)]] = snp_df[HAPPY_LETTERS[:len(f_cols)]].fillna(0).astype(int)
 snp_df.to_csv(snp_out)
 log.info(f'saved snp_genos.csv: {len(snp_df)} SNPs -> {snp_out}')
 
@@ -123,10 +126,10 @@ for chrom, chr_df in gm.groupby('chr'):
     with open(out_path, 'w') as fh:
         for snp_id, row in chr_df.iterrows():
             dosages = [row.get(f, np.nan) for f in f_cols]
-            dosages = [0.0 if np.isnan(d) else d for d in dosages]  # nan -> 0 (ref)
+            dosages = [0.0 if pd.isna(d) else d for d in dosages]  # nan -> 0 (ref)
             fh.write(snp_id + '\n')       # line 1: SNP id
             for d in dosages:
-                fh.write(f'{int(d)}\n')   # lines 2-9: one dosage per founder
+                fh.write(f'{int(d)}\n')   # lines 2-9: one dosage per founder (A-H order)
             n_written += 1
     log.info(f'  chr{chrom}: {n_written} SNPs -> {out_path}')
 

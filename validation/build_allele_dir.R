@@ -11,7 +11,8 @@
 data_dir   <- '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
 snp_csv    <- file.path(data_dir, 'input',  'snp_genos.csv')
 allele_dir <- file.path(data_dir, 'output', 'allele_dir')
-founders   <- c('AJ','B6J','129S1J','NODJ','NZOJ','CASTJ','PWKJ','WSBJ')
+founders   <- c('A','B','C','D','E','F','G','H')   # HAPPY single-letter codes (A=AJ..H=WSBJ)
+full_names <- c('AJ','B6J','129S1J','NODJ','NZOJ','CASTJ','PWKJ','WSBJ')
 
 if (!file.exists(snp_csv))
   stop('snp_genos.csv not found: ', snp_csv,
@@ -25,6 +26,14 @@ message('  ', nrow(df), ' SNPs x ', ncol(df), ' cols')
 
 founders <- founders[founders %in% colnames(df)]
 message('  founders: ', paste(founders, collapse=', '))
+
+# rename full founder names to HAPPY single-letter codes if needed
+present_full <- full_names[full_names %in% colnames(df)]
+if (length(present_full) > 0) {
+  colnames(df)[match(present_full, colnames(df))] <-
+    founders[match(present_full, full_names)]
+  message('  renamed columns to HAPPY letters')
+}
 
 dir.create(allele_dir, recursive=TRUE, showWarnings=FALSE)
 n_total <- 0
