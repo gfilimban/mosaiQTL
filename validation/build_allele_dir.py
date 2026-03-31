@@ -33,7 +33,7 @@ args = ap.parse_args()
 # ── paths ─────────────────────────────────────────────────────────────────────
 data_dir   = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
 gm_path    = os.path.join(data_dir, 'input', 'GM_ccfo_mm39.csv')
-pmap_path  = os.path.join(data_dir, 'input', 'pmap.csv')
+pmap_path  = os.path.join(data_dir, 'input', 'pmap.csv')   # unused; kept for snp_genos reference
 allele_dir = os.path.join(data_dir, 'output', 'allele_dir')
 snp_out    = os.path.join(data_dir, 'input',  'snp_genos.csv')
 
@@ -45,24 +45,11 @@ log.info(f'loading GigaMUGA from {gm_path}...')
 gm = pd.read_csv(gm_path, low_memory=False)
 log.info(f'  {len(gm)} SNPs x {len(gm.columns)} cols')
 
-# load pmap for chr and position
-pmap = pd.read_csv(pmap_path)
-if 'marker' in pmap.columns: pmap = pmap.rename(columns={'marker': 'locus'})
-if 'pos'    in pmap.columns: pmap = pmap.rename(columns={'pos': 'pos_mb'})
-pmap['locus'] = pmap['locus'].str.replace(r'\.RData$', '', regex=True)
-
-# ── align SNP ids ─────────────────────────────────────────────────────────────
-if gm.index.name is None or gm.index.dtype != object:
-    snp_col = gm.columns[0]
-    gm      = gm.set_index(snp_col)
-log.info(f'  SNP index: {gm.index[:3].tolist()}...')
-
-# subset to SNPs with pmap coordinates
-gm = gm.loc[gm.index.isin(pmap['locus'])]
-gm = gm.merge(pmap[['locus', 'chr', 'pos_mb']].set_index('locus'),
-              left_index=True, right_index=True, how='left')
+# set marker column as index (SNP ids); rename pos->pos_mb
+if 'marker' in gm.columns: gm = gm.set_index('marker')
+if 'pos'    in gm.columns: gm = gm.rename(columns={'pos': 'pos_mb'})
 gm['chr'] = gm['chr'].astype(str)
-log.info(f'  {len(gm)} SNPs with pmap coordinates')
+log.info(f'  SNP index: {gm.index[:3].tolist()}...')
 
 # filter chromosomes if requested
 if args.chrs:
