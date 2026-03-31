@@ -736,24 +736,27 @@ if (!length(ci_gene)) {
           error=function(e) { message('  positional scans failed: ', e$message); NULL })
 
         if (!is.null(boot_scans)) {
-          # $full.results = list(p.values, chr, pos) where $pos = list(lo=Mb, hi=Mb)
-          fr  <- boot_scans$full.results
+          # $full.results = list(p.values, chr, pos)
+          # $pos = list(Mb=numeric[n_boot], cM=numeric[n_boot]) — one position per bootstrap
+          fr       <- boot_scans$full.results
           message('  full.results names: ', paste(names(fr), collapse=', '))
-          message('  pos names: ', paste(names(fr$pos), collapse=', '))
-          message('  pos lo: ', fr$pos$lo, '  hi: ', fr$pos$hi)
-          ci_lo <- as.numeric(fr$pos$lo)
-          ci_hi <- as.numeric(fr$pos$hi)
+          boot_pos <- as.numeric(fr$pos$Mb)   # bootstrap peak positions in Mb
+          message('  n_boot: ', length(boot_pos), '  non-NA: ', sum(!is.na(boot_pos)))
+          if (is.null(peak_locus) || length(peak_locus) == 0 || is.na(peak_locus)) {
+            message('  SKIP: peak_locus is empty'); next
+          }
           write.csv(data.frame(
             gene_id=ci_gene, chr=ci_chr, locus=peak_locus,
-            ci_lo_mb=ci_lo, ci_hi_mb=ci_hi,
+            ci_lo_mb=quantile(boot_pos, 0.025, na.rm=TRUE),
+            ci_hi_mb=quantile(boot_pos, 0.975, na.rm=TRUE),
             peak_lod=max(ci_scan$LOD, na.rm=TRUE),
-            n_boot=100),
+            n_boot=sum(!is.na(boot_pos))),
             file.path(output_dir,'ci_r.csv'), row.names=FALSE)
           write.csv(data.frame(
             gene_id=ci_gene, chr=ci_chr, locus=peak_locus,
-            boot_pos=c(ci_lo, ci_hi)),
+            boot_pos=boot_pos),
             file.path(output_dir,'boot_pos_r.csv'), row.names=FALSE)
-          message('  saved: ci_r.csv  ci_lo=', round(ci_lo,3), ' ci_hi=', round(ci_hi,3))
+          message('  saved: ci_r.csv  boot_pos_r.csv')
         }
       }
     }
