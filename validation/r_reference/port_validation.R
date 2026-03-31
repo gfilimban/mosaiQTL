@@ -735,34 +735,26 @@ if (!length(ci_gene)) {
           error=function(e) { message('  positional scans failed: ', e$message); NULL })
 
         if (!is.null(boot_scans)) {
-          # $full.results is list(loci=char, LOD=matrix, p.value=matrix)
-          # LOD matrix dims: n_loci × n_boot (cols = bootstrap replicates)
-          fr   <- boot_scans$full.results
+          # $full.results = list(p.values, chr, pos) — peak positions already extracted
+          fr       <- boot_scans$full.results
           message('  full.results names: ', paste(names(fr), collapse=', '))
-          message('  full.results$LOD class: ', class(fr$LOD))
-          message('  full.results$LOD dim: ', paste(dim(fr$LOD), collapse=' x '))
-          lod_mat    <- fr$LOD          # matrix: n_loci × n_boot
-          loci_names <- fr$loci         # character vector of locus ids
-          # peak locus per bootstrap = col-wise argmax
-          boot_peaks <- apply(lod_mat, 2, function(col) {
-            if (all(is.na(col))) return(NA_character_)
-            loci_names[which.max(col)]
-          })
-          boot_pos <- pmap_flat$pos_mb[match(boot_peaks, pmap_flat$locus)]
+          message('  boot pos length: ', length(fr$pos))
+          message('  boot pos range: ', round(min(fr$pos, na.rm=TRUE), 3),
+                  ' – ', round(max(fr$pos, na.rm=TRUE), 3), ' Mb')
+          boot_pos <- fr$pos             # numeric Mb positions, one per bootstrap
           write.csv(data.frame(
             gene_id=ci_gene, chr=ci_chr, peak_locus=peak_locus,
             ci_lo_mb=quantile(boot_pos, 0.025, na.rm=TRUE),
             ci_hi_mb=quantile(boot_pos, 0.975, na.rm=TRUE),
             peak_lod=max(ci_scan$LOD, na.rm=TRUE),
-            n_boot=length(boot_peaks)),
+            n_boot=length(boot_pos)),
             file.path(output_dir,'ci_r.csv'), row.names=FALSE)
-          message("  Number of bootstrap peaks found: ", sum(!is.na(boot_peaks)))
-          message("  Number of peaks matched to pmap: ", sum(!is.na(boot_pos)))
+          message('  n_boot: ', length(boot_pos), '  non-NA: ', sum(!is.na(boot_pos)))
           if (length(boot_pos) > 0) {
             write.csv(data.frame(boot_pos=boot_pos),
               file.path(output_dir,'boot_pos_r.csv'), row.names=FALSE)
             message('  saved: ci_r.csv  boot_pos_r.csv')
-        } 
+          }
         }
       }
     }
