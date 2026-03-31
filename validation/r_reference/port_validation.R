@@ -670,8 +670,8 @@ if (length(med_genes) < 2) {
       med_peak <- grab.locus.from.scan(base_scan)
       lod_drop <- base_scan$LOD - med_scan$LOD
       write.csv(data.frame(
-        gene_id=med_gene, mediator=med_med, chr=med_chr,
-        locus=base_scan$loci,
+        gene_id=med_gene, chr=med_chr, locus=base_scan$loci,
+        mediator=med_med,
         pos_mb=pmap_flat$pos_mb[match(base_scan$loci, pmap_flat$locus)],
         lod_base=base_scan$LOD, lod_mediated=med_scan$LOD,
         lod_drop=lod_drop, peak_locus=med_peak,
@@ -735,26 +735,24 @@ if (!length(ci_gene)) {
           error=function(e) { message('  positional scans failed: ', e$message); NULL })
 
         if (!is.null(boot_scans)) {
-          # $full.results = list(p.values, chr, pos) — peak positions already extracted
-          fr       <- boot_scans$full.results
+          # $full.results = list(p.values, chr, pos) where $pos = list(lo=Mb, hi=Mb)
+          fr  <- boot_scans$full.results
           message('  full.results names: ', paste(names(fr), collapse=', '))
-          message('  boot pos length: ', length(fr$pos))
-          message('  boot pos range: ', round(min(fr$pos, na.rm=TRUE), 3),
-                  ' – ', round(max(fr$pos, na.rm=TRUE), 3), ' Mb')
-          boot_pos <- fr$pos             # numeric Mb positions, one per bootstrap
+          message('  pos names: ', paste(names(fr$pos), collapse=', '))
+          message('  pos lo: ', fr$pos$lo, '  hi: ', fr$pos$hi)
+          ci_lo <- as.numeric(fr$pos$lo)
+          ci_hi <- as.numeric(fr$pos$hi)
           write.csv(data.frame(
-            gene_id=ci_gene, chr=ci_chr, peak_locus=peak_locus,
-            ci_lo_mb=quantile(boot_pos, 0.025, na.rm=TRUE),
-            ci_hi_mb=quantile(boot_pos, 0.975, na.rm=TRUE),
+            gene_id=ci_gene, chr=ci_chr, locus=peak_locus,
+            ci_lo_mb=ci_lo, ci_hi_mb=ci_hi,
             peak_lod=max(ci_scan$LOD, na.rm=TRUE),
-            n_boot=length(boot_pos)),
+            n_boot=100),
             file.path(output_dir,'ci_r.csv'), row.names=FALSE)
-          message('  n_boot: ', length(boot_pos), '  non-NA: ', sum(!is.na(boot_pos)))
-          if (length(boot_pos) > 0) {
-            write.csv(data.frame(boot_pos=boot_pos),
-              file.path(output_dir,'boot_pos_r.csv'), row.names=FALSE)
-            message('  saved: ci_r.csv  boot_pos_r.csv')
-          }
+          write.csv(data.frame(
+            gene_id=ci_gene, chr=ci_chr, locus=peak_locus,
+            boot_pos=c(ci_lo, ci_hi)),
+            file.path(output_dir,'boot_pos_r.csv'), row.names=FALSE)
+          message('  saved: ci_r.csv  ci_lo=', round(ci_lo,3), ' ci_hi=', round(ci_hi,3))
         }
       }
     }
