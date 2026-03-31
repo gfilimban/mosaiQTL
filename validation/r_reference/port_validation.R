@@ -592,32 +592,47 @@ pheno_snp <- pheno_strain
 colnames(pheno_snp)[colnames(pheno_snp) == 'subject.name'] <- 'SUBJECT.NAME'
 if (!dir.exists(allele_dir_path)) {
   message('  SKIP: allele_dir not found at ', allele_dir_path)
-  message('  build with: mosaiqtl.snp_scan.build_allele_dir(snp_genos, allele_dir_path)')
 } else {
   snp_results <- list()
   for (chr in chromosomes) {
+    # read SNP ids available in this chr's allele file
+    allele_file <- file.path(allele_dir_path, paste0('chr', chr, '.alleles'))
+    if (!file.exists(allele_file)) {
+      message('  SKIP chr', chr, ': no allele file'); next
+    }
+    lines      <- readLines(allele_file)
+    # SNP ids are every 9th line starting at line 1
+    snp_ids    <- lines[seq(1, length(lines), by=9)]
+    message('  chr', chr, ': ', length(snp_ids), ' SNPs in allele file')
+
     k_chr  <- kinship_loco[[chr]]
     gnames <- if (use_gtf) head(intersect(
       gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
     for (gene in gnames) {
       cis <- get_cis_loci(gene, chr)
       if (is.null(cis)) next
+      # restrict to loci present in allele file — haplotype loci not in allele file
+      # cause subscript out of bounds in imputed.snp.scan.h2lmm
+      cis_snp <- intersect(cis, snp_ids)
+      if (length(cis_snp) == 0) next
       res <- tryCatch(
         imputed.snp.scan.h2lmm(
           data=pheno_snp, formula=make_form(gene), K=k_chr,
           allele.dir=allele_dir_path, genomecache=genomecache_path,
-          model='additive', chr=chr, just.these.loci=cis),
+          model='additive', chr=chr, just.these.loci=cis_snp),
         error=function(e) { message('  snp scan failed for ', gene, ': ', e$message); NULL })
       if (is.null(res)) next
       snp_results[[paste0(gene,'_',chr)]] <- data.frame(
-        gene_id=gene, snp=names(res$LOD), chr=chr,
+        gene_id=gene, chr=chr, snp=names(res$LOD),
         lod=res$LOD, p_value=res$p.value, stringsAsFactors=FALSE)
     }
   }
   if (length(snp_results)) {
     snp_df <- do.call(rbind, snp_results); rownames(snp_df) <- NULL
     write.csv(snp_df, file.path(output_dir,'snp_lod_r.csv'), row.names=FALSE)
-    message('  saved: snp_lod_r.csv (',nrow(snp_df),' rows)')
+    message('  saved: snp_lod_r.csv (', nrow(snp_df), ' rows)')
+  } else {
+    message('  no SNP results — cis loci may not overlap allele file SNPs')
   }
 }
 
