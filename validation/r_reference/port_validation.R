@@ -735,17 +735,18 @@ if (!length(ci_gene)) {
           error=function(e) { message('  positional scans failed: ', e$message); NULL })
 
         if (!is.null(boot_scans)) {
-          # $full.results is a list of scan objects (one per bootstrap replicate),
-          # NOT a matrix — $full.results$LOD is NULL, causing dim(X) error in apply.
-          # fix: iterate list, extract peak locus from each scan object's $loci/$LOD
-          message('  boot_scans$full.results length: ', length(boot_scans$full.results))
-          fr1 <- boot_scans$full.results[[1]]
-          message('  fr1 names: ', paste(names(fr1), collapse=', '))
-          message('  fr1$LOD length: ', length(fr1$LOD))
-          boot_peaks <- sapply(boot_scans$full.results, function(scan_i) {
-            if (is.null(scan_i$LOD) || length(scan_i$LOD) == 0 || all(is.na(scan_i$LOD)))
-              return(NA_character_)
-            scan_i$loci[which.max(scan_i$LOD)]   # locus with max LOD for this bootstrap
+          # $full.results is list(loci=char, LOD=matrix, p.value=matrix)
+          # LOD matrix dims: n_loci × n_boot (cols = bootstrap replicates)
+          fr   <- boot_scans$full.results
+          message('  full.results names: ', paste(names(fr), collapse=', '))
+          message('  full.results$LOD class: ', class(fr$LOD))
+          message('  full.results$LOD dim: ', paste(dim(fr$LOD), collapse=' x '))
+          lod_mat    <- fr$LOD          # matrix: n_loci × n_boot
+          loci_names <- fr$loci         # character vector of locus ids
+          # peak locus per bootstrap = col-wise argmax
+          boot_peaks <- apply(lod_mat, 2, function(col) {
+            if (all(is.na(col))) return(NA_character_)
+            loci_names[which.max(col)]
           })
           boot_pos <- pmap_flat$pos_mb[match(boot_peaks, pmap_flat$locus)]
           write.csv(data.frame(
