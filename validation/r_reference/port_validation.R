@@ -451,6 +451,16 @@ if (!length(thresh_gene)) {
     pheno_perm_base <- pheno_thresh[perm_subs, , drop=FALSE]
     k_perm <- k_thresh[perm_subs, perm_subs]
     n_perms <- ncol(perm_obj$y.matrix)
+    # ── diagnostic: verify perm_obj structure matches miQTL intent ──────────
+    message('  diagnostic — perm_obj$y.matrix:')
+    message('    dim: ', nrow(perm_obj$y.matrix), ' × ', ncol(perm_obj$y.matrix))
+    message('    col1 range: ', round(min(perm_obj$y.matrix[,1], na.rm=TRUE), 3),
+            ' to ', round(max(perm_obj$y.matrix[,1], na.rm=TRUE), 3))
+    message('    values are floats (not int indices): ',
+            !all(perm_obj$y.matrix[,1] == round(perm_obj$y.matrix[,1])))
+    message('    rownames match pheno_perm_base: ',
+            identical(sort(rownames(perm_obj$y.matrix)), sort(rownames(pheno_perm_base))))
+    # ── end diagnostic ───────────────────────────────────────────────────────
     max_lods <- numeric(n_perms)
     message('  running ', n_perms, ' permutation scans manually...')
     for (p_i in seq_len(n_perms)) {
@@ -723,10 +733,16 @@ if (!length(ci_gene)) {
           error=function(e) { message('  positional scans failed: ', e$message); NULL })
 
         if (!is.null(boot_scans)) {
-          # run.positional.scans stores peak loci in $max.statistics$peak.loci directly —
-          # use that instead of iterating $full.results which causes atomic-vector errors
-          boot_peaks <- boot_scans$max.statistics$peak.loci
-          boot_pos   <- pmap_flat$pos_mb[match(boot_peaks, pmap_flat$locus)]
+          # $max.statistics has $LOD and $p.value only — no $peak.loci field.
+          # extract peak locus per bootstrap from $full.results$LOD matrix
+          # (rows = bootstrap samples, cols = loci)
+          lod_mat    <- boot_scans$full.results$LOD      # matrix [n_boot × n_loci]
+          loci_names <- colnames(lod_mat)
+          boot_peaks <- apply(lod_mat, 1, function(row) {
+            if (all(is.na(row))) return(NA_character_)
+            loci_names[which.max(row)]
+          })
+          boot_pos <- pmap_flat$pos_mb[match(boot_peaks, pmap_flat$locus)]
           write.csv(data.frame(
             gene_id=ci_gene, chr=ci_chr, peak_locus=peak_locus,
             ci_lo_mb=quantile(boot_pos, 0.025, na.rm=TRUE),
@@ -762,15 +778,18 @@ if (!length(fx_gene)) {
   fx_scan <- tryCatch(
     scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
                 pheno.id='subject.name', geno.id='subject.name',
-                formula=make_form(fx_gene), K=fx_chr,
+                formula=make_form(fx_gene), K=k_chr,
                 use.multi.impute=FALSE, model='additive',
                 just.these.loci=cis_fx),
-    error=function(e) NULL)
+    error=function(e) { message('  fx_scan failed: ', e$message); NULL })
   if (!is.null(fx_scan)) {
     set.seed(1)
     simple_obj <- tryCatch(
       generate.simple.sample.outcomes.matrix(
-        fx_scan,
+        formula=make_form(fx_gene),
+        data=pheno_strain,
+        pheno.id='subject.name',
+        method='bootstrap',
         num.samples=100, seed=1),
       error=function(e) { message('  simple sample failed: ', e$message); NULL })
     if (!is.null(simple_obj)) {
