@@ -744,7 +744,6 @@ if (!length(ci_gene)) {
           ci_hi <- as.numeric(fr$pos$hi)
           write.csv(data.frame(
             gene_id=ci_gene, chr=ci_chr, locus=peak_locus,
-            pos_mb=pmap_flat$pos_mb[match(peak_locus, pmap_flat$locus)],
             ci_lo_mb=ci_lo, ci_hi_mb=ci_hi,
             peak_lod=max(ci_scan$LOD, na.rm=TRUE),
             n_boot=100),
