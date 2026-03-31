@@ -461,6 +461,10 @@ if (!length(thresh_gene)) {
     message('    rownames match pheno_perm_base: ',
             identical(sort(rownames(perm_obj$y.matrix)), sort(rownames(pheno_perm_base))))
     # ── end diagnostic ───────────────────────────────────────────────────────
+    # fix.par from base scan: miQTL run.threshold.scans fixes h2 at base scan estimate
+    # across all permutations — replicate this to match miQTL threshold exactly
+    base_fix_par <- if (!is.null(base_scan$fix.par)) base_scan$fix.par else NULL
+    message('  base fix.par (h2): ', if (is.null(base_fix_par)) 'NULL (will re-estimate)' else round(base_fix_par, 4))
     max_lods <- numeric(n_perms)
     message('  running ', n_perms, ' permutation scans manually...')
     for (p_i in seq_len(n_perms)) {
@@ -471,7 +475,9 @@ if (!length(thresh_gene)) {
                     pheno.id='subject.name', geno.id='subject.name',
                     formula=make_form(thresh_gene), K=k_perm,
                     use.multi.impute=FALSE, model='additive',
-                    just.these.loci=cis_t),
+                    just.these.loci=cis_t,
+                    use.fix.par=!is.null(base_fix_par),   # fix h2 if base scan succeeded
+                    fix.par=base_fix_par),
         error=function(e) NULL)
       max_lods[p_i] <- if (!is.null(p_scan) && length(p_scan$LOD) > 0)
         max(p_scan$LOD, na.rm=TRUE) else NA_real_
@@ -733,14 +739,17 @@ if (!length(ci_gene)) {
           error=function(e) { message('  positional scans failed: ', e$message); NULL })
 
         if (!is.null(boot_scans)) {
-          # $max.statistics has $LOD and $p.value only — no $peak.loci field.
-          # extract peak locus per bootstrap from $full.results$LOD matrix
-          # (rows = bootstrap samples, cols = loci)
-          lod_mat    <- boot_scans$full.results$LOD      # matrix [n_boot × n_loci]
-          loci_names <- colnames(lod_mat)
-          boot_peaks <- apply(lod_mat, 1, function(row) {
-            if (all(is.na(row))) return(NA_character_)
-            loci_names[which.max(row)]
+          # $full.results is a list of scan objects (one per bootstrap replicate),
+          # NOT a matrix — $full.results$LOD is NULL, causing dim(X) error in apply.
+          # fix: iterate list, extract peak locus from each scan object's $loci/$LOD
+          message('  boot_scans$full.results length: ', length(boot_scans$full.results))
+          fr1 <- boot_scans$full.results[[1]]
+          message('  fr1 names: ', paste(names(fr1), collapse=', '))
+          message('  fr1$LOD length: ', length(fr1$LOD))
+          boot_peaks <- sapply(boot_scans$full.results, function(scan_i) {
+            if (is.null(scan_i$LOD) || length(scan_i$LOD) == 0 || all(is.na(scan_i$LOD)))
+              return(NA_character_)
+            scan_i$loci[which.max(scan_i$LOD)]   # locus with max LOD for this bootstrap
           })
           boot_pos <- pmap_flat$pos_mb[match(boot_peaks, pmap_flat$locus)]
           write.csv(data.frame(
