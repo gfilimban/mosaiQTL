@@ -734,9 +734,13 @@ if (!length(ci_gene)) {
             peak_lod=max(ci_scan$LOD, na.rm=TRUE),
             n_boot=length(boot_peaks)),
             file.path(output_dir,'ci_r.csv'), row.names=FALSE)
-          write.csv(data.frame(boot_pos=boot_pos),
-            file.path(output_dir,'boot_pos_r.csv'), row.names=FALSE)
-          message('  saved: ci_r.csv  boot_pos_r.csv')
+          message("  Number of bootstrap peaks found: ", sum(!is.na(boot_peaks)))
+          message("  Number of peaks matched to pmap: ", sum(!is.na(boot_pos)))
+          if (length(boot_pos) > 0) {
+            write.csv(data.frame(boot_pos=boot_pos),
+              file.path(output_dir,'boot_pos_r.csv'), row.names=FALSE)
+            message('  saved: ci_r.csv  boot_pos_r.csv')
+        } 
         }
       }
     }
@@ -758,7 +762,7 @@ if (!length(fx_gene)) {
   fx_scan <- tryCatch(
     scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
                 pheno.id='subject.name', geno.id='subject.name',
-                formula=make_form(fx_gene), K=k_chr,
+                formula=make_form(fx_gene), K=fx_chr,
                 use.multi.impute=FALSE, model='additive',
                 just.these.loci=cis_fx),
     error=function(e) NULL)
@@ -766,7 +770,7 @@ if (!length(fx_gene)) {
     set.seed(1)
     simple_obj <- tryCatch(
       generate.simple.sample.outcomes.matrix(
-        scan.object=fx_scan,
+        fx_scan,
         num.samples=100, seed=1),
       error=function(e) { message('  simple sample failed: ', e$message); NULL })
     if (!is.null(simple_obj)) {
