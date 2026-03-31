@@ -57,23 +57,42 @@ if args.chrs:
     gm   = gm[gm['chr'].isin(keep)]
     log.info(f'  filtered to chr {keep}: {len(gm)} SNPs')
 
-# ── encode founder genotypes: A/H/B → 0/1/2 ──────────────────────────────────
-def encode_dosage(val):
-    if pd.isna(val): return np.nan
-    v = str(val).strip().upper()
-    if v in ('A', '0', 'AA', 'HOMREF', 'REF'): return 0.0
-    if v in ('H', '1', 'AB', 'HET'):           return 1.0
-    if v in ('B', '2', 'BB', 'HOMALT', 'ALT'): return 2.0
-    return np.nan
-
+# ── encode founder nucleotide calls → 0/1/2 dosage ───────────────────────────
+# founders are inbred: single letter = homozygous (T means TT)
+# per SNP: determine ref (most common non-missing allele) and alt allele
+# ref homozygous=0, alt homozygous=2, missing/N=0 (impute as ref)
 f_cols = [f for f in FOUNDER_COLS if f in gm.columns]
 if len(f_cols) < 2:
     log.error(f'founder columns not found. available: {list(gm.columns[:20])}')
     sys.exit(1)
 log.info(f'  encoding {len(f_cols)} founders: {f_cols}')
 
-for f in f_cols:
-    gm[f] = gm[f].apply(encode_dosage)
+def calls_to_dosage(row):
+    '''convert nucleotide founder calls to 0/1/2 per SNP row'''
+    calls = row[f_cols].values
+    # clean: uppercase, treat empty string / 'N' / '0' as missing
+    cleaned = []
+    for c in calls:
+        if pd.isna(c): cleaned.append(None)
+        else:
+            s = str(c).strip().upper()
+            cleaned.append(None if s in ('', 'N', '0', 'NA') else s)
+    # determine alleles from non-missing calls
+    alleles = [c for c in cleaned if c is not None]
+    unique  = list(dict.fromkeys(alleles))   # preserve order, deduplicate
+    if len(unique) == 0:
+        return pd.Series([0.0] * len(f_cols), index=f_cols)
+    ref = max(set(alleles), key=alleles.count)  # most common = ref
+    alt = next((a for a in unique if a != ref), None)
+    dosages = []
+    for c in cleaned:
+        if c is None:        dosages.append(0.0)   # missing -> ref
+        elif c == ref:       dosages.append(0.0)
+        elif c == alt:       dosages.append(2.0)
+        else:                dosages.append(0.0)   # unexpected allele -> ref
+    return pd.Series(dosages, index=f_cols)
+
+gm[f_cols] = gm.apply(calls_to_dosage, axis=1)
 
 # ── filter by MAF ─────────────────────────────────────────────────────────────
 if args.min_maf > 0:
@@ -85,6 +104,7 @@ if args.min_maf > 0:
 
 # ── save snp_genos.csv for validate_port.py S8 ───────────────────────────────
 snp_df = gm[['chr', 'pos_mb'] + f_cols].copy()
+snp_df[f_cols] = snp_df[f_cols].astype(int)
 snp_df.to_csv(snp_out)
 log.info(f'saved snp_genos.csv: {len(snp_df)} SNPs -> {snp_out}')
 
