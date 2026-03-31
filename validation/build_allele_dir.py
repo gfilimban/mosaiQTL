@@ -94,6 +94,10 @@ def calls_to_dosage(row):
 
 gm[f_cols] = gm.apply(calls_to_dosage, axis=1)
 
+# sanity: count polymorphic SNPs (any founder != 0)
+n_poly = (gm[f_cols].max(axis=1) > 0).sum()
+log.info(f'  polymorphic SNPs (any founder alt): {n_poly} / {len(gm)}')
+
 # ── filter by MAF ─────────────────────────────────────────────────────────────
 if args.min_maf > 0:
     dosages = gm[f_cols].values
@@ -104,7 +108,7 @@ if args.min_maf > 0:
 
 # ── save snp_genos.csv for validate_port.py S8 ───────────────────────────────
 snp_df = gm[['chr', 'pos_mb'] + f_cols].copy()
-snp_df[f_cols] = snp_df[f_cols].astype(int)
+snp_df[f_cols] = snp_df[f_cols].fillna(0).astype(int)  # nan (missing) -> 0 (ref)
 snp_df.to_csv(snp_out)
 log.info(f'saved snp_genos.csv: {len(snp_df)} SNPs -> {snp_out}')
 
