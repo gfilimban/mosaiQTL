@@ -633,7 +633,7 @@ if (!dir.exists(allele_dir_path)) {
   } else {
     message('  no SNP results — cis loci may not overlap allele file SNPs')
   }
-  message('  warnings:'); message(paste(capture.output(warnings()), collapse='\n'))
+  w <- warnings(); for (i in seq_along(w)) message('  warn ', i, ': ', names(w)[i])
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
