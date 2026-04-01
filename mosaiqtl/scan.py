@@ -472,11 +472,14 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
         kd_raw = kin_module.calc_kinship(genome_cache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd_raw)
 
+    # only impute chromosomes that will actually be scanned
+    _chrom_list = [c for c in genome_cache.chromosomes if c in kinship_decomp]
+
     lod_accum = None; ref_res = None
 
     for imp in range(n_imp):
         imp_data = {}
-        for chrom in genome_cache.chromosomes:
+        for chrom in _chrom_list:
             lids, pos, probs = genome_cache.get_chromosome(chrom)
             n_loci, n_s, n_f = probs.shape
             cum   = probs.cumsum(axis=2)
