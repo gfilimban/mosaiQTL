@@ -633,6 +633,7 @@ if (!dir.exists(allele_dir_path)) {
   } else {
     message('  no SNP results — cis loci may not overlap allele file SNPs')
   }
+  message('  warnings:'); print(warnings())
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
