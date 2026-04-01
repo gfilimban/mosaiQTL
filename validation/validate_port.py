@@ -23,7 +23,7 @@
 
 import numpy as np
 import pandas as pd
-import os, sys, argparse, logging, datetime
+import os, sys, argparse, logging, datetime, glob
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -51,10 +51,11 @@ LOGS    = os.path.join(pkg_dir, 'validation', 'port_validation', 'logs')
 for d in (R_DATA, PY_DATA, PLOTS, LOGS): os.makedirs(d, exist_ok=True)
 
 # GigaMUGA inputs
-GM_CSV  = os.path.join(miqtl_dir, 'input', 'GM_ccfo_mm39.csv')
-GM_GMAP = os.path.join(miqtl_dir, 'input', 'GM', 'gmap')
-GM_PMAP = os.path.join(miqtl_dir, 'input', 'GM', 'pmap')
-SNP_CSV = os.path.join(miqtl_dir, 'input', 'snp_genos.csv')
+GM_CSV      = os.path.join(miqtl_dir, 'input', 'GM_ccfo_mm39.csv')
+GM_GMAP     = os.path.join(miqtl_dir, 'input', 'GM', 'gmap')
+GM_PMAP     = os.path.join(miqtl_dir, 'input', 'GM', 'pmap')
+SNP_CSV     = os.path.join(miqtl_dir, 'input', 'snp_genos.csv')
+HAPPY_CACHE = os.path.join(miqtl_dir, 'output', 'genomecache')  # HAPPY cache root for marker allowlist
 
 CC_COLS      = ['CC001','CC002','CC003','CC004','CC005','CC006','CC007','CC008',
                 'CC009','CC010','CC011','CC012','CC013','CC015','CC017','CC018',
@@ -152,9 +153,26 @@ def scatter_qc(ax, x, y, xlabel, ylabel, title):
 
 # ── build Python cache ────────────────────────────────────────────────────────
 hi('\n● building Python genome cache...')
+# read HAPPY cache marker set to restrict Python cache to the same loci
+# this ensures loci counts match R for validation; mosaiQTL production runs use qc= instead
+_happy_marker_files = glob.glob(
+    os.path.join(HAPPY_CACHE, 'additive', 'chr*', 'markers.RData'))
+if _happy_marker_files:
+    import rpy2.robjects as _ro
+    _happy_markers = []
+    for _mf in sorted(_happy_marker_files):
+        _env = _ro.r['new.env']()
+        _ro.r['load'](_mf, envir=_env)
+        _happy_markers.extend(list(_ro.r['get']('markers', envir=_env)))
+    hi(f'  HAPPY allowlist: {len(_happy_markers)} markers across {len(_happy_marker_files)} chrs')
+else:
+    _happy_markers = None
+    hi(f'  HAPPY cache not found at {HAPPY_CACHE} — building without allowlist')
+
 cache_py = GenomeCache.from_gigamuga(
     gigamuga_path=GM_CSV, gmap_dir=GM_GMAP, pmap_dir=GM_PMAP,
-    cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES)
+    cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES,
+    just_these_loci=_happy_markers)   # restrict to HAPPY marker set for validation parity
 chr_order  = sorted(cache_py.chromosomes, key=_chr_sort)
 chr_colors = lambda s: [CHR_PAL[chr_order.index(c)%2]
                         if c in chr_order else '#aaa' for c in s]

@@ -233,9 +233,9 @@ class GenomeCache:
     @staticmethod
     def from_gigamuga(gigamuga_path, gmap_dir, pmap_dir,
                       cc_cols, founder_cols, f1_crosses,
-                      n_founders=8, n_gen=20, error_prob=0.002):
-        """build genome cache from raw GigaMUGA genotype data — no R required.
-
+                      n_founders=8, n_gen=20, error_prob=0.002,
+                      just_these_loci=None, qc=None):
+        """build genome cache from raw GigaMUGA genotype data.
         this is the fully Python-native path: reads the GigaMUGA consensus
         matrix CSV, runs the CC diplotype HMM (hmm.py), builds deterministic
         founder and F1 arrays, merges all 48 genotypes, and returns a
@@ -270,6 +270,12 @@ class GenomeCache:
             inbreeding generations (20 for CC)
         error_prob : float
             GigaMUGA genotyping error rate (0.002)
+        just_these_loci : list of str or None
+            restrict to this exact marker set (e.g. HAPPY cache markers for
+            cross-language validation). applied after the 3-way intersection.
+        qc : dict or None
+            user-driven QC filters. keys: min_maf (float), max_missing (float).
+            example: qc={'min_maf': 0.05, 'max_missing': 0.10}
 
         returns
         -------
@@ -331,6 +337,30 @@ class GenomeCache:
         gmap     = gmap_shared                            # already indexed and sorted
         pmap_idx = pmap.set_index('locus').loc[shared]
         logger.info(f'shared markers: {len(shared)}')
+
+        # ── just_these_loci allowlist (e.g. match HAPPY cache for validation) ──
+        if just_these_loci is not None:
+            allow = set(just_these_loci)
+            shared = [m for m in shared if m in allow]
+            logger.info(f'just_these_loci filter: {len(shared)} markers retained')
+
+        # ── user QC filters ──────────────────────────────────────────────────────
+        if qc:
+            gm_filt = gm_raw.loc[shared, founder_cols]  # founders only for QC
+            keep = pd.Series(True, index=shared)
+            if 'min_maf' in qc:                          # MAF across founder cols
+                freq = (gm_filt != gm_filt.iloc[:, 0].values[:, None]).mean(axis=1)
+                maf  = freq.clip(upper=0.5)              # minor allele freq
+                keep &= maf >= qc['min_maf']
+            if 'max_missing' in qc:                      # missing rate all cols
+                all_cols = [c for c in founder_cols + cc_cols if c in gm_raw.columns]
+                miss = (gm_raw.loc[shared, all_cols] == '-').mean(axis=1)
+                keep &= miss <= qc['max_missing']
+            n_before = len(shared)
+            shared = [m for m in shared if keep[m]]
+            logger.info(f'qc filter: {n_before} -> {len(shared)} markers '
+                        f'(dropped {n_before - len(shared)})')
+
 
         # chr column already str — build sorted chromosome list
         chrs = sorted(
