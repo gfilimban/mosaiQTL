@@ -593,51 +593,51 @@ colnames(pheno_snp)[colnames(pheno_snp) == 'subject.name'] <- 'SUBJECT.NAME'
 if (!dir.exists(allele_dir_path)) {
   message('  SKIP: allele_dir not found at ', allele_dir_path)
 } else {
+  # patch extract.imputed.design.matrix.from.doqtl.genotype:
+  # bug — original does matrix(...)[,-1] and fat_raw[fat_raw[,1]!='NA', -1] in one step,
+  # so after label-col drop, [,1] is f1 numeric and apply(fat[,-1],...) covers only f2..f8 (7 cols)
+  # → ref_count length 7 → non-conformable with mapping.matrix (36×8)
+  fixed_extract <- function(probs, allele.dir, snp, snp.chr, model, founders, mapping.matrix) {
+    raw <- system(paste0('grep -w -A 3 \'', snp, '\' ',
+                         file.path(allele.dir, paste0('chr', snp.chr, '.alleles'))),
+                  intern=TRUE)
+    raw <- trimws(raw)                                    # macOS grep -A prepends spaces to context lines
+    fat_raw <- matrix(unlist(strsplit(raw[-1], '\t', fixed=TRUE)),
+                      nrow=3, byrow=TRUE)                 # 3×9: col1=allele label, cols2-9=f1..f8
+    fat_filt <- fat_raw[fat_raw[, 1] != 'NA', , drop=FALSE]  # filter NA row BEFORE dropping label
+    labels   <- fat_filt[, 1]                             # save allele labels (len 2)
+    fat      <- fat_filt[, -1, drop=FALSE]                # drop label col → 2×8 numeric
+    f_alleles <- labels[apply(fat, 2, function(x) which.max(as.numeric(x)))]  # len 8
+    ref_allele <- fat_raw[1, 1]
+    ref_count  <- as.numeric(f_alleles == ref_allele)     # len 8 — conformable with mm (36×8)
+    full_ref   <- as.vector(mapping.matrix %*% matrix(ref_count, ncol=1))  # 36×1
+    full_geno  <- cbind(as.numeric(full_ref == 2),
+                        as.numeric(full_ref == 1),
+                        as.numeric(full_ref == 0))
+    colnames(full_geno) <- c('ref.hom', 'het', 'alt.hom')
+    gp <- probs %*% full_geno
+    X  <- if ((2*sum(gp[,1]) + sum(gp[,2])) / (2*nrow(gp)) > 0.5)
+            cbind(gp[,3], gp[,2]) else cbind(gp[,1], gp[,2])
+    colnames(X) <- c('SNP_aa', 'SNP_Aa')
+    if (model == 'additive') { X <- matrix(2*X[,1] + X[,2], ncol=1); colnames(X) <- 'SNP' }
+    rownames(X) <- rownames(probs)
+    X
+  }
+  utils::assignInNamespace('extract.imputed.design.matrix.from.doqtl.genotype',
+                           fixed_extract, ns='miqtl')
+  message('  patch: extract.imputed.design.matrix.from.doqtl.genotype applied')
+
   snp_results <- list()
   for (chr in chromosomes) {
-    # read SNP ids available in this chr's allele file
     allele_file <- file.path(allele_dir_path, paste0('chr', chr, '.alleles'))
     if (!file.exists(allele_file)) {
       message('  SKIP chr', chr, ': no allele file'); next
     }
-    lines      <- readLines(allele_file)
-    snp_ids    <- lines[seq(1, length(lines), by=4)]
+    lines   <- readLines(allele_file)
+    snp_ids <- lines[seq(1, length(lines), by=4)]
     message('  chr', chr, ': ', length(snp_ids), ' SNPs in allele file')
-
-
     gnames <- if (use_gtf) head(intersect(
       gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
-
-    # one-time dim check: reproduce exact internal parse for first cis SNP
-    g1   <- gnames[1]
-    cis1 <- intersect(get_cis_loci(g1, chr), snp_ids)
-    if (length(cis1) > 0) {
-      snp1 <- cis1[1]
-      mm   <- miqtl:::straineff.mapping.matrix()
-    message('  [diag] mm dim=', paste(dim(mm),collapse='x'),
-            '  mm source: ', paste(deparse(miqtl:::straineff.mapping.matrix)[1:3], collapse=' '))
-      raw  <- system(paste0("grep -w -A 3 '", snp1, "' ",
-                shQuote(allele_file)), intern=TRUE)
-      message('  [diag] snp1=', snp1, '  raw lines=', length(raw))
-      message('  [diag] raw: ', paste(raw, collapse=' | '))
-      message('  [diag] file first 4 lines: ',
-              paste(readLines(allele_file, n=4), collapse=' | '))
-      fat_raw   <- matrix(unlist(strsplit(raw[-1], '\t', fixed=TRUE)),
-                         nrow=3, byrow=TRUE)           # 3x9: col1=allele, col2-9=founders
-      fat       <- fat_raw[fat_raw[,1] != 'NA', -1, drop=FALSE]  # 2x8 after NA filter + label drop
-      f_alleles <- fat[,1][apply(fat[,-1,drop=FALSE], 2,
-                                  function(x) which.max(as.numeric(x)))]
-      ref_allele  <- fat_raw[1,1]
-      ref_count   <- as.numeric(f_alleles == ref_allele)
-      message('  [diag] fat_raw=', paste(dim(fat_raw),collapse='x'),
-              '  fat=', paste(dim(fat),collapse='x'),
-              '  ref_allele=', ref_allele,
-              '  ref_count len=', length(ref_count),
-              '  mm=', paste(dim(mm),collapse='x'))
-      test <- tryCatch(mm %*% matrix(ref_count, ncol=1),
-                       error=function(e) { message('  [diag] mult FAIL: ', e$message); NULL })
-      if (!is.null(test)) message('  [diag] mult OK len=', length(test))
-    }
 
     for (gene in gnames) {
       cis <- get_cis_loci(gene, chr)
