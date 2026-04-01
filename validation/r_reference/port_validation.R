@@ -648,6 +648,19 @@ if (!dir.exists(allele_dir_path)) {
     snp_ids    <- lines[seq(1, length(lines), by=4)]   # SNP id every 4 lines
     message('  chr', chr, ': ', length(snp_ids), ' SNPs in allele file')
 
+    # direct test of patched function on first available SNP
+    test_snp <- snp_ids[1]
+    mm  <- miqtl:::get.mapping.matrix(founders=h$getFounders(), model='additive')
+    prb <- h$getLocusMatrix(locus=test_snp, model='full', subjects=rownames(pheno_snp))
+    message('  [diag] test_snp=', test_snp, '  probs=', paste(dim(prb), collapse='x'),
+            '  mm=', paste(dim(mm), collapse='x'))
+    test_res <- tryCatch(
+      miqtl:::extract.imputed.design.matrix.from.doqtl.genotype(
+        probs=prb, allele.dir=allele_dir_path, snp=test_snp, snp.chr=chr,
+        model='additive', founders=h$getFounders(), mapping.matrix=mm),
+      error=function(e) { message('  [diag] direct test failed: ', e$message); NULL })
+    if (!is.null(test_res)) message('  [diag] direct test passed: dim=', paste(dim(test_res), collapse='x'))
+
     gnames <- if (use_gtf) head(intersect(
       gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
 
@@ -661,7 +674,11 @@ if (!dir.exists(allele_dir_path)) {
           data=pheno_snp, formula=make_form(gene), K=k_chr,
           allele.dir=allele_dir_path, genomecache=genomecache_path,
           model='additive', chr=chr, just.these.loci=cis_snp),
-        error=function(e) { message('  snp scan failed for ', gene, ': ', e$message); NULL })
+        error=function(e) {
+          message('  snp scan failed for ', gene, ': ', e$message)
+          message('  traceback: ', paste(sapply(sys.calls(), deparse), collapse=' > '))
+          NULL
+        })
       if (is.null(res)) next
       snp_results[[paste0(gene,'_',chr)]] <- data.frame(
         gene_id=gene, chr=chr, snp=names(res$LOD),
