@@ -271,8 +271,8 @@ def scan_chromosome(y, genome_cache, chrom, x_covariates,
     G_all = np.einsum('lnj,lnk->ljk', H_perp, H_perp, optimize=True)  # (n_loci, J-1, J-1)
     G_all += np.eye(q)[None] * 1e-10                 # ridge for singular loci
 
-    # solve G[l] beta_h[l] = c[l] for all loci simultaneously
-    beta_h = np.linalg.solve(G_all, c_all)           # (n_loci, J-1)
+    # numpy 2.x: batched vector solve requires b shape (...,m,1) not (...,m)
+    beta_h = np.linalg.solve(G_all, c_all[..., None]).squeeze(-1)  # (n_loci, J-1)
 
     # ── rss, lod, p-values ───────────────────────────────────────────────────
     rss_red  = np.einsum('lj,lj->l', c_all, beta_h)  # (n_loci,) rss reduction
