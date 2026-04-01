@@ -300,6 +300,7 @@ max_dev  = float((hap_df['mean_rowsum']-1.0).abs().max())
 if r_hap is not None:
     mg = hap_df.merge(r_hap[['locus','mean_rowsum']].rename(
         columns={'mean_rowsum':'rowsum_r'}), on='locus', how='inner')
+    mg['rowsum_r'] = mg['rowsum_r'] / 2.0   # miQTL additive = dosage [0,2]; Python = prob [0,1]
     fig, axes = plt.subplots(1,2,figsize=(11,4))
     ax = axes[0]
     mg_v = mg.dropna(subset=['rowsum_r','mean_rowsum'])
