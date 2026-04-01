@@ -201,6 +201,9 @@ chr_info <- do.call(rbind, lapply(chromosomes, function(c) {
              stringsAsFactors=FALSE)
 }))
 founders  <- h$getFounders()
+# HAPPY cache uses single-letter codes A-H; map to full names for cross-language comparison
+founder_map <- c(A='AJ',B='B6J',C='129S1J',D='NODJ',E='NZOJ',F='CASTJ',G='PWKJ',H='WSBJ')
+founders <- ifelse(founders %in% names(founder_map), founder_map[founders], founders)
 sample_ids <- h$getSubjects()
 sample_ids <- c(sample_ids[!grepl('^CC', sample_ids)],
                 sample_ids[ grepl('^CC', sample_ids)])  
