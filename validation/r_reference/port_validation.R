@@ -602,9 +602,11 @@ if (!dir.exists(allele_dir_path)) {
       message('  SKIP chr', chr, ': no allele file'); next
     }
     lines      <- readLines(allele_file)
-    # SNP ids are every 9th line starting at line 1
     snp_ids    <- lines[seq(1, length(lines), by=4)]
     message('  chr', chr, ': ', length(snp_ids), ' SNPs in allele file')
+    line2 <- lines[2]
+    f2 <- strsplit(line2, '\t', fixed=TRUE)[[1]]
+    message('  [diag] line2 nfields=', length(f2), ' col1=', f2[1], ' col2=', f2[2])
 
 
     gnames <- if (use_gtf) head(intersect(
