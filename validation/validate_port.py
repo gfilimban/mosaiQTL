@@ -630,7 +630,7 @@ if r_thresh is None or pheno_strain is None:
 else:
     from mosaiqtl import permutation as perm_mod
     from scipy.stats import genextreme as _gev
-    thresh_gene = str(r_thresh['gene'].iloc[0])
+    thresh_gene = str(r_thresh['gene_id'].iloc[0])
     thresh_chr  = str(r_thresh['chr'].iloc[0])
     thresh_r_v  = float(r_thresh['lod_threshold'].iloc[0])
     n_p         = int(r_thresh['n_perms'].iloc[0])
