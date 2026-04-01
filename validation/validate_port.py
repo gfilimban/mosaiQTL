@@ -323,9 +323,7 @@ if r_hap is not None:
         sns.heatmap(_h_disp, ax=axes[0], cmap='YlOrRd', vmin=0, vmax=1,
                     xticklabels=_fnames, yticklabels=_disp_s,
                     cbar_kws={'shrink':0.7})
-        axes[0].set_title(f'Python haplotype probs
-chr{_chrom0} · {_lids0[_mid]}',
-                          fontsize=10)
+        axes[0].set_title(f'Python haplotype probs  chr{_chrom0} · {_lids0[_mid]}', fontsize=10)
         axes[0].set_xticklabels(axes[0].get_xticklabels(),
                                 rotation=45, ha='right', fontsize=9,
                                 fontfamily='Carlito')
