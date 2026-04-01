@@ -54,9 +54,9 @@ for (chr in sort(unique(gm$chr))) {
     na_row  <- rep(0L, length(f_cols))
 
     writeLines(snp_id, con)
-    writeLines(paste(c(snp_id, ref,  ref_row), collapse='\t'), con)
-    writeLines(paste(c(snp_id, if (!is.na(alt)) alt else 'NA', alt_row), collapse='\t'), con)
-    writeLines(paste(c(snp_id, 'NA', na_row),  collapse='\t'), con)
+    writeLines(paste(c(ref,  ref_row), collapse='\t'), con)
+    writeLines(paste(c(if (!is.na(alt)) alt else 'NA', alt_row), collapse='\t'), con)
+    writeLines(paste(c('NA', na_row),  collapse='\t'), con)
     n_total <- n_total + 1
   }
   close(con)
