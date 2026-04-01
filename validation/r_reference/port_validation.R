@@ -604,8 +604,8 @@ if (!dir.exists(allele_dir_path)) {
     # SNP ids are every 9th line starting at line 1
     snp_ids    <- lines[seq(1, length(lines), by=9)]
     message('  chr', chr, ': ', length(snp_ids), ' SNPs in allele file')
-    message('  [diag] make.imputed.design.matrix.list.for.all.loci source:')
-    message(paste(deparse(miqtl:::make.imputed.design.matrix.list.for.all.loci), collapse='\n'))
+    message('  [diag] extract.imputed.design.matrix.from.doqtl.genotype source:')
+    message(paste(deparse(miqtl:::extract.imputed.design.matrix.from.doqtl.genotype), collapse='\n'))
 
     k_chr  <- kinship_loco[[chr]]
     gnames <- if (use_gtf) head(intersect(
