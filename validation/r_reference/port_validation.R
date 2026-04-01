@@ -604,6 +604,10 @@ if (!dir.exists(allele_dir_path)) {
     # SNP ids are every 9th line starting at line 1
     snp_ids    <- lines[seq(1, length(lines), by=9)]
     message('  chr', chr, ': ', length(snp_ids), ' SNPs in allele file')
+    # diagnostic: inspect miQTL source to understand allele file parsing
+    src_lines    <- deparse(miqtl:::imputed.snp.scan.h2lmm)
+    allele_lines <- grep('allele|read|scan.list|founders', src_lines, value=TRUE, ignore.case=TRUE)
+    message('  [diag] miQTL allele source:\n    ', paste(head(allele_lines, 20), collapse='\n    '))
 
     k_chr  <- kinship_loco[[chr]]
     gnames <- if (use_gtf) head(intersect(
