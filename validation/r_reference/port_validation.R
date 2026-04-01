@@ -614,6 +614,8 @@ if (!dir.exists(allele_dir_path)) {
     if (length(cis1) > 0) {
       snp1 <- cis1[1]
       mm   <- miqtl:::straineff.mapping.matrix()
+    message('  [diag] mm dim=', paste(dim(mm),collapse='x'),
+            '  mm source: ', paste(deparse(miqtl:::straineff.mapping.matrix)[1:3], collapse=' '))
       raw  <- system(paste0("grep -w -A 3 '", snp1, "' ",
                 shQuote(allele_file)), intern=TRUE)
       message('  [diag] snp1=', snp1, '  raw lines=', length(raw))
