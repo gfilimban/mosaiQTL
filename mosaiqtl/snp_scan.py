@@ -9,6 +9,7 @@ equivalent to miqtl:
   pairwise.cor.snp.scan()    →  pairwise_cor_snp_scan()
 """
 
+import os
 import numpy as np
 import pandas as pd
 import logging
