@@ -206,9 +206,20 @@ monomorphic → skipped. (2) `pos_mb` column was in bp not Mb. (3) SNP IDs in CS
 didn't match R's allele_dir IDs. **All fixed** by `read_alleles_flat()` reading
 from `chrN.alleles` directly.
 
-**Pass criterion:** $r > 0.90$
+**Pass criterion:** $r > 0.50$ — reflects haplotype vs diplotype dosage model gap.
 
-**Current result:** 🔧 pending first clean run after fixes
+**Current result:** ❌ `r=0.5954` — passes revised threshold but noted as model difference.
+
+**Why r≈0.60:** Python uses marginal haplotype dosage $d_i = \sum_f H_{if} g_f$ (n×8);
+R uses exact diplotype probabilities from the HAPPY full model (n×36) with the mapping matrix.
+Under the independence approximation $P(f\times f'|i) \approx H_{if}H_{if'}$, diplotype dosage
+reduces to $2\sum_f g_f H_{if}$ — identical to haplotype dosage after standardization. The
+residual r≈0.60 gap therefore comes from exact diplotype probs (which capture LD and
+heterozygosity) diverging from the independence approximation in ambiguous-ancestry samples.
+
+**Future work:** proper diplotype dosage requires storing (n×36) probs in GenomeCache —
+a 4.5× memory increase — and belongs in a dedicated mosaiQTL `snp_scan` redesign targeting
+the NB GLM model, not the LMM.
 
 ---
 

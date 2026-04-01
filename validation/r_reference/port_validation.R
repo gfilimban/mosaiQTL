@@ -77,11 +77,21 @@ n_genes     <- if (length(args) >= 2 && !args[2] %in% c('','NA','all','Inf')) {
                  v <- suppressWarnings(as.integer(args[2]))
                  if (is.na(v)) Inf else v
                } else Inf
-# optional 3rd arg: 'slurm' — write per-chr outputs to r_data/chr{N}/
-# used by run_validation_slurm.sh to parallelise across chromosomes
-slurm_mode  <- length(args) >= 3 && args[3] == 'slurm'
+# optional extra args (order-independent, position 3+):
+#   'slurm'         — write per-chr outputs to r_data/chr{N}/
+#   '11' or '8,11'  — comma-separated section numbers to run (default: all)
+# usage examples:
+#   Rscript port_validation.R 8 50 11        # only s11
+#   Rscript port_validation.R 8 50 8,11      # s8 and s11
+#   Rscript port_validation.R 8 50 slurm 11  # s11 in slurm mode
+slurm_mode   <- any(args == 'slurm')
+run_sections <- {
+  sec_arg <- args[grepl('^[0-9,]+$', args) & nchar(args) > 0]
+  if (length(sec_arg)) as.integer(strsplit(sec_arg[1], ',')[[1]]) else 1:11
+}
 message('[init] chr=', scan_chrs, '  n_genes=',
         if (is.infinite(n_genes)) 'all' else n_genes,
+        '  sections=', paste(run_sections, collapse=','),
         if (slurm_mode) '  mode=slurm' else '')
 
 # ── paths ─────────────────────────────────────────────────────────────────────
@@ -193,6 +203,7 @@ first_gene_on <- function(chr, n=1) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S1 — CACHE INFO
 # ─────────────────────────────────────────────────────────────────────────────
+if (1 %in% run_sections) {
 message('\n[s1] cache info')
 h <- DiploprobReader$new(genomecache_path)
 chr_info <- do.call(rbind, lapply(chromosomes, function(c) {
@@ -224,6 +235,9 @@ message('  saved: cache_info_r.csv  founders_r.csv  sample_ids_r.csv')
 # ─────────────────────────────────────────────────────────────────────────────
 # S2 — HAPLOTYPE PROBS SPOT-CHECK
 # ─────────────────────────────────────────────────────────────────────────────
+} # end s1
+
+if (2 %in% run_sections) {
 message('\n[s2] haplotype probs')
 hap_rows <- list()
 for (chr in chromosomes) {
@@ -252,6 +266,9 @@ message('  saved: haplotype_r.csv (', nrow(hap_df), ' loci)')
 # ─────────────────────────────────────────────────────────────────────────────
 # S3 — KINSHIP LOCO
 # ─────────────────────────────────────────────────────────────────────────────
+} # end s2
+
+if (3 %in% run_sections) {
 message('\n[s3] kinship loco')
 kin_rows <- list()
 for (chr in chromosomes) {
@@ -278,6 +295,9 @@ message('  saved: kinship_r.csv + per-chr kinship matrices')
 # ─────────────────────────────────────────────────────────────────────────────
 # S4 — LMM SCAN (ROP) — all genes on each chromosome
 # ─────────────────────────────────────────────────────────────────────────────
+} # end s3
+
+if (4 %in% run_sections) {
 message('\n[s4] lmm scan')
 results_list <- list(); effects_list <- list()
 for (chr in chromosomes) {
@@ -372,6 +392,9 @@ if (length(patched)) {
 # S5 — PERMUTATION THRESHOLDS
 # uses generate.sample.outcomes.matrix (miqtl native permutation)
 # ─────────────────────────────────────────────────────────────────────────────
+} # end s4
+
+if (5 %in% run_sections) {
 message('\n[s5] permutation thresholds')
 thresh_chr  <- chromosomes[1]
 thresh_candidates <- first_gene_on(thresh_chr, 10)
@@ -515,6 +538,9 @@ if (!length(thresh_gene)) {
 # confirmed miqtl:::check.l2.norm: max_i(||h_i,l1-h_i,l2||/sqrt(J)) <= tol
 # bugs patched: :::check.l2.norm (not exported) + test <- FALSE init
 # ─────────────────────────────────────────────────────────────────────────────
+} # end s5
+
+if (6 %in% run_sections) {
 message('\n[s6] cache collapse')
 fn_lines <- deparse(body(miqtl:::collapse.genomecache))
 fn_lines <- gsub('check\\.l2\\.norm\\(',      'miqtl:::check.l2.norm(',      fn_lines)
@@ -560,6 +586,9 @@ message('  saved: collapsed_cache_summary.csv  ',
 # ─────────────────────────────────────────────────────────────────────────────
 # S7 — MULTIPLE IMPUTATION
 # ─────────────────────────────────────────────────────────────────────────────
+} # end s6
+
+if (7 %in% run_sections) {
 message('\n[s7] multiple imputation')
 mi_results <- list()
 for (chr in chromosomes) {
@@ -594,6 +623,9 @@ if (length(mi_results)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S8 — SNP SCAN (gated on allele_dir)
 # ─────────────────────────────────────────────────────────────────────────────
+} # end s7
+
+if (8 %in% run_sections) {
 message('\n[s8] snp scan')
 pheno_snp <- pheno_strain
 colnames(pheno_snp)[colnames(pheno_snp) == 'subject.name'] <- 'SUBJECT.NAME'
@@ -677,6 +709,9 @@ if (!dir.exists(allele_dir_path)) {
 # S9 — MEDIATION
 # workflow: scan → peak locus → extract.mediation.qr(locus) → mediation.scan.qr
 # ─────────────────────────────────────────────────────────────────────────────
+} # end s8
+
+if (9 %in% run_sections) {
 message('\n[s9] mediation')
 med_chr   <- chromosomes[1]
 med_genes <- first_gene_on(med_chr, 2)
@@ -738,6 +773,9 @@ if (length(med_genes) < 2) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S10 — POSITIONAL CI (parametric bootstrap)
 # ─────────────────────────────────────────────────────────────────────────────
+} # end s9
+
+if (10 %in% run_sections) {
 message('\n[s10] positional CI')
 ci_chr  <- chromosomes[1]
 ci_gene <- first_gene_on(ci_chr, 1)
@@ -819,6 +857,9 @@ if (!length(ci_gene)) {
 # S11 — FIXED-EFFECT / INSTABILITY SCAN
 # workflow: scan → generate.simple.sample.outcomes.matrix → instability.lm.scan
 # ─────────────────────────────────────────────────────────────────────────────
+} # end s10
+
+if (11 %in% run_sections) {
 message('\n[s11] instability scan')
 fx_chr  <- chromosomes[1]
 # select highest-LOD gene from S4 scan — guarantees stable instability signal.
@@ -886,5 +927,6 @@ if (!length(fx_gene)) {
     }
   }
 }
+} # end s11
 
 cat('\n[done] all outputs in', output_dir, '\n')
