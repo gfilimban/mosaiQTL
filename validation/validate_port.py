@@ -56,6 +56,7 @@ GM_GMAP     = os.path.join(miqtl_dir, 'input', 'GM', 'gmap')
 GM_PMAP     = os.path.join(miqtl_dir, 'input', 'GM', 'pmap')
 SNP_CSV     = os.path.join(miqtl_dir, 'input', 'snp_genos.csv')
 HAPPY_CACHE = os.path.join(miqtl_dir, 'output', 'genomecache')  # HAPPY cache root for marker allowlist
+ALLELE_DIR  = os.path.join(miqtl_dir, 'output', 'allele_dir')   # flat chrN.alleles files (miQTL format)
 
 CC_COLS      = ['CC001','CC002','CC003','CC004','CC005','CC006','CC007','CC008',
                 'CC009','CC010','CC011','CC012','CC013','CC015','CC017','CC018',
@@ -770,24 +771,19 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 section(8, 'SNP SCAN')
 r_snp = load_r('snp_lod_r.csv')
-if not os.path.exists(SNP_CSV):
+if not os.path.exists(ALLELE_DIR):
     skip('snp_scan',
-         f'snp_genos.csv not found at {SNP_CSV}\n'
-         '         prepare: cols=[chr,pos_mb,AJ,B6J,129S1J,NODJ,NZOJ,CASTJ,PWKJ,WSBJ]')
+         f'allele_dir not found at {ALLELE_DIR}\n'
+         '         build with: python validation/build_allele_dir.py')
 elif pheno_strain is None:
     skip('snp_scan','pheno not loaded')
 else:
-    from mosaiqtl.snp_scan import imputed_snp_scan_h2lmm as _snp_scan
-    snp_genos = pd.read_csv(SNP_CSV, index_col=0)
-    _code_map  = dict(zip('ABCDEFGH', FOUNDER_COLS))   # HAPPY codes -> full names
-    snp_genos  = snp_genos.rename(columns=_code_map)
-    # recode nucleotide genotypes to numeric dosage: A=0 (ref hom), B=1 (alt hom), else nan
-    # founders are inbred — no H calls expected; N/missing -> nan -> treated as 0 in snp_scan
-    _geno_recode = {'A': 0.0, 'B': 1.0, 'H': 0.5}     # H included for safety
-    for _fc in FOUNDER_COLS:
-        if _fc in snp_genos.columns:
-            snp_genos[_fc] = snp_genos[_fc].map(_geno_recode)  # unmapped (N,-) -> nan
+    from mosaiqtl.snp_scan import (imputed_snp_scan_h2lmm as _snp_scan,
+                                    read_alleles_flat as _raf)
+    # read from flat allele_dir — same source+ids as R, 0/1 alt dosage per founder
+    snp_genos = _raf(ALLELE_DIR, FOUNDER_COLS, pmap_dir=GM_PMAP)
     snp_genos['chr'] = snp_genos['chr'].astype(str)
+    hi(f'  allele_dir: {len(snp_genos)} SNPs  pos_filled={snp_genos["pos_mb"].notna().sum()}')
     snp_comparisons=[]
     for chrom in chromosomes:
         genes_snp = (r_snp[r_snp['chr']==chrom]['gene_id'].unique().tolist()
@@ -904,7 +900,7 @@ else:
         boot_oc = np.column_stack([rng_ci.choice(y_ci_v,size=len(y_ci_v),
                                                    replace=True)
                                     for _ in range(n_boot)])
-        boot_pos,ci_info = _rps(boot_oc,y_ci,cache_py,covar_base,kd_ci,
+        boot_pos,ci_info = _rps(boot_oc,cache_py,y_ci,covar_base,kd_ci,
                                  peak_chrom=ci_chr)
         ci_lo_py = ci_info['ci_lo']; ci_hi_py = ci_info['ci_hi']
         overlap  = ci_lo_py<=ci_hi_r and ci_lo_r<=ci_hi_py

@@ -310,3 +310,75 @@ def build_allele_dir(snp_genos, allele_dir, pmap=None):
 
     logger.info(f'build_allele_dir: wrote {n_written} SNP files to {allele_dir}')
     return allele_dir
+
+
+def read_alleles_flat(allele_dir, founders, chrom=None, pmap_dir=None):
+    """read flat chrN.alleles files (miQTL format) into a snp_genos DataFrame.
+
+    format — 4 lines per SNP:
+      line 1 : SNP_ID
+      line 2 : ref_allele\tf1\t...\tf8   (0/1 per founder: 1=has ref)
+      line 3 : alt_allele\tf1\t...\tf8   (0/1 per founder: 1=has alt)
+      line 4 : NA\t0\t...\t0
+
+    founder dosage returned is the alt allele indicator (line 3 values): 0.0
+    for ref-homozygous founders, 1.0 for alt-homozygous founders.  consistent
+    with imputed_snp_scan_h2lmm's dosage = h_locus @ geno_f.
+
+    parameters
+    ----------
+    allele_dir : str   directory containing chrN.alleles flat files
+    founders   : list  founder names in same order as .alleles file columns
+    chrom      : str or None   restrict to this chromosome
+    pmap_dir   : str or None   directory with GM_pmap*.csv files; adds pos_mb
+
+    returns
+    -------
+    pd.DataFrame  index=snp_id, columns=founders + ['chr', 'pos_mb']
+    """
+    import glob as _glob
+
+    rows, snp_ids = [], []
+    for fpath in sorted(_glob.glob(os.path.join(allele_dir, 'chr*.alleles'))):
+        c = os.path.basename(fpath).replace('chr', '').replace('.alleles', '')
+        if chrom is not None and c != str(chrom):
+            continue
+        with open(fpath) as fh:
+            lines = [l.rstrip('\n') for l in fh]
+        for i in range(0, len(lines) - 2, 4):    # 4 lines per SNP block
+            snp_id    = lines[i].strip()
+            alt_parts = lines[i + 2].split('\t')  # line 3: alt allele row
+            alt_vals  = alt_parts[1:]              # drop allele label col
+            row = {'chr': c}
+            for fi, f in enumerate(founders):
+                try:    row[f] = float(alt_vals[fi]) if fi < len(alt_vals) else 0.0
+                except (ValueError, TypeError): row[f] = 0.0
+            snp_ids.append(snp_id)
+            rows.append(row)
+
+    if not rows:
+        return pd.DataFrame(columns=['chr', 'pos_mb'] + list(founders))
+
+    df = pd.DataFrame(rows, index=snp_ids)
+    df.index.name = 'snp_id'
+    df['pos_mb']  = np.nan
+
+    # attach positions from GM_pmap*.csv if pmap_dir provided
+    if pmap_dir is not None:
+        pmap_files = sorted(_glob.glob(os.path.join(pmap_dir, 'GM_pmap*.csv')))
+        frames = []
+        for pf in pmap_files:
+            try:
+                pm = pd.read_csv(pf, comment='#')
+                if 'marker' in pm.columns:
+                    pm = pm.rename(columns={'marker': 'locus', 'pos': 'pos_mb'})
+                frames.append(pm[['locus', 'pos_mb']])
+            except Exception:
+                pass
+        if frames:
+            pmap_all = pd.concat(frames).set_index('locus')
+            shared   = df.index.intersection(pmap_all.index)
+            df.loc[shared, 'pos_mb'] = pmap_all.loc[shared, 'pos_mb'].values
+
+    logger.info(f'read_alleles_flat: {len(df)} SNPs  pos_filled={df["pos_mb"].notna().sum()}')
+    return df
