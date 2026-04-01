@@ -604,20 +604,8 @@ if (!dir.exists(allele_dir_path)) {
     # SNP ids are every 9th line starting at line 1
     snp_ids    <- lines[seq(1, length(lines), by=9)]
     message('  chr', chr, ': ', length(snp_ids), ' SNPs in allele file')
-    # inspect the inner function that reads allele files
-    src <- deparse(miqtl:::imputed.snp.scan.h2lmm)
-    # find the inner worker function name
-    inner <- grep('function|allele.dir|scan.list|get.allele|read', src, value=TRUE)
-    message('  [diag] inner calls:\n    ', paste(head(inner, 30), collapse='\n    '))
-    # also try to find get.allele.covariates or similar
-    all_fns <- ls(getNamespace('miqtl'))
-    allele_fns <- grep('allele|snp|impute', all_fns, value=TRUE, ignore.case=TRUE)
-    message('  [diag] miqtl allele-related fns: ', paste(allele_fns, collapse=', '))
-    # read source of most promising inner function
-    if ('get.allele.design.matrix' %in% all_fns) {
-      message('  [diag] get.allele.design.matrix source:')
-      message(paste(deparse(miqtl:::get.allele.design.matrix), collapse='\n'))
-    }
+    message('  [diag] make.imputed.design.matrix.list.for.all.loci source:')
+    message(paste(deparse(miqtl:::make.imputed.design.matrix.list.for.all.loci), collapse='\n'))
 
     k_chr  <- kinship_loco[[chr]]
     gnames <- if (use_gtf) head(intersect(
