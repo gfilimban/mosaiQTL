@@ -777,8 +777,14 @@ elif pheno_strain is None:
 else:
     from mosaiqtl.snp_scan import imputed_snp_scan_h2lmm as _snp_scan
     snp_genos = pd.read_csv(SNP_CSV, index_col=0)
-    _code_map = dict(zip('ABCDEFGH', FOUNDER_COLS))  # HAPPY codes -> full names
-    snp_genos = snp_genos.rename(columns=_code_map)
+    _code_map  = dict(zip('ABCDEFGH', FOUNDER_COLS))   # HAPPY codes -> full names
+    snp_genos  = snp_genos.rename(columns=_code_map)
+    # recode nucleotide genotypes to numeric dosage: A=0 (ref hom), B=1 (alt hom), else nan
+    # founders are inbred — no H calls expected; N/missing -> nan -> treated as 0 in snp_scan
+    _geno_recode = {'A': 0.0, 'B': 1.0, 'H': 0.5}     # H included for safety
+    for _fc in FOUNDER_COLS:
+        if _fc in snp_genos.columns:
+            snp_genos[_fc] = snp_genos[_fc].map(_geno_recode)  # unmapped (N,-) -> nan
     snp_genos['chr'] = snp_genos['chr'].astype(str)
     snp_comparisons=[]
     for chrom in chromosomes:
