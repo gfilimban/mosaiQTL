@@ -652,7 +652,7 @@ if (!dir.exists(allele_dir_path)) {
         error=function(e) { message('  snp scan failed for ', gene, ': ', e$message); NULL })
       if (is.null(res)) next
       snp_results[[paste0(gene,'_',chr)]] <- data.frame(
-        gene_id=gene, chr=chr, snp=names(res$LOD),
+        gene_id=gene, chr=chr, snp=res$loci,   # $loci holds SNP IDs; names(res$LOD) is NULL
         lod=res$LOD, p_value=res$p.value, stringsAsFactors=FALSE)
     }
   }
