@@ -801,6 +801,13 @@ else:
                     rg_s,on='snp',how='inner')
                 if len(mg_s)>=3:
                     mg_s['gene_id']=gene; snp_comparisons.append(mg_s)
+    if not snp_comparisons and r_snp is not None:
+        # diagnose merge failure: check id overlap between r and py
+        py_snps = set(res_snp['snp'].tolist()) if 'res_snp' in dir() and not res_snp.empty else set()
+        r_snps  = set(r_snp['snp'].tolist())
+        hi(f'  [S8 diag] py snps={len(py_snps)}  r snps={len(r_snps)}  overlap={len(py_snps & r_snps)}')
+        if py_snps: hi(f'  [S8 diag] py sample: {list(py_snps)[:3]}')
+        if r_snps:  hi(f'  [S8 diag] r  sample: {list(r_snps)[:3]}')
     if snp_comparisons:
         snp_comp = pd.concat(snp_comparisons, ignore_index=True)
         snp_comp = _col(snp_comp, ['gene_id', 'chr', 'snp', 'lod_r', 'lod_py'])
@@ -837,7 +844,7 @@ else:
         py_med = med_mod.mediation_scan_qr(yo,ym,cache_py,covar_base,kd_m,
                                             outcome_id=med_gene,mediator_id=med_med)
         pm_c = py_med[py_med['chr']==med_chr]
-        rg_m = r_med[['locus','lod']].rename(columns={'lod':'lod_r'})
+        rg_m = r_med[['locus','lod_base']].rename(columns={'lod_base':'lod_r'})
         mg_m = pm_c.rename(columns={'lod':'lod_py'}).merge(rg_m,on='locus',how='inner')
         if len(mg_m) >= 3:
             mg_m = _col(mg_m, ['gene_id', 'chr', 'locus', 'pos_mb', 'lod_r', 'lod_py'])
