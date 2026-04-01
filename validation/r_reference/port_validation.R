@@ -608,6 +608,23 @@ if (!dir.exists(allele_dir_path)) {
     gnames <- if (use_gtf) head(intersect(
       gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
 
+    # one-time dim check: reproduce exact internal parse for first cis SNP
+    g1   <- gnames[1]
+    cis1 <- intersect(get_cis_loci(g1, chr), snp_ids)
+    if (length(cis1) > 0) {
+      snp1 <- cis1[1]
+      mm   <- miqtl:::straineff.mapping.matrix()
+      raw  <- system(paste0("grep -w -A 3 '", snp1, "' ",
+                shQuote(allele_file)), intern=TRUE)
+      fat  <- matrix(unlist(strsplit(raw[-1], '\t', fixed=TRUE)),
+                     nrow=3, byrow=TRUE)[, -1]
+      message('  [diag] mm=', paste(dim(mm),collapse='x'),
+              '  fat=', paste(dim(fat),collapse='x'),
+              '  fat[1,1]=', fat[1,1],
+              '  ref.count len=', length(fat[,1][apply(fat[,-1,drop=FALSE],2,
+                function(x) which.max(as.numeric(x)))]==fat[1,1]))
+    }
+
     for (gene in gnames) {
       cis <- get_cis_loci(gene, chr)
       if (is.null(cis)) next
