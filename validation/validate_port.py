@@ -701,13 +701,25 @@ else:
         valid = ~np.isnan(y_t)
         y_v   = _rint(y_t[valid]); x_v=covar_base[valid]; evc_v=evc[valid]
         h2,_  = lmm_module.estimate_h2_null(evc_v.T@y_v,evc_v.T@x_v,ev)
+        # restrict to cis loci only — R uses just.these.loci=cis_t per permutation;
+        # scanning all chr8 loci inflates max-LOD ~2x relative to R
+        _cis_loci = (set(r_lod.loc[(r_lod['gene_id']==thresh_gene) &
+                                    (r_lod['chr']==thresh_chr), 'locus'])
+                     if r_lod is not None else None)
+        if _cis_loci:
+            hi(f'  cis loci: {len(_cis_loci)} (restricted, matches R)')
         rng   = np.random.default_rng(42)
         max_lods = []
         hi(f'  {n_p} permutations — {thresh_gene} chr{thresh_chr}')
         for _ in range(n_p):
             yp  = rng.permutation(y_v)
             cr  = lmm_module.scan_chromosome(yp,cache_py,thresh_chr,x_v,ev,evc_v,h2)
-            max_lods.append(float(cr['lod'].max()))
+            if _cis_loci:
+                _mask = np.isin(cr['locus_ids'], list(_cis_loci))
+                _lod  = cr['lod'][_mask] if _mask.any() else cr['lod']
+            else:
+                _lod  = cr['lod']
+            max_lods.append(float(_lod.max()))
         max_lods = np.array(max_lods)
         thresh_py,gev_p = perm_mod.get_gev_thresholds(max_lods,0.95)
         delta = abs(thresh_py-thresh_r_v)
