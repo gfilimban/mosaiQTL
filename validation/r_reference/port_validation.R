@@ -619,6 +619,12 @@ if (!dir.exists(allele_dir_path)) {
                                     subjects=rownames(pheno_snp))
         message('  [diag] probs dim: ', paste(dim(probs_d), collapse=' x '))
         message('  [diag] founders: ', paste(h$getFounders(), collapse=', '))
+        # trace what grep produces for first cis SNP
+        grep_cmd <- paste0("grep -w -A 3 '", diag_locus, "' ",
+                           file.path(allele_dir_path, paste0('chr', chr, '.alleles')))
+        grep_out <- system(grep_cmd, intern=TRUE)
+        message('  [diag] grep output (', length(grep_out), ' lines):')
+        message(paste(grep_out, collapse='\n  '))
       }
     }
     for (gene in gnames) {
