@@ -651,8 +651,9 @@ if (!dir.exists(allele_dir_path)) {
     # direct test: call patched function manually with correct mapping matrix
     test_snp <- snp_ids[1]
     prb <- h$getLocusMatrix(locus=test_snp, model='full', subjects=rownames(pheno_snp))
-    mm  <- miqtl:::straineff.mapping.matrix(founders=h$getFounders())
-    message('  [diag] mm dim: ', paste(dim(mm), collapse='x'))
+    mm  <- miqtl:::straineff.mapping.matrix()
+    message('  [diag] mm dim: ', paste(dim(mm), collapse='x'),
+            '  founders in mm: ', paste(rownames(mm)[1:3], collapse=', '))
     test_res <- tryCatch(
       miqtl:::extract.imputed.design.matrix.from.doqtl.genotype(
         probs=prb, allele.dir=allele_dir_path, snp=test_snp, snp.chr=chr,
