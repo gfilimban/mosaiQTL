@@ -805,6 +805,8 @@ else:
         # diagnose merge failure: check id overlap between r and py
         py_snps = set(res_snp['snp'].tolist()) if 'res_snp' in dir() and not res_snp.empty else set()
         r_snps  = set(r_snp['snp'].tolist())
+        _sg_sample = snp_genos.iloc[:2, :5] if len(snp_genos) >= 2 else snp_genos
+        hi(f'  [S8 diag] snp_genos sample:\n{_sg_sample}')
         hi(f'  [S8 diag] py snps={len(py_snps)}  r snps={len(r_snps)}  overlap={len(py_snps & r_snps)}')
         if py_snps: hi(f'  [S8 diag] py sample: {list(py_snps)[:3]}')
         if r_snps:  hi(f'  [S8 diag] r  sample: {list(r_snps)[:3]}')
@@ -845,7 +847,8 @@ else:
                                             outcome_id=med_gene,mediator_id=med_med)
         pm_c = py_med[py_med['chr']==med_chr]
         rg_m = r_med[['locus','lod_base']].rename(columns={'lod_base':'lod_r'})
-        mg_m = pm_c.rename(columns={'lod':'lod_py'}).merge(rg_m,on='locus',how='inner')
+        mg_m = pm_c.rename(columns={'lod_base':'lod_py'}).merge(rg_m,on='locus',how='inner')
+        mg_m['gene_id'] = med_gene   # outcome_id -> gene_id for schema compat
         if len(mg_m) >= 3:
             mg_m = _col(mg_m, ['gene_id', 'chr', 'locus', 'pos_mb', 'lod_r', 'lod_py'])
             save_csv(mg_m, 'mediation_comparison.csv')
