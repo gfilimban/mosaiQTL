@@ -24,6 +24,7 @@
 # lib_path: run 'Rscript -e ".libPaths()"' in your conda env to find yours
 lib_path <- '/Users/ghassan/miniconda3/envs/bioinfo/lib/R/library'
 if (dir.exists(lib_path)) .libPaths(c(lib_path, .libPaths()))
+options(warn=1)  # print warnings immediately as they occur with call context
 for (pkg in c('miqtl','dplyr')) library(pkg, character.only=TRUE)
 # no lib.loc here — .libPaths() already includes lib_path above
 if (requireNamespace('rtracklayer', quietly=TRUE)) library(rtracklayer)
