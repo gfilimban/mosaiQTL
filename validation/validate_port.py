@@ -107,6 +107,10 @@ def save_csv(df, name):
     log.debug(f'saved {name} ({len(df)} rows)')
     return p
 
+def _col(df, first):
+    '''reorder df columns: identifiers first, then remainder in original order'''
+    return df[first + [c for c in df.columns if c not in first]]
+
 def save_plot(fig, name):
     p = os.path.join(PLOTS, name)
     fig.savefig(p, dpi=150, bbox_inches='tight')
@@ -448,6 +452,8 @@ else:
         col_order = ['gene_id', 'chr', 'locus', 'pos_mb', 'lod_r', 'lod_py']
         comp_df = comp_df[col_order + [c for c in comp_df.columns if c not in col_order]]
         stat_df = pd.DataFrame(gene_stats)
+        stat_df = _col(stat_df, ['gene_id', 'chr', 'tier', 'r', 'rel_error',
+                                  'peak_match', 'peak_lod_r', 'peak_lod_py', 'h2_null'])
         save_csv(comp_df, 'lod_comparison.csv')
         save_csv(stat_df, 'gene_summary.csv')
         n_s = (stat_df['tier']=='strict').sum()
@@ -645,10 +651,11 @@ else:
         thresh_py,gev_p = perm_mod.get_gev_thresholds(max_lods,0.95)
         delta = abs(thresh_py-thresh_r_v)
         perm_pass = delta < 0.5
-        save_csv(pd.DataFrame({'perm_lod':max_lods}),'perm_lods_py.csv')
-        save_csv(pd.DataFrame([{'gene':thresh_gene,'chr':thresh_chr,
-                                 'n_perms':n_p,'threshold_py':thresh_py,
-                                 'threshold_r':thresh_r_v,'delta':delta}]),
+        save_csv(pd.DataFrame({'perm_lod': max_lods}), 'perm_lods_py.csv')
+        save_csv(_col(pd.DataFrame([{'gene_id': thresh_gene, 'chr': thresh_chr,
+                                      'n_perms': n_p, 'threshold_r': thresh_r_v,
+                                      'threshold_py': thresh_py, 'delta': delta}]),
+                       ['gene_id', 'chr', 'n_perms', 'threshold_r', 'threshold_py', 'delta']),
                  'threshold_comparison.csv')
 
         fig,axes=plt.subplots(1,2,figsize=(11,4))
@@ -711,20 +718,19 @@ else:
             mg_mi['gene_id']=gene; mg_mi['chr']=chrom
             mi_comparisons.append(mg_mi)
     if mi_comparisons:
-        mi_comp = pd.concat(mi_comparisons,ignore_index=True)
-        save_csv(mi_comp,'mi_lod_comparison.csv')
-        fig,axes=plt.subplots(1,2,figsize=(11,4))
-        scatter_qc(axes[0],mi_comp['lod_r'],mi_comp['lod_py'],
-                   'LOD MI (miQTL R)','LOD MI (mosaiQTL Python)','MI LOD scatter')
-        # profile for first gene
+        mi_comp = pd.concat(mi_comparisons, ignore_index=True)
+        mi_comp = _col(mi_comp, ['gene_id', 'chr', 'locus', 'lod_r', 'lod_py'])
+        save_csv(mi_comp, 'mi_lod_comparison.csv')
+        fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+        scatter_qc(axes[0], mi_comp['lod_r'], mi_comp['lod_py'],
+                   'LOD MI (miQTL R)', 'LOD MI (mosaiQTL Python)', 'MI LOD scatter')
         first_g = mi_comp['gene_id'].iloc[0]
-        sub = mi_comp[mi_comp['gene_id']==first_g]
-        axes[1].plot(sub['lod_r'].values,color='#D83026',lw=1.2,alpha=0.85,label='miQTL (R)')
-        axes[1].plot(sub['lod_py'].values,color='#4F6EAF',lw=1.2,alpha=0.85,label='mosaiQTL (Python)')
-        axes[1].set(xlabel='locus index',ylabel='LOD',
-                    title=f'MI LOD profile — {first_g}')
-        axes[1].legend(fontsize=9);sns.despine(ax=axes[1])
-        plt.tight_layout();save_plot(fig,'s7_mi_scan.png')
+        sub = mi_comp[mi_comp['gene_id'] == first_g]
+        axes[1].plot(sub['lod_r'].values, color='#D83026', lw=1.2, alpha=0.85, label='miQTL (R)')
+        axes[1].plot(sub['lod_py'].values, color='#4F6EAF', lw=1.2, alpha=0.85, label='mosaiQTL (Python)')
+        axes[1].set(xlabel='locus index', ylabel='LOD', title=f'MI LOD profile — {first_g}')
+        axes[1].legend(fontsize=9); sns.despine(ax=axes[1])
+        plt.tight_layout(); save_plot(fig, 's7_mi_scan.png')
         r_mi_all = float(np.corrcoef(mi_comp['lod_r'],mi_comp['lod_py'])[0,1])
         record('multi_imputation',r_mi_all>0.95,
                f'r={r_mi_all:.4f}  n_genes={mi_comp["gene_id"].nunique()}')
@@ -768,8 +774,9 @@ else:
                 if len(mg_s)>=3:
                     mg_s['gene_id']=gene; snp_comparisons.append(mg_s)
     if snp_comparisons:
-        snp_comp = pd.concat(snp_comparisons,ignore_index=True)
-        save_csv(snp_comp,'snp_lod_comparison.csv')
+        snp_comp = pd.concat(snp_comparisons, ignore_index=True)
+        snp_comp = _col(snp_comp, ['gene_id', 'chr', 'snp', 'lod_r', 'lod_py'])
+        save_csv(snp_comp, 'snp_lod_comparison.csv')
         fig,ax=plt.subplots(figsize=(5,5))
         r_snp_all = scatter_qc(ax,snp_comp['lod_r'],snp_comp['lod_py'],
                                 'SNP LOD (miQTL R)','SNP LOD (mosaiQTL Python)',
@@ -804,20 +811,22 @@ else:
         pm_c = py_med[py_med['chr']==med_chr]
         rg_m = r_med[['locus','lod']].rename(columns={'lod':'lod_r'})
         mg_m = pm_c.rename(columns={'lod':'lod_py'}).merge(rg_m,on='locus',how='inner')
-        if len(mg_m)>=3:
-            save_csv(mg_m,'mediation_comparison.csv')
-            r_med_v = float(np.corrcoef(mg_m['lod_r'],mg_m['lod_py'])[0,1])
-            fig,axes=plt.subplots(1,2,figsize=(11,4))
-            scatter_qc(axes[0],mg_m['lod_r'],mg_m['lod_py'],
-                       'mediation LOD (R)','mediation LOD (Python)',
+        if len(mg_m) >= 3:
+            mg_m = _col(mg_m, ['gene_id', 'chr', 'locus', 'pos_mb', 'lod_r', 'lod_py'])
+            save_csv(mg_m, 'mediation_comparison.csv')
+            r_med_v = float(np.corrcoef(mg_m['lod_r'], mg_m['lod_py'])[0, 1])
+            fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+            scatter_qc(axes[0], mg_m['lod_r'], mg_m['lod_py'],
+                       'mediation LOD (R)', 'mediation LOD (Python)',
                        f'mediation  r={r_med_v:.4f}')
-            axes[1].plot(pm_c['pos_mb'],pm_c['mediation_lod'] if 'mediation_lod' in pm_c else pm_c['lod_py'],
-                         color='#D83026',lw=1.2,label='mediation LOD')
-            axes[1].set(xlabel='position (Mb)',ylabel='base LOD − mediated LOD',
+            pos_x = mg_m['pos_mb'] if 'pos_mb' in mg_m.columns else np.arange(len(mg_m))
+            axes[1].plot(pos_x, mg_m['lod_r'], color='#D83026', lw=1.2, alpha=0.85, label='miQTL (R)')
+            axes[1].plot(pos_x, mg_m['lod_py'], color='#4F6EAF', lw=1.2, alpha=0.85, label='mosaiQTL (Python)')
+            axes[1].set(xlabel='position (Mb)', ylabel='LOD drop',
                         title=f'mediation profile  chr{med_chr}')
-            axes[1].legend(fontsize=9);sns.despine(ax=axes[1])
-            plt.tight_layout();save_plot(fig,'s9_mediation.png')
-            record('mediation',r_med_v>0.90,f'r={r_med_v:.4f}')
+            axes[1].legend(fontsize=9); sns.despine(ax=axes[1])
+            plt.tight_layout(); save_plot(fig, 's9_mediation.png')
+            record('mediation', r_med_v > 0.90, f'r={r_med_v:.4f}')
         else:
             skip('mediation',f'insufficient locus overlap ({len(mg_m)})')
 
@@ -853,10 +862,13 @@ else:
                                  peak_chrom=ci_chr)
         ci_lo_py = ci_info['ci_lo']; ci_hi_py = ci_info['ci_hi']
         overlap  = ci_lo_py<=ci_hi_r and ci_lo_r<=ci_hi_py
-        save_csv(pd.DataFrame([{'gene_id':ci_gene,'chr':ci_chr,
-                                 'ci_lo_py':ci_lo_py,'ci_hi_py':ci_hi_py,
-                                 'ci_lo_r':ci_lo_r,'ci_hi_r':ci_hi_r,
-                                 'overlap':overlap}]),'ci_comparison.csv')
+        save_csv(_col(pd.DataFrame([{'gene_id': ci_gene, 'chr': ci_chr,
+                                       'locus': r_ci['locus'].iloc[0] if 'locus' in r_ci else '',
+                                       'ci_lo_r': ci_lo_r, 'ci_lo_py': ci_lo_py,
+                                       'ci_hi_r': ci_hi_r, 'ci_hi_py': ci_hi_py,
+                                       'overlap': overlap}]),
+                       ['gene_id', 'chr', 'locus', 'ci_lo_r', 'ci_lo_py', 'ci_hi_r', 'ci_hi_py', 'overlap']),
+                 'ci_comparison.csv')
         fig,axes=plt.subplots(1,2,figsize=(11,4))
         vp = boot_pos[~np.isnan(boot_pos)] if hasattr(boot_pos,'__len__') else []
         ax=axes[0]
@@ -913,22 +925,23 @@ else:
         mg_fx   = py_inst.merge(r_fx[r_fx['gene_id']==fx_gene][['locus','lod']]
                                   .rename(columns={'lod':'lod_r'}),
                                  on='locus',how='inner')
-        if len(mg_fx)>=3:
-            save_csv(mg_fx,'fixef_comparison.csv')
-            r_fx_v = float(np.corrcoef(mg_fx['lod_r'],mg_fx['lod_py'])[0,1])
-            fig,axes=plt.subplots(1,2,figsize=(11,4))
-            scatter_qc(axes[0],mg_fx['lod_r'],mg_fx['lod_py'],
-                       'instability LOD (R)','instability LOD (Python)',
+        if len(mg_fx) >= 3:
+            mg_fx = _col(mg_fx, ['gene_id', 'chr', 'locus', 'lod_r', 'lod_py'])
+            save_csv(mg_fx, 'fixef_comparison.csv')
+            r_fx_v = float(np.corrcoef(mg_fx['lod_r'], mg_fx['lod_py'])[0, 1])
+            fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+            scatter_qc(axes[0], mg_fx['lod_r'], mg_fx['lod_py'],
+                       'instability LOD (R)', 'instability LOD (Python)',
                        f'instability scan  r={r_fx_v:.4f}')
-            axes[1].plot(mg_fx['lod_r'].values,color='#D83026',lw=1.2,
-                         alpha=0.85,label='miQTL (R)')
-            axes[1].plot(mg_fx['lod_py'].values,color='#4F6EAF',lw=1.2,
-                         alpha=0.85,label='mosaiQTL (Python)')
-            axes[1].set(xlabel='locus index',ylabel='mean bootstrap LOD',
+            axes[1].plot(mg_fx['lod_r'].values, color='#D83026', lw=1.2,
+                         alpha=0.85, label='miQTL (R)')
+            axes[1].plot(mg_fx['lod_py'].values, color='#4F6EAF', lw=1.2,
+                         alpha=0.85, label='mosaiQTL (Python)')
+            axes[1].set(xlabel='locus index', ylabel='mean bootstrap LOD',
                         title=f'instability profile — {fx_gene} chr{fx_chr}')
-            axes[1].legend(fontsize=9);sns.despine(ax=axes[1])
-            plt.tight_layout();save_plot(fig,'s11_instability.png')
-            record('instability',r_fx_v>0.90,f'r={r_fx_v:.4f}  n_loci={len(mg_fx)}')
+            axes[1].legend(fontsize=9); sns.despine(ax=axes[1])
+            plt.tight_layout(); save_plot(fig, 's11_instability.png')
+            record('instability', r_fx_v > 0.90, f'r={r_fx_v:.4f}  n_loci={len(mg_fx)}')
         else:
             skip('instability',f'insufficient locus overlap ({len(mg_fx)})')
 
