@@ -42,7 +42,7 @@ if (!is.primitive(crossprod) || typeof(crossprod) != 'builtin') {
           ' — restoring base version')
   assign('crossprod',  base::crossprod,  envir=globalenv())
   assign('tcrossprod', base::tcrossprod, envir=globalenv())
-  message('[fix] typeof after restore: ', typeof(crossprod))
+  message('[fix] typeof after restore (globalenv): ', typeof(get('crossprod', envir=globalenv())))
 }
 # deep scan: try to patch within miqtl namespace as well
 .patch_miqtl_crossprod <- function() {
