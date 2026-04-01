@@ -21,8 +21,8 @@
 #   Rscript validation/r_reference/port_validation.R [chr] [n_genes]
 #   Rscript validation/r_reference/port_validation.R 8 50
 # ─────────────────────────────────────────────────────────────────────────────
-# lib_path: run 'Rscript -e ".libPaths()"' in your conda env to find yours
-lib_path <- '/Users/ghassan/miniconda3/envs/bioinfo/lib/R/library'
+# lib_path: set R_LIB_PATH env var on HPC, or falls back to .libPaths()
+lib_path <- Sys.getenv('R_LIB_PATH', unset='/Users/ghassan/miniconda3/envs/bioinfo/lib/R/library')
 if (dir.exists(lib_path)) .libPaths(c(lib_path, .libPaths()))
 for (pkg in c('miqtl','dplyr')) library(pkg, character.only=TRUE)
 # no lib.loc here — .libPaths() already includes lib_path above

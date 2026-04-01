@@ -40,6 +40,7 @@ TIME_MERGE="02:00:00"     # merge + python validation
 MEM="32G"
 CPUS=4
 CONDA_ENV="bioinfo"
+R_LIB_PATH="/share/crsp/lab/seyedam/gfilimba/miniconda3/envs/bioinfo/lib/R/library"  # update if conda path differs
 
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
@@ -71,6 +72,7 @@ SETUP_SCRIPT=$(cat << SLURM
 echo "[setup] started \$(date)"
 source \$(conda info --base)/etc/profile.d/conda.sh
 conda activate ${CONDA_ENV}
+export R_LIB_PATH="${R_LIB_PATH}"
 
 # run genome-level sections only (all chrs, no slurm flag)
 # s1 cache info, s2 haplotype, s3 kinship, s5 collapse run here
@@ -112,6 +114,7 @@ for CHR in "${CHRS[@]}"; do
 echo "[chr${CHR}] started \$(date)"
 source \$(conda info --base)/etc/profile.d/conda.sh
 conda activate ${CONDA_ENV}
+export R_LIB_PATH="${R_LIB_PATH}"
 
 # slurm mode: writes to r_data/chr${CHR}/
 # runs s4 (lmm scan), s6 (permutation), s7 (MI), s8 (SNP if allele_dir exists)
@@ -156,6 +159,7 @@ MERGE_SCRIPT_CONTENT=$(cat << SLURM
 echo "[merge] started \$(date)"
 source \$(conda info --base)/etc/profile.d/conda.sh
 conda activate ${CONDA_ENV}
+export R_LIB_PATH="${R_LIB_PATH}"
 
 # merge per-chr R outputs
 Rscript "${MERGE_SCRIPT}" 2>&1
