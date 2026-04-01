@@ -777,6 +777,8 @@ elif pheno_strain is None:
 else:
     from mosaiqtl.snp_scan import imputed_snp_scan_h2lmm as _snp_scan
     snp_genos = pd.read_csv(SNP_CSV, index_col=0)
+    _code_map = dict(zip('ABCDEFGH', FOUNDER_COLS))  # HAPPY codes -> full names
+    snp_genos = snp_genos.rename(columns=_code_map)
     snp_genos['chr'] = snp_genos['chr'].astype(str)
     snp_comparisons=[]
     for chrom in chromosomes:
