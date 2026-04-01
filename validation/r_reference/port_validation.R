@@ -614,15 +614,6 @@ if (!dir.exists(allele_dir_path)) {
       if (is.null(cis)) next
       cis_snp <- intersect(cis, snp_ids)
       if (length(cis_snp) == 0) next
-      # diagnostic: test grep output length for first cis snp
-      if (gene == gnames[1]) {
-        tsnp    <- cis_snp[1]
-        grep_out <- system(paste0("grep -w -A 3 '", tsnp, "' ",
-          shQuote(file.path(allele_dir_path, paste0('chr', chr, '.alleles')))),
-          intern=TRUE)
-        message('  [diag] grep lines for ', tsnp, ': ', length(grep_out))
-        message('  ', paste(grep_out, collapse='\n  '))
-      }
       res <- tryCatch(
         imputed.snp.scan.h2lmm(
           data=pheno_snp, formula=make_form(gene), K=k_chr,

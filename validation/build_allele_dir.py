@@ -100,9 +100,12 @@ for chrom, chr_df in gm.groupby('chr'):
             na_row  = [0] * len(f_cols)
 
             fh.write(snp_id + '\n')
-            fh.write(ref + '\t' + '\t'.join(map(str, ref_row)) + '\n')
-            fh.write((alt if alt else 'NA') + '\t' + '\t'.join(map(str, alt_row)) + '\n')
-            fh.write('NA\t' + '\t'.join(map(str, na_row)) + '\n')
+            # each data line: snp_id\tallele\tf1\t...\tf8  (10 fields)
+            # miQTL does matrix(...)[, -1] which drops col1 (snp_id), leaving
+            # allele label in col1 for the NA filter and which.max step
+            fh.write(snp_id + '\t' + ref + '\t' + '\t'.join(map(str, ref_row)) + '\n')
+            fh.write(snp_id + '\t' + (alt if alt else 'NA') + '\t' + '\t'.join(map(str, alt_row)) + '\n')
+            fh.write(snp_id + '\tNA\t' + '\t'.join(map(str, na_row)) + '\n')
             n_written += 1
 
     log.info(f'  chr{chrom}: {n_written} SNPs -> {out_path}')
