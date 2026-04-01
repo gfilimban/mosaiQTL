@@ -299,24 +299,58 @@ rsum_ok  = bool(np.allclose(hap_df['mean_rowsum'], 2.0, atol=1e-4))  # miQTL [0,
 max_dev  = float((hap_df['mean_rowsum']-2.0).abs().max())
 
 if r_hap is not None:
-    mg = hap_df.merge(r_hap[['locus','mean_rowsum']].rename(
-        columns={'mean_rowsum':'rowsum_r'}), on='locus', how='inner')
-    fig, axes = plt.subplots(1,2,figsize=(11,4))
-    ax = axes[0]
-    mg_v = mg.dropna(subset=['rowsum_r','mean_rowsum'])
-    if len(mg_v) > 1:
-        scatter_qc(ax, mg_v['rowsum_r'], mg_v['mean_rowsum'],
-                   'row sum (R)', 'row sum (Python)', 'haplotype row sums')
-    else:
-        ax.text(0.5,0.5,'insufficient overlap', ha='center', transform=ax.transAxes)
-    ax = axes[1]
-    ax.bar(range(len(hap_df)), hap_df['mean_rowsum']-2.0,
-           color=chr_colors(hap_df['chr'].tolist()), edgecolor='none')
-    ax.axhline(0, color='#D83026', lw=0.8, ls='--')
-    ax.set(xlabel='locus index', ylabel='mean row sum − 2',
-           title=f'row sum deviation  max={max_dev:.2e}')
-    sns.despine(ax=ax)
-    plt.tight_layout(); save_plot(fig, 's2_haplotype_probs.png')
+    # 3-panel heatmap: Python H matrix at mid-chr locus, row-sum deviations,
+    # and scatter vs R — consistent with validate_vs_r.py style
+    _chrom0 = chromosomes[0]
+    if _chrom0 in cache_py._data:
+        _lids0    = cache_py._data[_chrom0]['locus_ids']
+        _mid      = len(_lids0) // 2
+        _h_mid    = cache_py.get_locus(_chrom0, _mid)     # (n_samples, J)
+        _disp_ord = FOUNDER_COLS + [f[0] for f in F1_CROSSES] + CC_COLS
+        _sids     = list(cache_py.sample_ids)
+        _seen     = set(); _disp_s = []
+        for s in _disp_ord:
+            if s in _sids and s not in _seen: _disp_s.append(s); _seen.add(s)
+        for s in _sids:
+            if s not in _seen: _disp_s.append(s); _seen.add(s)
+        _disp_idx = [_sids.index(s) for s in _disp_s]
+        _h_disp   = _h_mid[_disp_idx]                    # reordered (n, J)
+        _fnames   = list(cache_py.founders)
+        _fs       = max(5, min(9, int(180 / len(_disp_s))))
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        # panel 1: haplotype heatmap at mid-chr locus
+        sns.heatmap(_h_disp, ax=axes[0], cmap='YlOrRd', vmin=0, vmax=1,
+                    xticklabels=_fnames, yticklabels=_disp_s,
+                    cbar_kws={'shrink':0.7})
+        axes[0].set_title(f'Python haplotype probs
+chr{_chrom0} · {_lids0[_mid]}',
+                          fontsize=10)
+        axes[0].set_xticklabels(axes[0].get_xticklabels(),
+                                rotation=45, ha='right', fontsize=9,
+                                fontfamily='Carlito')
+        axes[0].set_yticklabels(axes[0].get_yticklabels(),
+                                rotation=0, fontsize=_fs, fontfamily='Carlito')
+        # panel 2: row sum deviation bar chart
+        axes[1].bar(range(len(hap_df)), hap_df['mean_rowsum']-2.0,
+                    color=chr_colors(hap_df['chr'].tolist()), edgecolor='none')
+        axes[1].axhline(0, color='#D83026', lw=0.8, ls='--')
+        axes[1].set(xlabel='sampled locus index', ylabel='mean row sum $-$ 2',
+                    title=f'row sum deviation  max={max_dev:.2e}')
+        sns.despine(ax=axes[1])
+        # panel 3: scatter vs R row sums (few points but informative)
+        mg = hap_df.merge(r_hap[['locus','mean_rowsum']].rename(
+            columns={'mean_rowsum':'rowsum_r'}), on='locus', how='inner')
+        mg_v = mg.dropna(subset=['rowsum_r','mean_rowsum'])
+        if len(mg_v) > 1:
+            scatter_qc(axes[2], mg_v['rowsum_r'], mg_v['mean_rowsum'],
+                       'row sum (R)', 'row sum (Python)', 'row sum comparison')
+        else:
+            axes[2].text(0.5, 0.5, f'n overlap={len(mg_v)}\n(different loci sampled)',
+                         ha='center', va='center', transform=axes[2].transAxes,
+                         fontsize=9)
+            axes[2].set_title('row sum comparison'); sns.despine(ax=axes[2])
+        plt.tight_layout(); save_plot(fig, 's2_haplotype_probs.png')
 
 record('haplotype_probs', rsum_ok,
        f'row_sums_ok={rsum_ok}  max_dev={max_dev:.2e}')

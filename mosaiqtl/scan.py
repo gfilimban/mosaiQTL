@@ -98,7 +98,8 @@ def _resolve_z(sample_ids, genome_cache, pheno_id=None, geno_id=None):
 
 def scan_h2lmm(phenotype, genome_cache, covariates=None,
                kinship_decomp=None, sample_ids=None,
-               use_rint=True, use_reml=True, phenotype_id='unknown'):
+               use_rint=True, use_reml=True, phenotype_id='unknown',
+               fixed_h2_dict=None):
     """haplotype-based genome-wide scan with LOCO LMM.
 
     supports both 1:1 (n == m) and replicated (n > m) designs via
@@ -181,8 +182,12 @@ def scan_h2lmm(phenotype, genome_cache, covariates=None,
 
         y_rot = evecs.T @ y
         x_rot = evecs.T @ x
-        h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, evals,
-                                             method='reml' if use_reml else 'ml')
+        # use fixed h2 when provided (e.g. from scan_h2lmm_mi) — matches miQTL behaviour
+        if fixed_h2_dict is not None and chrom in fixed_h2_dict:
+            h2 = fixed_h2_dict[chrom]
+        else:
+            h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, evals,
+                                                 method='reml' if use_reml else 'ml')
         h2_null_dict[chrom] = h2
 
         chr_res = lmm_module.scan_chromosome(
@@ -475,6 +480,27 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
     # only impute chromosomes that will actually be scanned
     _chrom_list = [c for c in genome_cache.chromosomes if c in kinship_decomp]
 
+    # pre-estimate h2 once from the REAL cache — held fixed across all imputations
+    # matches miQTL behaviour: h2 from base scan is reused for each imputed draw
+    valid_mi = ~np.isnan(phenotype)
+    y_base   = phenotype[valid_mi].copy()
+    if use_rint:
+        from .utils import rint as _rint_mi
+        y_base = _rint_mi(y_base)
+    x_base = (covariates[valid_mi].copy() if covariates is not None
+              else np.ones((valid_mi.sum(), 1), dtype=float))
+    if not np.allclose(x_base[:, 0], 1.0):
+        x_base = np.hstack([np.ones((len(x_base), 1)), x_base])
+    fixed_h2 = {}
+    for _c in _chrom_list:
+        _ev  = kinship_decomp[_c]['values']
+        _evc = kinship_decomp[_c]['vectors'][valid_mi]
+        _yr  = _evc.T @ y_base
+        _xr  = _evc.T @ x_base
+        _h2, _ = lmm_module.estimate_h2_null(_yr, _xr, _ev,
+                                              method='reml' if use_reml else 'ml')
+        fixed_h2[_c] = _h2
+
     lod_accum = None; ref_res = None
 
     for imp in range(n_imp):
@@ -496,7 +522,8 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
                         list(genome_cache.founders), imp_data)
         res = scan_h2lmm(phenotype, imp_cache, covariates,
                          kinship_decomp, sample_ids, use_rint,
-                         use_reml, phenotype_id)
+                         use_reml, phenotype_id,
+                         fixed_h2_dict=fixed_h2)   # fixed from real cache
         if lod_accum is None:
             lod_accum = res.lod.copy(); ref_res = res
         else:
