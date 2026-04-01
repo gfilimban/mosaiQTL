@@ -614,18 +614,21 @@ if (!dir.exists(allele_dir_path)) {
       if (is.null(cis)) next
       cis_snp <- intersect(cis, snp_ids)
       if (length(cis_snp) == 0) next
+      # diagnostic: test grep output length for first cis snp
+      if (gene == gnames[1]) {
+        tsnp    <- cis_snp[1]
+        grep_out <- system(paste0("grep -w -A 3 '", tsnp, "' ",
+          shQuote(file.path(allele_dir_path, paste0('chr', chr, '.alleles')))),
+          intern=TRUE)
+        message('  [diag] grep lines for ', tsnp, ': ', length(grep_out))
+        message('  ', paste(grep_out, collapse='\n  '))
+      }
       res <- tryCatch(
-        withCallingHandlers(
-          imputed.snp.scan.h2lmm(
-            data=pheno_snp, formula=make_form(gene), K=k_chr,
-            allele.dir=allele_dir_path, genomecache=genomecache_path,
-            model='additive', chr=chr, just.these.loci=cis_snp[1:3]),  # first 3 only for diag
-          error=function(e) {
-            calls <- sys.calls()
-            message('  [stack] ', paste(sapply(tail(calls, 8),
-              function(x) deparse(x)[1]), collapse='\n  '))
-          }),
-        error=function(e) { message('  snp scan failed: ', e$message); NULL })
+        imputed.snp.scan.h2lmm(
+          data=pheno_snp, formula=make_form(gene), K=k_chr,
+          allele.dir=allele_dir_path, genomecache=genomecache_path,
+          model='additive', chr=chr, just.these.loci=cis_snp),
+        error=function(e) { message('  snp scan failed for ', gene, ': ', e$message); NULL })
       if (is.null(res)) next
       snp_results[[paste0(gene,'_',chr)]] <- data.frame(
         gene_id=gene, chr=chr, snp=names(res$LOD),
