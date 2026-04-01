@@ -602,10 +602,8 @@ if (!dir.exists(allele_dir_path)) {
     }
     lines      <- readLines(allele_file)
     # SNP ids are every 9th line starting at line 1
-    snp_ids    <- lines[seq(1, length(lines), by=9)]
+    snp_ids    <- lines[seq(1, length(lines), by=4)]   # SNP id every 4 lines
     message('  chr', chr, ': ', length(snp_ids), ' SNPs in allele file')
-    message('  [diag] extract.imputed.design.matrix.from.doqtl.genotype source:')
-    message(paste(deparse(miqtl:::extract.imputed.design.matrix.from.doqtl.genotype), collapse='\n'))
 
     k_chr  <- kinship_loco[[chr]]
     gnames <- if (use_gtf) head(intersect(
@@ -614,13 +612,6 @@ if (!dir.exists(allele_dir_path)) {
       cis <- get_cis_loci(gene, chr)
       if (is.null(cis)) next
       cis_snp <- intersect(cis, snp_ids)
-      # diagnostic: show overlap for first gene only
-      if (gene == gnames[1]) {
-        message('  [diag] gene=', gene, '  cis loci=', length(cis),
-                '  cis head: ', paste(head(cis, 3), collapse=', '))
-        message('  [diag] snp_ids head: ', paste(head(snp_ids, 3), collapse=', '))
-        message('  [diag] cis_snp overlap: ', length(cis_snp))
-      }
       if (length(cis_snp) == 0) next
       res <- tryCatch(
         imputed.snp.scan.h2lmm(
