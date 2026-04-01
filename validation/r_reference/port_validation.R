@@ -587,6 +587,46 @@ if (length(mi_results)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S8 — SNP SCAN (gated on allele_dir)
 # ─────────────────────────────────────────────────────────────────────────────
+# macOS grep -A adds leading spaces to context lines — patch extract function
+# once before any scan to strip whitespace before tab-splitting
+utils::assignInNamespace('extract.imputed.design.matrix.from.doqtl.genotype',
+  function(probs, allele.dir, snp, snp.chr, model, founders, mapping.matrix) {
+    grep.command <- paste0("grep -w -A 3 '", snp, "' ",
+      paste0(allele.dir, "/chr", snp.chr, ".alleles"))
+    founder.alleles.table <- trimws(system(grep.command, intern=TRUE))
+    founder.alleles.table <- matrix(
+      unlist(strsplit(x=founder.alleles.table[-1], split="\t", fixed=TRUE)),
+      nrow=3, byrow=TRUE)[, -1]
+    founder.alleles.table <- founder.alleles.table[
+      founder.alleles.table[, 1] != "NA", , drop=FALSE]
+    founder.alleles <- founder.alleles.table[, 1][
+      apply(founder.alleles.table[, -1, drop=FALSE], 2,
+            function(x) which.max(as.numeric(x)))]
+    ref.allele <- founder.alleles.table[1, 1]
+    ref.allele.founder.count <- as.numeric(founder.alleles == ref.allele)
+    full.ref.allele.count <- as.vector(
+      mapping.matrix %*% matrix(ref.allele.founder.count, ncol=1))
+    full.genotypes <- cbind(
+      as.numeric(full.ref.allele.count == 2),
+      as.numeric(full.ref.allele.count == 1),
+      as.numeric(full.ref.allele.count == 0))
+    colnames(full.genotypes) <- c("ref.hom", "het", "alt.hom")
+    genotype.probs <- probs %*% full.genotypes
+    if ((2*sum(genotype.probs[,1]) + sum(genotype.probs[,2])) /
+        (2*nrow(genotype.probs)) > 0.5) {
+      X <- cbind(genotype.probs[,3], genotype.probs[,2])
+    } else {
+      X <- cbind(genotype.probs[,1], genotype.probs[,2])
+    }
+    colnames(X) <- c("SNP_aa", "SNP_Aa")
+    if (model == "additive") {
+      snp.count <- 2*X[,1] + X[,2]
+      X <- matrix(snp.count, ncol=1)
+      colnames(X) <- "SNP"
+    }
+    rownames(X) <- rownames(probs)
+    return(X)
+  }, ns='miqtl')
 message('\n[s8] snp scan')
 pheno_snp <- pheno_strain
 colnames(pheno_snp)[colnames(pheno_snp) == 'subject.name'] <- 'SUBJECT.NAME'
@@ -605,48 +645,6 @@ if (!dir.exists(allele_dir_path)) {
     snp_ids    <- lines[seq(1, length(lines), by=4)]   # SNP id every 4 lines
     message('  chr', chr, ': ', length(snp_ids), ' SNPs in allele file')
 
-    # macOS grep -A adds leading spaces to context lines — patch extract function
-    # to strip whitespace before tab-splitting
-    assignInNamespace('extract.imputed.design.matrix.from.doqtl.genotype',
-      function(probs, allele.dir, snp, snp.chr, model, founders, mapping.matrix) {
-        grep.command <- paste0("grep -w -A 3 '", snp, "' ",
-          paste0(allele.dir, "/chr", snp.chr, ".alleles"))
-        founder.alleles.table <- system(grep.command, intern=TRUE)
-        # strip leading/trailing whitespace added by macOS grep -A context lines
-        founder.alleles.table <- trimws(founder.alleles.table)
-        founder.alleles.table <- matrix(
-          unlist(strsplit(x=founder.alleles.table[-1], split="\t", fixed=TRUE)),
-          nrow=3, byrow=TRUE)[, -1]
-        founder.alleles.table <- founder.alleles.table[
-          founder.alleles.table[, 1] != "NA", , drop=FALSE]
-        founder.alleles <- founder.alleles.table[, 1][
-          apply(founder.alleles.table[, -1, drop=FALSE], 2,
-                function(x) which.max(as.numeric(x)))]
-        ref.allele <- founder.alleles.table[1, 1]
-        ref.allele.founder.count <- as.numeric(founder.alleles == ref.allele)
-        full.ref.allele.count <- as.vector(
-          mapping.matrix %*% matrix(ref.allele.founder.count, ncol=1))
-        full.genotypes <- cbind(
-          as.numeric(full.ref.allele.count == 2),
-          as.numeric(full.ref.allele.count == 1),
-          as.numeric(full.ref.allele.count == 0))
-        colnames(full.genotypes) <- c("ref.hom", "het", "alt.hom")
-        genotype.probs <- probs %*% full.genotypes
-        if ((2*sum(genotype.probs[,1]) + sum(genotype.probs[,2])) /
-            (2*nrow(genotype.probs)) > 0.5) {
-          X <- cbind(genotype.probs[,3], genotype.probs[,2])
-        } else {
-          X <- cbind(genotype.probs[,1], genotype.probs[,2])
-        }
-        colnames(X) <- c("SNP_aa", "SNP_Aa")
-        if (model == "additive") {
-          snp.count <- 2*X[,1] + X[,2]
-          X <- matrix(snp.count, ncol=1)
-          colnames(X) <- "SNP"
-        }
-        rownames(X) <- rownames(probs)
-        return(X)
-      }, 'miqtl')
     gnames <- if (use_gtf) head(intersect(
       gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
 
