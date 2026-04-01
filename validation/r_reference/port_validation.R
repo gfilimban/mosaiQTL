@@ -611,9 +611,14 @@ if (!dir.exists(allele_dir_path)) {
     for (gene in gnames) {
       cis <- get_cis_loci(gene, chr)
       if (is.null(cis)) next
-      # restrict to loci present in allele file — haplotype loci not in allele file
-      # cause subscript out of bounds in imputed.snp.scan.h2lmm
       cis_snp <- intersect(cis, snp_ids)
+      # diagnostic: show overlap for first gene only
+      if (gene == gnames[1]) {
+        message('  [diag] gene=', gene, '  cis loci=', length(cis),
+                '  cis head: ', paste(head(cis, 3), collapse=', '))
+        message('  [diag] snp_ids head: ', paste(head(snp_ids, 3), collapse=', '))
+        message('  [diag] cis_snp overlap: ', length(cis_snp))
+      }
       if (length(cis_snp) == 0) next
       res <- tryCatch(
         imputed.snp.scan.h2lmm(
