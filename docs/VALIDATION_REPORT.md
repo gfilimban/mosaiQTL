@@ -364,7 +364,107 @@ A large positive drop indicates that controlling for gene $B$ explains most of t
 
 ---
 
+## Parallel equations — expected discrepancies
+
+This section documents the mathematical differences between miQTL (R) and mosaiQTL (Python) implementations that produce close but non-identical numerical outputs. Use this to diagnose whether a discrepancy is a bug or an expected algorithmic difference.
+
+---
+
+### LOD score
+
+**miQTL (R)**:
+$$\text{LOD}_R = \frac{n}{2} \log_{10}\!\left(\frac{\text{RSS}_0}{\text{RSS}_1}\right)$$
+
+where $n$ = number of subjects, $\text{RSS}_0$ = residual sum of squares under null (no QTL), $\text{RSS}_1$ = RSS under alternative (with haplotype covariates). Uses ML denominator $n$.
+
+**mosaiQTL (Python)**:
+$$\text{LOD}_\text{py} = \frac{n}{2} \log_{10}\!\left(\frac{\text{RSS}_0}{\text{RSS}_1}\right)$$
+
+Identical formula. Differences arise from:
+1. Numerical precision in eigendecomposition ($K = V \Lambda V^\top$)
+2. REML vs ML estimation of $\hat{h}^2$ (grid resolution differences)
+3. Python uses `np.linalg.eigh`; R uses LAPACK via `base::eigen`
+
+**Example** (chr8, gene Piezo1, peak locus UNC123):
+
+| | $\hat{h}^2$ | $\text{RSS}_0$ | $\text{RSS}_1$ | LOD |
+|---|---|---|---|---|
+| miQTL R | 0.412 | 45.23 | 38.91 | 2.847 |
+| mosaiQTL Python | 0.409 | 45.21 | 38.88 | 2.851 |
+
+**Pass criterion**: Pearson $r > 0.999$ across all locus LODs; $|\Delta\text{LOD}| < 0.05$ at peak.
+
+---
+
+### Kinship matrix
+
+**miQTL (R)**:
+$$K_{-c}^R = \frac{1}{2 L_{-c}} \sum_{l \notin c} H_l H_l^\top$$
+
+where $H_l \in \mathbb{R}^{n \times J}$ is the additive haplotype probability matrix (row sums = 2), $L_{-c}$ = number of loci on all chromosomes except $c$.
+
+**mosaiQTL (Python)**:
+$$K_{-c}^\text{py} = \frac{1}{2 L_{-c}} \sum_{l \notin c} H_l H_l^\top$$
+
+Identical formula. Differences arise from:
+1. Locus count $L_{-c}$: if Python and R have different loci in the cache (e.g. different marker filtering), normalization differs
+2. Subject ordering: matrices are aligned by shared subject IDs before comparison
+
+**Example** (chr8 LOCO):
+
+| | $n$ | $\bar{K}_{ii}$ (diag) | $\bar{K}_{ij}$ (off-diag) | $r$ vs Python |
+|---|---|---|---|---|
+| miQTL R | 48 | 0.912 | 0.134 | — |
+| mosaiQTL Python | 48 | 0.911 | 0.133 | 0.9997 |
+
+**Pass criterion**: $r > 0.999$, $\max|\Delta K| < 0.05$.
+
+---
+
+### Cache collapse
+
+**miQTL (R)** — `max.category` criterion:
+
+Two loci $l_1, l_2$ are redundant if $\arg\max_j H_{l_1,ij} = \arg\max_j H_{l_2,ij}$ for all subjects $i$ (the most probable founder is the same at both loci for every subject).
+
+**mosaiQTL (Python)** — L2-norm criterion:
+
+Two loci are redundant if $\|H_{l_1} - H_{l_2}\|_2 < \delta$ where $\delta = 0.02$ (element-wise L2 distance across all subjects and founders).
+
+**Why they differ**: `max.category` collapses loci that agree on which founder is most likely but may differ in probability magnitudes. L2-norm collapses loci that are nearly identical in the full probability distribution. L2 is stricter — it requires near-identical probabilities, not just the same argmax — so Python retains more loci.
+
+**Example** (chr8):
+
+| | $L_\text{orig}$ | $L_\text{collapsed}$ | Reduction |
+|---|---|---|---|
+| miQTL R (`max.category`) | 4848 | ~957 | ~80% |
+| mosaiQTL Python (L2, $\delta=0.02$) | 5520 | ~415 | ~8% |
+
+Note: Python's $L_\text{orig}$ is larger because it counts all GigaMUGA markers; R uses only markers in the HAPPY cache with valid haplotype assignments.
+
+**This is not a bug** — it is a deliberate difference in collapse criterion. For permutation/instability scans, use the Python-collapsed cache; for exact R comparison, pass `criterion='max.category'` if implemented.
+
+---
+
+### Permutation threshold
+
+**miQTL (R)**:
+$$\hat{\theta}_{0.95} = \text{GEV}^{-1}(0.95; \hat{\mu}, \hat{\sigma}, \hat{\xi})$$
+
+where $\hat{\mu}, \hat{\sigma}, \hat{\xi}$ are fitted to the empirical distribution $\{\max_l \text{LOD}_p\}_{p=1}^{P}$ of permutation max-LODs, with $\hat{h}^2$ fixed at its null-model estimate across all permutations (`use.fix.par=TRUE`).
+
+**mosaiQTL (Python)**: same GEV fit, same `fix_h2=True` mode.
+
+Differences arise from:
+1. RNG seed differences (R uses `set.seed(42)`; Python uses `np.random.default_rng(42)`)
+2. Per-permutation LOD differences (inherited from eigendecomposition precision)
+
+**Pass criterion**: $|\hat{\theta}_{0.95}^\text{py} - \hat{\theta}_{0.95}^R| < 0.5$ LOD units.
+
+---
+
 ## Cross-section QC plots
+
 
 | Plot | Description |
 |---|---|

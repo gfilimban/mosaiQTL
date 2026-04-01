@@ -232,7 +232,7 @@ if r_info is not None:
            label='mosaiQTL (Python)')
     ax.bar(x+w/2, info_df['n_loci_r'].fillna(0), w, color='#55AF5B',
            edgecolor='none', alpha=0.85, label='miQTL (R)')
-    ax.set(xticks=x, xticklabels=[f'chr{c}' for c in info_df['chr']],
+    ax.set(xticks=x, xticklabels=info_df['chr'].tolist(),
            xlabel='chromosome', ylabel='loci', title='loci per chromosome')
     plt.xticks(rotation=45, ha='right', fontsize=8)
     ax.legend(fontsize=9); sns.despine(ax=ax)
@@ -345,14 +345,17 @@ if kin_cors:
         sids_r  = k_r_df['sample_id'].tolist()
         k_r_mat = k_r_df.drop(columns='sample_id').values.astype(float)
         sids_py = list(cache_py.sample_ids)
-        # display order: founders → F1s → CCs
-        pref    = ([s for s in sids_py if s in FOUNDER_COLS] +
-                   [s for s in sids_py if any(s.startswith(f) for f in FOUNDER_COLS)
-                    and s not in FOUNDER_COLS and s in sids_r] +
-                   [s for s in sids_py if s in sids_r])
+        # display order: founders → F1s → CCs using canonical lists
+        f1_ids  = [f[0] for f in F1_CROSSES]
+        pref    = FOUNDER_COLS + f1_ids + CC_COLS
         seen    = set(); disp = []
         for s in pref:
-            if s not in seen and s in sids_r: disp.append(s); seen.add(s)
+            if s not in seen and s in sids_r and s in sids_py:
+                disp.append(s); seen.add(s)
+        # append any remaining shared subjects not in canonical lists
+        for s in sids_py:
+            if s not in seen and s in sids_r:
+                disp.append(s); seen.add(s)
         pi = np.array([sids_py.index(s) for s in disp])
         ri = np.array([sids_r.index(s)  for s in disp])
         kp = kinship_py[chrom_k][np.ix_(pi, pi)]
@@ -591,8 +594,8 @@ else:
            label='mosaiQTL (Python)')
     ax.bar(x+w/2,coll_df['pct_r'].fillna(0),w,color='#55AF5B',edgecolor='none',
            alpha=0.85,label='miQTL (R)')
-    ax.set(xticks=x,xticklabels=[f'chr{c}' for c in coll_df['chr']],
-           xlabel='chromosome',ylabel='loci reduced (%)',
+    ax.set(xticks=x, xticklabels=coll_df['chr'].tolist(),
+           xlabel='chromosome', ylabel='loci reduced (%)',
            title=f'collapse l2.norm tol=0.02\npy={mean_py:.1f}%  r={mean_r:.1f}%')
     plt.setp(ax.get_xticklabels(),rotation=45,ha='right',fontsize=8)
     ax.legend(fontsize=9);sns.despine(ax=ax)
@@ -610,10 +613,10 @@ else:
     else:
         ax.text(0.5,0.5,'LOD QC n/a',ha='center',transform=ax.transAxes)
     plt.tight_layout();save_plot(fig,'s5_cache_collapse.png')
-    record('cache_collapse',coll_pass,
+    record('cache_collapse', coll_pass,
            f'py={mean_py:.1f}%  r={mean_r:.1f}%  '
            f'kinship_r={mean_k_r:.4f}  '
-           f'lod_preservation={r_fc:.4f if not np.isnan(r_fc) else "n/a"}  '
+           f'lod_preservation={r_fc:.4f if np.isfinite(r_fc) else r_fc}  '
            f'row_sums={rows_ok}')
 
 # ══════════════════════════════════════════════════════════════════════════════
