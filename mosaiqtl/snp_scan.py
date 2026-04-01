@@ -83,8 +83,14 @@ def imputed_snp_scan_h2lmm(phenotype, genome_cache, snp_genos,
 
     results = []
 
-    for chrom in genome_cache.chromosomes:
-        chr_snps = snp_genos[snp_genos.get('chr', pd.Series(dtype=str)) == chrom]
+    # normalize snp_genos chr col once: strip leading 'chr' to match cache format
+    _snp_chr_norm = snp_genos['chr'].astype(str).str.replace(r'^chr', '', regex=True)
+
+    # only iterate chromosomes with kinship available
+    _chrom_list = [c for c in genome_cache.chromosomes if c in kinship_decomp]
+    for chrom in _chrom_list:
+        _c = str(chrom).replace('chr', '')               # bare chr id e.g. '8'
+        chr_snps = snp_genos[_snp_chr_norm == _c]
         chr_snps = chr_snps.loc[chr_snps.index.isin(snps_to_scan)]
         if chr_snps.empty:
             continue
@@ -92,9 +98,6 @@ def imputed_snp_scan_h2lmm(phenotype, genome_cache, snp_genos,
         lids, pos, probs = genome_cache.get_chromosome(chrom)   # probs: (L,n,J)
         # build {pos_mb → locus index} for quick lookup
         pos_to_idx = {float(p): i for i, p in enumerate(pos)}
-
-        if chrom not in kinship_decomp:
-            continue
         eigvals = kinship_decomp[chrom]['values']
         eigvecs = kinship_decomp[chrom]['vectors']
         ev_v    = eigvecs[valid]

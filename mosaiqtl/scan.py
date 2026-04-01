@@ -163,10 +163,10 @@ def scan_h2lmm(phenotype, genome_cache, covariates=None,
     all_lod, all_pval, all_betas = [], [], []
     h2_null_dict = {}
 
-    for chrom in genome_cache.chromosomes:
-        if chrom not in kinship_decomp:
-            logger.warning(f'no kinship for chr{chrom}, skipping')
-            continue
+    # restrict to chromosomes with kinship available; avoids noisy skip messages
+    # when kinship_decomp is built for a single chromosome (e.g. --chr 8)
+    _chrom_list = [c for c in genome_cache.chromosomes if c in kinship_decomp]
+    for chrom in _chrom_list:
 
         _ev  = kinship_decomp[chrom]['values']
         _evc = kinship_decomp[chrom]['vectors']
