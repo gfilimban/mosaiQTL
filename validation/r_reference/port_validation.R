@@ -587,50 +587,56 @@ if (length(mi_results)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S8 — SNP SCAN (gated on allele_dir)
 # ─────────────────────────────────────────────────────────────────────────────
-# macOS grep -A adds leading spaces to context lines — patch extract function
-# once before any scan to strip whitespace before tab-splitting
-utils::assignInNamespace('extract.imputed.design.matrix.from.doqtl.genotype',
-  function(probs, allele.dir, snp, snp.chr, model, founders, mapping.matrix) {
-    grep.command <- paste0("grep -w -A 3 '", snp, "' ",
-      paste0(allele.dir, "/chr", snp.chr, ".alleles"))
-    founder.alleles.table <- trimws(system(grep.command, intern=TRUE))
-    founder.alleles.table <- matrix(
-      unlist(strsplit(x=founder.alleles.table[-1], split="\t", fixed=TRUE)),
-      nrow=3, byrow=TRUE)[, -1]
-    founder.alleles.table <- founder.alleles.table[
-      founder.alleles.table[, 1] != "NA", , drop=FALSE]
-    founder.alleles <- founder.alleles.table[, 1][
-      apply(founder.alleles.table[, -1, drop=FALSE], 2,
-            function(x) which.max(as.numeric(x)))]
-    ref.allele <- founder.alleles.table[1, 1]
-    ref.allele.founder.count <- as.numeric(founder.alleles == ref.allele)
-    full.ref.allele.count <- as.vector(
-      mapping.matrix %*% matrix(ref.allele.founder.count, ncol=1))
-    full.genotypes <- cbind(
-      as.numeric(full.ref.allele.count == 2),
-      as.numeric(full.ref.allele.count == 1),
-      as.numeric(full.ref.allele.count == 0))
-    colnames(full.genotypes) <- c("ref.hom", "het", "alt.hom")
-    genotype.probs <- probs %*% full.genotypes
-    if ((2*sum(genotype.probs[,1]) + sum(genotype.probs[,2])) /
-        (2*nrow(genotype.probs)) > 0.5) {
-      X <- cbind(genotype.probs[,3], genotype.probs[,2])
+# patch make.imputed.design.matrix.list.for.all.loci to inline trimws fix —
+# imputed.snp.scan.h2lmm calls this directly via closure, bypassing namespace patch
+# on extract.imputed.design.matrix.from.doqtl.genotype
+utils::assignInNamespace('make.imputed.design.matrix.list.for.all.loci',
+  function(loci, loci.chr, n, subjects=NULL, model, h, allele.dir,
+           mapping.matrix, founders, exclusion.freq) {
+    p       <- length(loci)
+    num.col <- ifelse(model == 'additive', 1, 2)
+    X.list  <- rep(list(matrix(NA, nrow=n, ncol=num.col)), p)
+    for (i in 1:p) {
+      probs     <- h$getLocusMatrix(locus=loci[i], model='full', subjects=subjects)
+      # inline trimws-fixed extract (macOS grep -A adds leading spaces)
+      grep.cmd  <- paste0("grep -w -A 3 '", loci[i], "' ",
+                          paste0(allele.dir, "/chr", loci.chr[i], ".alleles"))
+      fat       <- trimws(system(grep.cmd, intern=TRUE))
+      fat       <- matrix(unlist(strsplit(fat[-1], split='\t', fixed=TRUE)),
+                          nrow=3, byrow=TRUE)[, -1]
+      fat       <- fat[fat[, 1] != 'NA', , drop=FALSE]
+      f.alleles <- fat[, 1][apply(fat[, -1, drop=FALSE], 2,
+                                  function(x) which.max(as.numeric(x)))]
+      ref       <- fat[1, 1]
+      ref.count <- as.numeric(f.alleles == ref)
+      full.ref  <- as.vector(mapping.matrix %*% matrix(ref.count, ncol=1))
+      full.gt   <- cbind(as.numeric(full.ref==2), as.numeric(full.ref==1),
+                         as.numeric(full.ref==0))
+      colnames(full.gt) <- c('ref.hom', 'het', 'alt.hom')
+      gp        <- probs %*% full.gt
+      if ((2*sum(gp[,1]) + sum(gp[,2])) / (2*nrow(gp)) > 0.5) {
+        X <- cbind(gp[,3], gp[,2])
+      } else {
+        X <- cbind(gp[,1], gp[,2])
+      }
+      colnames(X) <- c('SNP_aa', 'SNP_Aa')
+      if (model == 'additive') {
+        X <- matrix(2*X[,1] + X[,2], ncol=1)
+        colnames(X) <- 'SNP'
+      }
+      rownames(X) <- rownames(probs)
+      X.list[[i]] <- X
+    }
+    names(X.list) <- loci
+    if (model == 'additive') {
+      keep <- unlist(lapply(X.list, function(x) sum(x)/(2*length(x)))) > exclusion.freq
     } else {
-      X <- cbind(genotype.probs[,1], genotype.probs[,2])
+      keep <- unlist(lapply(X.list, function(x) (2*sum(x[,1])+sum(x[,2]))/(2*nrow(x)))) > exclusion.freq
     }
-    colnames(X) <- c("SNP_aa", "SNP_Aa")
-    if (model == "additive") {
-      snp.count <- 2*X[,1] + X[,2]
-      X <- matrix(snp.count, ncol=1)
-      colnames(X) <- "SNP"
-    }
-    rownames(X) <- rownames(probs)
-    return(X)
+    X.list[which(!keep)] <- NULL
+    return(X.list)
   }, ns='miqtl')
 message('\n[s8] snp scan')
-# verify patch applied
-test_src <- deparse(miqtl:::extract.imputed.design.matrix.from.doqtl.genotype)
-message('  patch active: ', any(grepl('trimws', test_src)))
 pheno_snp <- pheno_strain
 colnames(pheno_snp)[colnames(pheno_snp) == 'subject.name'] <- 'SUBJECT.NAME'
 if (!dir.exists(allele_dir_path)) {
@@ -648,26 +654,6 @@ if (!dir.exists(allele_dir_path)) {
     snp_ids    <- lines[seq(1, length(lines), by=4)]
     message('  chr', chr, ': ', length(snp_ids), ' SNPs in allele file')
 
-    # direct test: call patched function manually with correct mapping matrix
-    test_snp <- snp_ids[1]
-    prb <- h$getLocusMatrix(locus=test_snp, model='full', subjects=rownames(pheno_snp))
-    mm  <- miqtl:::straineff.mapping.matrix()
-    message('  [diag] mm dim: ', paste(dim(mm), collapse='x'))
-    # step-by-step trace of patched function internals
-    grep_cmd  <- paste0("grep -w -A 3 '", test_snp, "' ",
-                        file.path(allele_dir_path, paste0('chr', chr, '.alleles')))
-    raw       <- system(grep_cmd, intern=TRUE)
-    message('  [diag] raw lines (', length(raw), '): ', paste(raw, collapse=' | '))
-    stripped  <- trimws(raw)
-    message('  [diag] stripped: ', paste(stripped, collapse=' | '))
-    mat_input <- stripped[-1]
-    message('  [diag] mat_input length: ', length(mat_input))
-    split_out <- strsplit(x=mat_input, split='\t', fixed=TRUE)
-    message('  [diag] split lengths: ', paste(sapply(split_out, length), collapse=', '))
-    fat <- matrix(unlist(split_out), nrow=length(mat_input), byrow=TRUE)
-    message('  [diag] fat dim: ', paste(dim(fat), collapse='x'))
-    fat2 <- fat[fat[,1] != 'NA', , drop=FALSE]
-    message('  [diag] fat2 (after NA filter) dim: ', paste(dim(fat2), collapse='x'))
 
     gnames <- if (use_gtf) head(intersect(
       gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
@@ -684,7 +670,6 @@ if (!dir.exists(allele_dir_path)) {
           model='additive', chr=chr, just.these.loci=cis_snp),
         error=function(e) {
           message('  snp scan failed for ', gene, ': ', e$message)
-          message('  traceback: ', paste(sapply(sys.calls(), deparse), collapse=' > '))
           NULL
         })
       if (is.null(res)) next
