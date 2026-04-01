@@ -616,6 +616,9 @@ if (!dir.exists(allele_dir_path)) {
       mm   <- miqtl:::straineff.mapping.matrix()
       raw  <- system(paste0("grep -w -A 3 '", snp1, "' ",
                 shQuote(allele_file)), intern=TRUE)
+      message('  [diag] raw grep output: ', paste(raw, collapse=' | '))
+      message('  [diag] file first 4 lines: ',
+              paste(readLines(allele_file, n=4), collapse=' | '))
       fat  <- matrix(unlist(strsplit(raw[-1], '\t', fixed=TRUE)),
                      nrow=3, byrow=TRUE)[, -1]
       message('  [diag] mm=', paste(dim(mm),collapse='x'),
