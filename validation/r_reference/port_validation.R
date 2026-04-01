@@ -73,7 +73,10 @@ if (!is.primitive(crossprod) || typeof(crossprod) != 'builtin') {
 
 args        <- commandArgs(trailingOnly=TRUE)
 scan_chrs   <- if (length(args) >= 1) args[1] else 'all'
-n_genes     <- if (length(args) >= 2) as.integer(args[2]) else Inf
+n_genes     <- if (length(args) >= 2 && !args[2] %in% c('','NA','all','Inf')) {
+                 v <- suppressWarnings(as.integer(args[2]))
+                 if (is.na(v)) Inf else v
+               } else Inf
 # optional 3rd arg: 'slurm' — write per-chr outputs to r_data/chr{N}/
 # used by run_validation_slurm.sh to parallelise across chromosomes
 slurm_mode  <- length(args) >= 3 && args[3] == 'slurm'
@@ -157,7 +160,7 @@ if (file.exists(gtf_path) && requireNamespace('rtracklayer', quietly=TRUE)) {
 }
 
 meta_cols   <- c('subject.name','batch', paste0('pc',1:10))
-all_genes   <- head(setdiff(colnames(pheno_strain), meta_cols), n_genes)
+all_genes   <- if (is.infinite(n_genes)) setdiff(colnames(pheno_strain), meta_cols) else head(setdiff(colnames(pheno_strain), meta_cols), n_genes)
 chromosomes <- if (scan_chrs=='all') names(kinship_loco) else
                strsplit(scan_chrs, ',')[[1]]
 cis_window_mb <- 0.5; n_pcs <- 10
@@ -281,7 +284,8 @@ for (chr in chromosomes) {
   k_chr    <- kinship_loco[[chr]]
   chr_loci <- pmap_flat[pmap_flat$chr==chr, ]
   gnames   <- if (use_gtf) head(intersect(
-    gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
+    gene_annot$gene_id[gene_annot$chr==chr], all_genes),
+      if (is.infinite(n_genes)) .Machine$integer.max else n_genes) else all_genes
   message('  chr', chr, ': ', length(gnames), ' genes  ', nrow(chr_loci), ' loci')
   for (gene in gnames) {
     if (which(gnames == gene) %% 100 == 0)
@@ -561,7 +565,8 @@ mi_results <- list()
 for (chr in chromosomes) {
   k_chr  <- kinship_loco[[chr]]
   gnames <- if (use_gtf) head(intersect(
-    gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
+    gene_annot$gene_id[gene_annot$chr==chr], all_genes),
+      if (is.infinite(n_genes)) .Machine$integer.max else n_genes) else all_genes
   for (gene in gnames) {
     cis <- get_cis_loci(gene, chr)
     if (is.null(cis)) next
@@ -639,7 +644,8 @@ if (!dir.exists(allele_dir_path)) {
     snp_ids <- lines[seq(1, length(lines), by=4)]
     message('  chr', chr, ': ', length(snp_ids), ' SNPs in allele file')
     gnames <- if (use_gtf) head(intersect(
-      gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
+      gene_annot$gene_id[gene_annot$chr==chr], all_genes),
+      if (is.infinite(n_genes)) .Machine$integer.max else n_genes) else all_genes
 
     for (gene in gnames) {
       cis <- get_cis_loci(gene, chr)
