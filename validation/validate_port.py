@@ -677,7 +677,9 @@ else:
         thresh_py,gev_p = perm_mod.get_gev_thresholds(max_lods,0.95)
         delta = abs(thresh_py-thresh_r_v)
         perm_pass = delta < 0.5
-        save_csv(pd.DataFrame({'perm_lod': max_lods}), 'perm_lods_py.csv')
+        save_csv(pd.DataFrame({'gene_id': thresh_gene, 'chr': thresh_chr,
+                               'pos_mb': np.nan, 'perm_lod': max_lods}),
+                 'perm_lods_py.csv')
         save_csv(_col(pd.DataFrame([{'gene_id': thresh_gene, 'chr': thresh_chr,
                                       'n_perms': n_p, 'threshold_r': thresh_r_v,
                                       'threshold_py': thresh_py, 'delta': delta}]),
