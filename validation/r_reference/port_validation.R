@@ -821,7 +821,30 @@ if (!length(ci_gene)) {
 # ─────────────────────────────────────────────────────────────────────────────
 message('\n[s11] instability scan')
 fx_chr  <- chromosomes[1]
-fx_gene <- first_gene_on(fx_chr, 1)
+# select highest-LOD gene from S4 scan — guarantees stable instability signal.
+# first_gene_on() picks by position, may return a null-QTL gene whose bootstrap
+# scans never find a peak, causing instability.lm.scan to return length($loci)==0.
+fx_gene <- NULL
+lod_file_s4 <- file.path(output_dir, 'lod_r.csv')
+if (file.exists(lod_file_s4)) {
+  lod_s4    <- read.csv(lod_file_s4, check.names=FALSE)
+  lod_s4    <- lod_s4[as.character(lod_s4$chr) == as.character(fx_chr), ]
+  peak_s4   <- tapply(lod_s4$lod, lod_s4$gene_id, max, na.rm=TRUE)
+  top_genes <- names(sort(peak_s4, decreasing=TRUE))
+  for (cand in top_genes) {
+    if (cand %in% all_genes && !is.null(get_cis_loci(cand, fx_chr))) {
+      fx_gene <- cand; break
+    }
+  }
+  if (!is.null(fx_gene))
+    message('  instability gene (top LOD from S4): ', fx_gene,
+            '  peak_lod=', round(peak_s4[fx_gene], 2))
+}
+if (is.null(fx_gene)) {
+  fx_gene <- first_gene_on(fx_chr, 1)
+  message('  instability gene (fallback first_gene_on): ',
+          if (length(fx_gene)) fx_gene[1] else 'none')
+}
 if (!length(fx_gene)) {
   message('  SKIP: no gene with cis loci on chr', fx_chr)
 } else {
