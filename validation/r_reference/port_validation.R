@@ -628,6 +628,9 @@ utils::assignInNamespace('extract.imputed.design.matrix.from.doqtl.genotype',
     return(X)
   }, ns='miqtl')
 message('\n[s8] snp scan')
+# verify patch applied
+test_src <- deparse(miqtl:::extract.imputed.design.matrix.from.doqtl.genotype)
+message('  patch active: ', any(grepl('trimws', test_src)))
 pheno_snp <- pheno_strain
 colnames(pheno_snp)[colnames(pheno_snp) == 'subject.name'] <- 'SUBJECT.NAME'
 if (!dir.exists(allele_dir_path)) {
