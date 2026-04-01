@@ -608,6 +608,20 @@ if (!dir.exists(allele_dir_path)) {
     k_chr  <- kinship_loco[[chr]]
     gnames <- if (use_gtf) head(intersect(
       gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
+
+    # diagnostic: check probs and mapping.matrix dims for first cis locus
+    diag_gene <- gnames[1]
+    diag_cis  <- get_cis_loci(diag_gene, chr)
+    if (!is.null(diag_cis)) {
+      diag_locus <- intersect(diag_cis, snp_ids)[1]
+      if (!is.na(diag_locus)) {
+        h_tmp   <- miqtl::HAPPY(genomecache_path)
+        probs_d <- h_tmp$getLocusMatrix(locus=diag_locus, model='full',
+                                         subjects=rownames(pheno_snp))
+        message('  [diag] probs dim: ', paste(dim(probs_d), collapse=' x '))
+        message('  [diag] founders: ', paste(h_tmp$getFounders(), collapse=', '))
+      }
+    }
     for (gene in gnames) {
       cis <- get_cis_loci(gene, chr)
       if (is.null(cis)) next
