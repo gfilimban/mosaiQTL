@@ -24,7 +24,6 @@
 # lib_path: run 'Rscript -e ".libPaths()"' in your conda env to find yours
 lib_path <- '/Users/ghassan/miniconda3/envs/bioinfo/lib/R/library'
 if (dir.exists(lib_path)) .libPaths(c(lib_path, .libPaths()))
-options(warn=1)  # print warnings immediately as they occur with call context
 for (pkg in c('miqtl','dplyr')) library(pkg, character.only=TRUE)
 # no lib.loc here — .libPaths() already includes lib_path above
 if (requireNamespace('rtracklayer', quietly=TRUE)) library(rtracklayer)
@@ -604,9 +603,6 @@ if (!dir.exists(allele_dir_path)) {
     lines      <- readLines(allele_file)
     snp_ids    <- lines[seq(1, length(lines), by=4)]
     message('  chr', chr, ': ', length(snp_ids), ' SNPs in allele file')
-    line2 <- lines[2]
-    f2 <- strsplit(line2, '\t', fixed=TRUE)[[1]]
-    message('  [diag] line2 nfields=', length(f2), ' col1=', f2[1], ' col2=', f2[2])
 
 
     gnames <- if (use_gtf) head(intersect(
@@ -636,7 +632,6 @@ if (!dir.exists(allele_dir_path)) {
   } else {
     message('  no SNP results — cis loci may not overlap allele file SNPs')
   }
-  w <- warnings(); for (i in seq_along(w)) message('  warn ', i, ': ', names(w)[i])
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
