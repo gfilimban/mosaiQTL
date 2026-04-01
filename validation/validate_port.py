@@ -332,20 +332,46 @@ for chrom in chromosomes:
 if kin_cors:
     kc_df = pd.DataFrame(kin_cors)
     save_csv(kc_df, 'kinship_comparison.csv')
-    fig, axes = plt.subplots(1,2,figsize=(11,4))
-    ax = axes[0]
-    ax.scatter(range(len(kc_df)), kc_df['r'], s=20, color='#4F6EAF', edgecolors='none')
-    ax.axhline(0.999, color='#D83026', lw=1, ls='--', label='r=0.999')
-    ax.set(xlabel='chromosome index', ylabel='kinship Pearson r',
-           title=f'kinship r  mean={kc_df["r"].mean():.4f}', ylim=(0.98,1.001))
-    ax.legend(fontsize=9); sns.despine(ax=ax)
-    ax = axes[1]
-    ax.scatter(range(len(kc_df)), kc_df['max_delta'], s=20,
-               color='#D83026', edgecolors='none')
-    ax.set(xlabel='chromosome index', ylabel='max|ΔK|',
-           title=f'kinship max deviation  mean={kc_df["max_delta"].mean():.2e}')
-    sns.despine(ax=ax)
-    plt.tight_layout(); save_plot(fig,'s3_kinship.png')
+
+    # 3-panel heatmap for first chromosome — consistent with validate_vs_r.py
+    chrom_k = kc_df['chr'].iloc[0]
+    r_mat_path = os.path.join(R_DATA, f'kinship_mat_r_chr{chrom_k}.csv')
+    if os.path.exists(r_mat_path) and chrom_k in kinship_py:
+        k_r_df  = pd.read_csv(r_mat_path)
+        sids_r  = k_r_df['sample_id'].tolist()
+        k_r_mat = k_r_df.drop(columns='sample_id').values.astype(float)
+        sids_py = list(cache_py.sample_ids)
+        # display order: founders → F1s → CCs
+        pref    = ([s for s in sids_py if s in FOUNDER_COLS] +
+                   [s for s in sids_py if any(s.startswith(f) for f in FOUNDER_COLS)
+                    and s not in FOUNDER_COLS and s in sids_r] +
+                   [s for s in sids_py if s in sids_r])
+        seen    = set(); disp = []
+        for s in pref:
+            if s not in seen and s in sids_r: disp.append(s); seen.add(s)
+        pi = np.array([sids_py.index(s) for s in disp])
+        ri = np.array([sids_r.index(s)  for s in disp])
+        kp = kinship_py[chrom_k][np.ix_(pi, pi)]
+        kr = k_r_mat[np.ix_(ri, ri)]
+        dk = kp - kr
+        ab = max(abs(dk.min()), abs(dk.max()))
+        n  = len(disp); fs = max(5, min(8, int(200 / n)))
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        for ax, mat, title, cmap, vmin, vmax in [
+            (axes[0], kp, f'Python LOCO\nchr{chrom_k}',             'YlOrRd', 0, 1),
+            (axes[1], kr, f'R LOCO\nchr{chrom_k}',                  'YlOrRd', 0, 1),
+            (axes[2], dk, f'Difference\nmax|ΔK|={ab:.2e}',          'RdBu_r', -ab, ab),
+        ]:
+            sns.heatmap(mat, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,
+                        xticklabels=disp, yticklabels=disp,
+                        cbar_kws={'shrink': 0.7})
+            ax.set_title(title, fontsize=10)
+            ax.set_xticklabels(ax.get_xticklabels(),
+                               rotation=90, fontsize=fs, fontfamily='Carlito')
+            ax.set_yticklabels(ax.get_yticklabels(),
+                               rotation=0,  fontsize=fs, fontfamily='Carlito')
+        plt.tight_layout(); save_plot(fig, 's3_kinship.png')
+
     kin_pass = bool(kc_df['pass'].all())
     record('kinship', kin_pass,
            f'all_pass={kin_pass}  '
@@ -418,6 +444,9 @@ else:
 
     if comparisons:
         comp_df = pd.concat(comparisons, ignore_index=True)
+        # enforce column order
+        col_order = ['gene_id', 'chr', 'locus', 'pos_mb', 'lod_r', 'lod_py']
+        comp_df = comp_df[col_order + [c for c in comp_df.columns if c not in col_order]]
         stat_df = pd.DataFrame(gene_stats)
         save_csv(comp_df, 'lod_comparison.csv')
         save_csv(stat_df, 'gene_summary.csv')
