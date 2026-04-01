@@ -200,10 +200,9 @@ chr_info <- do.call(rbind, lapply(chromosomes, function(c) {
              min_mb=min(bp/1e6, na.rm=TRUE), max_mb=max(bp/1e6, na.rm=TRUE),
              stringsAsFactors=FALSE)
 }))
-founders  <- h$getFounders()
-# HAPPY cache uses single-letter codes A-H; map to full names for cross-language comparison
-founder_map <- c(A='AJ',B='B6J',C='129S1J',D='NODJ',E='NZOJ',F='CASTJ',G='PWKJ',H='WSBJ')
-founders <- ifelse(founders %in% names(founder_map), founder_map[founders], founders)
+founders      <- h$getFounders()   # single-letter HAPPY codes A-H
+founder_map   <- c(A='AJ',B='B6J',C='129S1J',D='NODJ',E='NZOJ',F='CASTJ',G='PWKJ',H='WSBJ')
+founders_full <- ifelse(founders %in% names(founder_map), founder_map[founders], founders)
 sample_ids <- h$getSubjects()
 sample_ids <- c(sample_ids[!grepl('^CC', sample_ids)],
                 sample_ids[ grepl('^CC', sample_ids)])  
@@ -213,8 +212,8 @@ cache_info <- list(
   n_samples   = length(sample_ids),
   sample_ids  = sample_ids)
 write.csv(chr_info, file.path(output_dir,'cache_info_r.csv'), row.names=FALSE)
-write.csv(data.frame(founder=founders), file.path(output_dir,'founders_r.csv'),
-          row.names=FALSE)
+write.csv(data.frame(founder_code=founders, founder=founders_full),
+          file.path(output_dir,'founders_r.csv'), row.names=FALSE)
 write.csv(data.frame(sample_id=sample_ids),
           file.path(output_dir,'sample_ids_r.csv'), row.names=FALSE)
 message('  saved: cache_info_r.csv  founders_r.csv  sample_ids_r.csv')
