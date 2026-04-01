@@ -479,12 +479,14 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
         for chrom in genome_cache.chromosomes:
             lids, pos, probs = genome_cache.get_chromosome(chrom)
             n_loci, n_s, n_f = probs.shape
-            cum = probs.cumsum(axis=2)
-            u   = rng.random((n_loci, n_s, 1))
-            idx = (u > cum).sum(axis=2).clip(0, n_f - 1)
+            cum   = probs.cumsum(axis=2)
+            u     = rng.random((n_loci, n_s, 1))
+            idx   = (u > cum).sum(axis=2).clip(0, n_f - 1)  # (n_loci, n_s)
             imp_p = np.zeros_like(probs)
-            for l in range(n_loci):
-                imp_p[l, np.arange(n_s), idx[l]] = 1.0
+            # vectorized one-hot: no Python loop over loci
+            l_idx = np.arange(n_loci)[:, None]   # (n_loci, 1)
+            s_idx = np.arange(n_s)[None, :]       # (1, n_s)
+            imp_p[l_idx, s_idx, idx] = 1.0
             imp_data[chrom] = {'locus_ids': lids, 'positions': pos,
                                 'probs': imp_p}
         imp_cache = _GC(list(genome_cache.sample_ids),
