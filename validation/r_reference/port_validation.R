@@ -652,15 +652,22 @@ if (!dir.exists(allele_dir_path)) {
     test_snp <- snp_ids[1]
     prb <- h$getLocusMatrix(locus=test_snp, model='full', subjects=rownames(pheno_snp))
     mm  <- miqtl:::straineff.mapping.matrix()
-    message('  [diag] mm dim: ', paste(dim(mm), collapse='x'),
-            '  founders in mm: ', paste(rownames(mm)[1:3], collapse=', '))
-    test_res <- tryCatch(
-      miqtl:::extract.imputed.design.matrix.from.doqtl.genotype(
-        probs=prb, allele.dir=allele_dir_path, snp=test_snp, snp.chr=chr,
-        model='additive', founders=h$getFounders(), mapping.matrix=mm),
-      error=function(e) { message('  [diag] direct test FAIL: ', e$message); NULL })
-    if (!is.null(test_res))
-      message('  [diag] direct test PASS dim=', paste(dim(test_res), collapse='x'))
+    message('  [diag] mm dim: ', paste(dim(mm), collapse='x'))
+    # step-by-step trace of patched function internals
+    grep_cmd  <- paste0("grep -w -A 3 '", test_snp, "' ",
+                        file.path(allele_dir_path, paste0('chr', chr, '.alleles')))
+    raw       <- system(grep_cmd, intern=TRUE)
+    message('  [diag] raw lines (', length(raw), '): ', paste(raw, collapse=' | '))
+    stripped  <- trimws(raw)
+    message('  [diag] stripped: ', paste(stripped, collapse=' | '))
+    mat_input <- stripped[-1]
+    message('  [diag] mat_input length: ', length(mat_input))
+    split_out <- strsplit(x=mat_input, split='\t', fixed=TRUE)
+    message('  [diag] split lengths: ', paste(sapply(split_out, length), collapse=', '))
+    fat <- matrix(unlist(split_out), nrow=length(mat_input), byrow=TRUE)
+    message('  [diag] fat dim: ', paste(dim(fat), collapse='x'))
+    fat2 <- fat[fat[,1] != 'NA', , drop=FALSE]
+    message('  [diag] fat2 (after NA filter) dim: ', paste(dim(fat2), collapse='x'))
 
     gnames <- if (use_gtf) head(intersect(
       gene_annot$gene_id[gene_annot$chr==chr], all_genes), n_genes) else all_genes
