@@ -616,7 +616,7 @@ else:
     record('cache_collapse', coll_pass,
            f'py={mean_py:.1f}%  r={mean_r:.1f}%  '
            f'kinship_r={mean_k_r:.4f}  '
-           f'lod_preservation={r_fc:.4f if np.isfinite(r_fc) else r_fc}  '
+           f'lod_preservation={r_fc:.4f}  '
            f'row_sums={rows_ok}')
 
 # ══════════════════════════════════════════════════════════════════════════════
