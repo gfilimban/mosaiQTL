@@ -289,18 +289,17 @@ for chrom in chromosomes:
     for i in idx:
         rs = probs[i].sum(axis=1)
         rows_hap.append({'chr':chrom,'locus':lids[i],'pos_mb':float(pos[i]),
-                         'mean_rowsum':float(rs.mean()),'min_rowsum':float(rs.min()),
-                         'max_rowsum':float(rs.max()),
+                         'mean_rowsum':float(rs.mean()*2),   # *2 to match miQTL [0,2] dosage scale
+                         'min_rowsum':float(rs.min()*2),'max_rowsum':float(rs.max()*2),
                          'mean_max_prob':float(probs[i].max(axis=1).mean())})
 hap_df   = pd.DataFrame(rows_hap)
 save_csv(hap_df, 'haplotype_py.csv')
-rsum_ok  = bool(np.allclose(hap_df['mean_rowsum'], 1.0, atol=1e-4))
-max_dev  = float((hap_df['mean_rowsum']-1.0).abs().max())
+rsum_ok  = bool(np.allclose(hap_df['mean_rowsum'], 2.0, atol=1e-4))  # miQTL [0,2] scale
+max_dev  = float((hap_df['mean_rowsum']-2.0).abs().max())
 
 if r_hap is not None:
     mg = hap_df.merge(r_hap[['locus','mean_rowsum']].rename(
         columns={'mean_rowsum':'rowsum_r'}), on='locus', how='inner')
-    mg['rowsum_r'] = mg['rowsum_r'] / 2.0   # miQTL additive = dosage [0,2]; Python = prob [0,1]
     fig, axes = plt.subplots(1,2,figsize=(11,4))
     ax = axes[0]
     mg_v = mg.dropna(subset=['rowsum_r','mean_rowsum'])
@@ -310,10 +309,10 @@ if r_hap is not None:
     else:
         ax.text(0.5,0.5,'insufficient overlap', ha='center', transform=ax.transAxes)
     ax = axes[1]
-    ax.bar(range(len(hap_df)), hap_df['mean_rowsum']-1.0,
+    ax.bar(range(len(hap_df)), hap_df['mean_rowsum']-2.0,
            color=chr_colors(hap_df['chr'].tolist()), edgecolor='none')
     ax.axhline(0, color='#D83026', lw=0.8, ls='--')
-    ax.set(xlabel='locus index', ylabel='mean row sum − 1',
+    ax.set(xlabel='locus index', ylabel='mean row sum − 2',
            title=f'row sum deviation  max={max_dev:.2e}')
     sns.despine(ax=ax)
     plt.tight_layout(); save_plot(fig, 's2_haplotype_probs.png')
