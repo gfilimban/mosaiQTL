@@ -220,9 +220,14 @@ py_sids     = list(cache_py.sample_ids)
 r_founders  = r_fnd['founder'].tolist() if r_fnd is not None else []
 r_sids      = r_sid['sample_id'].tolist() if r_sid is not None else []
 
-fnd_match   = set(py_founders) == set(r_founders) if r_founders else None
-sid_match   = set(py_sids) == set(r_sids)         if r_sids    else None
-loci_match  = bool(info_df['n_loci_py'].equals(info_df['n_loci_r'].fillna(-1).astype(int))) if r_info is not None else None
+fnd_match  = set(py_founders) == set(r_founders) if r_founders else None
+sid_match  = set(py_sids) == set(r_sids)         if r_sids    else None
+# loci counts differ when caches are built from different marker sets — report delta, don't hard-fail
+if r_info is not None:
+    info_df['loci_delta'] = info_df['n_loci_py'] - info_df['n_loci_r'].fillna(np.nan)
+    loci_match = info_df['loci_delta'].abs().max()   # max abs delta across chrs (0 = exact match)
+else:
+    loci_match = None
 
 if r_info is not None:
     fig, axes = plt.subplots(1,2,figsize=(12,4))
@@ -248,9 +253,9 @@ if r_info is not None:
     ax.set_title('cache metadata', fontsize=11)
     plt.tight_layout(); save_plot(fig,'s1_cache_info.png')
 
+loci_note = f'loci_max_delta={int(loci_match)}' if loci_match is not None else 'loci_delta=NA'
 record('cache_info', fnd_match is not False and sid_match is not False,
-       f'founders_match={fnd_match}  samples_match={sid_match}  '
-       f'loci_match={loci_match}')
+       f'founders_match={fnd_match}  samples_match={sid_match}  {loci_note}')
 
 # ══════════════════════════════════════════════════════════════════════════════
 # S2 — HAPLOTYPE PROBS
