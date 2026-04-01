@@ -620,13 +620,21 @@ if (!dir.exists(allele_dir_path)) {
       message('  [diag] raw: ', paste(raw, collapse=' | '))
       message('  [diag] file first 4 lines: ',
               paste(readLines(allele_file, n=4), collapse=' | '))
-      fat  <- matrix(unlist(strsplit(raw[-1], '\t', fixed=TRUE)),
-                     nrow=3, byrow=TRUE)[, -1]
-      message('  [diag] mm=', paste(dim(mm),collapse='x'),
+      fat_raw   <- matrix(unlist(strsplit(raw[-1], '\t', fixed=TRUE)),
+                         nrow=3, byrow=TRUE)           # 3x9: col1=allele, col2-9=founders
+      fat       <- fat_raw[fat_raw[,1] != 'NA', -1, drop=FALSE]  # 2x8 after NA filter + label drop
+      f_alleles <- fat[,1][apply(fat[,-1,drop=FALSE], 2,
+                                  function(x) which.max(as.numeric(x)))]
+      ref_allele  <- fat_raw[1,1]
+      ref_count   <- as.numeric(f_alleles == ref_allele)
+      message('  [diag] fat_raw=', paste(dim(fat_raw),collapse='x'),
               '  fat=', paste(dim(fat),collapse='x'),
-              '  fat[1,1]=', fat[1,1],
-              '  ref.count len=', length(fat[,1][apply(fat[,-1,drop=FALSE],2,
-                function(x) which.max(as.numeric(x)))]==fat[1,1]))
+              '  ref_allele=', ref_allele,
+              '  ref_count len=', length(ref_count),
+              '  mm=', paste(dim(mm),collapse='x'))
+      test <- tryCatch(mm %*% matrix(ref_count, ncol=1),
+                       error=function(e) { message('  [diag] mult FAIL: ', e$message); NULL })
+      if (!is.null(test)) message('  [diag] mult OK len=', length(test))
     }
 
     for (gene in gnames) {
