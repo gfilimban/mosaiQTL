@@ -89,6 +89,8 @@ effective $n$ for fair comparison.
 
 ### S1 — Cache Info
 
+**Purpose:** Confirms that both implementations load the same set of markers, founders, and samples. A mismatch here would propagate through every downstream section — wrong locus counts mean different kinship matrices and different LOD profiles. This is the sanity check that both pipelines are operating on identical input.
+
 **Locus QC filtering** — both R (HAPPY pipeline) and Python apply MAF and call-rate
 filters before including a locus. Only loci passing all QC criteria contribute to
 haplotype inference and kinship. Let $\mathcal{M}$ be the set of markers passing QC:
@@ -137,6 +139,8 @@ founder H (WSBJ) in both implementations.
 
 ### S2 — Haplotype Probabilities
 
+**Purpose:** Validates that the HMM inference is producing well-calibrated posterior probabilities. The row-sum check ($\sum_f H_{if\ell} = 1$) confirms the HMM normalizes correctly at every locus — a violation would mean some samples have probabilities that don't form a valid distribution, breaking all downstream dosage calculations. This is the most fundamental correctness check for the HMM port.
+
 **HMM emission model** — at each marker $\ell$, the observed genotype call
 $g_{i\ell} \in \{A,C,G,T,N\}$ for sample $i$ is emitted with probability:
 $$P(g_{i\ell} \,|\, s_{i\ell} = f) = \begin{cases} 1 - e & \text{if } g_{i\ell} = a_f \\ e & \text{if } g_{i\ell} \neq a_f,\; g_{i\ell} \neq N \\ 1/J & \text{if } g_{i\ell} = N \end{cases}$$
@@ -180,6 +184,8 @@ by HMM normalization, and the factor of 2 converts to R's additive dosage scale.
 ---
 
 ### S3 — Kinship LOCO
+
+**Purpose:** The LOCO kinship matrix is the central polygenic background control in every LMM scan. An incorrect $K^{(-c)}$ inflates or deflates LOD scores genome-wide by misattributing cis-QTL signal to the random effect. This section confirms the Python van Raden implementation matches miQTL's to within floating-point tolerance, ensuring the null model is correctly specified before any scan is run.
 
 **Van Raden kinship** (both R and Python, leave-one-chromosome-out):
 
@@ -235,6 +241,8 @@ $$\max|\Delta K| = \max_{ij} |K^\text{py}_{(-c),ij} - K^R_{(-c),ij}|$$
 
 ### S4 — LMM Scan (ROP)
 
+**Purpose:** The restricted optimum procedure (ROP) scan is the core statistical engine being ported. This section validates that the Python FWL-vectorized `scan_chromosome` produces LOD scores and allele effects that match miQTL's per-locus WLS loop across all genes on the target chromosome. A failure here would invalidate all eQTL discoveries made by mosaiQTL.
+
 **Null model** (both R `scan.h2lmm` and Python `scan_h2lmm`):
 $$y^\text{rint} = X\beta_0 + \varepsilon_0, \quad \varepsilon_0 \sim \mathcal{N}\!\left(0,\, \sigma^2[\hat{h}^2 K^{(-c)} + (1-\hat{h}^2)I]\right)$$
 
@@ -258,13 +266,14 @@ $\tilde{y}_\perp$ and all $\|\tilde{H}_{\perp,\ell}\|^2$ are precomputed once; t
 
 **Gene tier definitions:**
 
+Let $\varepsilon_\ell = |\text{LOD}_\ell^\text{py} - \text{LOD}_\ell^R|$ and $\text{rel\_err}(g) = \max_\ell \varepsilon_\ell \,/\, \max_\ell \text{LOD}_\ell^R$.
+`peak_match` is true when the Python peak locus satisfies $\text{LOD}_R \geq 0.99 \cdot \max(\text{LOD}_R)$.
+
 | Tier | Criterion |
 |---|---|
-| strict | `peak_match` AND $\max|\text{LOD}_\text{py} - \text{LOD}_R| / \max(\text{LOD}_R) < 0.10$ |
-| lenient | `peak_match` AND relative error $< 0.20$ |
+| strict | `peak_match` AND `rel_err < 0.10` |
+| lenient | `peak_match` AND `rel_err < 0.20` |
 | fail | otherwise |
-
-`peak_match` = Python peak locus has $\text{LOD}_R \geq 0.99 \cdot \max(\text{LOD}_R)$.
 
 **Pass criterion:** $(n_\text{strict} + n_\text{lenient}) / n_\text{genes} \geq 0.50$
 
@@ -277,6 +286,8 @@ of all 944 genes confirms the scan arithmetic is correct.
 ---
 
 ### S5 — Cache Collapse
+
+**Purpose:** Cache collapse dramatically reduces memory and scan time by merging loci whose haplotype probability vectors are nearly identical. This section confirms that the Python collapse preserves the kinship matrix and LOD profile — i.e., that the compression is lossless for statistical inference purposes. Critical for genome-wide production runs where holding the full cache in memory is impractical.
 
 **L2-norm collapse criterion** — merge adjacent loci $\ell_1, \ell_2$ if:
 $$d(\ell_1, \ell_2) = \frac{1}{\sqrt{J}} \max_{i \in 1\ldots n} \|H_{i,\ell_1} - H_{i,\ell_2}\|_2 \leq \tau, \quad \tau = 0.02$$
@@ -301,6 +312,8 @@ pairs → higher collapse rate. LOD preservation $r = 0.9996$ confirms no scient
 ---
 
 ### S6 — Permutation Thresholds
+
+**Purpose:** Genome-wide significance thresholds must be calibrated to the null distribution of max-LOD under no association. An incorrect threshold directly controls the false discovery rate — too low and mosaiQTL over-calls eQTLs; too high and it misses real ones. This section validates that the Python GEV-fitted threshold matches miQTL's reference value, confirming the permutation procedure and GEV fit are correctly implemented.
 
 **Procedure** (both R and Python, after fix):
 
@@ -327,6 +340,8 @@ $$f_\text{GEV}(x;\, \mu, \sigma, \xi) = \frac{1}{\sigma}\left[1 + \xi\frac{x-\mu
 ---
 
 ### S7 — Multiple Imputation
+
+**Purpose:** Multiple imputation averages LOD scores over independent hard-call haplotype draws to reduce winner's curse bias at the peak locus. This section validates the Python MI implementation against miQTL. Note: MI is a ported legacy feature — mosaiQTL's primary model (NB GLM on $n=418$ raw counts) does not require MI because the larger effective $n$ and explicit overdispersion already stabilize peak LOD estimates.
 
 **Imputation model** (both R and Python): at each locus $\ell$, draw $K$ hard-call
 haplotype assignments from the posterior:
@@ -372,6 +387,8 @@ overdispersion, making MI unnecessary. Retained as a ported legacy feature only.
 
 ### S8 — SNP Scan
 
+**Purpose:** The haplotype-imputed SNP scan extends QTL mapping to individual SNP resolution within a QTL interval, using founder haplotype probabilities to impute per-sample SNP dosages. This section validates the Python implementation against miQTL's allele-directory-based scan. The known model difference (haplotype vs diplotype dosage) sets the expected correlation ceiling and is documented as a future redesign target for the NB GLM SNP scan.
+
 **Python — haplotype dosage** (`imputed_snp_scan_h2lmm`):
 
 At SNP $s$ with nearest cache locus $\ell^* = \arg\min_\ell |p_\ell - p_s|$:
@@ -416,6 +433,8 @@ heterozygous ancestry windows where exact diplotype probs diverge from the produ
 
 ### S9 — Mediation
 
+**Purpose:** Mediation analysis tests whether a candidate intermediate gene explains the QTL's effect on the outcome — a key step in identifying regulatory mechanisms behind eQTLs. This section validates that the Python QR-based `mediation_scan_qr` produces the same base LOD profile as miQTL's eigendecomposition approach, confirming that the mediator conditioning is correctly implemented.
+
 **Scan without mediator** (base LOD, both R `mediation.scan.qr` and Python `mediation_scan_qr`):
 $$\text{LOD}_\text{base}(\ell) = \frac{n}{2}\log_{10}\frac{\text{RSS}_0}{\text{RSS}_1^\text{base}}, \quad \text{RSS}_1^\text{base} = \min_{\alpha,\beta}\|y - \tilde{H}_\ell\alpha - X\beta\|_{V^{-1}}^2$$
 
@@ -447,6 +466,8 @@ vs R applying a different scaling internally. Does not affect $r$.
 
 ### S10 — Positional CI
 
+**Purpose:** Positional confidence intervals bound the chromosomal region containing the causal variant, guiding fine-mapping and candidate gene prioritization. This section validates that the Python bootstrap CI overlaps miQTL's reference interval — a non-overlap would indicate a systematic bias in the peak position estimate or a broken bootstrap resampling procedure.
+
 **Parametric bootstrap** (both R `run.positional.scans` and Python `run_positional_scans`):
 
 1. Fix $\hat{h}^2$ from real phenotype scan on target chromosome
@@ -469,6 +490,8 @@ number, not 'GenomeCache'` when `rint()` was called on it. Fixed to `_rps(boot_o
 ---
 
 ### S11 — Instability Scan
+
+**Purpose:** The instability scan measures how robust each QTL peak is to phenotype perturbation — loci with high mean bootstrap LOD are more likely to replicate. This section validates the Python OLS bootstrap scan against miQTL's reference, confirming that the fixed-effect scan correctly identifies stable versus unstable loci. Unstable loci are deprioritized in downstream fine-mapping.
 
 **Bootstrap OLS scan** (both R `instability.lm.scan` and Python `instability_lm_scan`):
 
