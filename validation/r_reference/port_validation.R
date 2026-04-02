@@ -921,10 +921,16 @@ if (!length(fx_gene)) {
     pheno_tmp <- pheno_strain
     pheno_tmp[['pheno']] <- pheno_tmp[[cand]]
     assign('pheno', pheno_tmp[['pheno']], envir=globalenv())  # put in global scope
-    # instability.lm.scan calls run.locus.bs.fits via search path (not :::)
-    # — hoist the unexported function to globalenv so it resolves correctly
-    if (!exists('run.locus.bs.fits', envir=globalenv()))
-      assign('run.locus.bs.fits', miqtl:::run.locus.bs.fits, envir=globalenv())
+    # hoist all miqtl unexported functions that instability.lm.scan needs —
+    # they resolve via search path not :::; discover names at runtime
+    miqtl_ns  <- asNamespace('miqtl')
+    inst_fns  <- ls(miqtl_ns, pattern='locus|instab|bs\.fit|bootstrap|scan\.lm')
+    message('  miqtl internal candidates: ', paste(inst_fns, collapse=', '))
+    for (.fn in inst_fns) {
+      if (!exists(.fn, envir=globalenv(), inherits=FALSE))
+        assign(.fn, get(.fn, envir=miqtl_ns), envir=globalenv())
+    }
+    rm(miqtl_ns, inst_fns)
     inst_form <- as.formula(paste0('pheno ~ batch + ',
                                    paste0('pc', 1:n_pcs, collapse=' + ')))
     simple_obj <- tryCatch(
