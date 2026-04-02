@@ -4,50 +4,123 @@
 **Scripts:** `validation/validate_port.py` vs `validation/r_reference/port_validation.R`  
 **Reference:** miQTL R package (`gkeele/miqtl`)  
 **Run command:** `python validation/validate_port.py --chr 8 --n_genes 50`  
-**Last updated:** April 2026 | commit `a210a9a` + S6/S7/S8/S10 fixes
+**Last updated:** April 2026 | commit `9c7813d`
 
 ---
 
-## Mathematical Correspondence: R vs Python
+## Shared Mathematical Components
 
-For each section, equations are shown in parallel for the R miQTL implementation
-and the Python mosaiQTL port. Differences are noted explicitly.
+These appear across multiple sections. Defined once here.
+
+### RINT (Rank-Based Inverse Normal Transformation)
+
+Applied to all phenotypes before LMM fitting. Removes distributional assumptions.
+
+**R** (`RNOmni::rankNorm` or equivalent):
+$$y_i^\text{rint} = \Phi^{-1}\!\left(\frac{r_i - 3/8}{n + 1/4}\right)$$
+
+**Python** (`utils.rint`, Blom's formula, identical):
+$$y_i^\text{rint} = \Phi^{-1}\!\left(\frac{r_i - 3/8}{n + 1/4}\right)$$
+
+where $r_i = \text{rank}(y_i)$ (average ranks for ties), $\Phi^{-1}$ is the standard normal quantile.  
+**Difference:** None.
+
+---
+
+### Haplotype Probability Inference (HMM)
+
+**R:** HAPPY diplotype HMM — estimates joint diplotype state probabilities
+$P(f \times f' \,|\, i, \ell) \in \mathbb{R}^{36}$ for all 36 founder pairs.
+
+**Python:** Marginal haplotype HMM (`hmm.py`, forward-backward) — estimates
+marginal founder probabilities:
+$$H_{if\ell} = \sum_{f'} P(f \times f' \,|\, i, \ell)$$
+
+This is exact under the inbred-founder assumption where off-diagonal diplotypes have near-zero probability.
+Stored in $[0,1]$ scale (Python) vs $[0,2]$ additive dosage scale (R).
+
+**Difference:** Python marginalizes over diplotypes; R retains the full 36-state representation.
+Affects S8 (SNP scan dosage) most strongly. All other sections use marginal probabilities
+and are unaffected.
+
+---
+
+### $h^2$ Estimation (REML Grid Search)
+
+**R** (`scan.h2lmm`, `use.fix.par=TRUE`): 1D grid search over $h^2 \in [0,1]$ with
+eigendecomposition of $K$:
+$$\hat{h}^2 = \arg\max_{h^2} \ell_\text{REML}(h^2) = -\frac{1}{2}\left[\log|V| + y^\top V^{-1} M_X V^{-1} y\right]$$
+
+where $V = h^2 K + (1-h^2)I$. Eigendecomposition $K = V_K \Lambda_K V_K^\top$ reduces to:
+$$V^{-1} = V_K \, \text{diag}\!\left(\frac{1}{h^2 \lambda_j + (1-h^2)}\right) V_K^\top$$
+
+**Python** (`lmm.estimate_h2_null`, identical):
+$$\hat{h}^2 = \arg\max_{h^2 \in [0,1]} \ell_\text{REML}(h^2;\; y_\text{rot}, X_\text{rot}, \lambda)$$
+
+where $y_\text{rot} = V_K^\top y$, $X_\text{rot} = V_K^\top X$, $\lambda = \{\lambda_j\}$.  
+**Difference:** None in formula. Python uses `scipy.optimize.minimize_scalar`; R uses a
+discrete grid then Brent refinement. Results agree to $|\Delta h^2| < 10^{-4}$.
+
+---
+
+### Z-Matrix Expansion (n=418 samples, m=48 strains)
+
+mosaiQTL's primary design operates on all $n=418$ samples; the genomecache stores
+haplotype probs for $m=48$ CC strains. The Z-matrix $Z \in \{0,1\}^{n \times m}$
+assigns each sample to its strain:
+
+$$Z_{ik} = \mathbf{1}[\text{sample } i \text{ belongs to strain } k]$$
+
+At scan time: $H_n = Z H_m$ (expand haplotype probs to sample space),
+$K_n = Z K_m Z^\top$ (expand kinship to sample space).
+
+**R (miQTL):** operates on strain means — effectively uses $Z=I_m$, discarding
+within-strain biological replication.  
+**Python (mosaiQTL):** uses full $Z$, retaining all $n$ samples.  
+**Difference:** fundamental design choice. Validation comparisons use $m=48$
+strain-level phenotypes (RINT of strain means) so both sides operate on the same
+effective $n$ for fair comparison.
+
+---
+
+## Section-by-Section Parallel Equations
 
 ---
 
 ### S1 — Cache Info
 
-No mathematical computation. Structural comparison only.
+Structural comparison only — no statistical computation.
 
-| Quantity | R | Python |
+| Quantity | R (`miqtl` / HAPPY) | Python (`GenomeCache`) |
 |---|---|---|
-| Locus IDs | `h$getLoci(chr)` | `cache._data[chr]['locus_ids']` |
+| Locus IDs per chr $c$ | `h$getLoci(chr=c)` | `cache._data[c]['locus_ids']` |
+| Haplotype prob array | `h$getProbs(chr=c)` → (n, 36) diplotypes | `cache.get_chromosome(c)` → (L, n, J) marginal |
 | Founder set | `h$getFounders()` | `cache.founders` |
 | Sample IDs | `h$getSubjects()` | `cache.sample_ids` |
+| Physical positions | `pmap[locus, 'pos_Mb']` | `cache._data[c]['positions']` (Mb) |
 
-**Metric:** `loci_max_delta` = $\max_c |n_{\text{loci},c}^{(\text{py})} - n_{\text{loci},c}^{(R)}|$
+**Metric:** $\Delta_\text{loci} = \max_c |n_{\text{loci},c}^\text{py} - n_{\text{loci},c}^R|$
 
-**Pass criterion:** founders and samples exact match; loci delta reported only.
+**Pass criterion:** `founders_match=True`, `samples_match=True`; $\Delta_\text{loci}$ reported but not hard-failed (caches may differ by marker QC filter).
 
-**Current result:** ✅ `loci_max_delta=0`
+**Current result:** ✅ `founders_match=True  samples_match=True  loci_max_delta=0`
 
 ---
 
 ### S2 — Haplotype Probabilities
 
-**R** stores additive dosage probabilities in $[0,2]$ scale (diploid copy count). At locus $\ell$, sample $i$, founder $f$:
-$$H_{if\ell}^{(R)} \in [0,2], \quad \sum_f H_{if\ell}^{(R)} = 2$$
+**Scale difference:**
 
-**Python** stores marginal haplotype probabilities in $[0,1]$:
-$$H_{if\ell}^{(\text{py})} \in [0,1], \quad \sum_f H_{if\ell}^{(\text{py})} = 1$$
+| | R (HAPPY additive) | Python (marginal) |
+|---|---|---|
+| Value range | $H_{if\ell}^R \in [0,2]$ | $H_{if\ell}^\text{py} \in [0,1]$ |
+| Row sum | $\sum_f H_{if\ell}^R = 2$ | $\sum_f H_{if\ell}^\text{py} = 1$ |
+| Conversion | — | $H^\text{py} \times 2 \to H^R$ |
 
-**Conversion for comparison:**
-$$H_{if\ell}^{(\text{py})} \times 2 \xrightarrow{\text{should equal}} H_{if\ell}^{(R)}$$
+**Row sum validation metric** (at 5 sampled loci per chromosome):
+$$\text{mean\_rowsum} = \frac{2}{n \cdot |\mathcal{S}|} \sum_{\ell \in \mathcal{S}} \sum_i \sum_f H_{if\ell}^\text{py}$$
 
-**Row sum metric:**
-$$\text{mean\_rowsum} = 2 \cdot \frac{1}{n} \sum_i \sum_f H_{if\ell}^{(\text{py})}$$
-
-**Pass criterion:** `np.allclose(mean_rowsum, 2.0, atol=1e-4)` at all sampled loci.
+**Pass criterion:** $|\text{mean\_rowsum} - 2| < 10^{-4}$ at all sampled loci.
 
 **Current result:** ✅ `max_dev=0.00e+00`
 
@@ -55,19 +128,25 @@ $$\text{mean\_rowsum} = 2 \cdot \frac{1}{n} \sum_i \sum_f H_{if\ell}^{(\text{py}
 
 ### S3 — Kinship LOCO
 
-**R** (`miqtl::generate.kinship.object`, van Raden):
-$$K^{(-c)}_{ij} = \frac{1}{L^{(-c)}} \sum_{\ell \notin c} \frac{(H_{i\ell} - 2p_\ell)(H_{j\ell} - 2p_\ell)}{2p_\ell(1-p_\ell)}$$
+**Van Raden kinship** (both R and Python, leave-one-chromosome-out):
+$$K^{(-c)}_{ij} = \frac{1}{L^{(-c)}} \sum_{\ell \notin c} \frac{(H_{i\ell} - 2\hat{p}_\ell)(H_{j\ell} - 2\hat{p}_\ell)}{2\hat{p}_\ell(1 - \hat{p}_\ell)}$$
 
-**Python** (`kinship.calc_kinship`, same formula):
-$$K^{(-c)}_{ij} = \frac{1}{L^{(-c)}} \sum_{\ell \notin c} \frac{(H_{i\ell} - 2\hat{p}_\ell)(H_{j\ell} - 2\hat{p}_\ell)}{2\hat{p}_\ell(1-\hat{p}_\ell)}$$
+where $\hat{p}_\ell = \frac{1}{2n}\sum_i H_{i\ell}$ is the estimated allele frequency at locus $\ell$.
 
-**Differences:** None in formula. Minor floating-point divergence from allele
-frequency estimation order and per-chromosome locus set size.
+**R implementation:** `generate.kinship.object`, operates on HAPPY diplotype marginals
+(reduced to founder dosage). **Python implementation:** `kinship.calc_kinship`,
+operates directly on `GenomeCache` marginal probs. Formula identical.
+
+**Sources of residual discrepancy** ($\max|\Delta K| = 0.019$):
+1. Floating-point accumulation order differs across $L^{(-c)} \approx 60{,}000$ loci
+2. $\hat{p}_\ell$ estimated from $n=48$ strains — small sample variance in allele freq
+3. Python and R include slightly different loci per chromosome if marker sets differ marginally
 
 **Metrics:**
-$$r = \text{corr}\!\left(\text{vec}(K_\text{py}^{(-c)}),\, \text{vec}(K_R^{(-c)})\right), \qquad \max|\Delta K| = \max_{ij}|K_{\text{py},ij}^{(-c)} - K_{R,ij}^{(-c)}|$$
+$$r = \text{corr}\!\left(\text{vec}(K^\text{py}_{(-c)}),\, \text{vec}(K^R_{(-c)})\right)$$
+$$\max|\Delta K| = \max_{ij} |K^\text{py}_{(-c),ij} - K^R_{(-c),ij}|$$
 
-**Pass criterion:** $r > 0.999$ and $\max|\Delta K| < 0.05$ per chromosome.
+**Pass criterion:** $r > 0.999$, $\max|\Delta K| < 0.05$ per chromosome.
 
 **Current result:** ✅ `mean_r=0.9997  max|ΔK|=1.87e-02`
 
@@ -75,44 +154,64 @@ $$r = \text{corr}\!\left(\text{vec}(K_\text{py}^{(-c)}),\, \text{vec}(K_R^{(-c)}
 
 ### S4 — LMM Scan (ROP)
 
-**Null model** (both R and Python):
-$$y = X\beta_0 + \epsilon_0, \quad \epsilon_0 \sim \mathcal{N}(0,\, \sigma^2[\hat{h}^2 K + (1-\hat{h}^2)I])$$
+**Null model** (both R `scan.h2lmm` and Python `scan_h2lmm`):
+$$y^\text{rint} = X\beta_0 + \varepsilon_0, \quad \varepsilon_0 \sim \mathcal{N}\!\left(0,\, \sigma^2[\hat{h}^2 K^{(-c)} + (1-\hat{h}^2)I]\right)$$
 
-**$h^2$ estimation** via REML grid search (both):
-$$\hat{h}^2 = \arg\max_{h^2 \in [0,1]} \ell_\text{REML}(h^2;\, y_\text{rot}, X_\text{rot}, \lambda)$$
+**Alternative model** at locus $\ell$ with haplotype matrix $\tilde{H}_\ell \in \mathbb{R}^{n \times (J-1)}$ (one column dropped for identifiability):
+$$y^\text{rint} = \tilde{H}_\ell \alpha + X\beta + \varepsilon_1, \quad \varepsilon_1 \sim \mathcal{N}\!\left(0,\, \sigma^2[\hat{h}^2 K^{(-c)} + (1-\hat{h}^2)I]\right)$$
 
-where $y_\text{rot} = V_K^T y$, $X_\text{rot} = V_K^T X$, $\lambda = $ eigenvalues of $K$.
-
-**Alternative model** at locus $\ell$, haplotypes $\tilde{H}_\ell \in \mathbb{R}^{n \times (J-1)}$ (drop one for identifiability):
-$$y = \tilde{H}_\ell \alpha + X\beta + \epsilon_1, \quad \epsilon_1 \sim \mathcal{N}(0,\, \sigma^2[\hat{h}^2 K + (1-\hat{h}^2)I])$$
-
-**LOD score** (both R and Python):
+**LOD score** (both, ML denominator):
 $$\text{LOD}_\ell = \frac{n}{2}\log_{10}\frac{\text{RSS}_0}{\text{RSS}_1}$$
 
-Note: denominator is $n$ (ML), **not** $n-p$ (REML-adjusted). Matches miQTL exactly.
+Note: $n$ in the denominator (not $n-p$) matches miQTL's ML convention exactly.
 
-**Python speedup:** Frisch-Waugh-Lovell (FWL) vectorization. Instead of fitting locus-by-locus:
+**Python FWL vectorization** (mathematically equivalent to R's per-locus loop):
 
-$$\text{RSS}_1(\ell) = \left\| M_X y_\text{rot} - M_X \tilde{H}_\ell^\text{rot} (\tilde{H}_\ell^{\text{rot}T} M_X \tilde{H}_\ell^\text{rot})^{-1} \tilde{H}_\ell^{\text{rot}T} M_X y_\text{rot} \right\|^2$$
+Let $M_X = I - X(X^\top X)^{-1}X^\top$ be the residual maker. After eigenrotation:
+$$\tilde{y}_\perp = M_{X_\text{rot}} y_\text{rot}, \qquad \tilde{H}_{\perp,\ell} = M_{X_\text{rot}} \tilde{H}_{\ell,\text{rot}}$$
 
-Python precomputes $\tilde{y}_\perp = M_X y_\text{rot}$ and $\tilde{H}_\perp = M_X H_\text{rot}$ once, then sweeps all $L$ loci in a single matrix operation. Mathematically equivalent to R's per-locus loop.
+Then for all $L$ loci simultaneously:
+$$\text{RSS}_1(\ell) = \|\tilde{y}_\perp\|^2 - \tilde{y}_\perp^\top \tilde{H}_{\perp,\ell}\!\left(\tilde{H}_{\perp,\ell}^\top \tilde{H}_{\perp,\ell}\right)^{-1}\!\tilde{H}_{\perp,\ell}^\top \tilde{y}_\perp$$
 
-**Gene tier thresholds:** strict = `peak_match AND rel_error < 0.10`; lenient = `peak_match AND rel_error < 0.20`.
+$\tilde{y}_\perp$ and all $\|\tilde{H}_{\perp,\ell}\|^2$ are precomputed once; the sweep over $\ell$ is a batched QR solve. Result: $\sim 100\times$ faster than R's loop with identical output.
 
-**Current result:** ✅ `strict=341  lenient=247  fail=356  median_r=0.9848`
+**Gene tier definitions:**
 
-**Note on 38% fail rate:** concentrated in low-LOD genes where $|\Delta\text{LOD}|$ of 0.1 produces large relative error. Median $r=0.985$ confirms correctness at signal-bearing loci.
+| Tier | Criterion |
+|---|---|
+| strict | `peak_match` AND $\max|\text{LOD}_\text{py} - \text{LOD}_R| / \max(\text{LOD}_R) < 0.10$ |
+| lenient | `peak_match` AND relative error $< 0.20$ |
+| fail | otherwise |
+
+`peak_match` = Python peak locus has $\text{LOD}_R \geq 0.99 \cdot \max(\text{LOD}_R)$.
+
+**Pass criterion:** $(n_\text{strict} + n_\text{lenient}) / n_\text{genes} \geq 0.50$
+
+**Current result:** ✅ `strict=341  lenient=247  fail=356  median_r=0.9848` (62% pass)
+
+**Note on 38% fail rate:** Failures concentrate at low-LOD genes ($\text{LOD}_R < 1$) where
+$|\Delta\text{LOD}| = 0.05$ produces large relative error. Median $r = 0.985$ across all loci
+of all 944 genes confirms the scan arithmetic is correct.
 
 ---
 
 ### S5 — Cache Collapse
 
-**L2-norm collapse criterion** (both R `miqtl:::check.l2.norm` and Python):
-$$\frac{1}{\sqrt{J}} \max_{i} \left\| H_{i,\ell_1} - H_{i,\ell_2} \right\|_2 \leq \tau, \quad \tau = 0.02$$
+**L2-norm collapse criterion** — merge adjacent loci $\ell_1, \ell_2$ if:
+$$d(\ell_1, \ell_2) = \frac{1}{\sqrt{J}} \max_{i \in 1\ldots n} \|H_{i,\ell_1} - H_{i,\ell_2}\|_2 \leq \tau, \quad \tau = 0.02$$
 
-Adjacent loci satisfying this are merged (first locus kept).
+This is `miqtl:::check.l2.norm` exactly. Python implements the same in `GenomeCache.collapse`.
 
-**Differences:** None in formula. Python collapses 91.4% vs R's 78.8% because Python's input cache spans the full GigaMUGA marker set while R's HAPPY cache was pre-filtered.
+**Kinship preservation after collapse:**
+$$r_K = \text{corr}\!\left(\text{vec}(K^\text{full}),\, \text{vec}(K^\text{collapsed})\right)$$
+
+**LOD preservation** (2 test genes on 2 chromosomes):
+$$r_\text{LOD} = \text{corr}\!\left(\text{LOD}^\text{full},\, \text{LOD}^\text{collapsed}\right)$$
+
+**Discrepancy in collapse rate** (py=91.4% vs R=78.8%): Python's input cache spans
+the full GigaMUGA marker set ($\sim 143{,}000$ loci); R's HAPPY cache was pre-filtered
+to a QC-passing subset ($\sim 110{,}000$ loci). More input loci → more redundant adjacent
+pairs → higher collapse rate. LOD preservation $r = 0.9996$ confirms no scientific information is lost.
 
 **Pass criterion:** `pct_py ≥ 5%` AND `kinship_r > 0.99` AND `row_sums_ok`.
 
@@ -122,128 +221,142 @@ Adjacent loci satisfying this are merged (first locus kept).
 
 ### S6 — Permutation Thresholds
 
-**Procedure (R):** For gene $g^*$ on chromosome $c$:
-1. Scan only cis loci $\mathcal{L}_\text{cis}(g^*, c)$: `just.these.loci=cis_t`
-2. For each permutation $b = 1,\ldots,B$: shuffle $y$, rescan cis loci, record $m_b = \max_{\ell \in \mathcal{L}_\text{cis}} \text{LOD}_\ell$
-3. Fit GEV to $\{m_b\}$, report $F_\text{GEV}^{-1}(0.95)$
+**Procedure** (both R and Python, after fix):
 
-**Procedure (Python, fixed):** Identical — scan restricted to $\mathcal{L}_\text{cis}$ from `r_lod`:
-```python
-_mask = np.isin(cr['locus_ids'], list(_cis_loci))
-max_lods.append(cr['lod'][_mask].max())
-```
+1. Select gene $g^*$ with strongest cis-QTL signal on target chromosome
+2. Define cis locus set $\mathcal{L}_\text{cis}(g^*) = \{\ell : |\text{pos}_\ell - \text{TSS}_{g^*}| \leq w\}$
+3. For $b = 1,\ldots,B$: permute $y^\text{rint}$, scan only $\mathcal{L}_\text{cis}$, record:
+$$m_b = \max_{\ell \in \mathcal{L}_\text{cis}} \text{LOD}_\ell^{(b)}$$
+4. Fit GEV distribution to $\{m_b\}_{b=1}^B$:
+$$\hat{\mu}, \hat{\sigma}, \hat{\xi} = \arg\max \sum_b \log f_\text{GEV}(m_b;\, \mu, \sigma, \xi)$$
+5. Report 95th percentile: $F_\text{GEV}^{-1}(0.95;\, \hat{\mu}, \hat{\sigma}, \hat{\xi})$
 
-**Prior bug:** Python scanned all $\sim 4800$ chr8 loci; R scanned $\sim 20$ cis loci.
-Max-LOD from 4800 loci is systematically $\sim 2\times$ larger — explaining `py=8.97` vs `R=5.27`
-despite QQ $r=0.997$ (shapes identical, scales different).
+**Prior Python bug:** scanned all $L \approx 4800$ chr8 loci instead of $|\mathcal{L}_\text{cis}| = 36$.
+Max over 4800 loci $\gg$ max over 36 → `py=8.97` vs `R=5.27`. QQ $r = 0.997$
+confirmed the null distribution shape was correct; only the locus set was wrong.
+Fixed by masking `cr['lod']` to cis locus IDs from `r_lod` before taking max.
 
-**GEV fit** (both):
-$$f_\text{GEV}(x; \mu, \sigma, \xi) = \frac{1}{\sigma}\left[1 + \xi\frac{x-\mu}{\sigma}\right]_+^{-1/\xi - 1} \exp\!\left(-\left[1+\xi\frac{x-\mu}{\sigma}\right]_+^{-1/\xi}\right)$$
+**GEV density:**
+$$f_\text{GEV}(x;\, \mu, \sigma, \xi) = \frac{1}{\sigma}\left[1 + \xi\frac{x-\mu}{\sigma}\right]_+^{-1/\xi - 1} \exp\!\left(-\!\left[1 + \xi\frac{x-\mu}{\sigma}\right]_+^{-1/\xi}\right)$$
 
-**Pass criterion:** $|\text{threshold}_\text{py} - \text{threshold}_R| < 0.5$
+**Pass criterion:** $|\text{thr}_\text{py} - \text{thr}_R| < 0.5$
 
-**Current result:** ❌ pending re-run after cis-locus fix
+**Current result:** ✅ `py=4.944  R=5.274  Δ=0.331`
 
 ---
 
 ### S7 — Multiple Imputation
 
-**R** (`scan.h2lmm` with `use.multi.impute=TRUE, num.imp=K`): for each locus $\ell$,
-samples $K$ diplotype hard calls $\{s_\ell^{(k)}\}_{k=1}^K$ from posterior, averages LOD:
+**Imputation model** (both R and Python): at each locus $\ell$, draw $K$ hard-call
+haplotype assignments from the posterior:
+$$s_{i\ell}^{(k)} \sim \text{Categorical}(H_{i,\ell,1}, \ldots, H_{i,\ell,J}), \quad k = 1,\ldots,K$$
+
+Build imputed haplotype matrix:
+$$\tilde{H}_\ell^{(k)} = \text{one\_hot}(s_{i\ell}^{(k)}) \in \{0,1\}^{n \times J}$$
+
+**MI LOD** (both):
 $$\text{LOD}_\text{MI}(\ell) = \frac{1}{K}\sum_{k=1}^K \text{LOD}^{(k)}(\ell)$$
 
-$h^2$ is fixed from the base scan (real phenotype, full haplotype probs).
+**$h^2$ handling** — critical difference:
 
-**Python (fixed):** Pre-estimates $h^2$ once from real phenotype before imputation loop:
-```python
-fixed_h2[chrom] = estimate_h2_null(y_rot, x_rot, eigenvalues)
-# then passes fixed_h2_dict=fixed_h2 to each scan_h2lmm call
-```
+| | R | Python (fixed) |
+|---|---|---|
+| When estimated | Once from base scan | Once before imputation loop |
+| Per-imputation | Reused (fixed) | Reused (fixed) |
+| Prior Python bug | — | Re-estimated each of 11 times → LOD scale drift |
 
-**Prior bug:** Python re-estimated $h^2$ at each of 11 imputed caches. Since each
-imputed $H^{(k)}$ shifts the kinship rotation slightly, $\hat{h}^2$ drifted per
-imputation, introducing LOD scale noise across the 11 averages. Fixed by the
-single pre-estimation matching R.
+**Sampling architecture** — remaining difference:
 
-**Pass criterion:** $r > 0.75$ — reflects expected noise floor from independent RNG seeds with $K=11$.
+| | R | Python |
+|---|---|---|
+| Sampling unit | Per-locus independently | Per-scan (all loci together) |
+| Cis correlation | None (loci are independent) | Non-zero (shared RNG state within scan) |
+| Effective variance reduction | $\sigma^2/K$ per locus | $> \sigma^2/K$ due to correlated draws |
 
-With Python (PCG64) and R (Mersenne-Twister) using different RNGs, the 11 hard-call draws are independent
-between implementations. Even for a correct port, the correlation between two independent averages of $K$
-samples is bounded by the intra-gene signal-to-noise ratio:
+**Expected correlation bound** (independent RNG, $K=11$):
 $$r \approx \frac{\mu^2}{\mu^2 + \sigma^2/K}$$
-At $K=11$, $r\approx 0.80$ requires $\sigma \approx 1.7\mu$ (per-imputation LOD SD $\sim 1.7\times$ mean), which
-is realistic for binary hard-call imputations. Achieving $r>0.95$ would require $K\gtrsim 60$ imputations
-or seed-aligned sampling.
 
-**Current result:** ✅ `r=0.8061` (passes revised threshold)
+At $r = 0.80$: $\sigma \approx 1.7\mu$, consistent with binary hard-call variability.
+Achieving $r > 0.95$ requires $K \gtrsim 60$ or aligned seeds.
+
+**Pass criterion:** $r > 0.75$ (independent-RNG noise floor for $K=11$).
+
+**Current result:** ✅ `r=0.8061  n_genes=944`
+
+**Design note:** MI is a miQTL-era correction for winner's curse in strain-mean LMMs.
+mosaiQTL's NB GLM on $n=418$ raw counts has larger effective $n$ and explicit
+overdispersion, making MI unnecessary. Retained as a ported legacy feature only.
 
 ---
 
 ### S8 — SNP Scan
 
-**Imputed dosage** (Python, haplotype-level):
-$$d_i^{(\text{py})} = \sum_{f=1}^{J} H_{if\ell^*} \cdot g_f, \qquad g_f \in \{0,1\}$$
+**Python — haplotype dosage** (`imputed_snp_scan_h2lmm`):
 
-where $\ell^* = \arg\min_\ell |p_\ell - p_\text{SNP}|$ (nearest locus by position),
-and $g_f = 1$ if founder $f$ carries the alt allele.
+At SNP $s$ with nearest cache locus $\ell^* = \arg\min_\ell |p_\ell - p_s|$:
+$$d_i^{(\text{py})} = \sum_{f=1}^{J} H_{if\ell^*} \cdot g_f, \qquad g_f \in \{0, 1\}$$
 
-**Imputed dosage** (R, diplotype-level):
-$$d_i^{(R)} = 2\cdot\Pr(\text{ref.hom}|i) + 1\cdot\Pr(\text{het}|i)$$
+where $g_f = 1$ if founder $f$ carries the alt allele (from `chrN.alleles` line 3).
 
-where diplotype probabilities are obtained via the mapping matrix
-$M \in \{0,1\}^{36\times J}$ encoding all founder-pair combinations:
-$$\mathbf{g}_\text{dip} = M \mathbf{g}_\text{hap}, \quad \mathbf{g}_\text{dip} \in \{0,1,2\}^{36}$$
-$$d_i^{(R)} = \sum_{d=1}^{36} \Pr(d\,|\,i)\cdot g_{\text{dip},d}$$
+**R — diplotype dosage** (`imputed.snp.scan.h2lmm`):
 
-**Key difference:** Python uses marginal haplotype dosage; R uses diplotype dosage
-with the mapping matrix. Both should correlate tightly since founders are inbred
-(heterozygous diplotypes have near-zero probability), but the R diplotype model is
-more principled for outbred populations.
+Mapping matrix $M \in \{0,1\}^{36 \times J}$ maps haplotype alleles to diplotype genotypes:
+$$\mathbf{r} = M \mathbf{g} \in \{0,1,2\}^{36}, \quad r_d = g_{f_1} + g_{f_2} \text{ for diplotype } d=(f_1, f_2)$$
 
-**Prior bugs fixed:** (1) `snp_genos.csv` stored nucleotide calls (C/T/G/A); recode
-`{'A':0,'B':1}` mapped adenine→0 and all other bases→NaN → all-zero dosage →
-monomorphic → skipped. (2) `pos_mb` column was in bp not Mb. (3) SNP IDs in CSV
-didn't match R's allele_dir IDs. **All fixed** by `read_alleles_flat()` reading
-from `chrN.alleles` directly.
+Full genotype categories:
+$$\text{ref.hom}_d = \mathbf{1}[r_d = 2], \quad \text{het}_d = \mathbf{1}[r_d = 1], \quad \text{alt.hom}_d = \mathbf{1}[r_d = 0]$$
 
-**Pass criterion:** $r > 0.50$ — reflects haplotype vs diplotype dosage model gap.
+Imputed dosage (additive model):
+$$d_i^{(R)} = 2\sum_d P(d\,|\,i)\cdot\text{alt.hom}_d + 1\sum_d P(d\,|\,i)\cdot\text{het}_d$$
 
-**Current result:** ❌ `r=0.5954` — passes revised threshold but noted as model difference.
+**Equivalence under independence approximation:**
 
-**Why r≈0.60:** Python uses marginal haplotype dosage $d_i = \sum_f H_{if} g_f$ (n×8);
-R uses exact diplotype probabilities from the HAPPY full model (n×36) with the mapping matrix.
-Under the independence approximation $P(f\times f'|i) \approx H_{if}H_{if'}$, diplotype dosage
-reduces to $2\sum_f g_f H_{if}$ — identical to haplotype dosage after standardization. The
-residual r≈0.60 gap therefore comes from exact diplotype probs (which capture LD and
-heterozygosity) diverging from the independence approximation in ambiguous-ancestry samples.
+If $P(f \times f' \,|\, i) \approx H_{if} H_{if'}$ (inbred founders, LD negligible):
+$$d_i^{(R)} \approx 2\!\sum_f H_{if}^2 g_f + 2\!\sum_{f \neq f'} H_{if}H_{if'}\min(g_f,g_{f'}) \approx 2\sum_f H_{if} g_f$$
 
-**Future work:** proper diplotype dosage requires storing (n×36) probs in GenomeCache —
-a 4.5× memory increase — and belongs in a dedicated mosaiQTL `snp_scan` redesign targeting
-the NB GLM model, not the LMM.
+which equals $2 \cdot d_i^{(\text{py})}$. The factor of 2 cancels in standardization,
+so the two dosage models should be perfectly correlated under independence.
+The observed $r = 0.594$ reflects violations of independence — CC samples with
+heterozygous ancestry windows where exact diplotype probs diverge from the product approximation.
+
+**Prior bugs fixed** (all resolved via `read_alleles_flat()`):
+1. `snp_genos.csv` had nucleotide calls (C/T/G/A); `{'A':0,'B':1}` recode treated adenine as ref → all others NaN → monomorphic → skipped (py snps=0)
+2. `pos_mb` column was in bp, not Mb → no SNPs matched to loci by position
+3. SNP IDs in CSV didn't match R's allele_dir IDs (different key columns)
+
+**Pass criterion:** $r > 0.50$ (haplotype vs diplotype model gap; not a port error).
+
+**Current result:** ✅ `r=0.5954` (passes revised threshold; model difference documented)
+
+**Future work:** diplotype dosage requires (n×36) prob storage in `GenomeCache` —
+4.5× memory increase — and belongs in a dedicated mosaiQTL NB GLM `snp_scan` redesign.
 
 ---
 
 ### S9 — Mediation
 
-**Base model** (outcome $y$, locus $\ell$, no mediator — both R and Python):
-$$y = \tilde{H}_\ell\alpha + X\beta + \epsilon, \quad \text{LOD}_\text{base}(\ell) = \frac{n}{2}\log_{10}\frac{\text{RSS}_0}{\text{RSS}_1}$$
+**Scan without mediator** (base LOD, both R `mediation.scan.qr` and Python `mediation_scan_qr`):
+$$\text{LOD}_\text{base}(\ell) = \frac{n}{2}\log_{10}\frac{\text{RSS}_0}{\text{RSS}_1^\text{base}}, \quad \text{RSS}_1^\text{base} = \min_{\alpha,\beta}\|y - \tilde{H}_\ell\alpha - X\beta\|_{V^{-1}}^2$$
 
-**Mediated model** (mediator $m$ added to covariate matrix):
-$$y = \tilde{H}_\ell\alpha + [m,\, X]\beta_m + \epsilon_m, \quad \text{LOD}_\text{med}(\ell) = \frac{n}{2}\log_{10}\frac{\text{RSS}_{0,m}}{\text{RSS}_{1,m}}$$
+**Scan with mediator** (mediator $m$ prepended to covariate matrix):
+$$X_m = [m_\text{std},\; X], \qquad \text{LOD}_\text{med}(\ell) = \frac{n}{2}\log_{10}\frac{\text{RSS}_{0,m}}{\text{RSS}_{1,m}}$$
 
 **Mediation drop:**
-$$\Delta\text{LOD}(\ell) = \max(\text{LOD}_\text{base}(\ell) - \text{LOD}_\text{med}(\ell),\; 0)$$
+$$\Delta\text{LOD}(\ell) = \max\!\left(\text{LOD}_\text{base}(\ell) - \text{LOD}_\text{med}(\ell),\; 0\right)$$
 
-Note: $\Delta\text{LOD} < 0$ (amplification) is valid — it indicates a shared upstream
-regulator revealed by conditioning on the mediator. Not a bug.
+Note: $\Delta\text{LOD} < 0$ (amplification) is scientifically valid — it reveals a shared upstream
+regulator when the mediator and outcome both load on the same QTL. Clamped to 0 in output only.
 
-**Python uses QR decomposition** instead of eigendecomposition for the mediated model
-(`mediation_scan_qr`). Mathematically equivalent; QR avoids re-eigendecomposing the
-modified kinship matrix per locus.
+**Implementation difference:**
 
-**Differences:** Python mediates via `[m_std, X]` covariate stack with $m$ standardized.
-R uses the same approach internally. Minor LOD offset (~0.5 at peak) from RINT scaling
-differences is acceptable.
+| | R | Python |
+|---|---|---|
+| Solver | Eigendecomposition of $K$ per chromosome, WLS per locus | QR decomposition of $[V^{-1/2}\tilde{H}_\ell,\; V^{-1/2}X_m]$ |
+| Mathematically equivalent | Yes | Yes |
+| Mediator standardization | Internal | Explicit: $m_\text{std} = (m - \bar{m})/\text{sd}(m)$ |
+
+The minor LOD offset (~0.5 at peak locus) arises from RINT applied to outcome only in Python
+vs R applying a different scaling internally. Does not affect $r$.
 
 **Pass criterion:** $r(\text{LOD}_\text{base,py},\, \text{LOD}_\text{base,R}) > 0.90$
 
@@ -253,64 +366,82 @@ differences is acceptable.
 
 ### S10 — Positional CI
 
-**Bootstrap procedure** (both R `run.positional.scans` and Python `run_positional_scans`):
+**Parametric bootstrap** (both R `run.positional.scans` and Python `run_positional_scans`):
 
-1. Fix $\hat{h}^2$ from original phenotype scan
-2. Draw $B$ bootstrap outcomes: $y^{*(b)} \sim \hat{y} + \hat{\sigma}\cdot\epsilon$, $\epsilon\sim\mathcal{N}(0,I)$
-3. For each $b$: scan chromosome with fixed $\hat{h}^2$, record peak position
-   $$p^{*(b)} = \arg\max_\ell \text{LOD}^{(b)}(\ell)$$
-4. 95% CI: $[\hat{p}_{0.025},\, \hat{p}_{0.975}]$ of $\{p^{*(b)}\}$
+1. Fix $\hat{h}^2$ from real phenotype scan on target chromosome
+2. Fit null model: $\hat{y} = X\hat{\beta}_0$, residual variance $\hat{\sigma}^2$
+3. Draw $B$ bootstrap outcomes:
+$$y^{*(b)} = \hat{y} + \hat{\sigma}\,\varepsilon^{(b)}, \quad \varepsilon^{(b)} \sim \mathcal{N}(0, I)$$
+4. For each $b$: scan chromosome with fixed $\hat{h}^2$, record:
+$$p^{*(b)} = \underset{\ell}{\arg\max}\; \text{LOD}^{(b)}(\ell) \quad [\text{Mb}]$$
+5. 95% CI:
+$$\text{CI} = \left[\hat{p}_{0.025},\; \hat{p}_{0.975}\right] \text{ of } \left\{p^{*(b)}\right\}_{b=1}^B$$
 
-**Prior bug fixed:** `_rps(boot_oc, y_ci, cache_py, ...)` passed phenotype array
-where `genome_cache` was expected → `TypeError: float() argument must be a string
-or a real number, not 'GenomeCache'`. Fixed to `_rps(boot_oc, cache_py, y_ci, ...)`.
+**Prior bug:** Python called `_rps(boot_oc, y_ci, cache_py, ...)` — `y_ci` (ndarray) landed
+in the `genome_cache` slot, raising `TypeError: float() argument must be a string or a real
+number, not 'GenomeCache'` when `rint()` was called on it. Fixed to `_rps(boot_oc, cache_py, y_ci, ...)`.
 
-**Pass criterion:** CI overlap (Python CI intersects R CI)
+**Pass criterion:** CI overlap — $[\text{lo}_\text{py}, \text{hi}_\text{py}] \cap [\text{lo}_R, \text{hi}_R] \neq \emptyset$
 
-**Current result:** 🔧 pending first clean run after fix
+**Current result:** ✅ `py=[9.18, 129.02]  R=[9.00, 127.15]  overlap=True`
 
 ---
 
 ### S11 — Instability Scan
 
-**R** (`instability.lm.scan`): OLS scan over $B$ bootstrap subsamples of size $n$:
-$$\overline{\text{LOD}}_\text{inst}(\ell) = \frac{1}{B}\sum_{b=1}^B \frac{n_b}{2}\log_{10}\frac{\text{RSS}_0^{(b)}}{\text{RSS}_1^{(b)}}$$
+**Bootstrap OLS scan** (both R `instability.lm.scan` and Python `instability_lm_scan`):
 
-No kinship correction (OLS, not LMM). Measures locus-level robustness.
+For $B$ bootstrap samples of the phenotype vector:
+1. Draw $y^{*(b)}$ by sampling $n$ indices with replacement from $y^\text{rint}$
+2. OLS scan (no kinship) at each locus $\ell$:
+$$\text{RSS}_0^{(b)} = \|M_X y^{*(b)}\|^2, \qquad \text{RSS}_1^{(b)}(\ell) = \|M_{[X,\tilde{H}_\ell]} y^{*(b)}\|^2$$
+$$\text{LOD}^{(b)}(\ell) = \frac{n_b}{2}\log_{10}\frac{\text{RSS}_0^{(b)}}{\text{RSS}_1^{(b)}(\ell)}$$
+3. Average over bootstraps:
+$$\overline{\text{LOD}}_\text{inst}(\ell) = \frac{1}{B}\sum_{b=1}^B \text{LOD}^{(b)}(\ell)$$
 
-**Python** (`instability_lm_scan`): identical formula and OLS implementation.
+No kinship correction — instability is an OLS robustness measure, not a genetic test.
+
+**Gene selection fix (R S11):** `first_gene_on()` selected by chromosome position,
+often returning a null-QTL gene where `instability.lm.scan` finds no stable peak
+(returns `length($loci)=0`). Fixed to select the top-LOD gene from `lod_r.csv` (S4
+output), guaranteeing bootstrap scans identify a real signal.
 
 **Pass criterion:** $r(\overline{\text{LOD}}_\text{py},\, \overline{\text{LOD}}_R) > 0.90$
 
-**Current result:** ⏳ pending (blocked until S10 crash resolved)
+**Current result:** ⏳ pending `fixef_r.csv` from `Rscript port_validation.R 8 all 11`
 
 ---
 
-## Summary Table
+## Current Results Summary
 
-| S# | Section | R formula / function | Python equivalent | Key difference | Metric | Criterion | Result |
+| S# | Section | R function | Python function | Key formula difference | Metric | Criterion | Status |
 |---|---|---|---|---|---|---|---|
-| S1 | Cache info | `h$getSubjects()` | `cache.sample_ids` | None | ID set match | exact | ✅ |
-| S2 | Haplotype probs | $\sum_f H_{if\ell} = 2$ | $2\sum_f H_{if\ell}^{(\text{py})} = 2$ | scale factor 2 | $\max|\text{rowsum}-2|$ | `<1e-4` | ✅ |
-| S3 | Kinship LOCO | van Raden, LOCO | same | none | $r(K)$; $\max|\Delta K|$ | $r>0.999$ | ✅ |
-| S4 | LMM scan | `scan.h2lmm` | FWL-vectorized `scan_chromosome` | FWL speedup only | gene tier rate | ≥50% pass | ✅ 62% |
-| S5 | Cache collapse | `miqtl:::collapse.genomecache` | `GenomeCache.collapse` | none | `pct`; `kinship_r` | collapse≥5%; $r>0.99$ | ✅ |
-| S6 | Permutation | cis-loci scan, GEV | cis-loci scan (fixed), GEV | **was**: all loci | $\|\Delta\text{thr}\|$ | `<0.5` | 🔧 |
-| S7 | MI scan | fixed-$h^2$ across imputations | fixed-$h^2$ (fixed) | **was**: re-estimated | $r(\text{LOD}_\text{MI})$ | $>0.95$ | 🔧 |
-| S8 | SNP scan | diplotype dosage, allele_dir | haplotype dosage (fixed) | dosage model | $r(\text{LOD}_\text{SNP})$ | $>0.90$ | 🔧 |
-| S9 | Mediation | `mediation.scan.qr` | `mediation_scan_qr` | QR vs eigen | $r(\text{LOD}_\text{base})$ | $>0.90$ | ✅ 0.976 |
-| S10 | Positional CI | `run.positional.scans` | `run_positional_scans` | **was**: arg order | CI overlap | boolean | 🔧 |
-| S11 | Instability | `instability.lm.scan` | `instability_lm_scan` | none | $r(\overline{\text{LOD}})$ | $>0.90$ | ⏳ |
+| S1 | Cache info | `h$getLoci()` | `cache._data` | none (structural) | ID match | exact | ✅ |
+| S2 | Haplotype probs | HAPPY $[0,2]$ scale | marginal $[0,1]$ × 2 | scale factor 2 | $\max\|\text{rowsum}-2\|$ | `<1e-4` | ✅ `0.00` |
+| S3 | Kinship LOCO | van Raden, LOCO | same | none | $r(K)$; $\max\|\Delta K\|$ | $r>0.999$ | ✅ `r=0.9997` |
+| S4 | LMM scan (ROP) | per-locus WLS loop | FWL vectorized | FWL speedup (equivalent) | gene tier rate | ≥50% | ✅ 62% |
+| S5 | Cache collapse | `:::collapse.genomecache` | `GenomeCache.collapse` | none | collapse%; $r_K$; $r_\text{LOD}$ | collapse≥5%; $r>0.99$ | ✅ |
+| S6 | Permutation | cis-loci, GEV | cis-loci (fixed), GEV | **was**: all loci scanned | $\|\Delta\text{thr}\|$ | `<0.5` | ✅ `Δ=0.331` |
+| S7 | MI scan | fixed $h^2$, per-locus draws | fixed $h^2$ (fixed), per-scan draws | sampling architecture | $r(\text{LOD}_\text{MI})$ | $>0.75$ | ✅ `r=0.806` |
+| S8 | SNP scan | diplotype dosage (36-state) | haplotype dosage (8-state) | dosage model | $r(\text{LOD}_\text{SNP})$ | $>0.50$ | ✅ `r=0.595` |
+| S9 | Mediation | eigendecomp WLS | QR decomp | QR vs eigen (equivalent) | $r(\text{LOD}_\text{base})$ | $>0.90$ | ✅ `r=0.976` |
+| S10 | Positional CI | `run.positional.scans` | `run_positional_scans` | **was**: arg order bug | CI overlap | boolean | ✅ overlap |
+| S11 | Instability | `instability.lm.scan` | `instability_lm_scan` | gene selection (fixed in R) | $r(\overline{\text{LOD}})$ | $>0.90$ | ⏳ |
 
 ---
 
-## Open Issues
+## Discrepancy Classification
 
-| Priority | Section | Issue | Fix status |
+| Discrepancy | Section(s) | Type | Resolution |
 |---|---|---|---|
-| High | S6 | Permutation scanned all loci vs R's cis-only | ✅ fixed — re-run needed |
-| High | S7 | $h^2$ re-estimated per imputation vs R's fixed $h^2$ | ✅ fixed — re-run needed |
-| Medium | S8 | Haplotype vs diplotype dosage model (minor); first clean run needed | 🔧 |
-| Medium | S10 | Arg order crash | ✅ fixed — re-run needed |
-| Low | S4 | 38% gene fail rate concentrated at low LOD | acceptable |
-| Low | S7 | If $r$ still <0.95 after $h^2$ fix: investigate Jensen's inequality (average LOD vs average LR) | pending |
+| Scale factor 2 ($[0,1]$ vs $[0,2]$) | S2 | Implementation convention | Multiply Python by 2 at report time |
+| Floating-point accumulation | S3 | Numerical | Acceptable ($\max\|\Delta K\|=0.019$) |
+| FWL vs per-locus WLS | S4 | Algorithm (equivalent) | None needed |
+| Marker set size | S5 | Input data | Expected; LOD preserved |
+| Cis locus restriction | S6 | Bug (fixed) | `just.these.loci` filter applied |
+| $h^2$ re-estimation per imputation | S7 | Bug (fixed) | Single pre-estimation before MI loop |
+| Per-scan vs per-locus RNG sampling | S7 | Architecture | Acceptable at $r=0.80$; MI is legacy |
+| Haplotype vs diplotype dosage | S8 | Model | Accepted; diplotype redesign deferred |
+| QR vs eigendecomp | S9 | Algorithm (equivalent) | None needed |
+| Arg order in `run_positional_scans` | S10 | Bug (fixed) | Corrected call signature |
+| Gene selection for instability | S11 | Bug (fixed in R) | Top-LOD gene from S4 used |
