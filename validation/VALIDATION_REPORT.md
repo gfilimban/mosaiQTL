@@ -89,15 +89,43 @@ effective $n$ for fair comparison.
 
 ### S1 — Cache Info
 
-Structural comparison only — no statistical computation.
+**Locus QC filtering** — both R (HAPPY pipeline) and Python apply MAF and call-rate
+filters before including a locus. Only loci passing all QC criteria contribute to
+haplotype inference and kinship. Let $\mathcal{M}$ be the set of markers passing QC:
+$$\mathcal{M} = \{\ell : \text{MAF}_\ell \geq \tau_\text{maf},\; \text{call\_rate}_\ell \geq \tau_\text{cr}\}$$
+
+**Physical map interpolation** — genetic positions (cM) in the GigaMUGA map are
+converted to physical positions (Mb) via the `pmap` file (precomputed from mm39).
+Both implementations use the same `pmap.csv` source; no interpolation is applied —
+positions are a direct lookup $p_\ell = \text{pmap}[\ell, \text{pos\_Mb}]$.
+
+**Founder encoding:**
+
+| HAPPY code | Founder name | Index $f$ |
+|---|---|---|
+| A | AJ | 0 |
+| B | B6J | 1 |
+| C | 129S1J | 2 |
+| D | NODJ | 3 |
+| E | NZOJ | 4 |
+| F | CASTJ | 5 |
+| G | PWKJ | 6 |
+| H | WSBJ | 7 |
+
+R encodes internally as A–H; Python maps to full founder names at load time.
+The drop-one column convention (J−1 founders used in the design matrix) removes
+founder H (WSBJ) in both implementations.
+
+**Data structure comparison:**
 
 | Quantity | R (`miqtl` / HAPPY) | Python (`GenomeCache`) |
 |---|---|---|
 | Locus IDs per chr $c$ | `h$getLoci(chr=c)` | `cache._data[c]['locus_ids']` |
-| Haplotype prob array | `h$getProbs(chr=c)` → (n, 36) diplotypes | `cache.get_chromosome(c)` → (L, n, J) marginal |
-| Founder set | `h$getFounders()` | `cache.founders` |
+| Prob array shape | $(n, 36)$ diplotypes per locus | $(L, n, J)$ marginal, all loci stacked |
+| Founder set | `h$getFounders()` — HAPPY A–H codes | `cache.founders` — full names |
 | Sample IDs | `h$getSubjects()` | `cache.sample_ids` |
 | Physical positions | `pmap[locus, 'pos_Mb']` | `cache._data[c]['positions']` (Mb) |
+| Storage format | Per-locus `.RData` files on disk | HDF5 or in-memory dict |
 
 **Metric:** $\Delta_\text{loci} = \max_c |n_{\text{loci},c}^\text{py} - n_{\text{loci},c}^R|$
 
@@ -108,6 +136,28 @@ Structural comparison only — no statistical computation.
 ---
 
 ### S2 — Haplotype Probabilities
+
+**HMM emission model** — at each marker $\ell$, the observed genotype call
+$g_{i\ell} \in \{A,C,G,T,N\}$ for sample $i$ is emitted with probability:
+$$P(g_{i\ell} \,|\, s_{i\ell} = f) = \begin{cases} 1 - e & \text{if } g_{i\ell} = a_f \\ e & \text{if } g_{i\ell} \neq a_f,\; g_{i\ell} \neq N \\ 1/J & \text{if } g_{i\ell} = N \end{cases}$$
+
+where $a_f$ is the known allele of founder $f$ at locus $\ell$ and $e$ is the
+genotyping error rate (typically $e = 0.001$).
+
+**HMM transition model** — between adjacent markers $\ell$ and $\ell+1$ separated
+by genetic distance $d_\ell$ cM, the transition probability under the Haldane map:
+$$P(s_{i,\ell+1} = f' \,|\, s_{i\ell} = f) = \begin{cases} e^{-2d_\ell/100} + \frac{1-e^{-2d_\ell/100}}{J} & f = f' \\ \frac{1-e^{-2d_\ell/100}}{J} & f \neq f' \end{cases}$$
+
+**R (HAPPY)** runs a diplotype HMM: state space is all $J(J+1)/2 = 36$ founder
+pairs $(f, f')$. Joint diplotype posteriors:
+$$P(s^{(1)}_{i\ell} = f,\, s^{(2)}_{i\ell} = f' \,|\, g_i) \in \mathbb{R}^{36}$$
+
+**Python (`hmm.py`)** runs a marginal haplotype HMM via forward-backward:
+$$\alpha_{if\ell} = P(g_{i,1:\ell},\, s_{i\ell}=f), \qquad \beta_{if\ell} = P(g_{i,\ell+1:L} \,|\, s_{i\ell}=f)$$
+$$H_{if\ell} = P(s_{i\ell}=f \,|\, g_i) = \frac{\alpha_{if\ell}\,\beta_{if\ell}}{\sum_{f'}\alpha_{if'\ell}\,\beta_{if'\ell}}$$
+
+Marginalization is exact when founders are inbred (diplotype cross-terms vanish):
+$$H_{if\ell}^\text{py} = \sum_{f'} P(s^{(1)}=f, s^{(2)}=f' \,|\, g_i) \approx P(s^{(1)}=f \,|\, g_i)$$
 
 **Scale difference:**
 
@@ -120,6 +170,9 @@ Structural comparison only — no statistical computation.
 **Row sum validation metric** (at 5 sampled loci per chromosome):
 $$\text{mean\_rowsum} = \frac{2}{n \cdot |\mathcal{S}|} \sum_{\ell \in \mathcal{S}} \sum_i \sum_f H_{if\ell}^\text{py}$$
 
+This must equal 2.0 exactly (up to floating point) since $\sum_f H_{if\ell}^\text{py} = 1$
+by HMM normalization, and the factor of 2 converts to R's additive dosage scale.
+
 **Pass criterion:** $|\text{mean\_rowsum} - 2| < 10^{-4}$ at all sampled loci.
 
 **Current result:** ✅ `max_dev=0.00e+00`
@@ -129,18 +182,46 @@ $$\text{mean\_rowsum} = \frac{2}{n \cdot |\mathcal{S}|} \sum_{\ell \in \mathcal{
 ### S3 — Kinship LOCO
 
 **Van Raden kinship** (both R and Python, leave-one-chromosome-out):
+
+Using founder haplotype dosages $H_{i\ell} \in [0,2]$ (or equivalently $2H_{i\ell}^\text{py}$):
 $$K^{(-c)}_{ij} = \frac{1}{L^{(-c)}} \sum_{\ell \notin c} \frac{(H_{i\ell} - 2\hat{p}_\ell)(H_{j\ell} - 2\hat{p}_\ell)}{2\hat{p}_\ell(1 - \hat{p}_\ell)}$$
 
-where $\hat{p}_\ell = \frac{1}{2n}\sum_i H_{i\ell}$ is the estimated allele frequency at locus $\ell$.
+where the allele frequency estimate is:
+$$\hat{p}_\ell = \frac{1}{2n}\sum_{i=1}^n H_{i\ell}$$
 
-**R implementation:** `generate.kinship.object`, operates on HAPPY diplotype marginals
-(reduced to founder dosage). **Python implementation:** `kinship.calc_kinship`,
-operates directly on `GenomeCache` marginal probs. Formula identical.
+and $L^{(-c)} = |\mathcal{M} \setminus c|$ is the number of QC-passing loci outside chromosome $c$.
+
+**Centering interpretation:** the numerator $(H_{i\ell} - 2\hat{p}_\ell)$ centers each
+locus so that the kinship matrix has expected diagonal 1 and off-diagonal reflecting
+allele sharing above the population mean. The denominator $2\hat{p}_\ell(1-\hat{p}_\ell)$
+normalizes by expected heterozygosity, giving equal weight to rare and common variants.
+
+**Matrix properties:** $K^{(-c)} \in \mathbb{R}^{n \times n}$ is symmetric positive
+semi-definite. For inbred CC founders: $K_{ii} \approx 1$ (self-kinship), $K_{ij} \approx 0$
+for unrelated strains, $K_{ij} \approx 0.5$ for first-degree relatives.
+
+**Eigendecomposition** (computed once per chromosome, reused in all downstream LMM fits):
+$$K^{(-c)} = V_K \Lambda_K V_K^\top, \quad \Lambda_K = \text{diag}(\lambda_1, \ldots, \lambda_n), \quad \lambda_j \geq 0$$
+
+This decomposition enables $O(n^2)$ computation of $V^{-1} = [h^2 K + (1-h^2)I]^{-1}$:
+$$V^{-1} = V_K \,\text{diag}\!\left(\frac{1}{h^2\lambda_j + (1-h^2)}\right) V_K^\top$$
+
+avoiding repeated matrix inversion across $h^2$ values in the REML grid search.
+
+**LOCO rationale:** excluding chromosome $c$ from the kinship matrix removes the
+genetic signal on $c$ from the polygenic background term, preventing proximal
+confounding — without LOCO, a cis-eQTL on chromosome $c$ would be partially
+absorbed into the kinship-corrected null model.
+
+**R implementation:** `generate.kinship.object`, computes one matrix per
+excluded chromosome using HAPPY diplotype marginals reduced to additive dosage.  
+**Python implementation:** `kinship.calc_kinship(method='loco')`, identical formula
+on `GenomeCache` marginal probs × 2.
 
 **Sources of residual discrepancy** ($\max|\Delta K| = 0.019$):
 1. Floating-point accumulation order differs across $L^{(-c)} \approx 60{,}000$ loci
-2. $\hat{p}_\ell$ estimated from $n=48$ strains — small sample variance in allele freq
-3. Python and R include slightly different loci per chromosome if marker sets differ marginally
+2. $\hat{p}_\ell$ is estimated from $n=48$ strains — small-sample variance in allele freq propagates
+3. Marginally different locus sets per chromosome if marker QC thresholds differ by implementation
 
 **Metrics:**
 $$r = \text{corr}\!\left(\text{vec}(K^\text{py}_{(-c)}),\, \text{vec}(K^R_{(-c)})\right)$$
