@@ -891,42 +891,62 @@ if (is.null(fx_gene)) {
 if (!length(fx_gene)) {
   message('  SKIP: no gene with cis loci on chr', fx_chr)
 } else {
-  fx_gene <- fx_gene[1]; k_chr <- kinship_loco[[fx_chr]]
-  cis_fx  <- get_cis_loci(fx_gene, fx_chr)
-  fx_scan <- tryCatch(
-    scan.h2lmm(genomecache=genomecache_path, data=pheno_strain,
-                pheno.id='subject.name', geno.id='subject.name',
-                formula=make_form(fx_gene), K=k_chr,
-                use.multi.impute=FALSE, model='additive',
-                just.these.loci=cis_fx),
-    error=function(e) { message('  fx_scan failed: ', e$message); NULL })
-  if (!is.null(fx_scan)) {
-    set.seed(1)
+  # loop over top candidates until instability.lm.scan returns non-empty $loci.
+  # use.ROP=FALSE forces plain OLS bootstrap (function's documented intent);
+  # use.ROP=TRUE (default) runs a full ROP LMM per bootstrap replicate — when
+  # signal is weak the internal peak-finder finds no stable locus and returns
+  # length($loci)==0 regardless of gene quality.
+  lod_file_s4 <- file.path(output_dir, 'lod_r.csv')
+  if (file.exists(lod_file_s4)) {
+    lod_s4  <- read.csv(lod_file_s4, check.names=FALSE)
+    lod_s4  <- lod_s4[as.character(lod_s4$chr) == as.character(fx_chr), ]
+    peak_s4 <- tapply(lod_s4$lod, lod_s4$gene_id, max, na.rm=TRUE)
+    fx_candidates <- names(sort(peak_s4, decreasing=TRUE))
+    fx_candidates <- fx_candidates[fx_candidates %in% all_genes]
+  } else {
+    fx_candidates <- fx_gene   # already set above
+  }
+  fx_candidates <- head(fx_candidates[
+    sapply(fx_candidates, function(g) !is.null(get_cis_loci(g, fx_chr)))], 10)
+
+  inst_res <- NULL; fx_used <- NULL
+  for (cand in fx_candidates) {
+    cis_fx  <- get_cis_loci(cand, fx_chr)
+    k_chr   <- kinship_loco[[fx_chr]]
+    message('  trying gene: ', cand, '  cis_loci=', length(cis_fx))
     simple_obj <- tryCatch(
       generate.simple.sample.outcomes.matrix(
-        formula=make_form(fx_gene),
+        formula=make_form(cand),
         data=pheno_strain,
         pheno.id='subject.name',
         method='bootstrap',
         num.samples=100, seed=1),
       error=function(e) { message('  simple sample failed: ', e$message); NULL })
-    if (!is.null(simple_obj)) {
-      inst_res <- tryCatch(
-        instability.lm.scan(simple.sample.object=simple_obj,
-          genomecache=genomecache_path, model='additive',
-          seed=1, just.these.loci=cis_fx),
-        error=function(e) { message('  instability failed: ', e$message); NULL })
-      if (!is.null(inst_res) && length(inst_res$loci) > 0) {
-        write.csv(data.frame(
-          gene_id=fx_gene, chr=fx_chr, locus=inst_res$loci,
-          pos_mb=pmap_flat$pos_mb[match(inst_res$loci, pmap_flat$locus)],
-          lod=inst_res$LOD, stringsAsFactors=FALSE),
-          file.path(output_dir,'fixef_r.csv'), row.names=FALSE)
-        message('  saved: fixef_r.csv (', length(inst_res$loci), ' loci)')
-      } else {
-        message('  instability scan returned empty result — skipping write')
-      }
+    if (is.null(simple_obj)) next
+    res <- tryCatch(
+      instability.lm.scan(simple.sample.object=simple_obj,
+        genomecache=genomecache_path, model='additive',
+        use.ROP=FALSE,           # OLS bootstrap — avoids empty-loci from weak ROP signal
+        seed=1, just.these.loci=cis_fx),
+      error=function(e) { message('  instability failed: ', e$message); NULL })
+    if (!is.null(res) && length(res$loci) > 0) {
+      inst_res <- res; fx_used <- cand
+      message('  instability gene accepted: ', cand)
+      break
     }
+    message('  empty result for ', cand, ' — trying next candidate')
+  }
+
+  if (!is.null(inst_res) && length(inst_res$loci) > 0) {
+    cis_fx <- get_cis_loci(fx_used, fx_chr)
+    write.csv(data.frame(
+      gene_id=fx_used, chr=fx_chr, locus=inst_res$loci,
+      pos_mb=pmap_flat$pos_mb[match(inst_res$loci, pmap_flat$locus)],
+      lod=inst_res$LOD, stringsAsFactors=FALSE),
+      file.path(output_dir,'fixef_r.csv'), row.names=FALSE)
+    message('  saved: fixef_r.csv (', length(inst_res$loci), ' loci)')
+  } else {
+    message('  SKIP: all candidates returned empty instability result')
   }
 }
 } # end s11
