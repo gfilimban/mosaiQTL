@@ -583,9 +583,12 @@ if section(4, 'LMM SCAN (ROP)'):
                     ax.legend(fontsize=9); sns.despine(); plt.tight_layout()
                     save_plot(fig,'s4_founder_effects.png')
 
-            lod_pass = (n_s+n_l)/max(len(stat_df),1) >= 0.50
+            _n_total  = max(len(stat_df), 1)
+            _pct_pass = 100.0 * (n_s + n_l) / _n_total
+            lod_pass  = _pct_pass >= 50.0
             record('lmm_scan', lod_pass,
                    f'strict={n_s}  lenient={n_l}  fail={n_f}  '
+                   f'pct_pass={_pct_pass:.1f}%  threshold=50%  '
                    f'median_r={stat_df["r"].median():.4f}')
         else:
             skip('lmm_scan','no locus overlap between R and Python')
