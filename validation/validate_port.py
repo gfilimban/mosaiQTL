@@ -1028,6 +1028,7 @@ if section(11, 'INSTABILITY SCAN'):
                                       .rename(columns={'lod':'lod_r'}),
                                      on='locus',how='inner')
             if len(mg_fx) >= 3:
+                mg_fx['gene_id'] = fx_gene   # add gene_id before _col reorder
                 mg_fx = _col(mg_fx, ['gene_id', 'chr', 'locus', 'lod_r', 'lod_py'])
                 save_csv(mg_fx, 'fixef_comparison.csv')
                 r_fx_v = float(np.corrcoef(mg_fx['lod_r'], mg_fx['lod_py'])[0, 1])
