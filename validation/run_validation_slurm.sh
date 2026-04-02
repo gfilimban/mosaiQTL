@@ -74,9 +74,9 @@ source \$(conda info --base)/etc/profile.d/conda.sh
 conda activate ${CONDA_ENV}
 export R_LIB_PATH="${R_LIB_PATH}"
 
-# genome-level sections only: s1 cache, s2 haplotype, s3 kinship, s5 collapse
+# genome-level sections only: s1 cache, s2 haplotype, s3 kinship, s6 collapse
 # per-chromosome sections (s4 s6 s7 s8 s9 s10 s11) run in parallel array jobs
-Rscript "${R_SCRIPT}" all Inf 1,2,3,5 2>&1
+Rscript "${R_SCRIPT}" all Inf 1,2,3,6 2>&1
 echo "[setup] finished \$(date)"
 SLURM
 )
@@ -112,11 +112,11 @@ source \$(conda info --base)/etc/profile.d/conda.sh
 conda activate ${CONDA_ENV}
 export R_LIB_PATH="${R_LIB_PATH}"
 
-# per-chromosome sections: s4 lmm scan, s6 permutation, s7 MI,
+# per-chromosome sections: s4 lmm scan, s5 permutation, s7 MI,
 # s8 snp scan, s9 mediation, s10 positional CI, s11 instability
 # s1 s2 s3 s5 are genome-level and handled by setup job
 # slurm mode: writes to r_data/chr${CHR}/
-Rscript "${R_SCRIPT}" ${CHR} Inf slurm 4,6,7,8,9,10,11 2>&1
+Rscript "${R_SCRIPT}" ${CHR} Inf slurm 4,5,7,8,9,10,11 2>&1
 echo "[chr${CHR}] finished \$(date)"
 SLURM
     )
