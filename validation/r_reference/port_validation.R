@@ -924,7 +924,7 @@ if (!length(fx_gene)) {
     # hoist all miqtl unexported functions that instability.lm.scan needs —
     # they resolve via search path not :::; discover names at runtime
     miqtl_ns  <- asNamespace('miqtl')
-    inst_fns  <- ls(miqtl_ns, pattern='locus|instab|bs\.fit|bootstrap|scan\.lm')
+    inst_fns  <- ls(miqtl_ns, pattern='locus|instab|bs[.]fit|bootstrap|scan[.]lm')
     message('  miqtl internal candidates: ', paste(inst_fns, collapse=', '))
     for (.fn in inst_fns) {
       if (!exists(.fn, envir=globalenv(), inherits=FALSE))
