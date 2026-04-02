@@ -74,13 +74,9 @@ source \$(conda info --base)/etc/profile.d/conda.sh
 conda activate ${CONDA_ENV}
 export R_LIB_PATH="${R_LIB_PATH}"
 
-# run genome-level sections only (all chrs, no slurm flag)
-# s1 cache info, s2 haplotype, s3 kinship, s5 collapse run here
-# s4 s6 s7 s8 are skipped because output_dir = r_data/ (not per-chr)
-# we run with chr='all' so the per-chr scan loops complete quickly
-# (but they will run too — this is intentional for the genome-level outputs)
-# to run only genome-level: pass a dummy chr that has no genes
-Rscript "${R_SCRIPT}" all Inf 2>&1
+# genome-level sections only: s1 cache, s2 haplotype, s3 kinship, s5 collapse
+# per-chromosome sections (s4 s6 s7 s8 s9 s10 s11) run in parallel array jobs
+Rscript "${R_SCRIPT}" all Inf 1,2,3,5 2>&1
 echo "[setup] finished \$(date)"
 SLURM
 )
@@ -116,10 +112,11 @@ source \$(conda info --base)/etc/profile.d/conda.sh
 conda activate ${CONDA_ENV}
 export R_LIB_PATH="${R_LIB_PATH}"
 
+# per-chromosome sections: s4 lmm scan, s6 permutation, s7 MI,
+# s8 snp scan, s9 mediation, s10 positional CI, s11 instability
+# s1 s2 s3 s5 are genome-level and handled by setup job
 # slurm mode: writes to r_data/chr${CHR}/
-# runs s4 (lmm scan), s6 (permutation), s7 (MI), s8 (SNP if allele_dir exists)
-# skips genome-level sections (s1 s2 s3 s5 s9 s10 s11)
-Rscript "${R_SCRIPT}" ${CHR} Inf slurm 2>&1
+Rscript "${R_SCRIPT}" ${CHR} Inf slurm 4,6,7,8,9,10,11 2>&1
 echo "[chr${CHR}] finished \$(date)"
 SLURM
     )
