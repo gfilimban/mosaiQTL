@@ -914,13 +914,13 @@ if (!length(fx_gene)) {
     cis_fx  <- get_cis_loci(cand, fx_chr)
     k_chr   <- kinship_loco[[fx_chr]]
     message('  trying gene: ', cand, '  cis_loci=', length(cis_fx))
-    # generate.simple.sample.outcomes.matrix stores the formula but NOT the data.
-    # instability.lm.scan evaluates the formula in the calling env — gene-named
-    # columns (e.g. 'Nek3') are not in scope → "object 'Nek3' not found".
-    # fix: rename outcome to generic 'pheno' in a data copy so the stored
-    # formula uses 'pheno ~ batch + ...' which instability.lm.scan can resolve.
+    # instability.lm.scan evaluates the stored formula in an environment that
+    # has no access to the data frame — neither the gene column nor a renamed
+    # 'pheno' column is in scope. assign() to globalenv() makes the outcome
+    # vector findable wherever R searches during formula evaluation.
     pheno_tmp <- pheno_strain
     pheno_tmp[['pheno']] <- pheno_tmp[[cand]]
+    assign('pheno', pheno_tmp[['pheno']], envir=globalenv())  # put in global scope
     inst_form <- as.formula(paste0('pheno ~ batch + ',
                                    paste0('pc', 1:n_pcs, collapse=' + ')))
     simple_obj <- tryCatch(
@@ -946,6 +946,7 @@ if (!length(fx_gene)) {
     message('  empty result for ', cand, ' — trying next candidate')
   }
 
+  if (exists('pheno', envir=globalenv())) rm('pheno', envir=globalenv())  # clean up
   if (!is.null(inst_res) && length(inst_res$loci) > 0) {
     cis_fx <- get_cis_loci(fx_used, fx_chr)
     write.csv(data.frame(
