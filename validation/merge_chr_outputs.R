@@ -5,14 +5,20 @@
 pkg_dir <- '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl'
 r_data  <- file.path(pkg_dir, 'validation', 'port_validation', 'r_data')
 
-# CSVs that are per-chromosome and need stacking
+# CSVs that are per-chromosome and need stacking.
+# S4: lod_r, allele_effects_r | S5: thresholds_r, perm_lods_r | S7: mi_lod_r
+# S8: snp_lod_r | S9: mediation_r | S10: ci_r, boot_pos_r | S11: fixef_r
 per_chr_files <- c(
   'lod_r.csv',
   'allele_effects_r.csv',
   'mi_lod_r.csv',
   'snp_lod_r.csv',
   'thresholds_r.csv',
-  'perm_lods_r.csv'
+  'perm_lods_r.csv',
+  'mediation_r.csv',
+  'ci_r.csv',
+  'boot_pos_r.csv',
+  'fixef_r.csv'
 )
 
 # CSVs that are genome-level (written by setup job) — just check they exist

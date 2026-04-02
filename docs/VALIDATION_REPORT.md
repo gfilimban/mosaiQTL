@@ -4,7 +4,7 @@
 **Scripts:** `validation/validate_port.py` vs `validation/r_reference/port_validation.R`  
 **Reference:** miQTL R package (`gkeele/miqtl`)  
 **Run command:** `python validation/validate_port.py --chr 8 --n_genes 50`  
-**Last updated:** April 2026 | commit `9c7813d`
+**Last updated:** April 2026 | commit `2333b69`
 
 ---
 
