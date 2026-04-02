@@ -202,12 +202,24 @@ first_gene_on <- function(chr, n=1) {
   found
 }
 
+# ── shared genomecache handle — required by multiple sections ────────────────
+# initialised here (outside section guards) so per-chr array jobs that skip
+# S1 still have h, founders, and sample_ids available
+h              <- DiploprobReader$new(genomecache_path)
+founders       <- h$getFounders()
+founder_map    <- c(A='AJ',B='B6J',C='129S1J',D='NODJ',E='NZOJ',F='CASTJ',G='PWKJ',H='WSBJ')
+founders_full  <- ifelse(founders %in% names(founder_map), founder_map[founders], founders)
+sample_ids     <- h$getSubjects()
+sample_ids     <- c(sample_ids[!grepl('^CC', sample_ids)],
+                    sample_ids[ grepl('^CC', sample_ids)])
+message('[init] h loaded: ', length(h$getFounders()), ' founders  ',
+        length(h$getSubjects()), ' subjects')
+
 # ─────────────────────────────────────────────────────────────────────────────
 # S1 — CACHE INFO
 # ─────────────────────────────────────────────────────────────────────────────
 if (1 %in% run_sections) {
 message('\n[s1] cache info')
-h <- DiploprobReader$new(genomecache_path)
 chr_info <- do.call(rbind, lapply(chromosomes, function(c) {
   load(file.path(genomecache_path,'additive',paste0('chr',c),'markers.RData'))
   load(file.path(genomecache_path,'additive',paste0('chr',c),'map.RData'))
@@ -216,12 +228,7 @@ chr_info <- do.call(rbind, lapply(chromosomes, function(c) {
              min_mb=min(bp/1e6, na.rm=TRUE), max_mb=max(bp/1e6, na.rm=TRUE),
              stringsAsFactors=FALSE)
 }))
-founders      <- h$getFounders()   # single-letter HAPPY codes A-H
-founder_map   <- c(A='AJ',B='B6J',C='129S1J',D='NODJ',E='NZOJ',F='CASTJ',G='PWKJ',H='WSBJ')
-founders_full <- ifelse(founders %in% names(founder_map), founder_map[founders], founders)
-sample_ids <- h$getSubjects()
-sample_ids <- c(sample_ids[!grepl('^CC', sample_ids)],
-                sample_ids[ grepl('^CC', sample_ids)])  
+# h, founders, founder_map, founders_full, sample_ids — defined in shared setup above
 cache_info <- list(
   chr_summary = chr_info,
   founders    = founders,
