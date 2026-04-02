@@ -86,7 +86,9 @@ n_genes     <- if (length(args) >= 2 && !args[2] %in% c('','NA','all','Inf')) {
 #   Rscript port_validation.R 8 50 slurm 11  # s11 in slurm mode
 slurm_mode   <- any(args == 'slurm')
 run_sections <- {
-  sec_arg <- args[grepl('^[0-9,]+$', args) & nchar(args) > 0]
+  # only inspect args[3+] — args[1]=chr and args[2]=n_genes are positional
+  extra <- if (length(args) >= 3) args[3:length(args)] else character(0)
+  sec_arg <- extra[grepl('^[0-9,]+$', extra) & nchar(extra) > 0]
   if (length(sec_arg)) as.integer(strsplit(sec_arg[1], ',')[[1]]) else 1:11
 }
 message('[init] chr=', scan_chrs, '  n_genes=',
