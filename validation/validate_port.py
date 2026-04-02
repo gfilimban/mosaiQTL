@@ -1059,7 +1059,15 @@ for _sn, _sk in _section_keys.items():
                         'detail':'skipped: not in --sections'})
 
 qc_df = pd.DataFrame(qc_rows)
-qc_df.to_csv(os.path.join(PY_DATA,'qc_summary.csv'),index=False)
+# when running a subset of sections, merge into existing qc_summary.csv
+# rather than overwriting — preserves results from other sections
+_qc_path = os.path.join(PY_DATA,'qc_summary.csv')
+if args.sections and os.path.exists(_qc_path):
+    _existing = pd.read_csv(_qc_path)
+    _new_keys = set(qc_df['section'])
+    _existing = _existing[~_existing['section'].isin(_new_keys)]  # drop stale rows
+    qc_df = pd.concat([_existing, qc_df], ignore_index=True)
+qc_df.to_csv(_qc_path, index=False)
 hi('\n' + '='*65)
 hi(f'{"section":<25} {"status":<6} detail')
 hi('─'*65)
