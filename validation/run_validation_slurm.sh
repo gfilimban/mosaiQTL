@@ -3,8 +3,8 @@
 # parallelise port_validation.R across chromosomes using SLURM array jobs.
 #
 # workflow:
-#   step 0  setup    — dirs, genome-level sections (s1 s2 s3 s5)
-#   step 1  array    — per-chr sections (s4 s6 s7 s8) one node per chr
+#   step 0  setup    — dirs, genome-level sections (s1 s2 s3 s6)
+#   step 1  array    — per-chr sections (s4 s5 s7 s8 s9 s10 s11) one node per chr
 #   step 2  merge    — combine per-chr CSVs → unified r_data/ files
 #   step 3  python   — run validate_port.py against merged outputs
 #
@@ -34,8 +34,8 @@ CHRS=(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 X)
 # SLURM resources
 PARTITION="standard"    # update for your HPC partition
 ACCOUNT="seyedam_lab"   # update for your HPC account
-TIME_SETUP="01:00:00"     # setup step (s1-s3, s5)
-TIME_CHR="08:00:00"       # per-chr (s4 s6 s7 s8) — conservative
+TIME_SETUP="01:00:00"     # setup step (s1 s2 s3 s6)
+TIME_CHR="08:00:00"       # per-chr (s4 s5 s7 s8 s9 s10 s11) — conservative
 TIME_MERGE="02:00:00"     # merge + python validation
 MEM="32G"
 CPUS=4
@@ -54,7 +54,7 @@ mkdir -p "${R_DATA}/merged"
 echo "[${TS}] directories created"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 0 — SETUP: genome-level sections (s1 s2 s3 s5)
+# STEP 0 — SETUP: genome-level sections (s1 s2 s3 s6)
 # runs once on one node before the array
 # ─────────────────────────────────────────────────────────────────────────────
 SETUP_LOG="${LOGS}/setup_${TS}.log"
@@ -75,7 +75,7 @@ conda activate ${CONDA_ENV}
 export R_LIB_PATH="${R_LIB_PATH}"
 
 # genome-level sections only: s1 cache, s2 haplotype, s3 kinship, s6 collapse
-# per-chromosome sections (s4 s6 s7 s8 s9 s10 s11) run in parallel array jobs
+# per-chromosome sections (s4 s5 s7 s8 s9 s10 s11) run in parallel array jobs
 Rscript "${R_SCRIPT}" all Inf 1,2,3,6 2>&1
 echo "[setup] finished \$(date)"
 SLURM
@@ -90,7 +90,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 1 — ARRAY: one job per chromosome (s4 s6 s7 s8)
+# STEP 1 — ARRAY: one job per chromosome (s4 s5 s7 s8 s9 s10 s11)
 # ─────────────────────────────────────────────────────────────────────────────
 CHR_JIDS=()
 for CHR in "${CHRS[@]}"; do
@@ -114,7 +114,7 @@ export R_LIB_PATH="${R_LIB_PATH}"
 
 # per-chromosome sections: s4 lmm scan, s5 permutation, s7 MI,
 # s8 snp scan, s9 mediation, s10 positional CI, s11 instability
-# s1 s2 s3 s5 are genome-level and handled by setup job
+# s1 s2 s3 s6 are genome-level and handled by setup job
 # slurm mode: writes to r_data/chr${CHR}/
 Rscript "${R_SCRIPT}" ${CHR} Inf slurm 4,5,7,8,9,10,11 2>&1
 echo "[chr${CHR}] finished \$(date)"
