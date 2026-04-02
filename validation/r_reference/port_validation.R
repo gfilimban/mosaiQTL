@@ -909,54 +909,48 @@ if (!length(fx_gene)) {
   fx_candidates <- head(fx_candidates[
     sapply(fx_candidates, function(g) !is.null(get_cis_loci(g, fx_chr)))], 10)
 
+  # bypass instability.lm.scan — it calls run.locus.bs.fits which is a closure
+  # defined inside instability.lm.scan itself and cannot be hoisted.
+  # manual OLS bootstrap: subsample 63% of strains without replacement, run
+  # scan.h2lmm(K=NULL) for OLS at each cis locus, average LOD across bootstraps.
+  # mirrors Python instability_lm_scan (subsample_prop=0.63, n_samples=100).
   inst_res <- NULL; fx_used <- NULL
+  set.seed(1)
+  n_inst    <- nrow(pheno_strain)
+  k_inst    <- max(floor(0.63 * n_inst), 2)
+  n_boot    <- 100
+
   for (cand in fx_candidates) {
     cis_fx  <- get_cis_loci(cand, fx_chr)
-    k_chr   <- kinship_loco[[fx_chr]]
     message('  trying gene: ', cand, '  cis_loci=', length(cis_fx))
-    # instability.lm.scan evaluates the stored formula in an environment that
-    # has no access to the data frame — neither the gene column nor a renamed
-    # 'pheno' column is in scope. assign() to globalenv() makes the outcome
-    # vector findable wherever R searches during formula evaluation.
-    pheno_tmp <- pheno_strain
-    pheno_tmp[['pheno']] <- pheno_tmp[[cand]]
-    assign('pheno', pheno_tmp[['pheno']], envir=globalenv())  # put in global scope
-    # hoist all miqtl unexported functions that instability.lm.scan needs —
-    # they resolve via search path not :::; discover names at runtime
-    miqtl_ns  <- asNamespace('miqtl')
-    inst_fns  <- ls(miqtl_ns, pattern='locus|instab|bs[.]fit|bootstrap|scan[.]lm')
-    message('  miqtl internal candidates: ', paste(inst_fns, collapse=', '))
-    for (.fn in inst_fns) {
-      if (!exists(.fn, envir=globalenv(), inherits=FALSE))
-        assign(.fn, get(.fn, envir=miqtl_ns), envir=globalenv())
-    }
-    rm(miqtl_ns, inst_fns)
-    inst_form <- as.formula(paste0('pheno ~ batch + ',
+    inst_form <- as.formula(paste0('`', cand, '` ~ batch + ',
                                    paste0('pc', 1:n_pcs, collapse=' + ')))
-    simple_obj <- tryCatch(
-      generate.simple.sample.outcomes.matrix(
-        formula=inst_form,
-        data=pheno_tmp,
-        pheno.id='subject.name',
-        method='bootstrap',
-        num.samples=100, seed=1),
-      error=function(e) { message('  simple sample failed: ', e$message); NULL })
-    if (is.null(simple_obj)) next
-    res <- tryCatch(
-      instability.lm.scan(simple.sample.object=simple_obj,
-        genomecache=genomecache_path, model='additive',
-        use.ROP=FALSE,           # OLS bootstrap — avoids empty-loci from weak ROP signal
-        seed=1, just.these.loci=cis_fx),
-      error=function(e) { message('  instability failed: ', e$message); NULL })
-    if (!is.null(res) && length(res$loci) > 0) {
-      inst_res <- res; fx_used <- cand
-      message('  instability gene accepted: ', cand)
+    lod_accum <- NULL
+
+    for (b in seq_len(n_boot)) {
+      idx_b    <- sample(n_inst, size=k_inst, replace=FALSE)
+      pheno_b  <- pheno_strain[idx_b, , drop=FALSE]
+      k_b      <- kinship_loco[[fx_chr]][rownames(pheno_b), rownames(pheno_b)]
+      scan_b   <- tryCatch(
+        scan.h2lmm(genomecache=genomecache_path, data=pheno_b,
+                   pheno.id='subject.name', geno.id='subject.name',
+                   formula=inst_form, K=NULL,           # K=NULL → OLS (no kinship)
+                   use.multi.impute=FALSE, model='additive',
+                   just.these.loci=cis_fx),
+        error=function(e) NULL)
+      if (is.null(scan_b) || length(scan_b$LOD) == 0) next
+      if (is.null(lod_accum)) lod_accum <- numeric(length(scan_b$LOD))
+      lod_accum <- lod_accum + scan_b$LOD
+    }
+
+    if (!is.null(lod_accum) && any(is.finite(lod_accum))) {
+      inst_res <- list(loci=cis_fx, LOD=lod_accum / n_boot)
+      fx_used  <- cand
+      message('  instability gene accepted: ', cand, '  loci=', length(inst_res$loci))
       break
     }
-    message('  empty result for ', cand, ' — trying next candidate')
+    message('  no valid scans for ', cand, ' — trying next candidate')
   }
-
-  if (exists('pheno', envir=globalenv())) rm('pheno', envir=globalenv())  # clean up
   if (!is.null(inst_res) && length(inst_res$loci) > 0) {
     cis_fx <- get_cis_loci(fx_used, fx_chr)
     write.csv(data.frame(
