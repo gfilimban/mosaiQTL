@@ -700,86 +700,116 @@ if section(6, 'PERMUTATION THRESHOLDS'):
     else:
         from mosaiqtl import permutation as perm_mod
         from scipy.stats import genextreme as _gev
-        thresh_gene = str(r_thresh['gene_id'].iloc[0])
-        thresh_chr  = str(r_thresh['chr'].iloc[0])
-        thresh_r_v  = float(r_thresh['lod_threshold'].iloc[0])
-        n_p         = int(r_thresh['n_perms'].iloc[0])
-        y_t  = _get_y(thresh_gene)
-        if y_t is None:
-            skip('permutation',f'{thresh_gene} not in pheno')
-        else:
-            k_t   = kinship_py[thresh_chr]
-            ev,evc= np.linalg.eigh(k_t)
-            valid = ~np.isnan(y_t)
-            y_v   = _rint(y_t[valid]); x_v=covar_base[valid]; evc_v=evc[valid]
-            h2,_  = lmm_module.estimate_h2_null(evc_v.T@y_v,evc_v.T@x_v,ev)
-            # restrict to cis loci only — R uses just.these.loci=cis_t per permutation;
-            # scanning all chr8 loci inflates max-LOD ~2x relative to R
-            _cis_loci = (set(r_lod.loc[(r_lod['gene_id']==thresh_gene) &
-                                        (r_lod['chr']==thresh_chr), 'locus'])
-                         if r_lod is not None else None)
-            if _cis_loci:
-                hi(f'  cis loci: {len(_cis_loci)} (restricted, matches R)')
-            rng   = np.random.default_rng(42)
-            max_lods = []
-            hi(f'  {n_p} permutations — {thresh_gene} chr{thresh_chr}')
-            for _ in range(n_p):
+
+        # after genome-wide merge, r_thresh has one row per chromosome.
+        # loop all chromosomes, run n_p permutations each, accumulate max_lods.
+        # this makes the QQ and histogram use the same pooled distribution as R.
+        all_max_lods = []    # flat list of all per-chr perm max-LODs
+        chr_records  = []    # per-chr threshold comparison rows
+        chr_labels   = []    # for per-chr bar chart x-axis
+
+        for _, trow in r_thresh.iterrows():
+            _tgene = str(trow['gene_id'])
+            _tchr  = str(trow['chr'])
+            _tr_v  = float(trow['lod_threshold'])
+            _np    = int(trow['n_perms']) if trow['n_perms'] > 0 else 100
+            y_t    = _get_y(_tgene)
+            if y_t is None or _tchr not in kinship_py:
+                hi(f'  skip chr{_tchr}: gene {_tgene} not in pheno or kinship')
+                continue
+            k_t  = kinship_py[_tchr]
+            ev,evc = np.linalg.eigh(k_t)
+            valid  = ~np.isnan(y_t)
+            y_v    = _rint(y_t[valid]); x_v=covar_base[valid]; evc_v=evc[valid]
+            h2,_   = lmm_module.estimate_h2_null(evc_v.T@y_v,evc_v.T@x_v,ev)
+            # cis loci restriction — matches R's just.these.loci per permutation
+            _cis = (set(r_lod.loc[(r_lod['gene_id']==_tgene)&
+                                   (r_lod['chr']==_tchr),'locus'])
+                    if r_lod is not None else None)
+            hi(f'  chr{_tchr} — {_tgene}  cis={len(_cis) if _cis else "all"}  n_perm={_np}')
+            rng = np.random.default_rng(42)
+            ml  = []
+            for _ in range(_np):
                 yp  = rng.permutation(y_v)
-                cr  = lmm_module.scan_chromosome(yp,cache_py,thresh_chr,x_v,ev,evc_v,h2)
-                if _cis_loci:
-                    _mask = np.isin(cr['locus_ids'], list(_cis_loci))
-                    _lod  = cr['lod'][_mask] if _mask.any() else cr['lod']
-                else:
-                    _lod  = cr['lod']
-                max_lods.append(float(_lod.max()))
-            max_lods = np.array(max_lods)
-            thresh_py,gev_p = perm_mod.get_gev_thresholds(max_lods,0.95)
-            delta = abs(thresh_py-thresh_r_v)
-            perm_pass = delta < 0.5
-            save_csv(pd.DataFrame({'gene_id': thresh_gene, 'chr': thresh_chr,
-                                   'pos_mb': np.nan, 'perm_lod': max_lods}),
-                     'perm_lods_py.csv')
-            save_csv(_col(pd.DataFrame([{'gene_id': thresh_gene, 'chr': thresh_chr,
-                                          'n_perms': n_p, 'threshold_r': thresh_r_v,
-                                          'threshold_py': thresh_py, 'delta': delta}]),
-                           ['gene_id', 'chr', 'n_perms', 'threshold_r', 'threshold_py', 'delta']),
+                cr  = lmm_module.scan_chromosome(yp,cache_py,_tchr,x_v,ev,evc_v,h2)
+                _lod = cr['lod']
+                if _cis:
+                    _m = np.isin(cr['locus_ids'], list(_cis))
+                    _lod = _lod[_m] if _m.any() else _lod
+                ml.append(float(_lod.max()))
+            ml = np.array(ml)
+            all_max_lods.extend(ml.tolist())
+            t_py,_ = perm_mod.get_gev_thresholds(ml, 0.95)
+            chr_records.append({'gene_id':_tgene,'chr':_tchr,'n_perms':_np,
+                                 'threshold_r':_tr_v,'threshold_py':t_py,
+                                 'delta':abs(t_py-_tr_v)})
+            chr_labels.append(_tchr)
+            log.info(f'  chr{_tchr}: py={t_py:.3f}  R={_tr_v:.3f}  Δ={abs(t_py-_tr_v):.3f}')
+
+        if not chr_records:
+            skip('permutation','no valid chromosomes with phenotype and kinship')
+        else:
+            all_max_lods = np.array(all_max_lods)
+            comp_df = pd.DataFrame(chr_records)
+            thresh_py,gev_p = perm_mod.get_gev_thresholds(all_max_lods, 0.95)
+            thresh_r_v = float(comp_df['threshold_r'].mean())   # mean R threshold across chrs
+            delta      = float(comp_df['delta'].mean())
+            perm_pass  = delta < 0.5
+
+            save_csv(pd.DataFrame({'perm_lod': all_max_lods}), 'perm_lods_py.csv')
+            save_csv(_col(comp_df,['gene_id','chr','n_perms',
+                                    'threshold_r','threshold_py','delta']),
                      'threshold_comparison.csv')
 
-            fig,axes=plt.subplots(1,2,figsize=(11,4))
+            # ── 3-panel plot ──────────────────────────────────────────────────
+            fig,axes=plt.subplots(1,3,figsize=(16,4))
+
+            # panel 1 — pooled histogram + GEV fit
             ax=axes[0]
-            sns.histplot(max_lods,bins=30,color='#4F6EAF',ax=ax,
-                         edgecolor='none',stat='density',label='py permutations')
+            sns.histplot(all_max_lods,bins=40,color='#4F6EAF',ax=ax,
+                         edgecolor='none',stat='density',label='py (all chr)')
             if r_perms is not None:
-                sns.histplot(r_perms['perm_lod'],bins=30,color='#55AF5B',ax=ax,
-                             edgecolor='none',stat='density',alpha=0.5,label='r permutations')
-            xf=np.linspace(max_lods.min(),max_lods.max()*1.1,200)
+                sns.histplot(r_perms['perm_lod'],bins=40,color='#55AF5B',ax=ax,
+                             edgecolor='none',stat='density',alpha=0.5,label='R (all chr)')
+            xf=np.linspace(all_max_lods.min(),all_max_lods.max()*1.1,200)
             ax.plot(xf,_gev.pdf(xf,gev_p['c'],loc=gev_p['loc'],scale=gev_p['scale']),
-                    color='#C0BFBF',lw=2,label='GEV fit (py)')
+                    color='#C0BFBF',lw=2,label='GEV fit (py pooled)')
             ax.axvline(thresh_py,color='#4F6EAF',lw=1.5,ls='--',
                        label=f'py 95%={thresh_py:.2f}')
             ax.axvline(thresh_r_v,color='#D83026',lw=1.5,ls=':',
-                       label=f'R 95%={thresh_r_v:.2f}')
+                       label=f'R mean={thresh_r_v:.2f}')
             ax.set(xlabel='max LOD',ylabel='density',
-                   title=f'permutation thresholds\n{thresh_gene} chr{thresh_chr}')
+                   title=f'pooled permutation null  ({len(chr_records)} chr)')
             ax.legend(fontsize=8);sns.despine(ax=ax)
+
+            # panel 2 — QQ scatter (sorted pooled py vs sorted pooled R)
             ax=axes[1]
-            # filter r_perms to this gene+chr — merged CSV has all 20 chromosomes
-            _rp = (r_perms[(r_perms['gene_id']==thresh_gene)&(r_perms['chr']==thresh_chr)]
-                   if r_perms is not None and
-                   'gene_id' in r_perms.columns and 'chr' in r_perms.columns
-                   else r_perms)
-            if _rp is not None and len(_rp)>3:
-                _n = min(len(_rp), len(max_lods))
-                scatter_qc(ax,np.sort(_rp['perm_lod'].values[:_n]),
-                           np.sort(max_lods[:_n]),
+            if r_perms is not None and len(r_perms)>3:
+                _n = min(len(r_perms), len(all_max_lods))
+                scatter_qc(ax,np.sort(r_perms['perm_lod'].values)[:_n],
+                           np.sort(all_max_lods)[:_n],
                            'R perm max-LOD (sorted)',
                            'Python perm max-LOD (sorted)',
-                           f'QQ permutation  Δthr={delta:.3f}')
+                           f'QQ  mean Δthr={delta:.3f}')
             else:
                 ax.text(0.5,0.5,'no R perm lods',ha='center',transform=ax.transAxes)
+
+            # panel 3 — per-chr threshold delta bar chart
+            ax=axes[2]
+            x_pos = np.arange(len(comp_df))
+            colors = ['#D83026' if d>0.5 else '#4F6EAF' for d in comp_df['delta']]
+            ax.bar(x_pos, comp_df['delta'], color=colors, edgecolor='none')
+            ax.axhline(0.5,color='#D83026',lw=1,ls='--',label='pass threshold')
+            ax.set(xticks=x_pos, xticklabels=comp_df['chr'].tolist(),
+                   xlabel='chromosome', ylabel='|Δ threshold| (py − R)',
+                   title=f'per-chr threshold agreement')
+            ax.set_xticklabels(comp_df['chr'].tolist(),rotation=45,ha='right',fontsize=8)
+            ax.legend(fontsize=8);sns.despine(ax=ax)
+
             plt.tight_layout();save_plot(fig,'s6_permutation.png')
             record('permutation',perm_pass,
-                   f'py={thresh_py:.3f}  R={thresh_r_v:.3f}  Δ={delta:.3f}')
+                   f'mean_delta={delta:.3f}  py_pooled={thresh_py:.3f}  '
+                   f'R_mean={thresh_r_v:.3f}  n_chr={len(chr_records)}')
 
     # ══════════════════════════════════════════════════════════════════════════════
     # S7 — MULTIPLE IMPUTATION
