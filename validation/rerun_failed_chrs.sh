@@ -36,9 +36,9 @@ TIME_CHR="16:00:00"
 TIME_MERGE="02:00:00"
 
 # sentinel file that proves a chr job completed successfully.
-# lod_r.csv is written at the end of S4 — the longest section.
-# if it exists and is non-empty, the job ran far enough to be useful.
-SENTINEL="lod_r.csv"
+# ci_r.csv is written by S10 (positional CI) — the last section that commonly
+# times out. if it exists and is non-empty the job ran to completion.
+SENTINEL="ci_r.csv"
 
 ALL_CHRS=(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 X)
 
