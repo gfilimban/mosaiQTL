@@ -128,7 +128,7 @@ def save_plot(fig, name):
 def load_r(name):
     p = os.path.join(R_DATA, name)
     if not os.path.exists(p): return None
-    df = pd.read_csv(p)
+    df = pd.read_csv(p, low_memory=False)   # low_memory=False: chr col is mixed int/str after genome-wide merge
     if 'chr' in df.columns: df['chr'] = df['chr'].astype(str)
     return df
 
@@ -763,9 +763,15 @@ if section(6, 'PERMUTATION THRESHOLDS'):
                    title=f'permutation thresholds\n{thresh_gene} chr{thresh_chr}')
             ax.legend(fontsize=8);sns.despine(ax=ax)
             ax=axes[1]
-            if r_perms is not None and len(r_perms)>3:
-                scatter_qc(ax,np.sort(r_perms['perm_lod'].values),
-                           np.sort(max_lods[:len(r_perms)])[:len(r_perms)],
+            # filter r_perms to this gene+chr — merged CSV has all 20 chromosomes
+            _rp = (r_perms[(r_perms['gene_id']==thresh_gene)&(r_perms['chr']==thresh_chr)]
+                   if r_perms is not None and
+                   'gene_id' in r_perms.columns and 'chr' in r_perms.columns
+                   else r_perms)
+            if _rp is not None and len(_rp)>3:
+                _n = min(len(_rp), len(max_lods))
+                scatter_qc(ax,np.sort(_rp['perm_lod'].values[:_n]),
+                           np.sort(max_lods[:_n]),
                            'R perm max-LOD (sorted)',
                            'Python perm max-LOD (sorted)',
                            f'QQ permutation  Δthr={delta:.3f}')

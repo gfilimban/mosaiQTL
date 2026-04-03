@@ -50,7 +50,6 @@ mkdir -p "${LOGS}"
 for CHR in "${CHRS[@]}"; do
     mkdir -p "${R_DATA}/chr${CHR}"
 done
-mkdir -p "${R_DATA}/merged"
 echo "[${TS}] directories created"
 
 # ─────────────────────────────────────────────────────────────────────────────
