@@ -13,3 +13,6 @@ from .nb import scan_nb, scan_nb_multi_gene  # noqa: F401
 
 # validation port — Gaussian LMM (miQTL-equivalent)
 from .scan import scan_h2lmm, scan_multi_gene, ScanResult  # noqa: F401
+
+# three-layer user API
+from .pipeline import discover, characterize, resolve  # noqa: F401

@@ -10,10 +10,21 @@
 ## Overview
 
 The miQTL validation port (S1–S11) establishes mathematical equivalence with the
-R reference. This report documents the novel mosaiQTL extensions that go beyond
-miQTL: a negative binomial primary model, genome-wide dispersion scan, and planned
-epistasis module. Each section states the scientific motivation, the statistical
-model, the implementation design, and the planned validation criteria.
+R reference. This report documents the novel mosaiQTL extensions beyond miQTL,
+organized as three analysis layers. Users choose how far to go — Layer 1 alone
+produces genome-wide eQTL maps; Layers 2 and 3 add characterization and mechanistic
+resolution progressively.
+
+```
+Layer 1 — QTL Discovery           pipeline.discover()
+Layer 2 — QTL Characterization    pipeline.characterize()
+Layer 3 — Mechanistic Resolution  pipeline.resolve(modules=[...])
+```
+
+Each layer is implemented in `mosaiqtl/pipeline.py` as a standalone function.
+Layer 3 is fully modular: users pass only the subsections their data support.
+Each section below states the scientific motivation, the statistical model, the
+implementation design, and the planned validation criteria.
 
 ---
 
@@ -24,6 +35,54 @@ All models below operate parametrically on $n$ samples and $m$ genotyped strains
 is built at scan time from `sample_ids` vs `genome_cache.sample_ids`. When $n = m$
 and IDs match, $Z = I_m$ and all formulas reduce to the strain-mean case exactly.
 No module hardcodes $n$ or $m$.
+
+---
+
+## Layer 1 — QTL Discovery
+
+Implemented in `pipeline.discover()`. Users choose `model='nb'` (raw pseudobulk
+counts, primary model) or `model='lmm'` (normalized expression, miQTL validation
+port). Returns a `DiscoveryResult` with one `ScanResult` per gene.
+
+See P1 and M-sections below for full model mathematics.
+
+---
+
+## Layer 2 — QTL Characterization
+
+Implemented in `pipeline.characterize()`. Takes a `DiscoveryResult` and runs
+selected modules: allele effect extraction at peak loci, dispersion QTL scan
+(vQTL), and mediation analysis. Returns a `CharacterizationResult`.
+
+See P2 below for vQTL model.
+
+---
+
+## Layer 3 — Mechanistic Resolution
+
+Implemented in `pipeline.resolve(modules=[...])`. Users pass only the subsections
+their data support. Each module is independent — none require the others.
+
+```python
+results = pipeline.resolve(
+    disc,
+    modules=['snp_catalogue', 'conditional_scan', 'ase', 'sqtl'],
+    snp_catalogue_kwargs    = {'mgp_vcf': '/path/mgp.vcf.gz'},
+    conditional_scan_kwargs = {'n_signals': 3},
+    ase_kwargs              = {'f1_fastq_dirs': {...},
+                               'founder_fastas': {...},
+                               'gtf_path': '/path/gencode.gtf',
+                               'tool': 'kallisto'},
+    sqtl_kwargs             = {'psi_matrix': psi, 'junction_ids': jids},
+)
+```
+
+| Module | Flag | Purpose | Min data required |
+|---|---|---|---|
+| SNP catalogue | `snp_catalogue` | Founder-divergent SNP candidates per QTL interval | MGP VCF |
+| Conditional scan | `conditional_scan` | Multi-signal decomposition within 10 Mb blocks | Layer 1 result |
+| ASE validation | `ase` | Allele-specific expression in F1 hybrids (kallisto) | F1 FASTQs + founder FASTAs |
+| sQTL integration | `sqtl` | Splicing QTL scan on PSI phenotypes | PSI matrix (LeafCutter or SQANTI3) |
 
 ---
 
@@ -207,16 +266,116 @@ regress out effect at `locus_fixed`, scan residuals genome-wide for secondary QT
 
 ---
 
-## Open Items (all POC modules)
+## Layer 3 — Module Details
 
-| # | Item | Blocking? |
-|---|---|---|
-| 1 | Run `scan_nb` on real pseudobulk (Piezo1 chr8 proof of concept) | yes — primary validation |
-| 2 | Compare NB LOD vs LMM LOD for same gene set | yes — model justification |
-| 3 | Confirm edgePython `fit['fitted.values']` key matches API | yes — `scan_nb` correctness |
-| 4 | Permutation null for NB LOD thresholds | yes — significance calling |
-| 5 | K-expansion (n > m) end-to-end test with real data | yes — Z-matrix validation |
-| 6 | Implement `epistasis.py` | no — post-validation extension |
+### 3a — SNP Catalogue (`snp_scan.py` + MGP overlay)
+
+**Purpose:** Translate a haplotype QTL interval into a ranked list of candidate
+causal SNPs. Given ~10 Mb CC haplotype blocks, this produces O(1000s) candidates
+per interval — not single-variant resolution, but a filtered catalogue for
+downstream functional prioritization.
+
+**Method:** For each peak locus, query the Sanger MGP r9 VCF within `window_mb`
+of the peak. For each SNP, compute imputed dosage:
+
+$$d_i^{(s)} = \sum_{f=1}^{J} H_{if\ell^*} \cdot g_f^{(s)}, \quad g_f^{(s)} \in \{0,1\}$$
+
+Filter to SNPs private to founders with the largest haplotype effects. Output:
+ranked DataFrame of founder-divergent candidate SNPs per gene.
+
+**Status:** `snp_scan.py` ✅ implemented; `build_snp_catalogue()` 🔲 planned.
+
+---
+
+### 3b — Conditional Scan (`scan_conditional`)
+
+**Purpose:** Decompose multi-signal QTL intervals. CC blocks average ~10 Mb;
+a single haplotype scan peak may contain several independent regulatory variants.
+Forward stepwise conditioning separates them.
+
+**Method:** Condition on the BLUP of the peak haplotype effect, rescan residuals
+for secondary signal. Repeat up to `n_signals` times. BLUP conditioning (vs
+hard peak-locus residual) reduces false secondary signals from LD within the block.
+This is the haplotype-space analogue of SuSiE's iterative Bayesian stepwise
+selection but operating on founder dosages rather than SNP dosages.
+
+**Status:** `scan_conditional()` stub in `scan.py` 🔲 planned post-validation.
+
+---
+
+### 3c — ASE Validation (`ase.py`, kallisto|bustools)
+
+**Purpose:** Confirm that a haplotype eQTL operates through cis-regulatory
+allele-specific expression in the relevant cell type, using heterozygous F1
+hybrid snRNA-seq as orthogonal evidence.
+
+**Why F1 only:** CC strains are inbred (>98% homozygous) — no within-strain
+heterozygosity. F1 crosses (e.g., B6CASTF1/J) carry exactly two haplotypes and
+show informative ASE at every divergent locus between the parental founders.
+
+**Method (kallisto|bustools):**
+
+1. Build founder-specific transcriptomes from MGP pseudogenomes (SNPs/indels
+   applied to mm39) using `kb ref` with the founder genome as d-list.
+2. Concatenate dam + sire transcriptomes into a two-allele index, prefixing
+   transcript names by allele of origin.
+3. Run `kallisto bus` — pseudoalignment to the two-allele index.
+4. `bustools sort` → `bustools capture` by allele prefix → `bustools count`
+   per allele → two count matrices (dam / sire).
+5. Compute allelic imbalance per gene:
+
+$$	ext{AI}_g = rac{N_g^	ext{dam} - N_g^	ext{sire}}{N_g^	ext{dam} + N_g^	ext{sire}}$$
+
+A gene with $|	ext{AI}| > 0$ at the haplotype QTL locus, in the cell types
+where the eQTL was detected, is direct cis-regulatory evidence for the QTL.
+
+**Why kallisto over CompMap:**
+- Consistent with existing lab pipeline (F1 paper)
+- Memory-frugal pseudoalignment vs full alignment scoring
+- Native snRNA-seq support via `bustools nac` workflow
+- Works natively for multi-sample F1 crosses via barcode demultiplexing
+
+**Precision note:** k-mer discrimination is reliable for highly divergent founders
+(CAST/J, PWK/J); may have lower allele assignment accuracy for classical founders
+(e.g., 129S1/J vs B6/J) that share high sequence identity. Report allele
+assignment rate alongside AI for quality control.
+
+**Status:** `ase.py` ✅ scaffolded; end-to-end test pending F1 FASTQ access.
+
+---
+
+### 3d — sQTL Integration (`pipeline.resolve`, `sqtl` module)
+
+**Purpose:** Map splicing QTLs using the same haplotype scan engine with PSI
+(percent-spliced-in) as the phenotype. Non-overlapping with eQTL (~75% of sQTL
+genes are missed by gene-level analysis). Long-read data enables isoform-resolved
+sQTL assignment via SQANTI3.
+
+**Method:** PSI is bounded $[0,1]$ — RINT + LMM is appropriate; NB GLM is not.
+`pipeline.resolve(sqtl_kwargs={'psi_matrix': psi})` calls `scan_h2lmm` with PSI
+phenotypes directly. No new statistical machinery — only a new phenotype input.
+
+**Short-read sQTL:** LeafCutter junction PSI → same scan engine.  
+**Long-read sQTL:** SQANTI3 isoform fractions → transcript-eQTL (teQTL) mapping.
+
+**Status:** `_run_sqtl()` in `pipeline.py` ✅ scaffolded; requires PSI matrix.
+
+---
+
+## Open Items
+
+| # | Item | Layer | Blocking? |
+|---|---|---|---|
+| 1 | Run `scan_nb` end-to-end on real pseudobulk (Piezo1 chr8) | 1 | yes |
+| 2 | Compare NB LOD vs LMM LOD for same gene set | 1 | yes |
+| 3 | Confirm edgePython `fit['fitted.values']` key | 1 | yes |
+| 4 | Permutation null for NB LOD thresholds | 1 | yes |
+| 5 | K-expansion (n > m) end-to-end test | 1 | yes |
+| 6 | Implement `scan_conditional()` (Layer 3b) | 3b | post-validation |
+| 7 | Implement `build_snp_catalogue()` (Layer 3a) | 3a | post-validation |
+| 8 | End-to-end ASE test with F1 FASTQs (Layer 3c) | 3c | post-validation |
+| 9 | LeafCutter PSI matrix → sQTL scan (Layer 3d) | 3d | post-validation |
+| 10 | Implement `epistasis.py` (Layer 3 extension) | 3 | future |
 
 ---
 

@@ -532,3 +532,35 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
 
     ref_res.lod = lod_accum / n_imp
     return ref_res
+
+
+def scan_conditional(scan_result, genome_cache, covariates=None,
+                     kinship_decomp=None, n_signals=3, lod_drop=1.5):
+    """Layer 3b — forward-stepwise multi-signal decomposition.
+
+    conditions on the peak-locus BLUP (best linear unbiased predictor of the
+    haplotype effect) and rescans the same cis window for secondary signals.
+    repeats until n_signals reached or no signal exceeds lod_drop below peak.
+
+    rationale: CC haplotype blocks average ~10 Mb; a single QTL interval
+    commonly contains multiple independent signals. conditioning on BLUP
+    (rather than peak-locus OLS residual) avoids over-fitting and is the
+    haplotype-space analogue of SuSiE's iterative Bayesian stepwise selection.
+
+    parameters
+    ----------
+    scan_result     : ScanResult  from Layer 1
+    genome_cache    : GenomeCache
+    covariates      : np.ndarray (n, p) or None
+    kinship_decomp  : dict or None
+    n_signals       : int  max signals to extract (default 3)
+    lod_drop        : float  min LOD for secondary signal (default 1.5)
+
+    returns
+    -------
+    list of ScanResult  one per independent signal found (length 1..n_signals)
+    """
+    # stub — implementation pending after Layer 1/2 validation completes
+    raise NotImplementedError(
+        'scan_conditional is planned for Layer 3b; '
+        'run Layer 1 + 2 validation first.')
