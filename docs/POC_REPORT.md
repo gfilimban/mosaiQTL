@@ -217,3 +217,310 @@ regress out effect at `locus_fixed`, scan residuals genome-wide for secondary QT
 | 4 | Permutation null for NB LOD thresholds | yes — significance calling |
 | 5 | K-expansion (n > m) end-to-end test with real data | yes — Z-matrix validation |
 | 6 | Implement `epistasis.py` | no — post-validation extension |
+
+---
+
+## M — Model Comparison: miQTL LMM vs mosaiQTL LMM vs mosaiQTL NB GLM
+
+### Purpose
+
+Three distinct statistical models are active in this codebase. The miQTL LMM is the
+R reference used to validate the port (S1–S11). The mosaiQTL LMM is the Python port —
+architecturally extended but mathematically equivalent at $n = m$. The mosaiQTL NB
+GLM is the novel primary model for pseudobulk snRNA-seq counts. This section defines
+all three precisely and documents every point of similarity, divergence, and design
+rationale.
+
+---
+
+### M1 — Phenotype and Input Data
+
+| Property | miQTL LMM | mosaiQTL LMM | mosaiQTL NB GLM |
+|---|---|---|---|
+| Input data type | Continuous (RINT-transformed) | Continuous (RINT-transformed) | Raw integer counts |
+| Normality assumption | $y \sim \mathcal{N}$ (after RINT) | $y \sim \mathcal{N}$ (after RINT) | None — $y \sim \text{NB}$ |
+| Phenotype transform | RINT applied before fitting | RINT applied before fitting | None — counts used directly |
+| Library size | Not applicable | Not applicable | $\log s_i$ offset per sample |
+| Sample design | $n = m$ (strain means, $Z = I_m$) | $n \geq m$ (Z-matrix expansion) | $n \geq m$ (Z-matrix expansion) |
+| Expression scale | Normalized (e.g. CPM, VST) | Normalized | Raw pseudobulk integer counts |
+
+**RINT** is applied in the LMM to satisfy the Gaussian residual assumption:
+
+$$y_i^\text{rint} = \Phi^{-1}\!\left(\frac{r_i - 3/8}{n + 1/4}\right)$$
+
+where $r_i = \text{rank}(y_i)$, $\Phi^{-1}$ is the standard normal quantile. RINT
+destroys count-specific information (zero mass, overdispersion) and is inappropriate
+for raw counts — hence the NB GLM.
+
+---
+
+### M2 — Haplotype Design Matrix
+
+At every locus $\ell$, the founder haplotype probability matrix is:
+
+$$H_\ell \in \mathbb{R}^{m \times J}, \quad \sum_{f=1}^J H_{if\ell} = 1, \quad H_{if\ell} \in [0,1]$$
+
+One column is dropped for identifiability (linear dependency $\sum_f H_{if\ell} = 1$):
+
+$$\tilde{H}_\ell = H_\ell[\,,\, 1:J-1] \in \mathbb{R}^{m \times (J-1)}$$
+
+**Z-matrix expansion (mosaiQTL LMM and NB GLM):**
+
+$$\tilde{H}_{\ell,n} = Z\,\tilde{H}_\ell \in \mathbb{R}^{n \times (J-1)}, \quad Z \in \{0,1\}^{n \times m},\quad Z_{ik} = \mathbf{1}[\text{sample }i\text{ belongs to strain }k]$$
+
+When $n = m$ and IDs match, $Z = I_m$ and $\tilde{H}_{\ell,n} = \tilde{H}_\ell$ exactly.
+
+**miQTL LMM** operates on strain means — effectively $Z = I_m$ always, discarding
+within-strain replication. **mosaiQTL LMM and NB GLM** retain all $n$ samples,
+recovering within-strain information that contributes independent evidence at every locus.
+
+**Scale convention:**
+
+| | miQTL LMM | mosaiQTL LMM | mosaiQTL NB GLM |
+|---|---|---|---|
+| Haplotype range | $H_{if\ell} \in [0,2]$ (additive dosage) | $H_{if\ell} \in [0,1]$ (marginal) | $H_{if\ell} \in [0,1]$ (marginal) |
+| Row sum | 2 | 1 | 1 |
+| HAPPY source | Diplotype marginalised to additive | Direct from `GenomeCache` | Direct from `GenomeCache` |
+
+---
+
+### M3 — Confounding Correction
+
+**miQTL LMM and mosaiQTL LMM — kinship random effect:**
+
+Polygenic background is modelled as a Gaussian random effect with covariance
+proportional to the LOCO kinship matrix $K^{(-c)}$:
+
+$$\varepsilon \sim \mathcal{N}\!\left(0,\; \sigma^2\!\left[h^2 K^{(-c)} + (1 - h^2)I\right]\right)$$
+
+This simultaneously accounts for:
+- Population structure (correlated genetic backgrounds across strains)
+- Residual polygenicity (all other loci acting on expression)
+- The $h^2$ parameter partitions variance between polygenic and residual components
+
+**mosaiQTL NB GLM — fixed covariates only:**
+
+No kinship term. Confounding is controlled through:
+$$\log \mu_i = H_i^\ell\,\gamma + X_i\,\beta + \log s_i$$
+
+where $X_i$ includes intercept, batch, and top expression PCs. Library size $s_i$
+enters as a log-offset, not a covariate — it is treated as known and exact.
+
+**Implication:** The NB GLM is more conservative than the LMM in the presence of
+population structure — uncorrected kinship is confounded with batch, cell-type
+composition, and genotype effects on expression. For pseudobulk snRNA-seq from
+Collaborative Cross strains with substantial relatedness, this is a known limitation.
+A mixed NB model (NEBULA-LN style) would add the polygenic random effect but is
+deferred to a future extension.
+
+| Property | miQTL LMM | mosaiQTL LMM | mosaiQTL NB GLM |
+|---|---|---|---|
+| Polygenic correction | LOCO kinship random effect | LOCO kinship random effect | None (PCs as fixed proxy) |
+| $h^2$ estimated | Yes, per gene per chromosome | Yes, per gene per chromosome | N/A |
+| Batch correction | Fixed covariate in $X$ | Fixed covariate in $X$ | Fixed covariate in $X$ |
+| Library size | Not applicable | Not applicable | Log-offset $\log s_i$ |
+
+---
+
+### M4 — Full Statistical Models
+
+#### miQTL LMM
+
+**Null ($H_0$):**
+$$y^\text{rint} = X\beta_0 + u + \varepsilon_0$$
+$$u \sim \mathcal{N}(0,\; \sigma^2 h^2 K^{(-c)}), \quad \varepsilon_0 \sim \mathcal{N}(0,\; \sigma^2(1-h^2)I)$$
+
+**Alternative at locus $\ell$ ($H_1$):**
+$$y^\text{rint} = \tilde{H}_\ell\,\alpha + X\beta + u + \varepsilon_1$$
+
+Both null and alternative share the same $\hat{h}^2$ estimated under $H_0$ (use.fix.par=TRUE).
+
+**Combined variance:**
+$$V = h^2 K^{(-c)} + (1-h^2)I$$
+
+Operates on $m$ strain means; $K^{(-c)} \in \mathbb{R}^{m \times m}$.
+
+---
+
+#### mosaiQTL LMM
+
+**Null ($H_0$):**
+$$y^\text{rint} = X\beta_0 + u_n + \varepsilon_0$$
+$$u_n \sim \mathcal{N}(0,\; \sigma^2 h^2 K_n^{(-c)}), \quad \varepsilon_0 \sim \mathcal{N}(0,\; \sigma^2(1-h^2)I_n)$$
+
+where $K_n^{(-c)} = Z K_m^{(-c)} Z^\top \in \mathbb{R}^{n \times n}$ is the Z-expanded kinship.
+
+**Alternative at locus $\ell$ ($H_1$):**
+$$y^\text{rint} = \tilde{H}_{\ell,n}\,\alpha + X\beta + u_n + \varepsilon_1$$
+
+**At $n = m$, $Z = I_m$:** $K_n^{(-c)} = K_m^{(-c)}$ — full algebraic identity with miQTL LMM.
+
+**Additional benefit at $n > m$:** Within-strain replication increases effective sample size.
+The log-likelihood has $n$ contributing observations (not $m$), so:
+$$\text{LOD}_\ell = \frac{n}{2}\log_{10}\frac{\text{RSS}_0}{\text{RSS}_1}$$
+grows with $n$, improving power proportional to $\sqrt{n/m}$.
+
+---
+
+#### mosaiQTL NB GLM
+
+**Null ($H_0$):**
+$$Y_i \sim \text{NB}(\mu_i^0,\; \phi), \quad \log\mu_i^0 = X_i\beta_0 + \log s_i$$
+$$\text{Var}[Y_i] = \mu_i^0 + \phi(\mu_i^0)^2$$
+
+**Alternative at locus $\ell$ ($H_1$):**
+$$Y_i \sim \text{NB}(\mu_i^\ell,\; \phi), \quad \log\mu_i^\ell = \tilde{H}_{i,\ell,n}\,\gamma + X_i\beta + \log s_i$$
+
+$\phi$ is fixed across all loci for gene $g$ (estimated once from null model).  
+$\gamma \in \mathbb{R}^{J-1}$ are log-scale founder haplotype effects on mean expression.
+
+---
+
+### M5 — Likelihoods and Test Statistics
+
+#### LMM (both implementations)
+
+**Gaussian log-likelihood** at a given $h^2$ and $\alpha$:
+
+$$\ell(y^\text{rint} \mid \alpha, \beta, \sigma^2, h^2) = -\frac{n}{2}\ln(2\pi) - \frac{1}{2}\ln|V| - \frac{1}{2\sigma^2}\,e^\top V^{-1} e$$
+
+where $e = y^\text{rint} - \tilde{H}_\ell\alpha - X\beta$.
+
+**REML log-likelihood** (for $h^2$ estimation, excluding fixed-effect information):
+
+$$\ell_\text{REML}(h^2) = -\frac{1}{2}\ln|V| - \frac{1}{2}\ln|X^\top V^{-1} X| - \frac{n-p}{2}\ln(y^{\top} V^{-1} M_X y)$$
+
+where $M_X = I - X(X^\top V^{-1} X)^{-1} X^\top V^{-1}$ is the REML residual maker.
+
+**Eigendecomposition acceleration** ($K = V_K\Lambda_K V_K^\top$):
+
+$$V^{-1} = V_K\,\text{diag}\!\left(\frac{1}{h^2\lambda_j + (1-h^2)}\right)V_K^\top$$
+
+Precomputed once; $h^2$ optimisation becomes a scalar loop over $[0,1]$.
+
+**LOD score** (ML, fixed $\hat{h}^2$):
+
+$$\text{LOD}_\ell = \frac{n}{2}\log_{10}\frac{\text{RSS}_0}{\text{RSS}_1}$$
+
+where $\text{RSS}_k = e_k^\top V^{-1} e_k$ (generalised residual sum of squares under $H_k$).
+
+This uses ML denominator $n$, not REML denominator $n-p$, matching miQTL exactly.
+
+---
+
+#### NB GLM
+
+**NB log-likelihood** (size parameter $r = 1/\phi$):
+
+$$\ell_\text{NB}(y \mid \mu, \phi) = \sum_{i=1}^n \Bigl[\ln\Gamma(y_i + r) - \ln\Gamma(r) - \ln\Gamma(y_i+1) + r\ln\tfrac{r}{r+\mu_i} + y_i\ln\tfrac{\mu_i}{r+\mu_i}\Bigr]$$
+
+**Score test statistic** (default — null evaluated once):
+
+$$U_\ell = \tilde{H}_{\ell,n}^\top r, \qquad r_i = \frac{y_i - \hat\mu_i^0}{1 + \phi\hat\mu_i^0}$$
+
+$$I_\ell = \tilde{H}_{\ell,n}^\top \operatorname{diag}(w)\,\tilde{H}_{\ell,n}, \qquad w_i = \frac{\hat\mu_i^0}{1 + \phi\hat\mu_i^0}$$
+
+$$Q_\ell = U_\ell^\top I_\ell^{-1} U_\ell \;\sim\; \chi^2(J-1) \quad \text{under } H_0$$
+
+**LOD conversion:**
+
+$$\text{LOD}_\ell = \frac{Q_\ell}{2\ln 10}$$
+
+**LRT statistic** (alternative fitted at each locus):
+
+$$\Lambda_\ell = 2\!\left[\ell_\text{NB}(y \mid \hat\mu^\ell, \phi) - \ell_\text{NB}(y \mid \hat\mu^0, \phi)\right] \;\sim\; \chi^2(J-1)$$
+
+$$\text{LOD}_\ell = \frac{\Lambda_\ell}{2\ln 10}$$
+
+**Asymptotic equivalence of score and LRT:**
+
+As $n \to \infty$, $Q_\ell \to \Lambda_\ell$ by Le Cam's third lemma. For finite $n$,
+$Q_\ell \leq \Lambda_\ell$ (score test is conservative) — use LRT at peak loci for exact betas.
+
+---
+
+### M6 — Effect Sizes and Biological Interpretation
+
+| Property | miQTL LMM | mosaiQTL LMM | mosaiQTL NB GLM |
+|---|---|---|---|
+| Effect parameter | $\hat\alpha \in \mathbb{R}^{J-1}$ | $\hat\alpha \in \mathbb{R}^{J-1}$ | $\hat\gamma \in \mathbb{R}^{J-1}$ |
+| Effect scale | RINT units ($\sigma_y \approx 1$) | RINT units ($\sigma_y \approx 1$) | Log fold-change (natural log) |
+| Reference founder | Last founder (WSBJ, index $J$) | Last founder (WSBJ, index $J$) | Last founder (WSBJ, index $J$) |
+| Interpretation | $\hat\alpha_f$: RINT $y$ shift for founder $f$ vs WSBJ | same | $e^{\hat\gamma_f}$: multiplicative mean count ratio for founder $f$ vs WSBJ |
+| Total effect (sum over strains) | $\sum_f H_{if\ell}\hat\alpha_f$ | $\sum_f H_{if\ell}\hat\alpha_f$ | $\exp\!\left(\sum_f H_{if\ell}\hat\gamma_f\right)$ |
+| Score test betas | Full betas from WLS | Full betas from FWL | Zeros (score test skips alt fit) |
+| LRT betas | N/A (WLS always fits alt) | N/A (FWL always fits alt) | $\hat\gamma$ from `glm_fit` (LRT mode) |
+
+**Contrast to reference:** because column $J$ (WSBJ) is dropped, all effects are
+interpreted relative to WSBJ. To recover the $J$-th effect, apply the sum-to-zero
+constraint: $\hat\alpha_J = -\sum_{f=1}^{J-1}\hat\alpha_f$.
+
+---
+
+### M7 — LOD Score Comparison
+
+All three models produce a LOD score $\in [0, \infty)$ at every locus. The formulas
+are superficially similar but derive from different likelihoods:
+
+**LMM (both):**
+$$\text{LOD}_\ell^\text{LMM} = \frac{n}{2}\log_{10}\frac{\text{RSS}_0}{\text{RSS}_1}, \quad \text{RSS}_k = (y - \hat y_k)^\top V^{-1}(y - \hat y_k)$$
+
+This is the Gaussian ML LOD; $V$ encodes kinship and heritability.
+
+**NB score test:**
+$$\text{LOD}_\ell^\text{NB\text{-}score} = \frac{Q_\ell}{2\ln 10} = \frac{U_\ell^\top I_\ell^{-1} U_\ell}{2\ln 10}$$
+
+**NB LRT:**
+$$\text{LOD}_\ell^\text{NB\text{-}LRT} = \frac{\Lambda_\ell}{2\ln 10} = \frac{\ell_\text{alt}^\ell - \ell_\text{null}}{\ln 10}$$
+
+**Calibration difference:** LMM LOD is calibrated to $\chi^2(J-1)/(2\ln 10)$ under $H_0$
+after RINT, assuming Gaussian residuals. NB LOD is calibrated to the same $\chi^2(J-1)/(2\ln 10)$
+distribution directly, without distributional assumptions on $y$. For count data with
+strong overdispersion ($\phi \gg 0$), the NB LOD is expected to be larger than the
+LMM LOD at the same locus because RINT compresses the dynamic range of extreme
+counts, attenuating the signal available to the LMM.
+
+**Not directly comparable:** LOD scores across models should not be thresholded
+with the same cutoff. Each model requires its own permutation-calibrated threshold.
+
+---
+
+### M8 — Computational Complexity
+
+Let $L$ = loci per chromosome, $n$ = samples, $J$ = founders, $p$ = covariates.
+
+| Step | miQTL LMM | mosaiQTL LMM | mosaiQTL NB GLM |
+|---|---|---|---|
+| Kinship eigendecomp | $O(m^3)$ once per chr | $O(n^3)$ once per chr | N/A |
+| $h^2$ estimation | $O(n^2 \cdot G_\text{grid})$ per gene | same | N/A |
+| Null model fit | $O(n^2)$ per gene (WLS) | same (FWL) | $O(n \cdot p \cdot \text{IRLS})$ per gene |
+| Per-locus scan | $O(L \cdot n \cdot J)$ WLS loop | $O(L \cdot n \cdot J^2)$ FWL vectorised | $O(L \cdot n \cdot J^2)$ score test |
+| Alt model fit | Implicit in WLS | Implicit in FWL | $O(\text{IRLS} \cdot n \cdot J)$ per locus (LRT only) |
+| Score test mode | N/A | N/A | Null fit once; all loci in batch |
+| Bottleneck | $h^2$ estimation | eigendecomp for $n > m$ | dispersion estimation (EB pipeline) |
+
+The mosaiQTL LMM FWL vectorisation and NB score test share the same
+$O(L \cdot n \cdot J^2)$ per-chromosome structure, making them directly comparable
+in wall time. The key distinction is the inner loop: FWL executes a batched QR
+projection; score test executes a batched matrix-vector product and solve.
+
+---
+
+### M9 — Summary Comparison Table
+
+| Property | miQTL LMM | mosaiQTL LMM | mosaiQTL NB GLM |
+|---|---|---|---|
+| Module | R `miqtl::scan.h2lmm` | `scan.py::scan_h2lmm` | `nb.py::scan_nb` |
+| Distribution | $\mathcal{N}$ (after RINT) | $\mathcal{N}$ (after RINT) | NB ($\text{NB}(\mu, \phi)$) |
+| Phenotype transform | RINT | RINT | None |
+| Random effect | LOCO kinship $K^{(-c)}$ | LOCO kinship $K^{(-c)}_n = Z K_m^{(-c)} Z^\top$ | None |
+| Fixed confounders | Batch + PCs | Batch + PCs | Batch + PCs |
+| Library size | None | None | Log-offset $\log s_i$ |
+| Overdispersion | Implicitly zero (Gaussian) | Implicitly zero (Gaussian) | Explicit $\phi$ per gene |
+| Sample design | $n = m$ only | $n \geq m$ | $n \geq m$ |
+| Effect scale | RINT units | RINT units | Log fold-change |
+| Test statistic | $F$-test / LOD from $\text{RSS}_0/\text{RSS}_1$ | same via FWL | Score $Q_\ell$ or LRT $\Lambda_\ell$ |
+| Degrees of freedom | $J-1$ | $J-1$ | $J-1$ |
+| $h^2$ estimated | Yes | Yes | No |
+| Primary use | Validation reference | Production LMM (strain means) | Primary model (raw counts) |
+| Status | R reference (S1–S11) | ✅ validated ($r > 0.98$) | ✅ scaffolded, pending end-to-end |
