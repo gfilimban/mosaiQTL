@@ -32,7 +32,7 @@ CONDA_ENV="bioinfo"
 R_LIB_PATH="/share/crsp/lab/seyedam/gfilimba/miniconda3/envs/bioinfo/lib/R/library"
 
 # extra time for timed-out chrs — 4 h more than original
-TIME_CHR="12:00:00"
+TIME_CHR="16:00:00"
 TIME_MERGE="02:00:00"
 
 # sentinel file that proves a chr job completed successfully.
