@@ -29,6 +29,29 @@ genome_files <- c(
 )
 
 chrs <- c(1:19, 'X')
+
+# ── sentinel check: abort if any chromosome hasn't completed S10 ──────────────
+# ci_r.csv is written at the end of S10 (positional CI) — the last section
+# that commonly times out. a missing sentinel means the chr job did not finish.
+sentinel <- 'ci_r.csv'
+missing_chrs <- c()
+for (chr in chrs) {
+  p <- file.path(r_data, paste0('chr', chr), sentinel)
+  if (!file.exists(p) || file.size(p) == 0) {
+    message('  [sentinel] chr', chr, ': MISSING ', sentinel)
+    missing_chrs <- c(missing_chrs, as.character(chr))
+  } else {
+    message('  [sentinel] chr', chr, ': ok')
+  }
+}
+if (length(missing_chrs)) {
+  stop('[merge] aborting — ', length(missing_chrs), ' chromosome(s) missing sentinel\n',
+       '  missing: chr ', paste(missing_chrs, collapse=', chr '), '\n',
+       '  rerun:   bash validation/rerun_failed_chrs.sh ',
+       paste(missing_chrs, collapse=','))
+}
+message('[merge] all ', length(chrs), ' chromosomes complete — proceeding\n')
+
 message('[merge] combining per-chr outputs')
 
 for (fn in per_chr_files) {
