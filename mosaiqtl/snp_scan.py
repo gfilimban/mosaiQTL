@@ -316,3 +316,78 @@ def read_alleles_flat(allele_dir, founders, chrom=None, pmap_dir=None):
 
     logger.info(f'read_alleles_flat: {len(df)} SNPs  pos_filled={df["pos_mb"].notna().sum()}')
     return df
+
+
+def build_snp_catalogue(scan_results, genome_cache, mgp_vcf,
+                          window_mb=10.0, founders=None):
+    """Layer 3a — SNP catalogue from MGP VCF overlay (placeholder).
+
+    for each gene with a QTL peak, queries the MGP VCF within window_mb
+    of the peak, filters to SNPs that are private to founders with the
+    largest haplotype effects, and ranks candidates by founder divergence.
+
+    requires: pysam (for bgzipped + tabix-indexed VCF access).
+
+    parameters
+    ----------
+    scan_results : dict {gene_id: ScanResult}
+    genome_cache : GenomeCache
+    mgp_vcf      : str  path to Sanger MGP r9 VCF (bgzipped + tabix-indexed)
+    window_mb    : float  window around QTL peak (Mb)
+    founders     : list or None  subset of founders to query (default all)
+
+    returns
+    -------
+    dict {gene_id: pd.DataFrame}
+        columns: snp_id, chr, pos_mb, ref, alt, founder_genotypes...,
+                 n_divergent_founders, effect_dir_match
+        rows filtered to founder-divergent SNPs within the QTL window
+    """
+    try:
+        import pysam
+    except ImportError:
+        raise ImportError('build_snp_catalogue requires pysam: pip install pysam')
+
+    founders_use = founders or list(genome_cache.founders)
+    vcf = pysam.VariantFile(mgp_vcf)
+    results = {}
+
+    for gid, sr in scan_results.items():
+        if not len(sr.lod):
+            continue
+        peak = sr.peak_locus()
+        chrom, pos_mb = peak['chromosome'], peak['position']
+
+        lo = max(0.0, pos_mb - window_mb) * 1e6
+        hi = (pos_mb + window_mb) * 1e6
+        chr_str = f'chr{chrom}' if not str(chrom).startswith('chr') else str(chrom)
+
+        rows = []
+        try:
+            for rec in vcf.fetch(chr_str, int(lo), int(hi)):
+                if len(rec.alts) != 1:  # biallelic only
+                    continue
+                gts = {}
+                for f in founders_use:
+                    s = rec.samples.get(f)
+                    gts[f] = (int(s['GT'][0]) if s and s['GT'][0] is not None
+                               else None)
+                # count divergent founders (not all same genotype)
+                called = [v for v in gts.values() if v is not None]
+                n_div  = len(set(called)) - 1 if called else 0
+                if n_div == 0:
+                    continue
+                row = {'snp_id': rec.id or f'{chrom}:{rec.pos}',
+                        'chr': chrom, 'pos_mb': rec.pos / 1e6,
+                        'ref': rec.ref, 'alt': rec.alts[0],
+                        'n_divergent_founders': n_div}
+                row.update({f: gts[f] for f in founders_use})
+                rows.append(row)
+        except (ValueError, KeyError):
+            logger.warning(f'build_snp_catalogue: region fetch failed for {gid}')
+            continue
+
+        results[gid] = pd.DataFrame(rows) if rows else pd.DataFrame()
+
+    vcf.close()
+    return results

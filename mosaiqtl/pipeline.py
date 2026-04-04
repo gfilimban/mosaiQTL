@@ -171,15 +171,11 @@ def characterize(discovery_result, covariates=None,
         logger.info(f'allele effects: {len(ae)} genes')
 
     if 'vqtl' in modules:
-        from .vqtl import scan_vqtl
-        kw = vqtl_kwargs or {}
-        vq = {}
-        for gid, sr in discovery_result.scan.items():
-            if len(sr.lod) == 0: continue
-            peak = sr.peak_locus()
-            vq[gid] = scan_vqtl(gid, cache, covariates, **kw)
-        res.vqtl = vq
-        logger.info(f'vqtl: {len(vq)} genes')
+        # vqtl requires per-cell counts and subject_ids (not available from
+        # pseudobulk DiscoveryResult). call scan_vqtl() directly with cell-
+        # level data; pass vqtl_kwargs={'kinship_decomp': kd} for efficiency.
+        logger.info('vqtl: call scan_vqtl() directly with cell-level counts')
+        res.vqtl = {}
 
     if 'mediation' in modules:
         from .mediation import mediation_scan_qr
@@ -310,12 +306,13 @@ def _run_snp_catalogue(disc, cache, mgp_vcf=None, window_mb=10.0,
         logger.warning('snp_catalogue: mgp_vcf not provided — skipping')
         return {}
     from .snp_scan import build_snp_catalogue
-    return build_snp_catalogue(disc.scan, cache, mgp_vcf,
-                                window_mb=window_mb, founders=founders)
+    return build_snp_catalogue(
+        disc.scan, cache, mgp_vcf,
+        window_mb=window_mb, founders=founders)
 
 
 def _run_conditional_scan(disc, cache, covariates,
-                            n_signals=3, lod_drop=1.5):
+                            n_signals=3, lod_drop_threshold=1.5):
     """3b — conditional scan: forward-stepwise multi-signal decomposition.
 
     for each gene with a significant peak, conditions on the peak-locus BLUP
@@ -332,7 +329,7 @@ def _run_conditional_scan(disc, cache, covariates,
     for gid, sr in disc.scan.items():
         if len(sr.lod) == 0: continue
         signals = scan_conditional(sr, cache, covariates,
-                                    n_signals=n_signals, lod_drop=lod_drop,
+                                    n_signals=n_signals, lod_drop_threshold=lod_drop_threshold,
                                     kinship_decomp=disc.kinship_decomp)
         if signals: results[gid] = signals
     return results

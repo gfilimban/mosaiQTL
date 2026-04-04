@@ -2,7 +2,7 @@
 
 **Repo:** `github.com/gfilimban/mosaiqtl` (private)  
 **Scope:** Novel extensions beyond the miQTL validation port  
-**Status:** Scaffolded / design-complete; pending end-to-end validation  
+**Status:** Layer 1 port-validated (S1–S11 ✅); Layer 2 scaffolded; Layer 3 implemented — phase 3 validation pending  
 **Last updated:** April 2026 | commit `HEAD`
 
 ---
@@ -319,7 +319,7 @@ $$d_i^{(s)} = \sum_{f=1}^{J} H_{if\ell^*} \cdot g_f^{(s)}, \quad g_f^{(s)} \in \
 Filter to SNPs private to founders with the largest haplotype effects. Output:
 ranked DataFrame of founder-divergent candidate SNPs per gene.
 
-**Status:** `snp_scan.py` ✅ implemented; `build_snp_catalogue()` 🔲 planned.
+**Status:** `snp_scan.py` + `build_snp_catalogue()` ✅ implemented; requires pysam + tabix-indexed MGP VCF.
 
 ---
 
@@ -335,7 +335,7 @@ hard peak-locus residual) reduces false secondary signals from LD within the blo
 This is the haplotype-space analogue of SuSiE's iterative Bayesian stepwise
 selection but operating on founder dosages rather than SNP dosages.
 
-**Status:** `scan_conditional()` stub in `scan.py` 🔲 planned post-validation.
+**Status:** `scan_conditional()` and `scan_conditional_with_y()` ✅ implemented in `mosaiqtl/epistasis.py`.
 
 ---
 
@@ -408,7 +408,7 @@ phenotypes directly. No new statistical machinery — only a new phenotype input
 | 4 | Permutation null for NB LOD thresholds | 1 | yes |
 | 5 | K-expansion (n > m) end-to-end test | 1 | yes |
 | 6 | `scan_conditional()` + `scan_conditional_with_y()` | 3b | ✅ implemented |
-| 7 | Implement `build_snp_catalogue()` (Layer 3a) | 3a | post-validation |
+| 7 | `build_snp_catalogue()` with pysam VCF fetch | 3a | ✅ implemented |
 | 8 | End-to-end ASE test with F1 FASTQs (Layer 3c) | 3c | post-validation |
 | 9 | LeafCutter PSI matrix → sQTL scan (Layer 3d) | 3d | post-validation |
 | 10 | `epistasis.py`: scan_epistasis, test_haplotype_combinations | 3 | ✅ implemented |

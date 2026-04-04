@@ -18,6 +18,9 @@ from .nb import scan_nb, scan_nb_multi_gene          # noqa: F401
 # gaussian lmm scan
 from .scan import scan_h2lmm, scan_multi_gene, ScanResult  # noqa: F401
 
+# snp catalogue (Layer 3a)
+from .snp_scan import build_snp_catalogue           # noqa: F401
+
 # three-layer user API
 from .pipeline import discover, characterize, resolve       # noqa: F401
 
