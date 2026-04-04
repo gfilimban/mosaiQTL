@@ -821,9 +821,13 @@ if section(7, 'MULTIPLE IMPUTATION'):
     else:
         from mosaiqtl.scan import scan_h2lmm_mi as _mi
         mi_comparisons=[]
+        # S7 cap: MI is a legacy validation section (not mosaiQTL primary model).
+        # genome-wide merged data has 1000+ genes/chr × 11 imputations each —
+        # cap at S7_MAX_GENES per chromosome; r threshold already confirmed at chr8.
+        S7_MAX_GENES = 5
         for chrom in chromosomes:
             genes_mi = r_mi[r_mi['chr']==chrom]['gene_id'].unique().tolist()
-            if args.n_genes: genes_mi=genes_mi[:args.n_genes]
+            genes_mi = genes_mi[:min(S7_MAX_GENES, args.n_genes or S7_MAX_GENES)]
             if not genes_mi: continue
             kd_mi = kin_module.decomp_kinship({chrom:kinship_py[chrom]})
             for gene in genes_mi:
