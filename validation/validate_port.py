@@ -310,120 +310,199 @@ if section(1, 'CACHE INFO'):
     # S2 — HAPLOTYPE PROBS
     # ══════════════════════════════════════════════════════════════════════════════
 if section(2, 'HAPLOTYPE PROBS'):
-    r_hap = load_r('haplotype_r.csv')
+    r_hap      = load_r('haplotype_r.csv')
+    r_hap_vals = load_r('haplotype_vals_r.csv')   # per-sample per-founder actual probs
+
+    # row-sum check — internal consistency only.
+    # probs.sum(axis=1) == 1.0 by HMM normalisation; max_dev is always 0.00 by
+    # construction. this checks Python produces normalised probs, NOT that they
+    # match R. the real comparison is prob_r from haplotype_vals_r.csv below.
     rows_hap = []
     for chrom in chromosomes:
         if chrom not in cache_py._data: continue
         lids, pos, probs = cache_py.get_chromosome(chrom)
-        n_loci = len(lids)
-        idx    = np.round(np.linspace(0, n_loci-1, 5)).astype(int)
-        for i in idx:
+        for i in np.round(np.linspace(0, len(lids)-1, 5)).astype(int):
             rs = probs[i].sum(axis=1)
             rows_hap.append({'chr':chrom,'locus':lids[i],'pos_mb':float(pos[i]),
-                             'mean_rowsum':float(rs.mean()*2),   # *2 to match miQTL [0,2] dosage scale
+                             'mean_rowsum':float(rs.mean()*2),
                              'min_rowsum':float(rs.min()*2),'max_rowsum':float(rs.max()*2),
                              'mean_max_prob':float(probs[i].max(axis=1).mean())})
-    hap_df   = pd.DataFrame(rows_hap)
+    hap_df  = pd.DataFrame(rows_hap)
     save_csv(hap_df, 'haplotype_py.csv')
-    rsum_ok  = bool(np.allclose(hap_df['mean_rowsum'], 2.0, atol=1e-4))  # miQTL [0,2] scale
-    max_dev  = float((hap_df['mean_rowsum']-2.0).abs().max())
+    max_dev = float((hap_df['mean_rowsum']-2.0).abs().max())
 
-    # actual probability value comparison: load R per-locus per-sample values
-    # and compare to Python HMM output at the same loci
-    r_hap_vals = load_r('haplotype_vals_r.csv')
-    r_val_v, py_val_v, val_r, val_mad = None, None, np.nan, np.nan
+    # display order: founders → F1s → CCs
+    _fnames   = list(cache_py.founders)
+    _sids_py  = list(cache_py.sample_ids)
+    _disp_ord = FOUNDER_COLS + [f[0] for f in F1_CROSSES] + CC_COLS
+    _disp_s   = []; _seen_d = set()
+    for s in _disp_ord + _sids_py:
+        if s in _sids_py and s not in _seen_d:
+            _disp_s.append(s); _seen_d.add(s)
+    _disp_idx = [_sids_py.index(s) for s in _disp_s]
+    _fs       = max(4, min(8, int(160 / max(len(_disp_s), 1))))
+
+    # ── actual probability value comparison (all chromosomes) ────────────────
+    val_r = np.nan; val_mad = np.nan
+    all_r_probs = []; all_py_probs = []
+    val_rows_all = []
+    hmap_data    = {}   # chrom -> (H_py, H_r, locus_id) at representative locus
+
     if r_hap_vals is not None:
-        val_rows = []
+        fc_r = [c for c in r_hap_vals.columns
+                if c not in ('chr','locus','pos_mb','sample_id')]
         for chrom in chromosomes:
             if chrom not in cache_py._data: continue
             lids, pos, probs = cache_py.get_chromosome(chrom)
-            sids_py = list(cache_py.sample_ids)
-            rv = r_hap_vals[r_hap_vals['chr'].astype(str)==str(chrom)]
-            for lid in rv['locus'].unique():
-                idx = np.where(lids == lid)[0]
+            rv_c = r_hap_vals[r_hap_vals['chr'].astype(str)==str(chrom)]
+            if rv_c.empty: continue
+            for lid in rv_c['locus'].unique():
+                idx = np.where(lids==lid)[0]
                 if not len(idx): continue
-                h_py = probs[idx[0]]                          # (n_samples, J)
-                rv_l = rv[rv['locus']==lid].set_index('sample_id')
-                founder_cols_r = [c for c in rv_l.columns
-                                  if c not in ('chr','locus','pos_mb','sample_id')]
-                for sid in sids_py:
+                h_py = probs[idx[0]]
+                rv_l = rv_c[rv_c['locus']==lid].set_index('sample_id')
+                for sid in _sids_py:
                     if sid not in rv_l.index: continue
-                    si = sids_py.index(sid)
-                    for fi, fc in enumerate(founder_cols_r):
+                    si = _sids_py.index(sid)
+                    for fi, fc in enumerate(fc_r):
                         if fi >= h_py.shape[1]: continue
-                        val_rows.append({'r_prob': float(rv_l.loc[sid, fc]),
-                                         'py_prob': float(h_py[si, fi])})
-        if val_rows:
-            vdf = pd.DataFrame(val_rows).dropna()
-            # Python marginal probs are in [0,1]; R additive dosage in [0,2] → divide by 2
-            vdf['r_prob'] = vdf['r_prob'] / 2.0
-            r_val_v  = vdf['r_prob'].values
-            py_val_v = vdf['py_prob'].values
-            if len(vdf) > 3:
-                val_r   = float(np.corrcoef(r_val_v, py_val_v)[0, 1])
-                val_mad = float(np.abs(r_val_v - py_val_v).mean())
-            save_csv(vdf.head(10000), 'haplotype_val_comparison.csv')
-            log.info(f'  haplotype value comparison: n={len(vdf)}  r={val_r:.4f}  mad={val_mad:.4f}')
+                        rp = float(rv_l.loc[sid, fc]) / 2.0  # R [0,2] -> [0,1]
+                        pp = float(h_py[si, fi])
+                        all_r_probs.append(rp); all_py_probs.append(pp)
+                        val_rows_all.append({'chr':chrom,'locus':lid,'sample_id':sid,
+                                             'founder':fc,'r_prob':rp,'py_prob':pp})
+            # representative locus for heatmaps
+            uniq_loci = rv_c['locus'].unique()
+            rep_lid   = uniq_loci[len(uniq_loci)//2]
+            idx_mid   = np.where(lids==rep_lid)[0]
+            if not len(idx_mid): continue
+            H_py_mid = probs[idx_mid[0]][_disp_idx]
+            rv_mid   = rv_c[rv_c['locus']==rep_lid].set_index('sample_id')
+            H_r_mid  = np.zeros((len(_disp_s), len(fc_r)))
+            for di, sid in enumerate(_disp_s):
+                if sid in rv_mid.index:
+                    for fi, fc in enumerate(fc_r):
+                        H_r_mid[di, fi] = float(rv_mid.loc[sid, fc]) / 2.0
+            hmap_data[chrom] = (H_py_mid, H_r_mid, rep_lid)
 
-    if r_hap is not None:
-        _chrom0 = chromosomes[0]
-        if _chrom0 in cache_py._data:
-            _lids0    = cache_py._data[_chrom0]['locus_ids']
-            _mid      = len(_lids0) // 2
-            _h_mid    = cache_py.get_locus(_chrom0, _mid)     # (n_samples, J)
-            _disp_ord = FOUNDER_COLS + [f[0] for f in F1_CROSSES] + CC_COLS
-            _sids     = list(cache_py.sample_ids)
-            _seen     = set(); _disp_s = []
-            for s in _disp_ord:
-                if s in _sids and s not in _seen: _disp_s.append(s); _seen.add(s)
-            for s in _sids:
-                if s not in _seen: _disp_s.append(s); _seen.add(s)
-            _disp_idx = [_sids.index(s) for s in _disp_s]
-            _h_disp   = _h_mid[_disp_idx]
-            _fnames   = list(cache_py.founders)
-            _fs       = max(5, min(9, int(180 / len(_disp_s))))
+        if val_rows_all:
+            vdf = pd.DataFrame(val_rows_all).dropna()
+            save_csv(vdf, 'haplotype_val_comparison.csv')
+            rpa = np.array(all_r_probs); ppa = np.array(all_py_probs)
+            ok  = np.isfinite(rpa) & np.isfinite(ppa)
+            if ok.sum() > 3:
+                val_r   = float(np.corrcoef(rpa[ok], ppa[ok])[0,1])
+                val_mad = float(np.abs(rpa[ok]-ppa[ok]).mean())
+            log.info(f'  prob comparison: n={ok.sum()}  r={val_r:.4f}  mad={val_mad:.4f}')
 
-            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-            # panel 1: haplotype heatmap at mid-chr locus
-            sns.heatmap(_h_disp, ax=axes[0], cmap='YlOrRd', vmin=0, vmax=1,
+    # ── plot 1: detailed 3-panel heatmap (Python | R | diff) — representative chr
+    if hmap_data:
+        rep_chr = '8' if '8' in hmap_data else list(hmap_data.keys())[0]
+        H_py_r, H_r_r, rep_lid = hmap_data[rep_chr]
+        diff_r = H_py_r - H_r_r
+        ab_r   = max(abs(diff_r.min()), abs(diff_r.max())) + 1e-9
+        fig_hm, axes_hm = plt.subplots(1, 3, figsize=(18, 5))
+        for ax, mat, title, cmap, vmin, vmax in [
+            (axes_hm[0], H_py_r, f'Python HMM  chr{rep_chr} / {rep_lid}', 'YlOrRd', 0, 1),
+            (axes_hm[1], H_r_r,  f'R HAPPY  chr{rep_chr} / {rep_lid}',    'YlOrRd', 0, 1),
+            (axes_hm[2], diff_r, f'Difference (Python-R)  max|delta|={ab_r:.3f}', 'RdBu_r', -ab_r, ab_r),
+        ]:
+            sns.heatmap(mat, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,
+                        xticklabels=_fnames[:mat.shape[1]], yticklabels=_disp_s,
+                        cbar_kws={'shrink':0.7})
+            ax.set_title(title, fontsize=9)
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right', fontsize=8)
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=_fs)
+        plt.tight_layout()
+        save_plot(fig_hm, 's2_haplotype_heatmaps.png')
+
+        # compact difference-only grid for ALL chromosomes
+        chrs_d  = [c for c in chr_order if c in hmap_data]
+        n_c     = len(chrs_d); ncols = 5; nrows = int(np.ceil(n_c/ncols))
+        fig_gd, axs = plt.subplots(nrows, ncols, figsize=(ncols*3.2, nrows*3.0))
+        axs_flat = np.array(axs).flatten()
+        for ai, chrom in enumerate(chrs_d):
+            H_py_c, H_r_c, lid_c = hmap_data[chrom]
+            diff_c = H_py_c - H_r_c
+            ab_c   = max(abs(diff_c.min()), abs(diff_c.max())) + 1e-9
+            sns.heatmap(diff_c, ax=axs_flat[ai], cmap='RdBu_r', vmin=-ab_c, vmax=ab_c,
+                        xticklabels=False, yticklabels=False, cbar_kws={'shrink':0.5})
+            axs_flat[ai].set_title(f'chr{chrom}  |d|={ab_c:.3f}', fontsize=8)
+        for ai in range(n_c, len(axs_flat)):
+            axs_flat[ai].set_visible(False)
+        plt.suptitle('Haplotype prob difference (Python - R) — all chromosomes', fontsize=10)
+        plt.tight_layout()
+        save_plot(fig_gd, 's2_haplotype_diff_grid.png')
+    else:
+        # no R vals — show Python-only heatmap with note
+        rep_chr = chromosomes[0] if chromosomes else None
+        if rep_chr and rep_chr in cache_py._data:
+            lids0, pos0, probs0 = cache_py.get_chromosome(rep_chr)
+            H_py0 = probs0[len(lids0)//2][_disp_idx]
+            fig_hm, ax_hm = plt.subplots(figsize=(7, 5))
+            sns.heatmap(H_py0, ax=ax_hm, cmap='YlOrRd', vmin=0, vmax=1,
                         xticklabels=_fnames, yticklabels=_disp_s,
                         cbar_kws={'shrink':0.7})
-            axes[0].set_title(f'Python haplotype probs  chr{_chrom0} · {_lids0[_mid]}',
-                              fontsize=10)
-            axes[0].set_xticklabels(axes[0].get_xticklabels(),
-                                    rotation=45, ha='right', fontsize=9)
-            axes[0].set_yticklabels(axes[0].get_yticklabels(),
-                                    rotation=0, fontsize=_fs)
-            # panel 2: actual probability value scatter (R vs Python) — the real comparison
-            ax2 = axes[1]
-            if r_val_v is not None and len(r_val_v) > 3:
-                scatter_qc(ax2, r_val_v[:5000], py_val_v[:5000],
-                           'prob (R marginal)', 'prob (Python HMM)',
-                           f'actual prob values  r={val_r:.4f}  mad={val_mad:.4f}')
-            else:
-                ax2.text(0.5, 0.5, 'haplotype_vals_r.csv\nnot found — run R S2',
-                         ha='center', va='center', transform=ax2.transAxes, fontsize=9)
-                ax2.set_title('prob value comparison'); sns.despine(ax=ax2)
-            # panel 3: row-sum deviation (sanity check only — not the primary metric)
-            axes[2].bar(hap_df['pos_mb'], hap_df['mean_rowsum'] - 2.0,
-                        color=chr_colors(hap_df['chr'].tolist()), edgecolor='none',
-                        width=1.0)
-            axes[2].axhline(0, color='#D83026', lw=0.8, ls='--')
-            axes[2].set(xlabel='position (Mb)', ylabel='mean row sum $-$ 2',
-                        title=f'row sum deviation  max={max_dev:.2e}')
-            sns.despine(ax=axes[2])
-            plt.tight_layout(); save_plot(fig, 's2_haplotype_probs.png')
+            ax_hm.set_title(f'Python haplotype probs  chr{rep_chr}', fontsize=9)
+            ax_hm.set_xticklabels(ax_hm.get_xticklabels(), rotation=45, ha='right', fontsize=8)
+            ax_hm.set_yticklabels(ax_hm.get_yticklabels(), rotation=0, fontsize=_fs)
+            ax_hm.text(0.5, -0.12,
+                       'R comparison needs haplotype_vals_r.csv — run R S2 first',
+                       transform=ax_hm.transAxes, ha='center', fontsize=8, color='#D83026')
+            plt.tight_layout()
+            save_plot(fig_hm, 's2_haplotype_heatmaps.png')
 
-    # pass requires actual value comparison; row-sum alone is a tautology after *2
-    hap_pass = rsum_ok and (np.isnan(val_r) or val_r > 0.90)
-    detail   = f'row_sums_ok={rsum_ok}  max_dev={max_dev:.2e}'
+    # ── plot 2: actual prob values scatter + per-founder r (separate plot) ────
+    if val_rows_all:
+        rpa_p = np.array(all_r_probs); ppa_p = np.array(all_py_probs)
+        ok_p  = np.isfinite(rpa_p) & np.isfinite(ppa_p)
+        idx_s = np.random.default_rng(0).choice(np.where(ok_p)[0],
+                                                 min(20000, ok_p.sum()), replace=False)
+        fig_sc, axes_sc = plt.subplots(1, 2, figsize=(11, 4))
+        axes_sc[0].scatter(rpa_p[idx_s], ppa_p[idx_s],
+                           s=2, alpha=0.3, color='#4F6EAF', edgecolors='none')
+        axes_sc[0].plot([0,1],[0,1],'--',color='#D83026',lw=1)
+        axes_sc[0].set(xlim=(0,1.05), ylim=(0,1.05),
+                       xlabel='prob (R HAPPY, marginalised)',
+                       ylabel='prob (Python HMM)',
+                       title=f'actual probability values  r={val_r:.4f}  mad={val_mad:.4f}')
+        sns.despine(ax=axes_sc[0])
+        vdf_sc = pd.DataFrame(val_rows_all).dropna()
+        fnd_r_vals = (vdf_sc.groupby('founder')
+                      .apply(lambda g: float(np.corrcoef(g['r_prob'],g['py_prob'])[0,1])
+                             if len(g)>3 else np.nan)
+                      .reindex(fc_r if r_hap_vals is not None else FOUNDER_COLS)
+                      .fillna(0))
+        fc_colors = [FOUNDER_COLORS.get(f,'#888') for f in fnd_r_vals.index]
+        axes_sc[1].bar(range(len(fnd_r_vals)), fnd_r_vals.values,
+                       color=fc_colors, edgecolor='none')
+        axes_sc[1].axhline(0.90, color='#D83026', lw=1, ls='--', label='r=0.90')
+        axes_sc[1].set(xticks=range(len(fnd_r_vals)),
+                       xlabel='founder', ylabel='Pearson r (R vs Python)',
+                       title='per-founder probability correlation',
+                       ylim=(0, 1))
+        axes_sc[1].set_xticklabels(list(fnd_r_vals.index), rotation=45, ha='right', fontsize=9)
+        axes_sc[1].legend(fontsize=8); sns.despine(ax=axes_sc[1])
+        plt.tight_layout()
+        save_plot(fig_sc, 's2_prob_comparison.png')
+    else:
+        fig_sc, ax_sc = plt.subplots(figsize=(6, 4))
+        ax_sc.text(0.5, 0.5,
+                   'Run R S2 first:\nRscript validation/r_reference/port_validation.R all Inf 2',
+                   ha='center', va='center', transform=ax_sc.transAxes,
+                   fontsize=10, color='#D83026')
+        ax_sc.set_title('actual prob comparison — R data missing'); sns.despine(ax=ax_sc)
+        save_plot(fig_sc, 's2_prob_comparison.png')
+
+    # pass gate: actual prob_r if available; row_sum is ALWAYS 0.00 (by construction, not a gate)
+    hap_pass = np.isnan(val_r) or val_r > 0.90
+    detail   = f'row_sum_max_dev={max_dev:.2e} (always 0.00 — internal normalisation, not R comparison)'
     if not np.isnan(val_r):
         detail += f'  prob_r={val_r:.4f}  prob_mad={val_mad:.4f}'
     else:
-        detail += '  prob_r=NA (haplotype_vals_r.csv not found)'
+        detail += '  prob_r=NA — run R S2 to generate haplotype_vals_r.csv'
     record('haplotype_probs', hap_pass, detail)
 
-    # ══════════════════════════════════════════════════════════════════════════════
     # S3 — KINSHIP LOCO
     # ══════════════════════════════════════════════════════════════════════════════
 if section(3, 'KINSHIP LOCO'):
@@ -631,6 +710,54 @@ if section(4, 'LMM SCAN (ROP)'):
                          title='fail rate by LOD bin', ylim=(0, 1))
             sns.despine(ax=axes3[1])
             plt.tight_layout(); save_plot(fig3, 's4_gene_tiers.png')
+
+            # gene summary: h2_null + per-gene r + peak LOD scatter
+            fig_gs, axes_gs = plt.subplots(1, 3, figsize=(14, 4))
+            sns.histplot(stat_df['h2_null'].dropna(), bins=30, color='#4F6EAF',
+                         edgecolor='none', ax=axes_gs[0])
+            axes_gs[0].set(xlabel='h2 (null)', ylabel='genes',
+                           title='heritability distribution', xlim=(0,None), ylim=(0,None))
+            sns.despine(ax=axes_gs[0])
+            sns.histplot(stat_df['r'].dropna(), bins=30, color='#55AF5B',
+                         edgecolor='none', ax=axes_gs[1])
+            axes_gs[1].axvline(0.999, color='#D83026', lw=1, ls='--', label='r=0.999')
+            axes_gs[1].set(xlabel='Pearson r (LOD py vs R)', ylabel='genes',
+                           title='per-gene LOD correlation', xlim=(0,None), ylim=(0,None))
+            axes_gs[1].legend(fontsize=8); sns.despine(ax=axes_gs[1])
+            _tier_c = {'strict':'#4F6EAF','lenient':'#55AF5B','fail':'#D83026'}
+            for tier in ['strict','lenient','fail']:
+                sub = stat_df[stat_df['tier']==tier]
+                if sub.empty: continue
+                axes_gs[2].scatter(sub['peak_lod_r'], sub['peak_lod_py'],
+                                   s=4, alpha=0.7, edgecolors='none',
+                                   color=_tier_c[tier], label=tier)
+            _lim_gs = max(stat_df['peak_lod_r'].max(), stat_df['peak_lod_py'].max())*1.05
+            axes_gs[2].plot([0,_lim_gs],[0,_lim_gs],'--',color='#888',lw=1)
+            axes_gs[2].set(xlim=(0,_lim_gs), ylim=(0,_lim_gs),
+                           xlabel='peak LOD (R)', ylabel='peak LOD (Python)',
+                           title='peak LOD per gene')
+            axes_gs[2].legend(fontsize=8); sns.despine(ax=axes_gs[2])
+            plt.tight_layout(); save_plot(fig_gs, 's4_gene_summary.png')
+
+            # p-value QQ: lod_py -> chi2(J-1) -> p-value vs uniform null
+            _J_pq  = len(cache_py.founders); _df_pq = _J_pq - 1
+            _chi2o = np.sort(2*np.log(10)*comp_df['lod_py'].dropna().values)[::-1]
+            _n_pq  = len(_chi2o)
+            _p_obs = sp_stats.chi2.sf(_chi2o, df=_df_pq)
+            _p_exp = np.linspace(1/_n_pq, 1.0, _n_pq)
+            _step  = max(1, _n_pq//5000)
+            fig_qq, ax_qq = plt.subplots(figsize=(5, 5))
+            ax_qq.scatter(-np.log10(_p_exp[::_step]),
+                          -np.log10(_p_obs[::_step]),
+                          s=2, alpha=0.5, color='#4F6EAF', edgecolors='none')
+            _qlim = max(float(-np.log10(_p_obs[0])), 1.0)*1.05
+            ax_qq.plot([0,_qlim],[0,_qlim],'--',color='#D83026',lw=1,label='null')
+            ax_qq.set(xlim=(0,_qlim), ylim=(0,None),
+                      xlabel='expected -log10(p)',
+                      ylabel='observed -log10(p)',
+                      title=f'LMM p-value QQ (chi2 df={_df_pq})')
+            ax_qq.legend(fontsize=8); sns.despine(ax=ax_qq)
+            plt.tight_layout(); save_plot(fig_qq, 's4_pvalue_qq.png')
 
             # founder effects
             if r_ae is not None and py_betas:

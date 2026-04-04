@@ -30,6 +30,10 @@ validation/phase3/plots/*
 !validation/phase2/plots/.gitkeep
 !validation/phase3/py_data/.gitkeep
 !validation/phase3/plots/.gitkeep
+validation/phase2/logs/*
+validation/phase3/logs/*
+!validation/phase2/logs/.gitkeep
+!validation/phase3/logs/.gitkeep
 
 # HPC-only SLURM scripts — generated on HPC, never committed
 validation/run_validation_slurm.sh
@@ -39,7 +43,13 @@ validation/rerun_failed_chrs.sh
 *.h5 *.h5ad *.hdf5 *.rds *.RData *.bed.gz *.bim *.fam
 
 # slurm logs
-slurm-*.out logs/
+slurm-*.out
+
+# validation logs (keep dirs, ignore contents)
+validation/phase2/logs/*.log
+validation/phase3/logs/*.log
+!validation/phase2/logs/.gitkeep
+!validation/phase3/logs/.gitkeep
 
 # checkpoint files (safe-point markers)
 validation/phase2/py_data/*.done
