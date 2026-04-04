@@ -474,7 +474,7 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
     _chrom_list = [c for c in genome_cache.chromosomes if c in kinship_decomp]
 
     # pre-estimate h2 once from the REAL cache — held fixed across all imputations
-    #     valid_mi = ~np.isnan(phenotype)
+    valid_mi = ~np.isnan(phenotype)
     y_base   = phenotype[valid_mi].copy()
     if use_rint:
         from .utils import rint as _rint_mi

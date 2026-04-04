@@ -128,7 +128,7 @@ def _col(df, first):
 
 def save_plot(fig, name):
     p = os.path.join(PLOTS, name)
-    fig.savefig(p, dpi=150, bbox_inches='tight')
+    fig.savefig(p, dpi=300, bbox_inches='tight', transparent=True)
     plt.close(fig)
     log.debug(f'saved {name}')
 
