@@ -2,7 +2,7 @@
 mosaiqtl.lmm — linear mixed model engine
 
 implements the eigendecomposition-based fast LMM from
-Kang et al. (2008, Genetics) as used in qtl2/miQTL.
+Kang et al. (2008, Genetics) as used in qtl2.
 
 model:
     y = H γ + X α + u + ε
@@ -12,12 +12,9 @@ model:
 after eigendecomposition K = U D U':
     rotate: y* = U'y,  X* = U'X,  H* = U'H
     Var(y*) = σ²_g D + σ²_e I  — diagonal, O(n) weights
-    LOD = (n/2) log10(RSS_0 / RSS_1)       [ML, matches miQTL]
-    h²   estimated once under null via REML  [matches miQTL use.par='h2.REML']
-
-matches miQTL::lmmbygls behaviour:
+    LOD = (n/2) log10(RSS_0 / RSS_1)       [ML,     h²   estimated once under null via REML  [
   - h² optimized with scipy.optimize.minimize_scalar on [0,1] + grid safeguard
-  - brute check: compare optimized fit against h²=0 (miQTL's brute=TRUE default)
+  - brute check: compare optimized fit against h²=0 (brute-force safeguard)
   - LOD uses ML formula (n/2 log10 ratio), not REML
 """
 
@@ -52,19 +49,17 @@ class LMMResult:
 def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):
     """estimate heritability under the null model (no QTL effect).
 
-    algorithm (matches miQTL lmmbygls):
-      1. evaluate profile (RE)ML on a 20-point h² grid [0.01, 0.99]
+    algorithm (      1. evaluate profile (RE)ML on a 20-point h² grid [0.01, 0.99]
       2. refine around the best grid point with Brent's method
       3. brute check: compare against h²=0 — take whichever has
-         higher log-likelihood (miQTL's brute=TRUE safeguard)
+         higher log-likelihood (brute-force safeguard)
 
     parameters
     ----------
     y_rot   : np.ndarray (n,)    U'y — rotated phenotype
     x_rot   : np.ndarray (n, p)  U'X — rotated covariates
     eigvals : np.ndarray (n,)    eigenvalues of kinship matrix
-    method  : str  'reml' (default, matches miQTL) or 'ml'
-
+    method  : str  'reml' (default, 
     returns
     -------
     h2      : float   optimal h² ∈ (0, 1)
@@ -110,7 +105,7 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):
     h2_opt = float(np.clip(res.x, 1e-6, 1 - 1e-6))
     ll_opt = -float(res.fun)
 
-    # ── step 3: brute check at h²=0 (miQTL brute=TRUE) ───────────────────────
+    # ── step 3: brute check at h²=0 — take whichever has higher LL ────────────
     ll_zero = -neg_loglik(1e-6)
     if ll_zero > ll_opt:
         h2_opt = 1e-6
@@ -123,7 +118,7 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
     """fit LMM at a single locus and compute test statistic.
 
     uses null h² (from estimate_h2_null) as the fixed variance
-    component during the genome scan — same convention as miQTL.
+    component during the genome scan — 
 
     LOD = (n/2) log10(RSS_0 / RSS_1)   [ML formula, n not n-p]
 
@@ -171,7 +166,7 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
     resid_alt = y_rot - z_rot @ beta_alt
     rss_alt   = float(resid_alt @ (resid_alt * w_inv))
 
-    # LOD: ML formula (n not n-p) — matches miQTL::lmmbygls
+    # LOD: ML formula (n not n-p)
     if rss_alt > 0 and rss_null > rss_alt:
         lod = (n / 2.0) * np.log10(rss_null / rss_alt)
     else:

@@ -549,3 +549,296 @@ output), guaranteeing bootstrap scans identify a real signal.
 | QR vs eigendecomp | S9 | Algorithm (equivalent) | None needed |
 | Arg order in `run_positional_scans` | S10 | Bug (fixed) | Corrected call signature |
 | Gene selection for instability | S11 | Bug (fixed in R) | Top-LOD gene from S4 used |
+
+---
+
+## Appendix — Output CSV Column Reference
+
+Every CSV written by `port_validation.R` (R reference) and `validate_port.py` (Python comparison) is documented below. All files live in `validation/port_validation/r_data/` (R) or `validation/port_validation/py_data/` (Python).
+
+---
+
+### R Reference Outputs (`r_data/`)
+
+#### `cache_info_r.csv`
+| Column | Type | Description |
+|---|---|---|
+| `chr` | str | Chromosome identifier (1–19, X) |
+| `n_loci` | int | Number of QC-passing markers on this chromosome |
+| `min_mb` | float | Leftmost marker position (Mb) |
+| `max_mb` | float | Rightmost marker position (Mb) |
+
+#### `founders_r.csv`
+| Column | Type | Description |
+|---|---|---|
+| `founder_code` | str | HAPPY internal code (A–H) |
+| `founder` | str | Full strain name (e.g. CASTJ) |
+
+#### `sample_ids_r.csv`
+| Column | Type | Description |
+|---|---|---|
+| `sample_id` | str | Strain identifier in genomecache order (founders then CC strains) |
+
+#### `haplotype_r.csv`
+| Column | Type | Description |
+|---|---|---|
+| `chr` | str | Chromosome |
+| `locus` | str | Marker ID at sampled position |
+| `pos_mb` | float | Physical position (Mb) |
+| `mean_rowsum` | float | Mean sum of haplotype probs across samples (should equal 2.0 in additive dosage scale) |
+| `min_rowsum` | float | Minimum row sum across samples |
+| `max_rowsum` | float | Maximum row sum across samples |
+| `mean_max_prob` | float | Mean of per-sample maximum founder probability (confidence measure; ≥0.7 expected) |
+
+#### `kinship_r.csv`
+| Column | Type | Description |
+|---|---|---|
+| `chr` | str | Chromosome excluded (LOCO) |
+| `n` | int | Number of strains in kinship matrix |
+| `mean_diag` | float | Mean diagonal (self-kinship; ≈0.91 for inbred CC) |
+| `mean_offdiag` | float | Mean lower-triangle (relatedness; ≈0.13 for unrelated strains) |
+| `min_val` | float | Minimum matrix entry |
+| `max_val` | float | Maximum matrix entry |
+
+#### `kinship_mat_r_chr{N}.csv`
+Full n×n kinship matrix for chromosome N. First column `sample_id`; remaining columns are strain IDs matching `sample_ids_r.csv`.
+
+#### `pheno_48_used.csv`
+Strain-level phenotype matrix used in all scans. Rows = strains, columns = genes + covariates (`subject.name`, `batch`, `pc1`–`pc10`). Written once by S4; used by all downstream sections.
+
+#### `pmap_r.csv`
+| Column | Type | Description |
+|---|---|---|
+| `locus` | str | Marker ID |
+| `chr` | str | Chromosome |
+| `pos_mb` | float | Physical position (Mb) |
+
+#### `lod_r.csv`
+Per-locus LOD scores from the LMM scan (S4). One row per gene × locus pair.
+
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene name |
+| `locus` | str | Marker ID |
+| `chr` | str | Chromosome |
+| `pos_mb` | float | Position (Mb) |
+| `lod` | float | LOD score = (n/2) log₁₀(RSS₀/RSS₁) under ML |
+| `p_value` | float | F-test p-value for haplotype effect (J−1 df) |
+
+#### `allele_effects_r.csv`
+Founder haplotype effects at the peak locus per gene.
+
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene name |
+| `chr` | str | Chromosome |
+| `locus` | str | Peak marker ID (highest LOD on this chr for this gene) |
+| `founder` | str | Founder code (A–H) |
+| `effect` | float | WLS effect size in RINT units relative to intercept |
+
+#### `thresholds_r.csv`
+GEV-fitted permutation threshold per chromosome (one row per chr after genome-wide merge).
+
+| Column | Type | Description |
+|---|---|---|
+| `percentile` | float | Target percentile (0.95 = genome-wide 5% threshold) |
+| `lod_threshold` | float | LOD value at this percentile from GEV fit |
+| `gene_id` | str | Gene used for permutation (highest-LOD gene on this chr) |
+| `chr` | str | Chromosome |
+| `n_perms` | int | Number of permutations (0 = fallback threshold used) |
+| `perm_mean` | float | Mean of permutation max-LOD distribution |
+| `perm_sd` | float | SD of permutation max-LOD distribution |
+
+#### `perm_lods_r.csv`
+Raw permutation max-LOD values (all chromosomes after merge).
+
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene used for permutation |
+| `chr` | str | Chromosome |
+| `pos_mb` | float | Peak position of base scan (NaN if using fallback) |
+| `perm_lod` | float | Max LOD across cis loci for one permutation replicate |
+
+#### `collapsed_cache_summary.csv`
+L2-norm collapse reduction per chromosome.
+
+| Column | Type | Description |
+|---|---|---|
+| `chr` | str | Chromosome |
+| `n_loci_orig` | int | Loci before collapse |
+| `n_loci_coll` | int | Loci after collapse (unique haplotype patterns) |
+
+#### `mi_lod_r.csv`
+Multiple-imputation LOD scores (S7). Same schema as `lod_r.csv` but LOD averaged over 11 hard-call imputation draws.
+
+#### `snp_lod_r.csv`
+Haplotype-imputed SNP scan LOD scores (S8).
+
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene name |
+| `chr` | str | Chromosome |
+| `snp` | str | SNP ID from allele_dir |
+| `lod` | float | LOD under imputed additive dosage model |
+| `p_value` | float | F-test p-value |
+
+#### `mediation_r.csv`
+Per-locus mediation scan output (S9).
+
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Outcome gene |
+| `chr` | str | Chromosome |
+| `locus` | str | Marker ID |
+| `pos_mb` | float | Position (Mb) |
+| `mediator` | str | Mediator gene name |
+| `lod_base` | float | LOD without mediator in model |
+| `lod_mediated` | float | LOD with mediator as covariate |
+| `lod_drop` | float | lod_base − lod_mediated (positive = mediation; negative = amplification) |
+
+#### `ci_r.csv`
+Parametric bootstrap positional CI (S10).
+
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene |
+| `chr` | str | Chromosome |
+| `locus` | str | Peak locus ID |
+| `ci_lo_mb` | float | 2.5th percentile of bootstrap peak positions (Mb) |
+| `ci_hi_mb` | float | 97.5th percentile of bootstrap peak positions (Mb) |
+| `peak_lod` | float | LOD at peak locus |
+| `n_boot` | int | Number of bootstrap replicates with finite peak position |
+
+#### `boot_pos_r.csv`
+Raw bootstrap peak positions (S10).
+
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene |
+| `chr` | str | Chromosome |
+| `locus` | str | Peak locus of base scan |
+| `boot_pos` | float | Bootstrap peak position (Mb); NaN if no peak found in that replicate |
+
+#### `fixef_r.csv`
+OLS bootstrap instability scan (S11). Mean LOD per locus across bootstrap subsamples.
+
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene (highest-LOD from S4 on this chr) |
+| `chr` | str | Chromosome |
+| `locus` | str | Marker ID |
+| `pos_mb` | float | Position (Mb) |
+| `lod` | float | Mean OLS LOD across 100 bootstrap subsamples (63% of strains each) |
+
+---
+
+### Python Comparison Outputs (`py_data/`)
+
+#### `cache_info_py.csv`
+| Column | Type | Description |
+|---|---|---|
+| `chr` | str | Chromosome |
+| `n_loci_py` | int | Loci in Python cache |
+| `n_loci_r` | int | Loci in R cache (from `cache_info_r.csv`) |
+| `min_mb_py` | float | Min position (Mb) |
+| `max_mb_py` | float | Max position (Mb) |
+| `loci_delta` | int | n_loci_py − n_loci_r (0 = exact match) |
+
+#### `kinship_comparison.csv`
+| Column | Type | Description |
+|---|---|---|
+| `chr` | str | Chromosome |
+| `r` | float | Pearson r between Python and R LOCO kinship matrix entries |
+| `max_delta` | float | Max absolute element-wise difference |
+| `pass` | bool | r > 0.999 AND max_delta < 0.05 |
+
+#### `lod_comparison.csv`
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene |
+| `chr` | str | Chromosome |
+| `locus` | str | Marker ID |
+| `pos_mb` | float | Position (Mb) |
+| `lod_r` | float | LOD from R reference |
+| `lod_py` | float | LOD from Python mosaiQTL |
+
+#### `gene_summary.csv`
+Per-gene validation tier summary (S4).
+
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene |
+| `chr` | str | Chromosome |
+| `tier` | str | `strict` (peak_match AND rel_err<10%), `lenient` (<20%), or `fail` |
+| `r` | float | Pearson r between R and Python LOD profiles across cis loci |
+| `rel_error` | float | max\|ΔLOD\| / max(LOD_R) — relative error at peak |
+| `peak_match` | bool | Python peak locus has LOD_R ≥ 99% of max(LOD_R) |
+| `peak_lod_r` | float | Peak LOD in R |
+| `peak_lod_py` | float | Peak LOD in Python |
+| `h2_null` | float | Estimated null heritability used in Python scan |
+
+#### `threshold_comparison.csv`
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene used for permutation |
+| `chr` | str | Chromosome |
+| `n_perms` | int | Number of permutations |
+| `threshold_r` | float | R GEV 95th-percentile threshold |
+| `threshold_py` | float | Python GEV 95th-percentile threshold |
+| `delta` | float | \|threshold_py − threshold_r\| (pass if mean < 0.5) |
+
+#### `mi_lod_comparison.csv`
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene |
+| `chr` | str | Chromosome |
+| `locus` | str | Marker ID |
+| `lod_r` | float | MI LOD from R (11 imputations) |
+| `lod_py` | float | MI LOD from Python (11 imputations, independent RNG) |
+
+#### `snp_lod_comparison.csv`
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene |
+| `chr` | str | Chromosome |
+| `snp` | str | SNP ID |
+| `lod_r` | float | Diplotype-dosage SNP LOD (R) |
+| `lod_py` | float | Haplotype-dosage SNP LOD (Python) |
+
+#### `mediation_comparison.csv`
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Outcome gene |
+| `chr` | str | Chromosome |
+| `locus` | str | Marker ID |
+| `pos_mb` | float | Position (Mb) |
+| `lod_r` | float | Base LOD from R (no mediator) |
+| `lod_py` | float | Base LOD from Python (no mediator) |
+
+#### `ci_comparison.csv`
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene |
+| `chr` | str | Chromosome |
+| `locus` | str | Peak locus |
+| `ci_lo_r`, `ci_hi_r` | float | R 95% CI bounds (Mb) |
+| `ci_lo_py`, `ci_hi_py` | float | Python 95% CI bounds (Mb) |
+| `overlap` | bool | Whether the two intervals intersect |
+
+#### `fixef_comparison.csv`
+| Column | Type | Description |
+|---|---|---|
+| `gene_id` | str | Gene |
+| `chr` | str | Chromosome |
+| `locus` | str | Marker ID |
+| `lod_r` | float | Mean bootstrap OLS LOD from R |
+| `lod_py` | float | Mean bootstrap OLS LOD from Python |
+
+#### `qc_summary.csv`
+Master pass/fail table — one row per validation section.
+
+| Column | Type | Description |
+|---|---|---|
+| `section` | str | Section key (e.g. `kinship`, `lmm_scan`) |
+| `pass` | bool/None | True = PASS, False = FAIL, None = SKIP |
+| `detail` | str | Metric values and threshold used for decision |

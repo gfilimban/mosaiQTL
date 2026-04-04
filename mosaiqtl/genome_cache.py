@@ -734,8 +734,7 @@ class GenomeCache:
 
         merges consecutive loci whose haplotype probability matrices are
         nearly identical, reducing cache size without information loss.
-        equivalent to miqtl::collapse.genomecache().
-
+        
         algorithm:
           for each chromosome, scan adjacent locus pairs. if their
           euclidean distance (criterion='euclidean') or most-likely-allele
@@ -745,8 +744,7 @@ class GenomeCache:
 
         parameters
         ----------
-        criterion : str  'l2.norm' (default, matches miQTL) or 'allele' / 'max.category'
-        tol : float  merge threshold (euclidean: l2 norm; allele: fraction
+        criterion : str  'l2.norm' (default,         tol : float  merge threshold (euclidean: l2 norm; allele: fraction
                      of strains with different most-likely allele)
 
         returns
@@ -769,7 +767,7 @@ class GenomeCache:
             n_founders = probs.shape[2]
             for i in range(1, n_loci):
                 if criterion in ('l2.norm', 'euclidean'):
-                    # matches miqtl:::check.l2.norm exactly:
+                    # l2-norm criterion:
                     #   l2_i = ||h_i,l - h_i,l-1||_2 / sqrt(J)  per strain
                     #   merge if max_i(l2_i) <= tol  (any > tol → keep separate)
                     diff   = probs[i] - run_probs[-1]           # (n, J)

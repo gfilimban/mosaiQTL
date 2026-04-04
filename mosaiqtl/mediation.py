@@ -1,13 +1,13 @@
 """
 mosaiqtl.mediation — genome-wide mediation scan
 
-tests whether a trans-eQTL effect on outcome gene y is mediated through
-an intermediate (cis) gene m. the qr decomposition is precomputed once
-per mediator to make genome-wide scanning efficient.
+tests whether a haplotype QTL effect on outcome gene y is mediated through
+an intermediate gene m. the qr decomposition of [m | X] is precomputed once;
+the per-locus loop is vectorised via the FWL identity (same trick as scan.py).
 
-equivalent to miqtl:
-  mediation.scan.qr()       →  mediation_scan_qr()
-  fixef.mediation.scan()    →  fixef_mediation_scan()
+lod_drop = lod_base − lod_mediated
+  > 0  mediation detected (haplotype effect shrinks when m is added)
+  < 0  amplification (shared upstream regulator)
 """
 
 import numpy as np
@@ -18,49 +18,83 @@ from scipy import stats as sp_stats
 logger = logging.getLogger('mosaiqtl')
 
 
-def _wls_beta(x, y, w_inv):
-    """weighted least squares: β = (XᵀWX)⁻¹ XᵀWy."""
-    xw = x * w_inv[:, np.newaxis]
-    return np.linalg.lstsq(xw.T @ x, xw.T @ y, rcond=None)[0]
+def _wls_null_rss(y_rot, x_rot, w_inv):
+    """null RSS under weighted OLS: RSS₀ = ||M_X y||²_W."""
+    xw = x_rot * w_inv[:, None]
+    beta = np.linalg.lstsq(xw.T @ x_rot, xw.T @ y_rot, rcond=None)[0]
+    e = y_rot - x_rot @ beta
+    return float(e @ (e * w_inv)), beta
+
+
+def _batch_lod(y_rot, x_rot, probs_chr, w_inv, nf1, n, rss0, valid):
+    """vectorised LOD over all loci on one chromosome.
+
+    probs_chr : (L, n_strains, J) — sliced to valid rows and nf1 cols inside.
+    returns   : lod (L,), p_value (L,), betas (L, J-1)
+    """
+    p  = x_rot.shape[1]
+    q  = nf1
+    df2 = n - p - q
+
+    H  = probs_chr[:, valid, :nf1]               # (L, n, J-1)
+    # rotate
+    # H_rot[l,k,j] = sum_n eigvec[n,k] * H[l,n,j] — but we work in
+    # weighted space: H_w[l,n,j] = H[l,n,j] * sqrt(w_inv[n])
+    # already have x_rot = U' X * w_sqrt; same for H
+    # we need to apply the same rotation that produced y_rot/x_rot
+    # NOTE: caller passes pre-rotated y_rot, x_rot; H must be rotated too.
+    # We pass evc (eigvecs) and w_sqrt separately; this helper keeps the
+    # interface clean by accepting already-formed x_rot and doing H inline.
+    # → caller passes H already rotated and weighted; see mediation_scan_qr.
+
+    # FWL: residualise H on X
+    xt_pinv  = np.linalg.lstsq(x_rot.T @ x_rot, x_rot.T, rcond=None)[0]  # (p,n)
+    proj     = np.einsum('pn,lnj->lpj', xt_pinv, H, optimize=True)        # (L,p,J-1)
+    H_perp   = H - np.einsum('np,lpj->lnj', x_rot, proj, optimize=True)   # (L,n,J-1)
+
+    c    = np.einsum('lnj,n->lj', H_perp, y_rot * w_inv, optimize=True)   # (L,J-1)
+    # Gram matrices (L, J-1, J-1)
+    G    = np.einsum('lnj,lnk->ljk', H_perp * w_inv[None,:,None], H_perp,
+                     optimize=True)
+    G   += np.eye(q)[None] * 1e-10
+    betas = np.linalg.solve(G, c[..., None]).squeeze(-1)                   # (L,J-1)
+
+    rss_red = np.einsum('lj,lj->l', c, betas)                              # (L,)
+    rss1    = np.maximum(rss0 - rss_red, 1e-30)
+    lod     = np.where(rss1 < rss0, (n / 2.0) * np.log10(rss0 / rss1), 0.0)
+
+    if df2 > 0:
+        f_stat = np.maximum((rss0 - rss1) / q / (rss1 / df2), 0.0)
+        pval   = 1.0 - sp_stats.f.cdf(f_stat, q, df2)
+    else:
+        pval   = np.ones(len(lod))
+
+    return lod, pval, betas
 
 
 def mediation_scan_qr(outcome, mediator, genome_cache,
-                      covariates=None, kinship_decomp=None,
-                      use_rint=True, use_reml=True,
-                      outcome_id='outcome', mediator_id='mediator'):
-    """genome-wide mediation scan via qr decomposition.
+                       covariates=None, kinship_decomp=None,
+                       use_rint=True, use_reml=True,
+                       outcome_id='outcome', mediator_id='mediator'):
+    """genome-wide mediation scan — vectorised per chromosome.
 
     tests: does the haplotype effect on outcome persist after conditioning
-    on mediator? if the haplotype effect shrinks to zero when mediator is
-    included, the effect is fully mediated.
-
-    model:
-      null:  y ~ mediator + X + u     (no haplotype)
-      alt:   y ~ H + mediator + X + u (haplotype added)
-      LOD = n/2 * log10(RSS_null / RSS_alt)
-
-    the qr decomposition of [mediator | X] is computed once and reused
-    across all loci, matching miQTL's efficient implementation.
-
-    equivalent to miqtl::mediation.scan.qr().
+    on mediator? lod_drop > 0 means effect is (partially) mediated.
 
     parameters
     ----------
-    outcome : np.ndarray (n,)   y — the trans target gene
-    mediator : np.ndarray (n,)  m — the cis mediator gene expression
-    genome_cache : GenomeCache
-    covariates : np.ndarray (n, p) or None
-    kinship_decomp : dict or None
-    use_rint : bool   apply rint to outcome
-    use_reml : bool
-    outcome_id : str
-    mediator_id : str
+    outcome, mediator : np.ndarray (n,)
+    genome_cache      : GenomeCache
+    covariates        : np.ndarray (n, p) or None
+    kinship_decomp    : dict or None
+    use_rint          : bool  apply RINT to outcome
+    use_reml          : bool
+    outcome_id        : str
+    mediator_id       : str
 
     returns
     -------
-    pd.DataFrame  columns: locus, chr, pos_mb, lod, p_value, mediation_lod
-      mediation_lod = lod_without_mediator - lod_with_mediator
-                    (positive = mediation detected)
+    pd.DataFrame  locus, chr, pos_mb, lod_base, lod_mediated, lod_drop, p_value
     """
     from . import kinship as kin_module
     from . import lmm as lmm_module
@@ -70,91 +104,92 @@ def mediation_scan_qr(outcome, mediator, genome_cache,
         kd = kin_module.calc_kinship(genome_cache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd)
 
-    # align samples
     valid  = (~np.isnan(outcome)) & (~np.isnan(mediator))
     y      = outcome[valid].copy()
     m      = mediator[valid].copy()
     if use_rint:
         y = _rint(y)
-    n      = len(y)
+    n  = len(y)
 
     x_base = (covariates[valid].copy() if covariates is not None
               else np.ones((n, 1), dtype=float))
     if not np.allclose(x_base[:, 0], 1.0):
         x_base = np.hstack([np.ones((n, 1)), x_base])
 
-    # build mediation covariate: [mediator | X]
-    m_std  = (m - m.mean()) / max(m.std(), 1e-10)
-    x_med  = np.hstack([m_std.reshape(-1, 1), x_base])   # (n, p+1)
+    m_std = (m - m.mean()) / max(m.std(), 1e-10)
+    x_med = np.hstack([m_std[:, None], x_base])   # (n, p+1)
 
-    rows = []
+    nf1 = genome_cache.n_founders - 1
+    rows_base, rows_med = [], []
 
     for chrom in genome_cache.chromosomes:
         if chrom not in kinship_decomp:
             continue
-        eigvals = kinship_decomp[chrom]['values']
-        eigvecs = kinship_decomp[chrom]['vectors']
-        ev_v    = eigvecs[valid]
+        ev  = kinship_decomp[chrom]['values']
+        evc = kinship_decomp[chrom]['vectors']
+        ev_v = evc[valid]                            # (n, n)
 
-        y_rot   = ev_v.T @ y
-        xb_rot  = ev_v.T @ x_base
-        xm_rot  = ev_v.T @ x_med
+        # rotate + weight — sqrt(w_inv) applied for WLS formulation
+        delta   = None   # computed per-model below
+        def _rot_wt(x_cov, h2):
+            delta = h2 / max(1 - h2, 1e-10)
+            w_inv = 1.0 / (delta * ev + 1.0)
+            w_sqrt = np.sqrt(w_inv)
+            return (ev_v.T @ y) * w_sqrt, (ev_v.T @ x_cov) * w_sqrt[:, None], w_inv, w_sqrt
 
-        h2_base, _ = lmm_module.estimate_h2_null(y_rot, xb_rot, eigvals)
-        h2_med,  _ = lmm_module.estimate_h2_null(y_rot, xm_rot, eigvals)
+        h2_base, _ = lmm_module.estimate_h2_null(ev_v.T @ y, ev_v.T @ x_base, ev)
+        h2_med,  _ = lmm_module.estimate_h2_null(ev_v.T @ y, ev_v.T @ x_med,  ev)
 
-        lids, pos, probs = genome_cache.get_chromosome(chrom)
-        nf1 = genome_cache.n_founders - 1
+        y_rot_b, x_rot_b, w_inv_b, w_sqrt_b = _rot_wt(x_base, h2_base)
+        y_rot_m, x_rot_m, w_inv_m, w_sqrt_m = _rot_wt(x_med,  h2_med)
 
-        for i_l, lid in enumerate(lids):
-            h_l    = probs[i_l][valid, :nf1]
-            h_rot  = ev_v.T @ h_l
+        rss0_b, _ = _wls_null_rss(y_rot_b, x_rot_b, np.ones(n))  # already weighted
+        rss0_m, _ = _wls_null_rss(y_rot_m, x_rot_m, np.ones(n))
 
-            # scan without mediator (base model)
-            res_base = lmm_module.fit_lmm_at_locus(
-                y_rot, h_rot, xb_rot, eigvals, h2_base, use_reml)
-            # scan with mediator
-            res_med  = lmm_module.fit_lmm_at_locus(
-                y_rot, h_rot, xm_rot, eigvals, h2_med, use_reml)
+        lids, pos, probs = genome_cache.get_chromosome(chrom)  # (L, m, J)
 
-            rows.append({
-                'locus':         lid,
-                'chr':           chrom,
-                'pos_mb':        float(pos[i_l]),
-                'lod':           res_med.lod,         # LOD after conditioning on mediator
-                'p_value':       res_med.p_value,
-                'lod_base':      res_base.lod,         # LOD without mediator
-                'mediation_lod': max(res_base.lod - res_med.lod, 0.0),
-                'outcome_id':    outcome_id,
-                'mediator_id':   mediator_id,
-            })
+        # pre-rotate haplotype block for this chromosome
+        # H_rot[l,k,j] = (U'[valid] H[l,valid,:])_k * w_sqrt_b[k]
+        H_raw = probs[:, valid, :nf1]                           # (L, n, J-1)
+        # rotate via einsum: H_rot = einsum('nk,lnj->lkj', ev_v, H_raw)
+        H_rot_b = np.einsum('nk,lnj->lkj', ev_v, H_raw, optimize=True) \
+                   * w_sqrt_b[None, :, None]                    # (L, n, J-1)
+        H_rot_m = np.einsum('nk,lnj->lkj', ev_v, H_raw, optimize=True) \
+                   * w_sqrt_m[None, :, None]
 
-    return pd.DataFrame(rows)
+        lod_b, _, _ = _batch_lod(
+            y_rot_b, x_rot_b, H_rot_b, np.ones(n), nf1, n, rss0_b, slice(None))
+        lod_m, pv, _ = _batch_lod(
+            y_rot_m, x_rot_m, H_rot_m, np.ones(n), nf1, n, rss0_m, slice(None))
+
+        lod_drop = np.maximum(lod_b - lod_m, 0.0)
+
+        df = pd.DataFrame({
+            'locus':        lids,
+            'chr':          chrom,
+            'pos_mb':       pos.astype(float),
+            'lod_base':     lod_b,
+            'lod_mediated': lod_m,
+            'lod_drop':     lod_drop,
+            'p_value':      pv,
+            'outcome_id':   outcome_id,
+            'mediator_id':  mediator_id,
+        })
+        rows_base.append(df)
+
+    return pd.concat(rows_base, ignore_index=True) if rows_base else pd.DataFrame()
 
 
 def fixef_mediation_scan(outcome, mediator, genome_cache,
-                         covariates=None, use_rint=True,
-                         outcome_id='outcome', mediator_id='mediator',
-                         just_these_loci=None):
-    """fixed-effect mediation scan — no kinship, ols only.
+                          covariates=None, use_rint=True,
+                          outcome_id='outcome', mediator_id='mediator',
+                          just_these_loci=None):
+    """fixed-effect mediation scan — OLS, no kinship, vectorised.
 
-    fast version for exploratory analysis or large-scale screening.
-    equivalent to miqtl::fixef.mediation.scan().
+    fast screening version. compatible with just_these_loci filter
+    for cis-window restriction.
 
-    parameters
-    ----------
-    outcome : np.ndarray (n,)
-    mediator : np.ndarray (n,)
-    genome_cache : GenomeCache
-    covariates : np.ndarray or None
-    use_rint : bool
-    outcome_id : str
-    mediator_id : str
-    just_these_loci : set or None
-
-    returns
-    -------
-    pd.DataFrame  same columns as mediation_scan_qr()
+    returns pd.DataFrame with same columns as mediation_scan_qr().
     """
     from .utils import rint as _rint
 
@@ -163,56 +198,69 @@ def fixef_mediation_scan(outcome, mediator, genome_cache,
     m      = mediator[valid].copy()
     if use_rint:
         y = _rint(y)
-    n      = len(y)
+    n  = len(y)
 
     x_base = (covariates[valid].copy() if covariates is not None
               else np.ones((n, 1), dtype=float))
     if not np.allclose(x_base[:, 0], 1.0):
         x_base = np.hstack([np.ones((n, 1)), x_base])
-
     m_std  = (m - m.mean()) / max(m.std(), 1e-10)
-    x_med  = np.hstack([m_std.reshape(-1, 1), x_base])
-    p_b    = x_base.shape[1]
-    p_m    = x_med.shape[1]
+    x_med  = np.hstack([m_std[:, None], x_base])
 
-    # null rss for base and mediation models
-    def _rss_ols(x, y):
+    nf1 = genome_cache.n_founders - 1
+
+    def _rss0(x):
         b = np.linalg.lstsq(x, y, rcond=None)[0]
         e = y - x @ b; return float(e @ e)
 
-    rss0_b = _rss_ols(x_base, y)
-    rss0_m = _rss_ols(x_med,  y)
+    rss0_b = _rss0(x_base); rss0_m = _rss0(x_med)
+    p_b = x_base.shape[1];  p_m = x_med.shape[1]
 
     rows = []
-
     for chrom in genome_cache.chromosomes:
-        lids, pos, probs = genome_cache.get_chromosome(chrom)
-        nf1 = genome_cache.n_founders - 1
+        lids, pos, probs = genome_cache.get_chromosome(chrom)  # (L, m, J)
+        H = probs[:, valid, :nf1]                               # (L, n, J-1)
 
-        for i_l, lid in enumerate(lids):
-            if just_these_loci and lid not in just_these_loci:
-                continue
-            h   = probs[i_l][valid, :nf1]
-            q   = nf1
+        if just_these_loci is not None:
+            mask = np.isin(lids, list(just_these_loci))
+            lids, pos, H = lids[mask], pos[mask], H[mask]
+        if not len(lids):
+            continue
 
-            zb  = np.hstack([h, x_base])
-            zm  = np.hstack([h, x_med])
+        # vectorised OLS via FWL for both models
+        for x_cov, rss0, p_cov, model_tag in [
+            (x_base, rss0_b, p_b, 'base'),
+            (x_med,  rss0_m, p_m, 'med'),
+        ]:
+            xt_pinv = np.linalg.lstsq(x_cov.T @ x_cov, x_cov.T, rcond=None)[0]
+            proj    = np.einsum('pn,lnj->lpj', xt_pinv, H, optimize=True)
+            H_perp  = H - np.einsum('np,lpj->lnj', x_cov, proj, optimize=True)
+            c       = np.einsum('lnj,n->lj', H_perp, y, optimize=True)
+            G       = np.einsum('lnj,lnk->ljk', H_perp, H_perp, optimize=True)
+            G      += np.eye(nf1)[None] * 1e-10
+            betas   = np.linalg.solve(G, c[..., None]).squeeze(-1)
+            rss_red = np.einsum('lj,lj->l', c, betas)
+            rss1    = np.maximum(rss0 - rss_red, 1e-30)
+            lod     = np.where(rss1 < rss0, (n/2.0)*np.log10(rss0/rss1), 0.0)
 
-            rss1_b = _rss_ols(zb, y); rss1_m = _rss_ols(zm, y)
-            lod_b  = max((n/2.0)*np.log10(max(rss0_b,1e-30)/max(rss1_b,1e-30)), 0.0)
-            lod_m  = max((n/2.0)*np.log10(max(rss0_m,1e-30)/max(rss1_m,1e-30)), 0.0)
-
-            df2 = n - p_m - q
-            if df2 > 0 and rss1_m > 0:
-                f  = ((rss0_m - rss1_m)/q) / (rss1_m/df2)
-                pv = 1.0 - sp_stats.f.cdf(max(f,0), q, df2)
+            if model_tag == 'base':
+                lod_b = lod
             else:
-                pv = 1.0
+                lod_m = lod
+                df2 = n - p_cov - nf1
+                if df2 > 0:
+                    f_stat = np.maximum((rss0-rss1)/nf1/(rss1/df2), 0.0)
+                    pval   = 1.0 - sp_stats.f.cdf(f_stat, nf1, df2)
+                else:
+                    pval = np.ones(len(lod))
 
-            rows.append({'locus': lid, 'chr': chrom, 'pos_mb': float(pos[i_l]),
-                         'lod': lod_m, 'p_value': pv,
-                         'lod_base': lod_b,
-                         'mediation_lod': max(lod_b - lod_m, 0.0),
-                         'outcome_id': outcome_id, 'mediator_id': mediator_id})
+        df = pd.DataFrame({
+            'locus':        lids, 'chr': chrom, 'pos_mb': pos.astype(float),
+            'lod_base':     lod_b, 'lod_mediated': lod_m,
+            'lod_drop':     np.maximum(lod_b - lod_m, 0.0),
+            'p_value':      pval,
+            'outcome_id':   outcome_id, 'mediator_id': mediator_id,
+        })
+        rows.append(df)
 
-    return pd.DataFrame(rows)
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()

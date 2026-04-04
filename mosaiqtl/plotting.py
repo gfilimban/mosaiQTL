@@ -333,11 +333,11 @@ def plot_dispersion_vs_truth(phi_estimated, phi_true, save_path=None):
 
 
 # ----------------------------------------------------------------
-# cross-language comparison (mosaiqtl vs miqtl/r)
+# cross-language comparison (python vs r reference)
 # ----------------------------------------------------------------
 
 def plot_lod_correlation(py_scan_result, r_results_csv, save_path=None):
-    """scatter of mosaiqtl lod vs miqtl lod at every shared locus.
+    """scatter of mosaiQTL LOD vs R reference LOD at every shared locus.
 
     parameters
     ----------
@@ -379,7 +379,7 @@ def plot_lod_correlation(py_scan_result, r_results_csv, save_path=None):
 
     ax.set_xlim(left=0)
     ax.set_ylim(bottom=0)
-    ax.set_xlabel('miQTL LOD (R)')
+    ax.set_xlabel('Reference LOD (R)')
     ax.set_ylabel('mosaiQTL LOD (Python)')
     ax.set_title('cross-language LOD comparison')
     ax.legend(fontsize=9)
@@ -438,7 +438,7 @@ def plot_lod_difference(py_scan_result, r_results_csv, save_path=None):
                 top=max(0.1, diff.max() * 1.2))
     ax.set_xlabel('locus index')
     ax.set_ylabel('$\\Delta$ LOD (Python $-$ R)')
-    ax.set_title('LOD residuals: mosaiQTL vs miQTL')
+    ax.set_title('LOD residuals')
     sns.despine()
 
     plt.tight_layout()
@@ -500,7 +500,7 @@ def plot_founder_effects_comparison(py_scan_result, genome_cache,
         r_all = np.array([r_effects.get(n, 0.0) for n in all_names])
         ax.bar(x + width / 2, r_all, width, color=colors_py,
                edgecolor='#444444', linewidth=0.5, alpha=0.5,
-               label='miQTL (R)')
+               label='Reference (R)')
 
     ax.axhline(y=0, color='#444444', linewidth=0.5)
     ax.set_xticks(x)

@@ -3,7 +3,7 @@
 **Repo:** `github.com/gfilimban/mosaiqtl` (private)  
 **Scope:** Novel extensions beyond the miQTL validation port  
 **Status:** Scaffolded / design-complete; pending end-to-end validation  
-**Last updated:** April 2026 | commit `04eaeea`
+**Last updated:** April 2026 | commit `HEAD`
 
 ---
 
@@ -229,7 +229,7 @@ sample space ($n$).
 
 ---
 
-## P3 — Epistasis Module (`epistasis.py`) — Planned
+## P3 — Epistasis Module (`epistasis.py`)
 
 ### Purpose
 
@@ -239,20 +239,55 @@ in the Collaborative Cross.
 
 ---
 
-### Planned Functions
+### P3a — Pairwise Interaction Scan (`scan_epistasis`)
 
-**`scan_epistasis(locus_a, locus_b)`** — pairwise $G \times G$ interaction:
+**Additive model** at loci $a$ and $b$:
 
-$$Y_i = H_i^a\,\alpha + H_i^b\,\beta + (H_i^a \otimes H_i^b)\,\gamma + X_i\,\xi + \epsilon_i$$
+$$Y_i = H_i^a\,\alpha + H_i^b\,\beta + X_i\,\xi + u_i + \varepsilon_i$$
 
-Interaction term $(J-1)^2$-dimensional; LOD from LRT vs additive null.
+**Interaction model**:
 
-**`test_haplotype_combinations()`** — $J \times J$ founder-pair expression heatmap:
-for each pair $(f, f')$, subset strains carrying $(f, f')$ at two peak loci and
-report mean expression — visualises emergent polygenic combinations.
+$$Y_i = H_i^a\,\alpha + H_i^b\,\beta + (H_i^a \otimes H_i^b)\,\gamma + X_i\,\xi + u_i + \varepsilon_i$$
 
-**`scan_conditional(locus_fixed)`** — multi-QTL residual scanning:
-regress out effect at `locus_fixed`, scan residuals genome-wide for secondary QTL.
+where $H_i^a \otimes H_i^b \in \mathbb{R}^{(J-1)^2}$ is the row-wise Khatri-Rao product
+of the two haplotype design matrices.
+
+**Epistasis LOD:**
+
+$$\text{LOD}_\text{epi} = \text{LOD}_\text{int} - \text{LOD}_\text{add}$$
+
+Tested as $\chi^2((J-1)^2)$ via LRT approximation.
+
+---
+
+### P3b — Founder-Pair Heatmap (`test_haplotype_combinations`)
+
+Hard-call founder assignment (argmax over $H_{if\ell}$) at two peak loci.
+For each pair $(f_a, f_b)$, compute mean phenotype over strains assigned
+to both. Returns a $J \times J$ DataFrame — visualises emergent polygenic
+combinations that survive the additive decomposition.
+
+---
+
+### P3c — Multi-Signal Decomposition (`scan_conditional`, `scan_conditional_with_y`)
+
+Two implementations with different input requirements:
+
+**`scan_conditional`** (LOD-drop heuristic, no phenotype needed):
+identifies non-overlapping peaks using a 5 Mb exclusion zone around each
+already-found signal. Requires only a `ScanResult`.
+
+**`scan_conditional_with_y`** (full BLUP conditioning, preferred):
+at each step, fits the BLUP of the peak haplotype effect and subtracts it
+from the phenotype residual before rescanning. Requires the original phenotype vector.
+
+$$y_\text{res}^{(k)} = y_\text{res}^{(k-1)} - H_{\ell^*}^{(k)} \hat{\gamma}^{(k)}$$
+
+where $\hat{\gamma}^{(k)} = \text{BLUP of haplotype effect at the }k\text{-th peak locus}$.
+
+BLUP conditioning is more conservative than OLS residualization — it accounts
+for uncertainty in $\hat{\gamma}$ and is the haplotype-space analogue of
+SuSiE's iterative Bayesian stepwise selection.
 
 ---
 
@@ -260,9 +295,10 @@ regress out effect at `locus_fixed`, scan residuals genome-wide for secondary QT
 
 | Function | Location | Status |
 |---|---|---|
-| `scan_epistasis()` | `mosaiqtl/epistasis.py` | 🔲 not yet created |
-| `test_haplotype_combinations()` | `mosaiqtl/epistasis.py` | 🔲 not yet created |
-| `scan_conditional()` | `mosaiqtl/epistasis.py` | 🔲 not yet created |
+| `scan_epistasis()` | `mosaiqtl/epistasis.py` | ✅ implemented |
+| `test_haplotype_combinations()` | `mosaiqtl/epistasis.py` | ✅ implemented |
+| `scan_conditional()` | `mosaiqtl/epistasis.py` | ✅ implemented (LOD-drop) |
+| `scan_conditional_with_y()` | `mosaiqtl/epistasis.py` | ✅ implemented (BLUP) |
 
 ---
 
@@ -371,11 +407,11 @@ phenotypes directly. No new statistical machinery — only a new phenotype input
 | 3 | Confirm edgePython `fit['fitted.values']` key | 1 | yes |
 | 4 | Permutation null for NB LOD thresholds | 1 | yes |
 | 5 | K-expansion (n > m) end-to-end test | 1 | yes |
-| 6 | Implement `scan_conditional()` (Layer 3b) | 3b | post-validation |
+| 6 | `scan_conditional()` + `scan_conditional_with_y()` | 3b | ✅ implemented |
 | 7 | Implement `build_snp_catalogue()` (Layer 3a) | 3a | post-validation |
 | 8 | End-to-end ASE test with F1 FASTQs (Layer 3c) | 3c | post-validation |
 | 9 | LeafCutter PSI matrix → sQTL scan (Layer 3d) | 3d | post-validation |
-| 10 | Implement `epistasis.py` (Layer 3 extension) | 3 | future |
+| 10 | `epistasis.py`: scan_epistasis, test_haplotype_combinations | 3 | ✅ implemented |
 
 ---
 

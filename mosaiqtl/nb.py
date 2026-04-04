@@ -120,7 +120,7 @@ def scan_nb(counts, genome_cache, covariates=None, sample_ids=None,
 
     primary mosaiQTL model — operates on raw integer pseudobulk counts.
     no RINT (NB handles discrete counts natively).
-    no kinship term (fixed-effect GLM; LMM is the miQTL validation port).
+    no kinship term (fixed-effect GLM).
 
     score test (default):
       one null model per gene; score statistic Q_l evaluated at each locus.

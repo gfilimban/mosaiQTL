@@ -96,7 +96,7 @@ def discover(phenotype_matrix, gene_ids, genome_cache,
     sample_ids       : array-like (n,) or None
     model            : 'nb' (default) or 'lmm'
         'nb'  — NB GLM on raw counts; no kinship; primary mosaiQTL model
-        'lmm' — Gaussian LMM with LOCO kinship; miQTL-equivalent validation port
+        'lmm' — gaussian lmm scan with loco kinship correction
     lib_sizes        : np.ndarray (n,) or None  (nb only) log-offset
     cis_loci_dict    : dict {gene_id: set} or None  restrict scan to cis window
     n_cores          : int
@@ -327,7 +327,7 @@ def _run_conditional_scan(disc, cache, covariates,
     (rather than peak-locus residual) reduces false secondary signals from
     LD within the block.
     """
-    from .scan import scan_conditional
+    from .epistasis import scan_conditional
     results = {}
     for gid, sr in disc.scan.items():
         if len(sr.lod) == 0: continue

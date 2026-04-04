@@ -4,8 +4,7 @@ mosaiqtl.scan — genome-wide haplotype QTL scan
 orchestrates the scan across chromosomes for a single phenotype,
 combining genome cache, kinship, and the LMM engine.
 
-global design — pheno_id / geno_id split (matches miQTL):
-    pheno_id : identifiers for each row of phenotype data (n)
+global design — pheno_id / geno_id split (    pheno_id : identifiers for each row of phenotype data (n)
     geno_id  : identifiers for rows of the genome cache (m ≤ n)
 
 when n > m (replicated CC strains), a Z matrix (n×m) maps each
@@ -15,7 +14,6 @@ phenotype sample to its genotype:
 when n == m and ids match, Z == I and all results are identical
 to the 1:1 case.
 
-equivalent to miQTL::scan.h2lmm().
 """
 
 import numpy as np
@@ -106,8 +104,7 @@ def scan_h2lmm(phenotype, genome_cache, covariates=None,
     the Z-matrix expansion. when sample_ids is provided and differs
     from genome_cache.sample_ids, Z is built automatically.
 
-    equivalent to miQTL::scan.h2lmm(use.multi.impute=FALSE).
-
+    
     parameters
     ----------
     phenotype       : np.ndarray (n,)    phenotype values; NaN excluded
@@ -182,7 +179,7 @@ def scan_h2lmm(phenotype, genome_cache, covariates=None,
 
         y_rot = evecs.T @ y
         x_rot = evecs.T @ x
-        # use fixed h2 when provided (e.g. from scan_h2lmm_mi) — matches miQTL behaviour
+        # use fixed h2 when provided (e.g. from scan_h2lmm_mi)
         if fixed_h2_dict is not None and chrom in fixed_h2_dict:
             h2 = fixed_h2_dict[chrom]
         else:
@@ -260,8 +257,7 @@ def scan_multi_gene(phenotype_matrix, gene_ids, genome_cache,
 def grab_locus_from_scan(scan_result):
     """return the locus id with the highest LOD score.
 
-    equivalent to miQTL::grab.locus.from.scan().
-    """
+        """
     return scan_result.locus_ids[np.argmax(scan_result.lod)]
 
 
@@ -286,8 +282,7 @@ def fixef_eqtl_scan(phenotype, genome_cache, covariates=None,
                     phenotype_id='unknown', just_these_loci=None):
     """fixed-effect eQTL scan — OLS, no kinship.
 
-    equivalent to miQTL::fixef.eQTL.scan() / locus.as.fixed=TRUE mode.
-
+    
     parameters
     ----------
     phenotype       : np.ndarray (n,)
@@ -379,8 +374,7 @@ def instability_lm_scan(phenotype, genome_cache, covariates=None,
     subsamples strains b times, runs fixef_eqtl_scan() on each subsample,
     reports mean LOD and peak proportion across bootstraps.
 
-    equivalent to miQTL::instability.lm.scan() (which requires a
-    pre-generated sample matrix from generate.simple.sample.outcomes.matrix).
+        pre-generated sample matrix from generate.simple.sample.outcomes.matrix).
     this implementation handles sampling internally.
 
     parameters
@@ -451,8 +445,7 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
     """multiple-imputation haplotype scan.
 
     samples n_imp diplotype states per locus and averages LOD scores.
-    equivalent to miQTL::scan.h2lmm(use.multi.impute=TRUE, num.imp=n_imp).
-
+    
     parameters
     ----------
     phenotype      : np.ndarray (n,)
@@ -460,7 +453,7 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
     covariates     : np.ndarray (n, p) or None
     kinship_decomp : dict or None
     sample_ids     : array-like (n,) or None
-    n_imp          : int   number of imputations (miQTL default = 11)
+    n_imp          : int   number of imputations (default 11)
     seed           : int
     use_rint       : bool
     use_reml       : bool
@@ -481,8 +474,7 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
     _chrom_list = [c for c in genome_cache.chromosomes if c in kinship_decomp]
 
     # pre-estimate h2 once from the REAL cache — held fixed across all imputations
-    # matches miQTL behaviour: h2 from base scan is reused for each imputed draw
-    valid_mi = ~np.isnan(phenotype)
+    #     valid_mi = ~np.isnan(phenotype)
     y_base   = phenotype[valid_mi].copy()
     if use_rint:
         from .utils import rint as _rint_mi
@@ -532,35 +524,3 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
 
     ref_res.lod = lod_accum / n_imp
     return ref_res
-
-
-def scan_conditional(scan_result, genome_cache, covariates=None,
-                     kinship_decomp=None, n_signals=3, lod_drop=1.5):
-    """Layer 3b — forward-stepwise multi-signal decomposition.
-
-    conditions on the peak-locus BLUP (best linear unbiased predictor of the
-    haplotype effect) and rescans the same cis window for secondary signals.
-    repeats until n_signals reached or no signal exceeds lod_drop below peak.
-
-    rationale: CC haplotype blocks average ~10 Mb; a single QTL interval
-    commonly contains multiple independent signals. conditioning on BLUP
-    (rather than peak-locus OLS residual) avoids over-fitting and is the
-    haplotype-space analogue of SuSiE's iterative Bayesian stepwise selection.
-
-    parameters
-    ----------
-    scan_result     : ScanResult  from Layer 1
-    genome_cache    : GenomeCache
-    covariates      : np.ndarray (n, p) or None
-    kinship_decomp  : dict or None
-    n_signals       : int  max signals to extract (default 3)
-    lod_drop        : float  min LOD for secondary signal (default 1.5)
-
-    returns
-    -------
-    list of ScanResult  one per independent signal found (length 1..n_signals)
-    """
-    # stub — implementation pending after Layer 1/2 validation completes
-    raise NotImplementedError(
-        'scan_conditional is planned for Layer 3b; '
-        'run Layer 1 + 2 validation first.')

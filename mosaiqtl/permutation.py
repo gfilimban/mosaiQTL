@@ -4,7 +4,6 @@ mosaiqtl.permutation — permutation thresholds and parametric bootstrap CI
 implements significance thresholds for genome-wide scans via permutation
 and positional confidence intervals via parametric bootstrap.
 
-equivalent to miqtl:
   generate.sample.outcomes.matrix()  →  generate_null_outcomes()
   run.threshold.scans()              →  run_threshold_scans()
   get.gev.thresholds()               →  get_gev_thresholds()
@@ -37,8 +36,7 @@ def generate_null_outcomes(y, n_samples=1000, method='permutation', seed=1):
     for permutation: shuffles phenotype labels (breaks geno-pheno link).
     for bootstrap: resamples with replacement from centred phenotype.
 
-    equivalent to miqtl::generate.sample.outcomes.matrix().
-
+    
     parameters
     ----------
     y         : np.ndarray (n,)  original phenotype (NaN-free)
@@ -76,8 +74,7 @@ def run_threshold_scans(null_outcomes, genome_cache,
                         use_rint=True, use_reml=True):
     """scan null phenotype columns to build the peak-LOD null distribution.
 
-    equivalent to miqtl::run.threshold.scans().
-
+    
     parameters
     ----------
     null_outcomes  : np.ndarray (n, n_perms)  from generate_null_outcomes()
@@ -179,10 +176,9 @@ def get_gev_thresholds(max_lods, percentile=0.95):
     permutation peak-LOD distribution and return the threshold.
 
     fitting GEV is more stable than empirical quantiles when n_perms
-    is small (100-500), matching miQTL behaviour.
+    is small (100-500).
 
-    equivalent to miqtl::get.gev.thresholds().
-
+    
     parameters
     ----------
     max_lods   : np.ndarray (n_perms,)  per-permutation max LOD scores
@@ -224,8 +220,7 @@ def run_positional_scans(bootstrap_outcomes, genome_cache,
     """run single-chromosome scans on parametric bootstrap samples to compute
     a positional confidence interval for a QTL.
 
-    equivalent to miqtl::run.positional.scans().
-
+    
     parameters
     ----------
     bootstrap_outcomes : np.ndarray (n, n_boot)  from generate_null_outcomes(method='bootstrap')
