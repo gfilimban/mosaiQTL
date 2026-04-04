@@ -34,3 +34,11 @@ clean:
 	find validation/port_validation -name '*.png' -delete
 	find validation/port_validation -name '*.csv' -delete
 	@echo "cleared qc_plots/ and py_data/"
+
+# phase 3 validation (HPC only — requires gastroc_all_processed2.h5ad)
+validate-phase3:
+	python validation/validate_phase3.py --cell_type type2x --n_genes 500
+
+validate-phase3-quick:
+	python validation/validate_phase3.py --cell_type type2x --n_genes 100 \
+	    --sections nb,vqtl
