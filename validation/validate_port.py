@@ -309,9 +309,44 @@ if section(2, 'HAPLOTYPE PROBS'):
     rsum_ok  = bool(np.allclose(hap_df['mean_rowsum'], 2.0, atol=1e-4))  # miQTL [0,2] scale
     max_dev  = float((hap_df['mean_rowsum']-2.0).abs().max())
 
+    # actual probability value comparison: load R per-locus per-sample values
+    # and compare to Python HMM output at the same loci
+    r_hap_vals = load_r('haplotype_vals_r.csv')
+    r_val_v, py_val_v, val_r, val_mad = None, None, np.nan, np.nan
+    if r_hap_vals is not None:
+        val_rows = []
+        for chrom in chromosomes:
+            if chrom not in cache_py._data: continue
+            lids, pos, probs = cache_py.get_chromosome(chrom)
+            sids_py = list(cache_py.sample_ids)
+            rv = r_hap_vals[r_hap_vals['chr'].astype(str)==str(chrom)]
+            for lid in rv['locus'].unique():
+                idx = np.where(lids == lid)[0]
+                if not len(idx): continue
+                h_py = probs[idx[0]]                          # (n_samples, J)
+                rv_l = rv[rv['locus']==lid].set_index('sample_id')
+                founder_cols_r = [c for c in rv_l.columns
+                                  if c not in ('chr','locus','pos_mb','sample_id')]
+                for sid in sids_py:
+                    if sid not in rv_l.index: continue
+                    si = sids_py.index(sid)
+                    for fi, fc in enumerate(founder_cols_r):
+                        if fi >= h_py.shape[1]: continue
+                        val_rows.append({'r_prob': float(rv_l.loc[sid, fc]),
+                                         'py_prob': float(h_py[si, fi])})
+        if val_rows:
+            vdf = pd.DataFrame(val_rows).dropna()
+            # Python marginal probs are in [0,1]; R additive dosage in [0,2] → divide by 2
+            vdf['r_prob'] = vdf['r_prob'] / 2.0
+            r_val_v  = vdf['r_prob'].values
+            py_val_v = vdf['py_prob'].values
+            if len(vdf) > 3:
+                val_r   = float(np.corrcoef(r_val_v, py_val_v)[0, 1])
+                val_mad = float(np.abs(r_val_v - py_val_v).mean())
+            save_csv(vdf.head(10000), 'haplotype_val_comparison.csv')
+            log.info(f'  haplotype value comparison: n={len(vdf)}  r={val_r:.4f}  mad={val_mad:.4f}')
+
     if r_hap is not None:
-        # 3-panel heatmap: Python H matrix at mid-chr locus, row-sum deviations,
-        # and scatter vs R — consistent with validate_vs_r.py style
         _chrom0 = chromosomes[0]
         if _chrom0 in cache_py._data:
             _lids0    = cache_py._data[_chrom0]['locus_ids']
@@ -325,7 +360,7 @@ if section(2, 'HAPLOTYPE PROBS'):
             for s in _sids:
                 if s not in _seen: _disp_s.append(s); _seen.add(s)
             _disp_idx = [_sids.index(s) for s in _disp_s]
-            _h_disp   = _h_mid[_disp_idx]                    # reordered (n, J)
+            _h_disp   = _h_mid[_disp_idx]
             _fnames   = list(cache_py.founders)
             _fs       = max(5, min(9, int(180 / len(_disp_s))))
 
@@ -334,35 +369,40 @@ if section(2, 'HAPLOTYPE PROBS'):
             sns.heatmap(_h_disp, ax=axes[0], cmap='YlOrRd', vmin=0, vmax=1,
                         xticklabels=_fnames, yticklabels=_disp_s,
                         cbar_kws={'shrink':0.7})
-            axes[0].set_title(f'Python haplotype probs  chr{_chrom0} · {_lids0[_mid]}', fontsize=10)
+            axes[0].set_title(f'Python haplotype probs  chr{_chrom0} · {_lids0[_mid]}',
+                              fontsize=10)
             axes[0].set_xticklabels(axes[0].get_xticklabels(),
-                                    rotation=45, ha='right', fontsize=9,
-                                    fontfamily='Carlito')
+                                    rotation=45, ha='right', fontsize=9)
             axes[0].set_yticklabels(axes[0].get_yticklabels(),
-                                    rotation=0, fontsize=_fs, fontfamily='Carlito')
-            # panel 2: row sum deviation bar chart
-            axes[1].bar(range(len(hap_df)), hap_df['mean_rowsum']-2.0,
-                        color=chr_colors(hap_df['chr'].tolist()), edgecolor='none')
-            axes[1].axhline(0, color='#D83026', lw=0.8, ls='--')
-            axes[1].set(xlabel='sampled locus index', ylabel='mean row sum $-$ 2',
-                        title=f'row sum deviation  max={max_dev:.2e}')
-            sns.despine(ax=axes[1])
-            # panel 3: scatter vs R row sums (few points but informative)
-            mg = hap_df.merge(r_hap[['locus','mean_rowsum']].rename(
-                columns={'mean_rowsum':'rowsum_r'}), on='locus', how='inner')
-            mg_v = mg.dropna(subset=['rowsum_r','mean_rowsum'])
-            if len(mg_v) > 1:
-                scatter_qc(axes[2], mg_v['rowsum_r'], mg_v['mean_rowsum'],
-                           'row sum (R)', 'row sum (Python)', 'row sum comparison')
+                                    rotation=0, fontsize=_fs)
+            # panel 2: actual probability value scatter (R vs Python) — the real comparison
+            ax2 = axes[1]
+            if r_val_v is not None and len(r_val_v) > 3:
+                scatter_qc(ax2, r_val_v[:5000], py_val_v[:5000],
+                           'prob (R marginal)', 'prob (Python HMM)',
+                           f'actual prob values  r={val_r:.4f}  mad={val_mad:.4f}')
             else:
-                axes[2].text(0.5, 0.5, f'n overlap={len(mg_v)}\n(different loci sampled)',
-                             ha='center', va='center', transform=axes[2].transAxes,
-                             fontsize=9)
-                axes[2].set_title('row sum comparison'); sns.despine(ax=axes[2])
+                ax2.text(0.5, 0.5, 'haplotype_vals_r.csv\nnot found — run R S2',
+                         ha='center', va='center', transform=ax2.transAxes, fontsize=9)
+                ax2.set_title('prob value comparison'); sns.despine(ax=ax2)
+            # panel 3: row-sum deviation (sanity check only — not the primary metric)
+            axes[2].bar(hap_df['pos_mb'], hap_df['mean_rowsum'] - 2.0,
+                        color=chr_colors(hap_df['chr'].tolist()), edgecolor='none',
+                        width=1.0)
+            axes[2].axhline(0, color='#D83026', lw=0.8, ls='--')
+            axes[2].set(xlabel='position (Mb)', ylabel='mean row sum $-$ 2',
+                        title=f'row sum deviation  max={max_dev:.2e}')
+            sns.despine(ax=axes[2])
             plt.tight_layout(); save_plot(fig, 's2_haplotype_probs.png')
 
-    record('haplotype_probs', rsum_ok,
-           f'row_sums_ok={rsum_ok}  max_dev={max_dev:.2e}')
+    # pass requires actual value comparison; row-sum alone is a tautology after *2
+    hap_pass = rsum_ok and (np.isnan(val_r) or val_r > 0.90)
+    detail   = f'row_sums_ok={rsum_ok}  max_dev={max_dev:.2e}'
+    if not np.isnan(val_r):
+        detail += f'  prob_r={val_r:.4f}  prob_mad={val_mad:.4f}'
+    else:
+        detail += '  prob_r=NA (haplotype_vals_r.csv not found)'
+    record('haplotype_probs', hap_pass, detail)
 
     # ══════════════════════════════════════════════════════════════════════════════
     # S3 — KINSHIP LOCO
@@ -518,7 +558,6 @@ if section(4, 'LMM SCAN (ROP)'):
 
         if comparisons:
             comp_df = pd.concat(comparisons, ignore_index=True)
-            # enforce column order
             col_order = ['gene_id', 'chr', 'locus', 'pos_mb', 'lod_r', 'lod_py']
             comp_df = comp_df[col_order + [c for c in comp_df.columns if c not in col_order]]
             stat_df = pd.DataFrame(gene_stats)
@@ -530,28 +569,49 @@ if section(4, 'LMM SCAN (ROP)'):
             n_l = (stat_df['tier']=='lenient').sum()
             n_f = (stat_df['tier']=='fail').sum()
 
-            fig, axes = plt.subplots(1,3,figsize=(16,4))
-            # scatter
-            scatter_qc(axes[0], comp_df['lod_r'], comp_df['lod_py'],
+            # plot 1: LOD scatter
+            fig1, ax1 = plt.subplots(figsize=(5, 5))
+            scatter_qc(ax1, comp_df['lod_r'], comp_df['lod_py'],
                        'LOD (miQTL R)', 'LOD (mosaiQTL Python)', 'LOD comparison')
-            # residuals
-            diff = comp_df['lod_py']-comp_df['lod_r']
-            axes[1].scatter(range(len(diff)), diff,
-                            c=chr_colors(comp_df['chr'].tolist()),
-                            s=2, alpha=1.0, edgecolors='none')
-            axes[1].axhline(0,color='#D83026',lw=0.8,ls='--')
-            axes[1].text(0.99,0.97,f'mean={diff.mean():.3f}  sd={diff.std():.3f}',
-                         transform=axes[1].transAxes,fontsize=8,va='top',ha='right')
-            axes[1].set(xlabel='locus index',ylabel='ΔLOD (py−R)',title='LOD residuals')
-            sns.despine(ax=axes[1])
-            # tier summary
-            tc = {'fail':'#D83026','lenient':'#55AF5B','strict':'#4F6EAF'}
-            axes[2].bar(['fail','lenient','strict'],[n_f,n_l,n_s],
-                        color=[tc['fail'],tc['lenient'],tc['strict']],edgecolor='none')
-            axes[2].set(xlabel='tier',ylabel='genes',
-                        title=f'gene tiers  strict={n_s}  lenient={n_l}  fail={n_f}')
-            sns.despine(ax=axes[2])
-            plt.tight_layout(); save_plot(fig,'s4_lmm_scan.png')
+            plt.tight_layout(); save_plot(fig1, 's4_lod_scatter.png')
+
+            # plot 2: LOD residuals — x-axis = pos_mb (Mb)
+            fig2, ax2 = plt.subplots(figsize=(10, 4))
+            diff = comp_df['lod_py'] - comp_df['lod_r']
+            xpos = comp_df['pos_mb'] if 'pos_mb' in comp_df.columns else np.arange(len(diff))
+            ax2.scatter(xpos, diff, c=chr_colors(comp_df['chr'].tolist()),
+                        s=2, alpha=1.0, edgecolors='none')
+            ax2.axhline(0, color='#D83026', lw=0.8, ls='--')
+            ax2.text(0.99, 0.97, f'mean={diff.mean():.3f}  sd={diff.std():.3f}',
+                     transform=ax2.transAxes, fontsize=8, va='top', ha='right')
+            ax2.set(xlabel='position (Mb)', ylabel=r'$\Delta$LOD (py$-$R)', title='LOD residuals')
+            sns.despine(ax=ax2)
+            plt.tight_layout(); save_plot(fig2, 's4_lod_residuals.png')
+
+            # plot 3: gene tiers — strict → lenient → fail + LOD-stratified fail rate
+            fig3, axes3 = plt.subplots(1, 2, figsize=(11, 4))
+            # left: tier bar in correct order
+            tc = {'strict': '#4F6EAF', 'lenient': '#55AF5B', 'fail': '#D83026'}
+            axes3[0].bar(['strict', 'lenient', 'fail'], [n_s, n_l, n_f],
+                         color=[tc['strict'], tc['lenient'], tc['fail']], edgecolor='none')
+            axes3[0].set(xlabel='tier', ylabel='genes',
+                         title=f'gene tiers  strict={n_s}  lenient={n_l}  fail={n_f}')
+            sns.despine(ax=axes3[0])
+            # right: fail rate by peak LOD bin — tests whether fails concentrate at low LOD
+            bins  = [0, 1, 3, 5, np.inf]
+            blabs = ['[0,1)', '[1,3)', '[3,5)', '[5,∞)']
+            stat_df['lod_bin'] = pd.cut(stat_df['peak_lod_r'], bins=bins, labels=blabs,
+                                         right=False)
+            grp   = stat_df.groupby('lod_bin', observed=False)['tier'].value_counts(
+                normalize=True).unstack(fill_value=0)
+            if 'fail' in grp.columns:
+                axes3[1].bar(range(len(blabs)), grp.reindex(blabs)['fail'].fillna(0),
+                             color='#D83026', edgecolor='none')
+            axes3[1].set(xticks=range(len(blabs)), xticklabels=blabs,
+                         xlabel='peak LOD (R)', ylabel='fail rate',
+                         title='fail rate by LOD bin', ylim=(0, 1))
+            sns.despine(ax=axes3[1])
+            plt.tight_layout(); save_plot(fig3, 's4_gene_tiers.png')
 
             # founder effects
             if r_ae is not None and py_betas:
@@ -707,6 +767,7 @@ if section(6, 'PERMUTATION THRESHOLDS'):
         all_max_lods = []    # flat list of all per-chr perm max-LODs
         chr_records  = []    # per-chr threshold comparison rows
         chr_labels   = []    # for per-chr bar chart x-axis
+        _perm_lod_details = {}  # chr → list of {pos_mb, perm_lod} for perm_lods_py.csv
 
         for _, trow in r_thresh.iterrows():
             _tgene = str(trow['gene_id'])
@@ -728,15 +789,21 @@ if section(6, 'PERMUTATION THRESHOLDS'):
                     if r_lod is not None else None)
             hi(f'  chr{_tchr} — {_tgene}  cis={len(_cis) if _cis else "all"}  n_perm={_np}')
             rng = np.random.default_rng(42)
-            ml  = []
+            ml  = []; _chr_detail = []
             for _ in range(_np):
                 yp  = rng.permutation(y_v)
                 cr  = lmm_module.scan_chromosome(yp,cache_py,_tchr,x_v,ev,evc_v,h2)
                 _lod = cr['lod']
+                _pos = cr.get('positions', np.zeros(len(_lod)))
                 if _cis:
                     _m = np.isin(cr['locus_ids'], list(_cis))
-                    _lod = _lod[_m] if _m.any() else _lod
-                ml.append(float(_lod.max()))
+                    if _m.any():
+                        _lod = _lod[_m]; _pos = _pos[_m]
+                _pk_idx = int(np.argmax(_lod))
+                ml.append(float(_lod[_pk_idx]))
+                _chr_detail.append({'pos_mb': float(_pos[_pk_idx]),
+                                    'perm_lod': float(_lod[_pk_idx])})
+            _perm_lod_details[_tchr] = _chr_detail
             ml = np.array(ml)
             all_max_lods.extend(ml.tolist())
             t_py,_ = perm_mod.get_gev_thresholds(ml, 0.95)
@@ -752,12 +819,20 @@ if section(6, 'PERMUTATION THRESHOLDS'):
             all_max_lods = np.array(all_max_lods)
             comp_df = pd.DataFrame(chr_records)
             thresh_py,gev_p = perm_mod.get_gev_thresholds(all_max_lods, 0.95)
-            thresh_r_v = float(comp_df['threshold_r'].mean())   # mean R threshold across chrs
+            thresh_r_v = float(comp_df['threshold_r'].mean())
             delta      = float(comp_df['delta'].mean())
             perm_pass  = delta < 0.5
 
-            save_csv(pd.DataFrame({'perm_lod': all_max_lods}), 'perm_lods_py.csv')
-            save_csv(_col(comp_df,['gene_id','chr','n_perms',
+            # perm_lods_py.csv: gene_id + chr + pos_mb per max-LOD observation
+            perm_records = []
+            for rec in chr_records:
+                for pl in _perm_lod_details.get(rec['chr'], []):
+                    perm_records.append({'gene_id': rec['gene_id'], 'chr': rec['chr'],
+                                         'pos_mb': pl['pos_mb'], 'perm_lod': pl['perm_lod']})
+            save_csv(_col(pd.DataFrame(perm_records),
+                          ['gene_id', 'chr', 'pos_mb', 'perm_lod']),
+                     'perm_lods_py.csv')
+            save_csv(_col(comp_df, ['gene_id','chr','n_perms',
                                     'threshold_r','threshold_py','delta']),
                      'threshold_comparison.csv')
 
@@ -836,9 +911,10 @@ if section(7, 'MULTIPLE IMPUTATION'):
                 res_mi = _mi(y_mi,cache_py,covar_base,kd_mi,n_imp=11,
                              seed=1,phenotype_id=gene)
                 py_mi  = pd.DataFrame({'locus':res_mi.locus_ids,'lod_py':res_mi.lod,
-                                       'chr':res_mi.chromosomes})
-                py_mi  = py_mi[py_mi['chr']==chrom]
-                rg_mi  = r_mi[(r_mi['gene_id']==gene)&(r_mi['chr']==chrom)
+                                       'chr':res_mi.chromosomes,
+                                       'pos_mb':res_mi.positions})   # positions in Mb
+                py_mi  = py_mi[py_mi['chr'].astype(str)==str(chrom)]
+                rg_mi  = r_mi[(r_mi['gene_id']==gene)&(r_mi['chr'].astype(str)==str(chrom))
                               ][['locus','lod']].rename(columns={'lod':'lod_r'})
                 mg_mi  = py_mi.merge(rg_mi,on='locus',how='inner')
                 if len(mg_mi)<3: continue
@@ -846,16 +922,19 @@ if section(7, 'MULTIPLE IMPUTATION'):
                 mi_comparisons.append(mg_mi)
         if mi_comparisons:
             mi_comp = pd.concat(mi_comparisons, ignore_index=True)
-            mi_comp = _col(mi_comp, ['gene_id', 'chr', 'locus', 'lod_r', 'lod_py'])
+            mi_comp = _col(mi_comp, ['gene_id', 'chr', 'locus', 'pos_mb', 'lod_r', 'lod_py'])
             save_csv(mi_comp, 'mi_lod_comparison.csv')
             fig, axes = plt.subplots(1, 2, figsize=(11, 4))
             scatter_qc(axes[0], mi_comp['lod_r'], mi_comp['lod_py'],
                        'LOD MI (miQTL R)', 'LOD MI (mosaiQTL Python)', 'MI LOD scatter')
             first_g = mi_comp['gene_id'].iloc[0]
             sub = mi_comp[mi_comp['gene_id'] == first_g]
-            axes[1].plot(sub['lod_r'].values, color='#D83026', lw=1.2, alpha=0.85, label='miQTL (R)')
-            axes[1].plot(sub['lod_py'].values, color='#4F6EAF', lw=1.2, alpha=0.85, label='mosaiQTL (Python)')
-            axes[1].set(xlabel='locus index', ylabel='LOD', title=f'MI LOD profile — {first_g}')
+            pos_x = sub['pos_mb'] if 'pos_mb' in sub.columns else np.arange(len(sub))
+            axes[1].plot(pos_x.values, sub['lod_r'].values, color='#D83026', lw=1.2,
+                         alpha=0.85, label='miQTL (R)')
+            axes[1].plot(pos_x.values, sub['lod_py'].values, color='#4F6EAF', lw=1.2,
+                         alpha=0.85, label='mosaiQTL (Python)')
+            axes[1].set(xlabel='position (Mb)', ylabel='LOD', title=f'MI LOD profile — {first_g}')
             axes[1].legend(fontsize=9); sns.despine(ax=axes[1])
             plt.tight_layout(); save_plot(fig, 's7_mi_scan.png')
             r_mi_all = float(np.corrcoef(mi_comp['lod_r'],mi_comp['lod_py'])[0,1])
@@ -939,38 +1018,54 @@ if section(9, 'MEDIATION'):
         skip('mediation','mediation_r.csv missing — run port_validation.R s9')
     else:
         from mosaiqtl import mediation as med_mod
-        med_gene = str(r_med['gene_id'].iloc[0])
-        med_med  = str(r_med['mediator'].iloc[0])
-        med_chr  = str(r_med['chr'].iloc[0])
-        yo = _get_y(med_gene); ym = _get_y(med_med)
-        if yo is None or ym is None:
-            skip('mediation',f'{med_gene} or {med_med} not in pheno')
+        med_comparisons = []
+        # loop all unique (gene_id, chr, mediator) triples from merged R data
+        med_pairs = (r_med[['gene_id','chr','mediator']]
+                     .drop_duplicates()
+                     .itertuples(index=False))
+        for mp in med_pairs:
+            med_gene = str(mp.gene_id); med_chr = str(mp.chr)
+            med_med  = str(mp.mediator)
+            yo = _get_y(med_gene); ym = _get_y(med_med)
+            if yo is None or ym is None or med_chr not in kinship_py:
+                hi(f'  skip mediation {med_gene} chr{med_chr}: pheno or kinship missing')
+                continue
+            kd_m   = kin_module.decomp_kinship({med_chr: kinship_py[med_chr]})
+            py_med = med_mod.mediation_scan_qr(yo, ym, cache_py, covar_base, kd_m,
+                                               outcome_id=med_gene, mediator_id=med_med)
+            pm_c   = py_med[py_med['chr'].astype(str) == med_chr]
+            rg_m   = (r_med[(r_med['gene_id']==med_gene) & (r_med['chr'].astype(str)==med_chr)]
+                      [['locus','lod_base']].rename(columns={'lod_base':'lod_r'}))
+            mg_m   = pm_c.rename(columns={'lod_base':'lod_py'}).merge(rg_m, on='locus',
+                                                                        how='inner')
+            if len(mg_m) < 3: continue
+            mg_m['gene_id'] = med_gene; mg_m['chr'] = med_chr
+            med_comparisons.append(mg_m)
+
+        if med_comparisons:
+            med_comp = pd.concat(med_comparisons, ignore_index=True)
+            med_comp = _col(med_comp, ['gene_id','chr','locus','pos_mb','lod_r','lod_py'])
+            save_csv(med_comp, 'mediation_comparison.csv')
+            r_med_v = float(np.corrcoef(med_comp['lod_r'], med_comp['lod_py'])[0, 1])
+            fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+            scatter_qc(axes[0], med_comp['lod_r'], med_comp['lod_py'],
+                       'mediation LOD (R)', 'mediation LOD (Python)',
+                       f'mediation  r={r_med_v:.4f}')
+            # profile for first chr only (all chrs on one plot would be unreadable)
+            _g0 = med_comp['gene_id'].iloc[0]; _c0 = med_comp['chr'].iloc[0]
+            sub = med_comp[(med_comp['gene_id']==_g0) & (med_comp['chr']==_c0)]
+            pos_x = sub['pos_mb'] if 'pos_mb' in sub.columns else np.arange(len(sub))
+            axes[1].plot(pos_x, sub['lod_r'].values, color='#D83026', lw=1.2,
+                         alpha=0.85, label='miQTL (R)')
+            axes[1].plot(pos_x, sub['lod_py'].values, color='#4F6EAF', lw=1.2,
+                         alpha=0.85, label='mosaiQTL (Python)')
+            axes[1].set(xlabel='position (Mb)', ylabel='LOD (base)',
+                        title=f'mediation profile  {_g0} chr{_c0}')
+            axes[1].legend(fontsize=9); sns.despine(ax=axes[1])
+            plt.tight_layout(); save_plot(fig, 's9_mediation.png')
+            record('mediation', r_med_v > 0.90, f'r={r_med_v:.4f}  n_chr={med_comp["chr"].nunique()}')
         else:
-            kd_m = kin_module.decomp_kinship({med_chr:kinship_py[med_chr]})
-            py_med = med_mod.mediation_scan_qr(yo,ym,cache_py,covar_base,kd_m,
-                                                outcome_id=med_gene,mediator_id=med_med)
-            pm_c = py_med[py_med['chr']==med_chr]
-            rg_m = r_med[['locus','lod_base']].rename(columns={'lod_base':'lod_r'})
-            mg_m = pm_c.rename(columns={'lod_base':'lod_py'}).merge(rg_m,on='locus',how='inner')
-            mg_m['gene_id'] = med_gene   # outcome_id -> gene_id for schema compat
-            if len(mg_m) >= 3:
-                mg_m = _col(mg_m, ['gene_id', 'chr', 'locus', 'pos_mb', 'lod_r', 'lod_py'])
-                save_csv(mg_m, 'mediation_comparison.csv')
-                r_med_v = float(np.corrcoef(mg_m['lod_r'], mg_m['lod_py'])[0, 1])
-                fig, axes = plt.subplots(1, 2, figsize=(11, 4))
-                scatter_qc(axes[0], mg_m['lod_r'], mg_m['lod_py'],
-                           'mediation LOD (R)', 'mediation LOD (Python)',
-                           f'mediation  r={r_med_v:.4f}')
-                pos_x = mg_m['pos_mb'] if 'pos_mb' in mg_m.columns else np.arange(len(mg_m))
-                axes[1].plot(pos_x, mg_m['lod_r'], color='#D83026', lw=1.2, alpha=0.85, label='miQTL (R)')
-                axes[1].plot(pos_x, mg_m['lod_py'], color='#4F6EAF', lw=1.2, alpha=0.85, label='mosaiQTL (Python)')
-                axes[1].set(xlabel='position (Mb)', ylabel='LOD drop',
-                            title=f'mediation profile  chr{med_chr}')
-                axes[1].legend(fontsize=9); sns.despine(ax=axes[1])
-                plt.tight_layout(); save_plot(fig, 's9_mediation.png')
-                record('mediation', r_med_v > 0.90, f'r={r_med_v:.4f}')
-            else:
-                skip('mediation',f'insufficient locus overlap ({len(mg_m)})')
+            skip('mediation', 'insufficient locus overlap across all chr')
 
     # ══════════════════════════════════════════════════════════════════════════════
     # S10 — POSITIONAL CI
@@ -983,65 +1078,68 @@ if section(10, 'POSITIONAL CI'):
     else:
         from mosaiqtl.permutation import run_positional_scans as _rps
         from mosaiqtl.scan import scan_h2lmm as _sh
-        ci_gene = str(r_ci['gene_id'].iloc[0])
-        ci_chr  = str(r_ci['chr'].iloc[0])
-        ci_lo_r = float(r_ci['ci_lo_mb'].iloc[0])
-        ci_hi_r = float(r_ci['ci_hi_mb'].iloc[0])
-        n_boot  = int(r_ci['n_boot'].iloc[0]) if 'n_boot' in r_ci else 100
-        y_ci = _get_y(ci_gene)
-        if y_ci is None:
-            skip('positional_ci',f'{ci_gene} not in pheno')
-        else:
-            kd_ci = kin_module.decomp_kinship({ci_chr:kinship_py[ci_chr]})
-            ci_res = _sh(y_ci,cache_py,covar_base,kd_ci,phenotype_id=ci_gene)
-            rng_ci = np.random.default_rng(1)
+        ci_comparisons = []; boot_pos = None; ci_gene = ci_chr = None
+        for cp in r_ci[['gene_id','chr']].drop_duplicates().itertuples(index=False):
+            ci_gene = str(cp.gene_id); ci_chr = str(cp.chr)
+            rrow    = r_ci[(r_ci['gene_id']==ci_gene) &
+                           (r_ci['chr'].astype(str)==ci_chr)].iloc[0]
+            ci_lo_r = float(rrow['ci_lo_mb']); ci_hi_r = float(rrow['ci_hi_mb'])
+            n_boot  = int(rrow['n_boot']) if 'n_boot' in rrow.index else 100
+            y_ci    = _get_y(ci_gene)
+            if y_ci is None or ci_chr not in kinship_py: continue
+            kd_ci   = kin_module.decomp_kinship({ci_chr: kinship_py[ci_chr]})
+            rng_ci  = np.random.default_rng(1)
             valid_ci = ~np.isnan(y_ci)
-            y_ci_v = _rint(y_ci[valid_ci]); y_ci_v -= y_ci_v.mean()
-            boot_oc = np.column_stack([rng_ci.choice(y_ci_v,size=len(y_ci_v),
-                                                       replace=True)
+            y_ci_v   = _rint(y_ci[valid_ci]); y_ci_v -= y_ci_v.mean()
+            boot_oc  = np.column_stack([rng_ci.choice(y_ci_v, size=len(y_ci_v), replace=True)
                                         for _ in range(n_boot)])
-            boot_pos,ci_info = _rps(boot_oc,cache_py,y_ci,covar_base,kd_ci,
+            boot_pos, ci_info = _rps(boot_oc, cache_py, y_ci, covar_base, kd_ci,
                                      peak_chrom=ci_chr)
             ci_lo_py = ci_info['ci_lo']; ci_hi_py = ci_info['ci_hi']
-            overlap  = ci_lo_py<=ci_hi_r and ci_lo_r<=ci_hi_py
-            save_csv(_col(pd.DataFrame([{'gene_id': ci_gene, 'chr': ci_chr,
-                                           'locus': r_ci['locus'].iloc[0] if 'locus' in r_ci else '',
-                                           'ci_lo_r': ci_lo_r, 'ci_lo_py': ci_lo_py,
-                                           'ci_hi_r': ci_hi_r, 'ci_hi_py': ci_hi_py,
-                                           'overlap': overlap}]),
-                           ['gene_id', 'chr', 'locus', 'ci_lo_r', 'ci_lo_py', 'ci_hi_r', 'ci_hi_py', 'overlap']),
-                     'ci_comparison.csv')
-            fig,axes=plt.subplots(1,2,figsize=(11,4))
-            vp = boot_pos[~np.isnan(boot_pos)] if hasattr(boot_pos,'__len__') else []
-            ax=axes[0]
+            overlap  = ci_lo_py <= ci_hi_r and ci_lo_r <= ci_hi_py
+            ci_comparisons.append({'gene_id': ci_gene, 'chr': ci_chr,
+                                   'locus': rrow.get('locus', ''),
+                                   'ci_lo_r': ci_lo_r, 'ci_lo_py': ci_lo_py,
+                                   'ci_hi_r': ci_hi_r, 'ci_hi_py': ci_hi_py,
+                                   'overlap': overlap})
+        if ci_comparisons:
+            ci_comp = _col(pd.DataFrame(ci_comparisons),
+                           ['gene_id','chr','locus','ci_lo_r','ci_lo_py','ci_hi_r','ci_hi_py','overlap'])
+            save_csv(ci_comp, 'ci_comparison.csv')
+            n_overlap = int(ci_comp['overlap'].sum())
+            fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+            # panel 1: bootstrap histogram for last processed chr
+            vp = boot_pos[~np.isnan(boot_pos)] if boot_pos is not None and hasattr(boot_pos,'__len__') else []
+            ax = axes[0]
             if len(vp):
-                sns.histplot(vp,bins=30,color='#4F6EAF',ax=ax,
-                             edgecolor='none',label='py bootstrap peaks')
+                sns.histplot(vp, bins=30, color='#4F6EAF', ax=ax,
+                             edgecolor='none', label='py bootstrap peaks')
             if r_boot is not None:
-                sns.histplot(r_boot['boot_pos'].dropna(),bins=30,color='#55AF5B',
-                             ax=ax,edgecolor='none',alpha=0.5,label='R bootstrap peaks')
-            ax.axvline(ci_lo_py,color='#4F6EAF',lw=1.2,ls='--')
-            ax.axvline(ci_hi_py,color='#4F6EAF',lw=1.2,ls='--',
-                       label=f'py=[{ci_lo_py:.2f},{ci_hi_py:.2f}]')
-            ax.axvline(ci_lo_r,color='#D83026',lw=1.2,ls=':')
-            ax.axvline(ci_hi_r,color='#D83026',lw=1.2,ls=':',
-                       label=f'R=[{ci_lo_r:.2f},{ci_hi_r:.2f}]')
-            ax.set(xlabel='peak position (Mb)',ylabel='bootstraps',
+                _rb_c = r_boot[r_boot['chr'].astype(str)==ci_chr] if 'chr' in r_boot.columns else r_boot
+                sns.histplot(_rb_c['boot_pos'].dropna(), bins=30, color='#55AF5B',
+                             ax=ax, edgecolor='none', alpha=0.5, label='R bootstrap peaks')
+            last = ci_comp.iloc[-1]
+            ax.axvline(last['ci_lo_py'], color='#4F6EAF', lw=1.2, ls='--')
+            ax.axvline(last['ci_hi_py'], color='#4F6EAF', lw=1.2, ls='--',
+                       label=f'py=[{last["ci_lo_py"]:.2f},{last["ci_hi_py"]:.2f}]')
+            ax.axvline(last['ci_lo_r'], color='#D83026', lw=1.2, ls=':')
+            ax.axvline(last['ci_hi_r'], color='#D83026', lw=1.2, ls=':',
+                       label=f'R=[{last["ci_lo_r"]:.2f},{last["ci_hi_r"]:.2f}]')
+            ax.set(xlabel='peak position (Mb)', ylabel='bootstraps',
                    title=f'positional CI — {ci_gene} chr{ci_chr}')
-            ax.legend(fontsize=8);sns.despine(ax=ax)
-            ax=axes[1]
-            ax.scatter(ci_lo_py,0,s=60,color='#4F6EAF',zorder=5)
-            ax.scatter(ci_hi_py,0,s=60,color='#4F6EAF',zorder=5)
-            ax.hlines(0,ci_lo_py,ci_hi_py,colors='#4F6EAF',lw=4,alpha=0.7,label='Python CI')
-            ax.hlines(0.05,ci_lo_r,ci_hi_r,colors='#D83026',lw=4,alpha=0.7,label='R CI')
-            ax.set(xlabel='Mb',yticks=[],xlim=(min(ci_lo_py,ci_lo_r)-0.5,
-                                               max(ci_hi_py,ci_hi_r)+0.5),
-                   title=f'CI comparison  overlap={overlap}')
-            ax.legend(fontsize=9);sns.despine(ax=ax)
-            plt.tight_layout();save_plot(fig,'s10_positional_ci.png')
-            record('positional_ci',overlap,
-                   f'py=[{ci_lo_py:.2f},{ci_hi_py:.2f}]  '
-                   f'R=[{ci_lo_r:.2f},{ci_hi_r:.2f}]  overlap={overlap}')
+            ax.legend(fontsize=8); sns.despine(ax=ax)
+            # panel 2: interval comparison for all chrs
+            ax = axes[1]
+            for ri, row in ci_comp.reset_index().iterrows():
+                col = '#4F6EAF' if row['overlap'] else '#D83026'
+                ax.hlines(ri,      row['ci_lo_py'], row['ci_hi_py'], colors=col, lw=4, alpha=0.7)
+                ax.hlines(ri+0.15, row['ci_lo_r'],  row['ci_hi_r'],  colors='#888', lw=4, alpha=0.5)
+            ax.set(xlabel='position (Mb)', ylabel='gene index',
+                   title=f'CI comparison  overlap={n_overlap}/{len(ci_comp)}')
+            sns.despine(ax=ax)
+            plt.tight_layout(); save_plot(fig, 's10_positional_ci.png')
+            record('positional_ci', n_overlap > 0,
+                   f'n_chr={len(ci_comp)}  overlap={n_overlap}/{len(ci_comp)}')
 
     # ══════════════════════════════════════════════════════════════════════════════
     # S11 — INSTABILITY SCAN
@@ -1052,41 +1150,63 @@ if section(11, 'INSTABILITY SCAN'):
         skip('instability','fixef_r.csv missing — run port_validation.R s11')
     else:
         from mosaiqtl.scan import instability_lm_scan as _inst
-        fx_gene = str(r_fx['gene_id'].iloc[0])
-        fx_chr  = str(r_fx['chr'].iloc[0])
-        y_fx = _get_y(fx_gene)
-        if y_fx is None:
-            skip('instability',f'{fx_gene} not in pheno')
-        else:
-            loci_r = set(r_fx[r_fx['gene_id']==fx_gene]['locus'].tolist())
-            inst_py = _inst(y_fx,cache_py,covar_base,n_samples=100,seed=1,
-                            phenotype_id=fx_gene,just_these_loci=loci_r)
-            py_inst = pd.DataFrame({'locus':inst_py.locus_ids,'lod_py':inst_py.lod,
-                                     'chr':inst_py.chromosomes})
-            py_inst = py_inst[py_inst['chr']==fx_chr]
-            mg_fx   = py_inst.merge(r_fx[r_fx['gene_id']==fx_gene][['locus','lod']]
-                                      .rename(columns={'lod':'lod_r'}),
-                                     on='locus',how='inner')
-            if len(mg_fx) >= 3:
-                mg_fx['gene_id'] = fx_gene   # add gene_id before _col reorder
-                mg_fx = _col(mg_fx, ['gene_id', 'chr', 'locus', 'lod_r', 'lod_py'])
-                save_csv(mg_fx, 'fixef_comparison.csv')
-                r_fx_v = float(np.corrcoef(mg_fx['lod_r'], mg_fx['lod_py'])[0, 1])
-                fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+        fx_pairs = r_fx[['gene_id','chr']].drop_duplicates().itertuples(index=False)
+        fx_all   = []
+        for fp in fx_pairs:
+            fx_gene = str(fp.gene_id); fx_chr = str(fp.chr)
+            y_fx = _get_y(fx_gene)
+            if y_fx is None or fx_chr not in kinship_py: continue
+            loci_r  = set(r_fx[(r_fx['gene_id']==fx_gene) &
+                               (r_fx['chr'].astype(str)==fx_chr)]['locus'].tolist())
+            if not loci_r: continue
+            inst_py = _inst(y_fx, cache_py, covar_base, n_samples=100, seed=1,
+                            phenotype_id=fx_gene, just_these_loci=loci_r)
+            py_inst = pd.DataFrame({'locus': inst_py.locus_ids,
+                                    'lod_py': inst_py.lod,
+                                    'chr': inst_py.chromosomes.astype(str),   # explicit str cast
+                                    'pos_mb': inst_py.positions})
+            py_inst = py_inst[py_inst['chr'] == fx_chr]   # now guaranteed to match
+            rg_fx   = (r_fx[(r_fx['gene_id']==fx_gene) & (r_fx['chr'].astype(str)==fx_chr)]
+                       [['locus','lod','pos_mb']]
+                       .rename(columns={'lod':'lod_r','pos_mb':'pos_mb_r'}))
+            mg      = py_inst.merge(rg_fx, on='locus', how='inner')
+            if len(mg) < 2: continue
+            mg['gene_id'] = fx_gene
+            fx_all.append(mg)
+            log.info(f'  instability chr{fx_chr} {fx_gene}: n={len(mg)}  '
+                     f'py_range=[{mg["lod_py"].min():.3f},{mg["lod_py"].max():.3f}]  '
+                     f'r_range=[{mg["lod_r"].min():.3f},{mg["lod_r"].max():.3f}]')
+            # diagnostic: show first 5 rows for every chr so merge errors are visible
+            hi(f'  [S11 diag] chr{fx_chr} first rows:\n'
+               + mg[['locus','pos_mb_r','lod_r','lod_py']].head(5).to_string(index=False))
+
+        if fx_all:
+            mg_fx = pd.concat(fx_all, ignore_index=True)
+            mg_fx = _col(mg_fx, ['gene_id','chr','locus','pos_mb_r','lod_r','lod_py'])
+            save_csv(mg_fx, 'fixef_comparison.csv')
+            r_fx_v = (float(np.corrcoef(mg_fx['lod_r'], mg_fx['lod_py'])[0,1])
+                      if len(mg_fx) > 3 else np.nan)
+            fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+            if not np.isnan(r_fx_v):
                 scatter_qc(axes[0], mg_fx['lod_r'], mg_fx['lod_py'],
                            'instability LOD (R)', 'instability LOD (Python)',
                            f'instability scan  r={r_fx_v:.4f}')
-                axes[1].plot(mg_fx['lod_r'].values, color='#D83026', lw=1.2,
-                             alpha=0.85, label='miQTL (R)')
-                axes[1].plot(mg_fx['lod_py'].values, color='#4F6EAF', lw=1.2,
-                             alpha=0.85, label='mosaiQTL (Python)')
-                axes[1].set(xlabel='locus index', ylabel='mean bootstrap LOD',
-                            title=f'instability profile — {fx_gene} chr{fx_chr}')
-                axes[1].legend(fontsize=9); sns.despine(ax=axes[1])
-                plt.tight_layout(); save_plot(fig, 's11_instability.png')
-                record('instability', r_fx_v > 0.90, f'r={r_fx_v:.4f}  n_loci={len(mg_fx)}')
-            else:
-                skip('instability',f'insufficient locus overlap ({len(mg_fx)})')
+            # profile for first chr — x-axis = pos_mb
+            _g0 = mg_fx['gene_id'].iloc[0]; _c0 = mg_fx['chr'].iloc[0]
+            sub = mg_fx[(mg_fx['gene_id']==_g0) & (mg_fx['chr']==_c0)].sort_values('pos_mb_r')
+            pos_x = sub['pos_mb_r'] if 'pos_mb_r' in sub.columns else np.arange(len(sub))
+            axes[1].plot(pos_x.values, sub['lod_r'].values, color='#D83026', lw=1.2,
+                         alpha=0.85, label='miQTL (R)')
+            axes[1].plot(pos_x.values, sub['lod_py'].values, color='#4F6EAF', lw=1.2,
+                         alpha=0.85, label='mosaiQTL (Python)')
+            axes[1].set(xlabel='position (Mb)', ylabel='mean bootstrap LOD',
+                        title=f'instability profile — {_g0} chr{_c0}')
+            axes[1].legend(fontsize=9); sns.despine(ax=axes[1])
+            plt.tight_layout(); save_plot(fig, 's11_instability.png')
+            record('instability', not np.isnan(r_fx_v) and r_fx_v > 0.90,
+                   f'r={r_fx_v:.4f}  n_loci={len(mg_fx)}  n_chr={mg_fx["chr"].nunique()}')
+        else:
+            skip('instability', 'no chr with sufficient locus overlap')
 
 # ══════════════════════════════════════════════════════════════════════════════
 # QC SUMMARY

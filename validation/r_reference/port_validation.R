@@ -272,6 +272,32 @@ hap_df <- do.call(rbind, hap_rows)
 write.csv(hap_df, file.path(output_dir,'haplotype_r.csv'), row.names=FALSE)
 message('  saved: haplotype_r.csv (', nrow(hap_df), ' loci)')
 
+# export actual probability values (n_samples × 8 founders) at sampled loci
+# so Python can compare real HMM values rather than row-sum tautology
+hap_val_rows <- list()
+for (chr in chromosomes) {
+  load(file.path(genomecache_path,'additive',paste0('chr',chr),'markers.RData'))
+  load(file.path(genomecache_path,'additive',paste0('chr',chr),'bp.RData'))
+  n_loci <- length(markers)
+  idx    <- round(seq(1, n_loci, length.out=5))
+  for (i in idx) {
+    mat <- h$getLocusMatrix(locus=markers[i], model='additive', subjects=NULL)
+    mat <- mat[!is.na(rownames(mat)), , drop=FALSE]
+    df_i <- as.data.frame(mat, stringsAsFactors=FALSE)
+    df_i$chr      <- chr
+    df_i$locus    <- markers[i]
+    df_i$pos_mb   <- bp[i] / 1e6
+    df_i$sample_id <- rownames(mat)
+    hap_val_rows[[length(hap_val_rows)+1]] <- df_i
+  }
+}
+hap_vals <- do.call(rbind, hap_val_rows); rownames(hap_vals) <- NULL
+# reorder: identifiers first
+id_cols  <- c('chr','locus','pos_mb','sample_id')
+hap_vals <- hap_vals[, c(id_cols, setdiff(names(hap_vals), id_cols))]
+write.csv(hap_vals, file.path(output_dir,'haplotype_vals_r.csv'), row.names=FALSE)
+message('  saved: haplotype_vals_r.csv (', nrow(hap_vals), ' rows)')
+
 # ─────────────────────────────────────────────────────────────────────────────
 # S3 — KINSHIP LOCO
 # ─────────────────────────────────────────────────────────────────────────────
