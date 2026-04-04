@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .scan import scan_h2lmm, scan_multi_gene, ScanResult
-from .nb   import scan_nb, scan_nb_multi_gene
+from .nb   import scan_nb
 from . import kinship as kin_module
 
 logger = logging.getLogger('mosaiqtl')
@@ -108,9 +108,11 @@ def discover(phenotype_matrix, gene_ids, genome_cache,
     DiscoveryResult
     """
     if model == 'nb':
-        scan_results = scan_nb_multi_gene(
-            phenotype_matrix, gene_ids, genome_cache,
-            covariates=covariates, sample_ids=sample_ids,
+        # counts_cells: (n_genes, n_cells); sample_ids: per-cell strain ids
+        from .nb import scan_nb as _scan_nb
+        scan_results = _scan_nb(
+            phenotype_matrix, genome_cache, sample_ids,
+            gene_ids=gene_ids, covariates_cells=covariates,
             lib_sizes=lib_sizes, cis_loci_dict=cis_loci_dict,
             n_cores=n_cores)
         return DiscoveryResult(scan=scan_results, model='nb',

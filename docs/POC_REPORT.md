@@ -92,30 +92,44 @@ results = pipeline.resolve(
 
 The LMM assumes $y \sim \mathcal{N}$ after RINT. Pseudobulk snRNA-seq counts are
 non-negative integers with overdispersion — RINT discards this structure. The NB
-GLM is the natural primary model: it handles zero-inflation, library-size offsets,
-and overdispersion natively, with no normality assumption.
+GLM is the natural primary model: it handles library-size offsets and overdispersion
+natively. `glm_sc_fit` (edgePython, NEBULA-LN) extends this with a per-subject
+gamma random effect, absorbing within-strain cell-to-cell variability.
 
 ---
 
-### Model
+### Two-Stage Design
 
-**Null model** (covariates only):
+**Stage 1 — null model (cell level, once per cell type):**
 
-$$Y_i \sim \text{NB}(\mu_i^0,\, \phi), \quad \log \mu_i^0 = X_i\,\beta_0 + \log s_i$$
+$$Y_{ij} \sim \text{NB}(\mu_{ij},\, \phi_g), \quad \log \mu_{ij} = X_j\,\beta_g + \log s_j + u_i$$
 
-where $X_i \in \mathbb{R}^p$ = intercept + batch + PCs, $s_i$ = library size offset,
-$\phi$ = dispersion ($\text{Var}[Y_i] = \mu_i + \phi\mu_i^2$).
+$$u_i \sim \mathcal{N}(0,\, \sigma^2_g) \quad \text{(per-subject random effect)}$$
 
-**Alternative model** at locus $\ell$:
+Fitted via NEBULA-LN (`glm_sc_fit`). Empirical Bayes shrinkage of $\phi_g$ toward a
+trended prior (`shrink_sc_disp`). Returns per-gene $\hat{\phi}_g^\text{shrunk}$ and
+$\hat{\sigma}^2_g$ used in stage 2.
 
-$$\log \mu_i^\ell = H_i^\ell\,\gamma + X_i\,\beta + \log s_i$$
+**Stage 2 — genome-wide scan (pseudobulk, vectorised):**
 
-where $H_i^\ell = (Z H_m^\ell)_i \in \mathbb{R}^{J-1}$ are founder haplotype
-dosages after Z-expansion (last founder dropped, linear constraint).
+$$S_{ig} = \sum_j Y_{ij} \quad \text{(pseudobulk sum per strain }i\text{)}$$
+
+$$H_0:\; \log E[S_{ig}] = X_i\,\beta_0 + \log(n_i \bar{s}_i)$$
+
+$$H_1:\; \log E[S_{ig}] = H_i^\ell\,\gamma + X_i\,\beta + \log(n_i \bar{s}_i)$$
+
+Score test with $\hat{\sigma}^2_g$ inflating the working denominator:
+
+$$r_i = \frac{S_{ig} - \hat{\mu}_i^0}{(1 + \hat{\phi}_g \hat{\mu}_i^0)(1 + \hat{\sigma}^2_g)}, \quad w_i = \frac{\hat{\mu}_i^0}{(1 + \hat{\phi}_g \hat{\mu}_i^0)(1 + \hat{\sigma}^2_g)}$$
 
 **NB log-likelihood:**
 
 $$\ell(y \mid \mu, \phi) = \sum_i \Bigl[\ln\Gamma\!\bigl(y_i + \phi^{-1}\bigr) - \ln\Gamma\!\bigl(\phi^{-1}\bigr) + \phi^{-1}\ln\!\tfrac{\phi^{-1}}{\phi^{-1}+\mu_i} + y_i\ln\!\tfrac{\mu_i}{\phi^{-1}+\mu_i} - \ln\Gamma(y_i+1)\Bigr]$$
+
+**Kinship note:** $u_i$ is an unstructured exchangeable random effect, not a
+LOCO-kinship random effect. For CC strains with 10 expression PCs as fixed
+covariates this is adequate for the eQTL proof-of-concept. A full NB-LMM with
+LOCO kinship covariance is a planned future extension.
 
 ---
 
@@ -168,11 +182,11 @@ convention in edgeR and avoiding $L$ separate dispersion fits.
 
 | Function | Location | Status |
 |---|---|---|
-| `scan_nb()` | `mosaiqtl/nb.py` | ✅ scaffolded |
-| `scan_nb_multi_gene()` | `mosaiqtl/nb.py` | ✅ scaffolded |
-| `_nb_loglik()` | `mosaiqtl/nb.py` | ✅ implemented |
-| `_score_stat_vectorised()` | `mosaiqtl/nb.py` | ✅ implemented |
-| `estimate_gene_dispersion()` | `mosaiqtl/nb.py` | ✅ implemented |
+| `fit_null_sc()` | `mosaiqtl/nb.py` | ✅ implemented — `glm_sc_fit` + `shrink_sc_disp` |
+| `pseudobulk_sum()` | `mosaiqtl/nb.py` | ✅ implemented |
+| `scan_nb_gene()` | `mosaiqtl/nb.py` | ✅ implemented — score test per gene |
+| `scan_nb()` | `mosaiqtl/nb.py` | ✅ implemented — full two-stage pipeline |
+| `_score_stats_chromosome()` | `mosaiqtl/nb.py` | ✅ implemented — vectorised einsum |
 
 **Pending:** end-to-end run on real pseudobulk data; comparison of NB LOD profiles
 against LMM LOD profiles for Piezo1, Ccdc171, Pmis2.
@@ -557,17 +571,21 @@ grows with $n$, improving power proportional to $\sqrt{n/m}$.
 
 ---
 
-#### mosaiQTL NB GLM
+#### mosaiQTL NB GLM (two-stage)
 
-**Null ($H_0$):**
-$$Y_i \sim \text{NB}(\mu_i^0,\; \phi), \quad \log\mu_i^0 = X_i\beta_0 + \log s_i$$
-$$\text{Var}[Y_i] = \mu_i^0 + \phi(\mu_i^0)^2$$
+**Stage 1 — cell-level null ($H_0$, NEBULA-LN via `glm_sc_fit`):**
+$$Y_{ij} \sim \text{NB}(\mu_{ij},\; \phi_g), \quad \log\mu_{ij} = X_j\beta_g + \log s_j + u_i$$
+$$u_i \sim \mathcal{N}(0,\sigma^2_g) \quad \text{(subject random effect)}$$
+$$\text{Var}[Y_{ij}] = \mu_{ij} + \phi_g\mu_{ij}^2 + \sigma^2_g\mu_{ij}^2$$
 
-**Alternative at locus $\ell$ ($H_1$):**
-$$Y_i \sim \text{NB}(\mu_i^\ell,\; \phi), \quad \log\mu_i^\ell = \tilde{H}_{i,\ell,n}\,\gamma + X_i\beta + \log s_i$$
+Dispersion $\hat\phi_g$ shrunk by EB (`shrink_sc_disp`). $\hat\sigma^2_g$ is the
+per-gene subject variance component.
 
-$\phi$ is fixed across all loci for gene $g$ (estimated once from null model).  
-$\gamma \in \mathbb{R}^{J-1}$ are log-scale founder haplotype effects on mean expression.
+**Stage 2 — pseudobulk scan ($H_1$ at locus $\ell$):**
+$$S_{ig} \sim \text{NB}(\mu_i^\ell,\; \hat\phi_g), \quad \log\mu_i^\ell = \tilde{H}_{i,\ell,n}\,\gamma + X_i\beta + \log(n_i\bar{s}_i)$$
+
+$\hat\phi_g$ fixed from stage 1; $\hat\sigma^2_g$ inflates score test denominator.
+$\gamma \in \mathbb{R}^{J-1}$ are log-scale founder haplotype effects.
 
 ---
 
@@ -706,16 +724,16 @@ projection; score test executes a batched matrix-vector product and solve.
 | Property | miQTL LMM | mosaiQTL LMM | mosaiQTL NB GLM |
 |---|---|---|---|
 | Module | R `miqtl::scan.h2lmm` | `scan.py::scan_h2lmm` | `nb.py::scan_nb` |
-| Distribution | $\mathcal{N}$ (after RINT) | $\mathcal{N}$ (after RINT) | NB ($\text{NB}(\mu, \phi)$) |
+| Distribution | $\mathcal{N}$ (after RINT) | $\mathcal{N}$ (after RINT) | NB-gamma (NEBULA-LN cell + NB pseudobulk) |
 | Phenotype transform | RINT | RINT | None |
-| Random effect | LOCO kinship $K^{(-c)}$ | LOCO kinship $K^{(-c)}_n = Z K_m^{(-c)} Z^\top$ | None |
+| Random effect | LOCO kinship $K^{(-c)}$ | LOCO kinship $K^{(-c)}_n = Z K_m^{(-c)} Z^\top$ | Subject r.e. $u_i \sim \mathcal{N}(0,\sigma^2_g)$ |
 | Fixed confounders | Batch + PCs | Batch + PCs | Batch + PCs |
 | Library size | None | None | Log-offset $\log s_i$ |
-| Overdispersion | Implicitly zero (Gaussian) | Implicitly zero (Gaussian) | Explicit $\phi$ per gene |
+| Overdispersion | Implicitly zero (Gaussian) | Implicitly zero (Gaussian) | Cell-level $\phi_g$ + subject $\sigma^2_g$ (EB shrunk) |
 | Sample design | $n = m$ only | $n \geq m$ | $n \geq m$ |
 | Effect scale | RINT units | RINT units | Log fold-change |
 | Test statistic | $F$-test / LOD from $\text{RSS}_0/\text{RSS}_1$ | same via FWL | Score $Q_\ell$ or LRT $\Lambda_\ell$ |
 | Degrees of freedom | $J-1$ | $J-1$ | $J-1$ |
 | $h^2$ estimated | Yes | Yes | No |
-| Primary use | Validation reference | Production LMM (strain means) | Primary model (raw counts) |
+| Primary use | Validation reference | Production LMM (strain means) | Primary model (raw cell + pseudobulk) |
 | Status | R reference (S1–S11) | ✅ validated ($r > 0.98$) | ✅ scaffolded, pending end-to-end |
