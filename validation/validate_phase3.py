@@ -132,6 +132,29 @@ def save_plot(fig, name):
     plt.close(fig)
     hi(f'  saved {name}')
 
+def load_py(name):
+    '''load a CSV from py_data — returns None if missing.'''
+    p = os.path.join(PY_DATA, name)
+    if not os.path.exists(p): return None
+    df = pd.read_csv(p, low_memory=False)
+    if 'chr' in df.columns: df['chr'] = df['chr'].astype(str)
+    return df
+
+def scatter_qc(ax, x, y, xlabel, ylabel, title):
+    '''standard scatter with y=x line and Pearson r annotation.'''
+    x = np.asarray(x, dtype=float); y = np.asarray(y, dtype=float)
+    ok  = np.isfinite(x) & np.isfinite(y)
+    lim = max(float(np.nanmax(np.abs(np.concatenate([x[ok], y[ok]])))), 0.1) * 1.05
+    ax.scatter(x[ok], y[ok], s=6, alpha=0.7, color='#4F6EAF', edgecolors='none')
+    ax.plot([0, lim], [0, lim], '--', color='#D83026', lw=1)
+    r = float(np.corrcoef(x[ok], y[ok])[0, 1]) if ok.sum() > 3 else np.nan
+    rho = float(sp_stats.spearmanr(x[ok], y[ok]).statistic) if ok.sum() > 3 else np.nan
+    ax.text(0.05, 0.95, f'$r$={r:.3f}  $\\rho$={rho:.3f}',
+            transform=ax.transAxes, fontsize=8, va='top')
+    ax.set(xlim=(0, lim), ylim=(0, lim), xlabel=xlabel, ylabel=ylabel, title=title)
+    sns.despine(ax=ax)
+    return r, rho
+
 qc_rows = []
 def record(key, passed, detail):
     st = 'PASS' if passed else ('NA' if passed is None else 'FAIL')
@@ -276,6 +299,20 @@ hi(f'  cache: {len(chr_order)} chr | {len(cache_py.sample_ids)} strains')
 kinship_py   = kin_module.calc_kinship(cache_py, method='loco')
 kinship_decomp = kin_module.decomp_kinship(kinship_py)
 hi(f'  kinship: {len(kinship_py)} LOCO matrices')
+
+# ── load LMM phase 2 outputs for comparison ───────────────────────────────────
+hi('\n● loading LMM phase 2 outputs for comparison')
+lmm_gene_summary = load_py('gene_summary.csv')    # per-gene peak stats (LMM py)
+lmm_lod_comp     = load_py('lod_comparison.csv')  # per-locus LOD_r + LOD_py
+if lmm_gene_summary is not None:
+    hi(f'  gene_summary.csv:   {len(lmm_gene_summary)} genes')
+    hi(f'  columns: {list(lmm_gene_summary.columns)}')
+else:
+    hi('  gene_summary.csv not found — run validate_port.py S4 first')
+if lmm_lod_comp is not None:
+    hi(f'  lod_comparison.csv: {len(lmm_lod_comp)} locus×gene rows')
+else:
+    hi('  lod_comparison.csv not found — per-locus LMM overlay unavailable')
 
 # ── strain-level covariates (averaged from cell-level) ────────────────────────
 # used for scan_nb stage 2 and for LMM scans below
@@ -445,15 +482,76 @@ if 'nb' in _run:
         sns.despine(ax=ax); plt.tight_layout()
         save_plot(fig3, 'p1_nb_top_egenes.png')
 
-        # sanity checks
-        piezo_lod = (float(peak_df.loc[peak_df['gene_id']=='Piezo1','lod'].iloc[0])
-                     if 'Piezo1' in peak_df['gene_id'].values else 0.0)
+        # ── NB vs LMM comparison ─────────────────────────────────────────────
+        nb_vs_lmm = None
+        if lmm_gene_summary is not None:
+            mg = peak_df.merge(
+                lmm_gene_summary[['gene_id','chr','peak_lod_py','h2_null',
+                                   'tier','peak_match']]
+                .rename(columns={'peak_lod_py':'lod_lmm','chr':'chr_lmm'}),
+                on='gene_id', how='inner')
+            mg['peak_chr_match'] = mg['chr'] == mg['chr_lmm']
+            mg['lmm_egene']      = mg['tier'].isin(['strict','lenient'])
+            mg['nb_egene']       = mg['fdr_bh'] < 0.05
+            mg['both_egene']     = mg['nb_egene'] & mg['lmm_egene']
+            ok = mg[['lod','lod_lmm']].notna().all(axis=1)
+            rho_rank = float(sp_stats.spearmanr(mg.loc[ok,'lod'],
+                                                mg.loc[ok,'lod_lmm']).statistic)
+            n_shared  = int(mg['both_egene'].sum())
+            n_chr_ok  = int(mg['peak_chr_match'].sum())
+            hi(f'  NB vs LMM: n_shared_genes={len(mg)}  spearman_rank_r={rho_rank:.4f}  '
+               f'shared_egenes={n_shared}  peak_chr_concordance={n_chr_ok}/{len(mg)}')
+            nb_vs_lmm = mg[['gene_id','chr','pos_mb','lod','p_value','fdr_bh',
+                             'nb_egene','lod_lmm','chr_lmm','peak_chr_match',
+                             'lmm_egene','both_egene','h2_null']]
+            save_csv(nb_vs_lmm, 'nb_vs_lmm_comparison.csv')
+
+            # plot 4: NB LOD vs LMM LOD scatter (Pearson + Spearman)
+            fig4, ax = plt.subplots(figsize=(5, 5))
+            scatter_qc(ax, mg['lod_lmm'], mg['lod'],
+                       'peak LOD (LMM)', 'peak LOD (NB)',
+                       f'NB vs LMM per-gene peak LOD  n={len(mg)}')
+            # highlight known candidates
+            for gname in KNOWN_HITS:
+                row = mg[mg['gene_id'] == gname]
+                if row.empty: continue
+                ax.scatter(float(row['lod_lmm']), float(row['lod']),
+                           s=60, color='#D83026', zorder=5, edgecolors='white', lw=0.5)
+                ax.annotate(gname, (float(row['lod_lmm']), float(row['lod'])),
+                            fontsize=7, xytext=(4, 2), textcoords='offset points')
+            plt.tight_layout(); save_plot(fig4, 'p1_nb_vs_lmm_scatter.png')
+
+            # plot 5: Piezo1 chr8 — NB vs LMM LOD profile overlay
+            if ('Piezo1' in results_nb and lmm_lod_comp is not None
+                    and 'Piezo1' in lmm_lod_comp['gene_id'].values):
+                sr_p   = results_nb['Piezo1']
+                mask_c = sr_p.chromosomes.astype(str) == '8'
+                lmm_p  = lmm_lod_comp[(lmm_lod_comp['gene_id']=='Piezo1') &
+                                       (lmm_lod_comp['chr']=='8')]
+                fig5, ax = plt.subplots(figsize=(9, 4))
+                ax.fill_between(sr_p.positions[mask_c], 0, sr_p.lod[mask_c],
+                                color='#4F6EAF', alpha=0.5, step='mid', label='NB')
+                if not lmm_p.empty:
+                    ax.plot(lmm_p['pos_mb'].values, lmm_p['lod_py'].values,
+                            color='#D83026', lw=1.5, alpha=0.85, label='LMM (Python)')
+                ax.set(xlabel='position chr8 (Mb)', ylabel='LOD',
+                       title='Piezo1 — NB vs LMM LOD profile chr8',
+                       xlim=(0, None), ylim=(0, None))
+                ax.legend(fontsize=9); sns.despine(ax=ax)
+                plt.tight_layout(); save_plot(fig5, 'p1_nb_vs_lmm_piezo1_profile.png')
+
+        # ── sanity + record ───────────────────────────────────────────────────
+        piezo_lod    = (float(peak_df.loc[peak_df['gene_id']=='Piezo1','lod'].iloc[0])
+                        if 'Piezo1' in peak_df['gene_id'].values else 0.0)
         lod_right_skew = float(sp_stats.skew(peak_df['lod'].values)) > 0.5
-        record('scan_nb',
-               lod_right_skew and piezo_lod > 3.0,
-               f'n_egenes={n_egenes}  piezo1_lod={piezo_lod:.2f}  '
-               f'lod_skew={sp_stats.skew(peak_df["lod"].values):.2f}  '
-               f'lod_right_skew={lod_right_skew}')
+        detail = (f'n_egenes={n_egenes}  piezo1_lod={piezo_lod:.2f}  '
+                  f'lod_skew={sp_stats.skew(peak_df["lod"].values):.2f}  '
+                  f'lod_right_skew={lod_right_skew}')
+        if nb_vs_lmm is not None:
+            detail += (f'  nb_lmm_spearman={rho_rank:.3f}  '
+                       f'shared_egenes={n_shared}  '
+                       f'peak_chr_concordance={n_chr_ok}/{len(nb_vs_lmm)}')
+        record('scan_nb', lod_right_skew and piezo_lod > 3.0, detail)
     else:
         record('scan_nb', False, 'scan_nb returned no results')
 
@@ -514,11 +612,13 @@ if 'vqtl' in _run:
                           'colocalises': (pk_v['chromosome'] == info['chr'] and
                                          abs(pk_v['position'] - info['approx_mb']) < 10)})
 
-        # per-gene plot: vQTL + mean eQTL LOD profile on target chr
-        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-        sr_v = res_v.vqtl_scan
-        mask = sr_v.chromosomes.astype(str) == info['chr']
+        # per-gene plot: vQTL + mean eQTL + LMM overlay on target chr
+        fig, axes = plt.subplots(1, 3, figsize=(16, 4))
+        sr_v  = res_v.vqtl_scan
+        mask  = sr_v.chromosomes.astype(str) == info['chr']
         pos_v = sr_v.positions[mask]; lod_v = sr_v.lod[mask]
+
+        # panel 1: vQTL LOD profile
         axes[0].fill_between(pos_v, 0, lod_v, color='#4F6EAF', alpha=0.8, step='mid')
         axes[0].axvline(info['approx_mb'], color='#D83026', lw=1.0, ls='--',
                         label=f'eQTL ref ~{info["approx_mb"]:.0f}Mb')
@@ -526,21 +626,56 @@ if 'vqtl' in _run:
                     title=f'{gname} — dispersion vQTL', xlim=(0, None), ylim=(0, None))
         axes[0].legend(fontsize=8); sns.despine(ax=axes[0])
 
+        # panel 2: mean eQTL (pseudobulk, from scan_vqtl also_scan_mean)
         if res_v.mean_scan is not None:
-            sr_m = res_v.mean_scan
+            sr_m   = res_v.mean_scan
             mask_m = sr_m.chromosomes.astype(str) == info['chr']
-            pos_m = sr_m.positions[mask_m]; lod_m = sr_m.lod[mask_m]
-            axes[1].fill_between(pos_m, 0, lod_m, color='#55AF5B', alpha=0.8, step='mid')
-            axes[1].set(xlabel=f'position chr{info["chr"]} (Mb)', ylabel='LOD (mean eQTL)',
-                        title=f'{gname} — mean eQTL (pseudobulk)',
+            pos_m  = sr_m.positions[mask_m]; lod_m = sr_m.lod[mask_m]
+            axes[1].fill_between(pos_m, 0, lod_m, color='#55AF5B', alpha=0.8, step='mid',
+                                 label='NB mean scan')
+            # overlay LMM profile if available
+            if lmm_lod_comp is not None:
+                lmm_g = lmm_lod_comp[(lmm_lod_comp['gene_id']==gname) &
+                                      (lmm_lod_comp['chr']==info['chr'])]
+                if not lmm_g.empty:
+                    axes[1].plot(lmm_g['pos_mb'].values, lmm_g['lod_py'].values,
+                                 color='#D83026', lw=1.5, alpha=0.85, label='LMM (Python)')
+            axes[1].set(xlabel=f'position chr{info["chr"]} (Mb)', ylabel='LOD',
+                        title=f'{gname} — mean eQTL vs LMM',
                         xlim=(0, None), ylim=(0, None))
+            axes[1].legend(fontsize=8); sns.despine(ax=axes[1])
+        else:
+            axes[1].text(0.5, 0.5, 'mean scan\nnot available',
+                         ha='center', va='center', transform=axes[1].transAxes)
             sns.despine(ax=axes[1])
+
+        # panel 3: vQTL vs mean eQTL LOD scatter (colocalisation check)
+        if res_v.mean_scan is not None and mask.sum() > 3 and mask_m.sum() > 3:
+            # align by position
+            _v = pd.DataFrame({'pos_mb': pos_v, 'lod_vqtl': lod_v})
+            _m = pd.DataFrame({'pos_mb': pos_m, 'lod_mean': lod_m})
+            _vm = _v.merge(_m, on='pos_mb', how='inner')
+            if len(_vm) > 3:
+                scatter_qc(axes[2], _vm['lod_mean'], _vm['lod_vqtl'],
+                           'LOD (mean eQTL)', 'LOD (vQTL)',
+                           f'{gname} vQTL vs mean eQTL chr{info["chr"]}')
+            else:
+                axes[2].text(0.5, 0.5, 'insufficient\noverlap',
+                             ha='center', va='center', transform=axes[2].transAxes)
+                sns.despine(ax=axes[2])
         plt.tight_layout()
         save_plot(fig, f'p2_vqtl_{gname.lower()}.png')
 
     if vqtl_rows:
         vqtl_df = pd.DataFrame(vqtl_rows)
-        save_csv(vqtl_df, 'vqtl_summary.csv')
+        # merge with LMM peak positions for comparison CSV
+        if lmm_gene_summary is not None:
+            vqtl_df = vqtl_df.merge(
+                lmm_gene_summary[['gene_id','peak_lod_py','h2_null']]
+                .rename(columns={'peak_lod_py':'lod_lmm'}),
+                on='gene_id', how='left')
+            vqtl_df['lod_vqtl_vs_lmm_delta'] = vqtl_df['lod_vqtl'] - vqtl_df['lod_lmm']
+        save_csv(vqtl_df, 'vqtl_vs_lmm_comparison.csv')
         record('scan_vqtl', True,
                f'n_genes={len(vqtl_rows)}  '
                f'colocalise={vqtl_df["colocalises"].sum()}/{len(vqtl_df)}')
@@ -614,17 +749,50 @@ if 'epistasis' in _run:
             hi(f'  LOD_additive   = {epi_res["lod_additive"]:.3f}')
             hi(f'  LOD_interaction= {epi_res["lod_interaction"]:.3f}')
             hi(f'  LOD_epistasis  = {epi_res["lod_epistasis"]:.3f}  (interaction drop)')
+
+            # cross-check: LOD_additive should be close to LMM LOD at same locus
+            lmm_lod_at_a = np.nan
+            if lmm_lod_comp is not None:
+                row_a = lmm_lod_comp[(lmm_lod_comp['gene_id']=='Piezo1') &
+                                     (lmm_lod_comp['locus']==locus_a)]
+                if not row_a.empty:
+                    lmm_lod_at_a = float(row_a['lod_py'].iloc[0])
+            delta_add_lmm = (epi_res['lod_additive'] - lmm_lod_at_a
+                             if np.isfinite(lmm_lod_at_a) else np.nan)
+            hi(f'  LMM LOD at locus_a = {lmm_lod_at_a:.3f}  '
+               f'Δ(NB_add - LMM) = {delta_add_lmm:.3f}')
+
             epi_df = pd.DataFrame([{
-                'gene_id':         'Piezo1',
-                'locus_a':         locus_a,
-                'locus_b':         locus_b,
-                'lod_additive':    epi_res['lod_additive'],
-                'lod_interaction': epi_res['lod_interaction'],
-                'lod_epistasis':   epi_res['lod_epistasis'],
+                'gene_id':              'Piezo1',
+                'locus_a':              locus_a,
+                'locus_b':              locus_b,
+                'lod_additive':         epi_res['lod_additive'],
+                'lod_interaction':      epi_res['lod_interaction'],
+                'lod_epistasis':        epi_res['lod_epistasis'],
+                'lmm_lod_at_locus_a':  lmm_lod_at_a,
+                'delta_additive_lmm':  delta_add_lmm,
             }])
             save_csv(epi_df, 'epistasis_piezo1_ccdc171.csv')
 
-            # plot: haplotype combination heatmap if available
+            # plot: LOD breakdown bar (additive / interaction / epistasis)
+            # + LMM reference line
+            fig_e, ax_e = plt.subplots(figsize=(5, 4))
+            bars = ['additive', 'interaction', 'epistasis']
+            vals = [epi_res['lod_additive'],
+                    epi_res['lod_interaction'],
+                    epi_res['lod_epistasis']]
+            colors_e = ['#4F6EAF', '#55AF5B', '#D83026']
+            ax_e.bar(bars, vals, color=colors_e, edgecolor='none')
+            if np.isfinite(lmm_lod_at_a):
+                ax_e.axhline(lmm_lod_at_a, color='#888', lw=1.5, ls='--',
+                             label=f'LMM ref={lmm_lod_at_a:.2f}')
+                ax_e.legend(fontsize=8)
+            ax_e.set(ylabel='LOD', title='Piezo1×Ccdc171 epistasis — LOD decomposition',
+                     ylim=(0, None))
+            sns.despine(ax=ax_e)
+            plt.tight_layout(); save_plot(fig_e, 'p3_epistasis_lod_breakdown.png')
+
+            # haplotype combination heatmap if available
             if 'hap_means' in epi_res:
                 from mosaiqtl.epistasis import test_haplotype_combinations
                 try:
@@ -646,7 +814,9 @@ if 'epistasis' in _run:
 
             record('scan_epistasis', epi_res['lod_additive'] > 0,
                    f'lod_additive={epi_res["lod_additive"]:.3f}  '
-                   f'lod_epistasis={epi_res["lod_epistasis"]:.3f}')
+                   f'lod_epistasis={epi_res["lod_epistasis"]:.3f}  '
+                   f'lmm_lod_at_locus_a={lmm_lod_at_a:.3f}  '
+                   f'delta_add_lmm={delta_add_lmm:.3f}')
         else:
             record('scan_epistasis', False, 'scan_epistasis raised an error')
 
@@ -719,23 +889,44 @@ if 'conditional' in _run:
                                  'pos_mb': pk['position'],
                                  'lod': pk['lod']})
             sig_df = pd.DataFrame(sig_rows)
-            save_csv(sig_df, 'conditional_signals_piezo1.csv')
 
-            # plot: overlay all signal scans on chr8
+            # plot: overlay all signal scans + LMM reference on chr8
             chr_plot = pk0['chromosome']
             fig, ax = plt.subplots(figsize=(9, 4))
-            colors_sig = ['#4F6EAF','#D83026','#55AF5B']
+            colors_sig = ['#4F6EAF', '#D83026', '#55AF5B']
             for si, sr in enumerate(signals):
                 mask = sr.chromosomes.astype(str) == chr_plot
                 pos_s = sr.positions[mask]; lod_s = sr.lod[mask]
                 ax.plot(pos_s, lod_s, color=colors_sig[si % len(colors_sig)],
                         lw=1.5, alpha=0.85,
-                        label=f'signal {si+1}  LOD={sr.lod.max():.2f}')
+                        label=f'signal {si+1}  peak={sr.lod.max():.2f}')
+            # LMM reference for same gene + chr
+            if lmm_lod_comp is not None:
+                lmm_p4 = lmm_lod_comp[(lmm_lod_comp['gene_id']=='Piezo1') &
+                                       (lmm_lod_comp['chr']==chr_plot)]
+                if not lmm_p4.empty:
+                    ax.plot(lmm_p4['pos_mb'].values, lmm_p4['lod_py'].values,
+                            color='#888', lw=1.2, ls='--', alpha=0.7,
+                            label=f'LMM (Python)')
             ax.set(xlabel=f'position chr{chr_plot} (Mb)', ylabel='LOD',
                    title=f'Piezo1 conditional scan  {len(signals)} signal(s)',
                    xlim=(0, None), ylim=(0, None))
             ax.legend(fontsize=9); sns.despine(ax=ax)
             plt.tight_layout(); save_plot(fig, 'p4_conditional_piezo1.png')
+
+            # comparison CSV: signal LODs vs LMM LOD at each peak locus
+            lmm_at_peaks = []
+            for row in sig_rows:
+                lmm_row = (lmm_lod_comp[(lmm_lod_comp['gene_id']=='Piezo1') &
+                                         (lmm_lod_comp['locus']==row['locus'])]
+                           if lmm_lod_comp is not None else pd.DataFrame())
+                lmm_at_peaks.append(float(lmm_row['lod_py'].iloc[0])
+                                    if not lmm_row.empty else np.nan)
+            sig_df = pd.DataFrame(sig_rows)
+            sig_df['lod_lmm_at_locus'] = lmm_at_peaks
+            sig_df['delta_signal_lmm'] = sig_df['lod'] - sig_df['lod_lmm_at_locus']
+            save_csv(sig_df, 'conditional_signals_piezo1.csv')
+            hi(f'  signal vs LMM comparison:\n{sig_df[["signal","lod","lod_lmm_at_locus","delta_signal_lmm"]].to_string(index=False)}')
 
             lod_drop = (float(pk0['lod']) - float(signals[-1].lod.max())
                         if len(signals) > 1 else 0.0)
