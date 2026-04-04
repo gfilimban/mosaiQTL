@@ -1,125 +1,98 @@
 # mosaiQTL
 
-mosaiQTL maps QTL in multiparent populations using Gaussian LMM for normalized expression,
-[edgePython](https://github.com/pachterlab/edgePython)-backed NB GLM for pseudobulk counts,
-and NEBULA-LN for single-nucleus data — chosen per gene without changing the rest of the pipeline.
+Haplotype-based QTL mapping for multiparent populations — parametric on $J$ founders,
+model-agnostic across expression data types.
 
-It resolves genetic effects to $J$ inbred founder haplotypes across any number of mosaic lines,
-parametric on both $J$ and population size. Designed for populations where each individual genome is
-a unique recombinant mosaic of segments inherited from $J$ founders: Collaborative Cross (CC, $J=8$,
-~33 lines), Diversity Outbred (DO), or any user-defined MAGIC design. Informed by
-[miQTL](https://github.com/gkeele/miqtl) (Keele *et al.* 2020) and
-[R/qtl2](https://kbroman.org/qtl2/) (Broman *et al.* 2019).
+Maps genetic effects to $J$ inbred founder haplotypes across any number of mosaic lines.
+Designed for populations where each genome is a unique recombinant mosaic of segments
+from $J$ founders: Collaborative Cross (CC, $J=8$), Diversity Outbred (DO), or any
+user-defined MAGIC design.
 
 ---
 
-## Current phase — Phase 2: full miQTL port
+## Three-layer API
 
-**Phase 1 (complete):** Core LMM engine validated against R miQTL on a full genome scan
-(18,447 genes, all 20 chromosomes). All three QC sections pass.
+```python
+from mosaiqtl import discover, characterize, resolve
 
-**Phase 2 (in progress):** Complete port of all remaining miQTL functions — multiple imputation,
-SNP scan, permutation thresholds, mediation, positional CI, and publication-quality plots — to
-eliminate R as a dependency entirely for analyses.
+# Layer 1 — genome-wide QTL scan
+disc = discover(counts, gene_ids, cache, covariates, sample_ids, model='nb')
 
-**Phase 3 (planned):** Novel extensions — NB GLM scan, NEBULA-LN NB mixed model for single-nucleus
-data, variance QTL.
+# Layer 2 — characterize discovered QTLs
+char = characterize(disc, covariates, modules=['allele_effects', 'vqtl'])
+
+# Layer 3 — mechanistic resolution (pass only modules your data support)
+res = resolve(disc, covariates,
+              modules=['snp_catalogue', 'conditional_scan', 'ase', 'sqtl'],
+              snp_catalogue_kwargs    = {'mgp_vcf': '/path/mgp.vcf.gz'},
+              conditional_scan_kwargs = {'n_signals': 3},
+              ase_kwargs              = {'f1_fastq_dirs': {...},
+                                         'founder_fastas': {...},
+                                         'gtf_path': '/path/gencode.gtf'},
+              sqtl_kwargs             = {'psi_matrix': psi, 'junction_ids': jids})
+```
 
 ---
 
-## Validation status (Phase 1 — full genome)
+## Models
 
-| Section | Status | Detail |
+| Model | Function | Use case |
 |---|---|---|
-| Haplotype probs | **PASS** | row sums correct; spot-check delta informational (HMM vs qtl2 C impl.) |
-| LOCO kinship | **PASS** | r = 0.9997, max\|ΔK\| < 0.02, all 20 chromosomes |
-| LOD scores | **PASS** | slope = 1.048, peak locus match 91.8%, 77.7% pass (strict + lenient) |
+| **NB GLM** (primary) | `scan_nb()` | Raw pseudobulk counts — no RINT, library-size offset, overdispersion |
+| **Gaussian LMM** | `scan_h2lmm()` | Normalized expression — LOCO kinship correction |
+| **Dispersion QTL** | `scan_vqtl()` | Transcriptional noise — scan log(φ̂) as phenotype |
+| **Epistasis** | `scan_epistasis()` | Pairwise GxG interaction at haplotype resolution |
 
-Pass criteria: strict = `peak_match AND rel_error < 10%`; lenient = `peak_match AND rel_error < 20%`.
+The NB GLM uses a vectorised score test — one null fit per gene, all loci scored in a
+single tensor operation via `einsum`. The LMM uses the Frisch-Waugh-Lovell trick for
+equivalent vectorisation. Both are parametric on $J$ with no hardcoded assumptions.
 
 ---
 
-## Architecture
+## Module inventory
 
 ```
 mosaiqtl/
-  genome_cache.py   # GenomeCache — from_gigamuga(), from_happy_dir(), save/load HDF5
-  hmm.py            # 8-founder diplotype HMM — Haldane map, forward-backward
-  kinship.py        # calc_kinship() LOCO, decomp_kinship(), EigenCache
-  lmm.py            # estimate_h2_null() REML, fit_lmm_at_locus() ML LOD
-  scan.py           # scan_h2lmm(), scan_multi_gene(), ScanResult
-  nb.py             # NB GLM: dispersion estimation, score test (Phase 3)
-  vqtl.py           # variance QTL: scan_vqtl(), mean vs dispersion (Phase 3)
-  plotting.py       # LOD profiles, kinship heatmap, founder effects, QQ
-  utils.py          # rint(), align_samples(), make_design_matrix()
-
-validation/
-  lmm_validation/           # Phase 1 outputs (LMM scan vs miQTL)
-    r_data/                 # CSVs: lod_r.csv, gene_results.csv, kinship_report.csv, ...
-    qc_plots/               # PNGs: lod_correlation, kinship_heatmap, gene_summary, ...
-  port_validation/          # Phase 2 outputs (full port vs miQTL)
-    r_data/
-    qc_plots/
-  r_reference/
-    run_validation.R        # R reference scan using miQTL::scan.h2lmm()
-  validate_vs_r.py          # Python validation script (all 4 sections)
+  genome_cache.py   GenomeCache — from_gigamuga(), from_happy_dir(), HDF5 save/load, collapse()
+  hmm.py            forward-backward HMM, Haldane map transitions, emission from GigaMUGA
+  kinship.py        calc_kinship() LOCO via einsum, decomp_kinship() eigendecomposition
+  lmm.py            estimate_h2_null() REML+grid, fit_lmm_at_locus(), scan_chromosome() FWL
+  scan.py           scan_h2lmm(), scan_multi_gene(), scan_h2lmm_mi(), instability_lm_scan()
+  nb.py             scan_nb(), scan_nb_multi_gene(), score test, LRT, dispersion EB pipeline
+  vqtl.py           scan_vqtl(), estimate_dispersion_per_subject(), compare_mean_vs_dispersion()
+  epistasis.py      scan_epistasis(), test_haplotype_combinations(),
+                    scan_conditional(), scan_conditional_with_y()
+  mediation.py      mediation_scan_qr(), fixef_mediation_scan() — FWL vectorised
+  snp_scan.py       imputed_snp_scan_h2lmm(), build_snp_catalogue() (pysam+MGP VCF)
+  permutation.py    generate_null_outcomes(), get_gev_thresholds(), run_positional_scans()
+  pipeline.py       discover(), characterize(), resolve() — Layer 1/2/3 user API
+  ase.py            run_kallisto_ase() — F1 ASE via kallisto|bustools two-allele index
+  plotting.py       LOD profiles, kinship heatmap, founder effects, QQ, CC founder palette
+  utils.py          rint(), align_samples(), build_z_matrix(), expand_kinship()
 ```
 
 ---
 
-## Feature parity with miQTL — implementation plan
+## Z-matrix design (n ≥ m)
 
-### Phase 1 — implemented and validated ✓
+mosaiQTL operates natively on $n$ samples mapping to $m \leq n$ genotyped strains.
+The Z-matrix $Z \in \{0,1\}^{n \times m}$ ($Z_{ik} = 1$ if sample $i$ belongs to
+strain $k$) expands haplotypes and kinship at scan time:
 
-| miQTL (R) | mosaiQTL (Python) | Notes |
-|---|---|---|
-| `calc_genoprob()` (qtl2) + HAPPY build | `genome_cache.from_gigamuga()` | **R-free**; pure Python HMM |
-| HAPPY `.RData` cache | `genome_cache.from_happy_dir()` | rpy2 bridge (compat only) |
-| `convert.qtl2.to.HAPPY()` | `genome_cache.from_rds()` | rpy2 bridge (compat only) |
-| `calc_kinship(loco)` | `kinship.calc_kinship('loco')` | validated r = 0.9997 |
-| `scan.h2lmm()` / `lmmbygls()` | `scan.scan_h2lmm()` + `lmm.fit_lmm_at_locus()` | validated slope = 1.048 |
-| `rint()` | `utils.rint()` | direct port |
+$$H_n = Z H_m \qquad K_n = Z K_m Z^\top$$
 
-### Phase 2 — in progress
-
-| miQTL (R) | mosaiQTL target | Module |
-|---|---|---|
-| `scan.h2lmm(use.multi.impute=TRUE)` | multiple imputation scan | `lmm.py` + `scan.py` |
-| `imputed.snp.scan.h2lmm()` | haplotype-imputed SNP scan | `scan.py` |
-| `pairwise.cor.snp.scan()` | SNP LD / r² matrix | `scan.py` |
-| `generate.sample.outcomes.matrix()` | permutation / bootstrap sampling | `permutation.py` |
-| `run.threshold.scans()` | genome-wide threshold scans | `permutation.py` |
-| `get.gev.thresholds()` | GEV significance thresholds | `permutation.py` |
-| `instability.lm.scan()` | fixed-effect bootstrap stability scan | `scan.py` |
-| `fixef.eQTL.scan()` | fixed-effect eQTL scan | `scan.py` |
-| `mediation.scan.qr()` | genome-wide mediation via QR | `mediation.py` |
-| `fixef.mediation.scan()` | fixed-effect mediation scan | `mediation.py` |
-| `run.positional.scans()` | parametric bootstrap CI | `permutation.py` |
-| `grab.locus.from.scan()` | peak locus extraction | `scan.py` |
-| `collapse.genomecache()` | merge redundant adjacent loci | `genome_cache.py` |
-| `genome.plotter.whole/region()` | Manhattan + regional plots | `plotting.py` |
-| `allele.plotter.region()` | founder effect region plot | `plotting.py` |
-| `single.chr.plotter.w.ci()` | CI plot with confidence interval | `plotting.py` |
-| `prob.heatmap()` | haplotype probability heatmap | `plotting.py` |
-| `snp.genome.plotter.*()` | SNP association plots | `plotting.py` |
-
-### Phase 3 — extensions unique to mosaiQTL
-
-| Feature | Module | Description |
-|---|---|---|
-| NB GLM scan | `nb.py` | Negative binomial score test for pseudobulk counts |
-| NEBULA-LN | `nb.py` | NB mixed model (He *et al.* 2021) for single-cell data |
-| Variance QTL | `vqtl.py` | Two-stage dispersion scan — mean vs variance QTL |
+When $n = m$ and IDs match, $Z = I_m$ and all results are identical to the strain-mean
+case. No hardcoded sample counts anywhere in the codebase.
 
 ---
 
-## Usage
+## Quick start
 
 ```python
 from mosaiqtl.genome_cache import GenomeCache
-from mosaiqtl import kinship, scan
+from mosaiqtl import scan_nb, scan_h2lmm
 
-# build R-free cache from raw GigaMUGA data
+# build cache from GigaMUGA array data (R-free)
 cache = GenomeCache.from_gigamuga(
     gigamuga_path = 'input/GM_ccfo_mm39.csv',
     gmap_dir      = 'input/GM/gmap/',
@@ -128,20 +101,18 @@ cache = GenomeCache.from_gigamuga(
     founder_cols  = FOUNDER_COLS,
     f1_crosses    = F1_CROSSES,
 )
-cache.save('output/cache.h5')          # save once
+cache.save('output/cache.h5')            # save once
 cache = GenomeCache.load('output/cache.h5')  # fast reload
 
-K = kinship.calc_kinship(cache, method='loco')
+# NB GLM scan (primary model — raw counts)
+result = scan_nb(counts, cache, covariates=X, sample_ids=sids,
+                 lib_sizes=lib, just_these_loci=cis_set)
 
-result = scan.scan_h2lmm(
-    phenotype    = y,
-    genome_cache = cache,
-    covariates   = covar_df,
-    kinship      = K,
-    chrom        = '8',
-    cis_window   = 0.5,
-    gene_pos_mb  = 123.4,
-)
+# Gaussian LMM scan (normalized expression)
+result = scan_h2lmm(y_rint, cache, covariates=X, sample_ids=sids)
+
+peak = result.peak_locus()   # {'locus_id', 'chromosome', 'position', 'lod'}
+df   = result.to_dataframe() # pd.DataFrame all loci
 ```
 
 ---
@@ -149,13 +120,47 @@ result = scan.scan_h2lmm(
 ## Validation
 
 ```bash
-# Phase 1 — LMM validation (R required for reference scan)
-Rscript validation/r_reference/run_validation.R
-python validation/validate_vs_r.py
-
-# Phase 2 — full port validation (validate_port.py, built alongside the port)
+# Phase 2 — full port validation (all 11 sections, genome-wide)
+# Run R reference first on HPC:
+bash validation/run_validation_slurm.sh
+# Then merge and validate:
+Rscript validation/merge_chr_outputs.R
 python validation/validate_port.py
+
+# Rerun failed chromosomes:
+bash validation/rerun_failed_chrs.sh 3,5
+
+# Specific sections only:
+python validation/validate_port.py --sections 4,6
 ```
+
+Validation outputs: `validation/port_validation/py_data/qc_summary.csv`
+
+---
+
+## Development status
+
+**Phase 1 — LMM port:** ✅ complete  
+**Phase 2 — Full port validation (S1–S11):** ✅ complete (genome-wide, all 20 chr)  
+**Phase 3 — Novel extensions validation:** 🔄 in progress
+
+| Extension | Module | Status |
+|---|---|---|
+| NB GLM scan | `nb.py` | ✅ scaffolded — end-to-end test pending |
+| Dispersion vQTL | `vqtl.py` | ✅ scaffolded — end-to-end test pending |
+| Epistasis scan | `epistasis.py` | ✅ implemented |
+| Conditional scan (BLUP) | `epistasis.py` | ✅ implemented |
+| SNP catalogue (MGP VCF) | `snp_scan.py` | ✅ implemented |
+| ASE validation (kallisto) | `ase.py` | ✅ scaffolded — F1 FASTQs required |
+| sQTL integration | `pipeline.py` | ✅ scaffolded — PSI matrix required |
+
+---
+
+## Documentation
+
+- `docs/PORT_VALIDATION_REPORT.md` — S1–S11 math, pass criteria, CSV column reference
+- `docs/POC_REPORT.md` — Layer 1/2/3 design, model comparison (M1–M9), epistasis math
+- `docs/ARCHITECTURE.md` — Z-matrix design, HMM details, FWL derivation
 
 ---
 
@@ -165,18 +170,18 @@ python validation/validate_port.py
 pip install -e .
 ```
 
-**Dependencies:** `numpy scipy pandas h5py matplotlib seaborn`  
-**Optional:** `rpy2` (backwards-compat readers only)
+**Required:** `numpy scipy pandas h5py matplotlib seaborn edgepython`  
+**Optional:** `rpy2` (HAPPY `.RData` readers), `pysam` (SNP catalogue), `kallisto bustools` (ASE)
 
 ---
 
 ## References
 
-- Keele, G.R. *et al.* (2020). *PLOS Genetics* 16:e1008537 — **miQTL** [doi:10.1371/journal.pgen.1008537](https://doi.org/10.1371/journal.pgen.1008537)
-- Broman, K.W. *et al.* (2019). *Genetics* 211:495 — **R/qtl2** [doi:10.1534/genetics.118.301595](https://doi.org/10.1534/genetics.118.301595)
-- Mott, R. *et al.* (2000). *PNAS* 97:12649 — **HAPPY HMM** [doi:10.1073/pnas.230304397](https://doi.org/10.1073/pnas.230304397)
-- Kang, H.M. *et al.* (2008). *Genetics* 178:1709 — **eigendecomposition LMM** [doi:10.1534/genetics.107.080101](https://doi.org/10.1534/genetics.107.080101)
-- He, L. *et al.* (2021). *Communications Biology* 4:629 — **NEBULA** [doi:10.1038/s42003-021-02146-6](https://doi.org/10.1038/s42003-021-02146-6)
+- Kang, H.M. *et al.* (2008). *Genetics* 178:1709 — eigendecomposition LMM
+- Broman, K.W. *et al.* (2019). *Genetics* 211:495 — R/qtl2
+- Mott, R. *et al.* (2000). *PNAS* 97:12649 — HAPPY HMM
+- Churchill, G.A. *et al.* (2004). *Nat Genet* 36:1133 — Collaborative Cross
+- Sullivan, D.K. *et al.* (2024). *Nat Protoc* — kallisto|bustools
 
 ## License
 
