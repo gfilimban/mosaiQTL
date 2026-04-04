@@ -50,11 +50,18 @@ _run_sections = (set(int(s.strip()) for s in args.sections.split(','))
 miqtl_dir = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
 pkg_dir   = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl'
 
-R_DATA  = os.path.join(pkg_dir, 'validation', 'port_validation', 'r_data')
-PY_DATA = os.path.join(pkg_dir, 'validation', 'port_validation', 'py_data')
-PLOTS   = os.path.join(pkg_dir, 'validation', 'port_validation', 'qc_plots')
-LOGS    = os.path.join(pkg_dir, 'validation', 'port_validation', 'logs')
+R_DATA  = os.path.join(pkg_dir, 'validation', 'phase2', 'r_data')
+PY_DATA = os.path.join(pkg_dir, 'validation', 'phase2', 'py_data')
+PLOTS   = os.path.join(pkg_dir, 'validation', 'phase2', 'plots')
+LOGS    = os.path.join(pkg_dir, 'validation', 'phase2', 'logs')
 for d in (R_DATA, PY_DATA, PLOTS, LOGS): os.makedirs(d, exist_ok=True)
+
+# ── checkpoints (safe-point system) ──────────────────────────────────────
+# write {section}.done after each pass; --force ignores all checkpoints.
+_ap_force = '--force' in sys.argv
+def _done_path(key): return os.path.join(PY_DATA, f'{key}.done')
+def _is_done(key):   return not _ap_force and os.path.exists(_done_path(key))
+def _mark_done(key): open(_done_path(key), 'w').close()
 
 # GigaMUGA inputs
 GM_CSV      = os.path.join(miqtl_dir, 'input', 'GM_ccfo_mm39.csv')
@@ -132,10 +139,21 @@ def load_r(name):
     if 'chr' in df.columns: df['chr'] = df['chr'].astype(str)
     return df
 
+_section_keys = {
+    1:'cache_info', 2:'haplotype_probs', 3:'kinship', 4:'lmm_scan',
+    5:'cache_collapse', 6:'permutation', 7:'multi_imputation', 8:'snp_scan',
+    9:'mediation', 10:'positional_ci', 11:'instability'}
+
+
 def section(n, title):
-    '''print section header and return True if section is in run_sections.'''
+    '''print section header; return True if section should run.'''
+    key = _section_keys.get(n, str(n))
     if n not in _run_sections:
         log.debug(f'S{n} skipped (not in --sections)')
+        return False
+    if _is_done(key):
+        hi(f'\n✓ S{n} — {title}  [checkpoint — use --force to rerun]')
+        qc_rows.append({'section':key,'pass':True,'detail':'checkpoint (skipped)'})
         return False
     hi(f'\n▶ S{n} — {title}')
     log.info(f'=== S{n} {title} ===')
@@ -151,6 +169,7 @@ def record(key, passed, detail):
     hi(f'  {st}: {detail}')
     log.info(f'{key}: {st} — {detail}')
     qc_rows.append({'section':key,'pass':passed,'detail':detail})
+    if passed: _mark_done(key)
 
 def scatter_qc(ax, x, y, xlabel, ylabel, title):
     """standard scatter with y=x line and r annotation."""
@@ -1212,10 +1231,6 @@ if section(11, 'INSTABILITY SCAN'):
 # QC SUMMARY
 # ══════════════════════════════════════════════════════════════════════════════
 # add skipped-by-sections entries so summary table is always complete
-_section_keys = {
-    1:'cache_info', 2:'haplotype_probs', 3:'kinship', 4:'lmm_scan',
-    5:'cache_collapse', 6:'permutation', 7:'multi_imputation', 8:'snp_scan',
-    9:'mediation', 10:'positional_ci', 11:'instability'}
 _recorded = {r['section'] for r in qc_rows}
 for _sn, _sk in _section_keys.items():
     if _sn not in _run_sections and _sk not in _recorded:

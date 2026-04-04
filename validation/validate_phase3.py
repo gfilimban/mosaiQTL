@@ -88,10 +88,17 @@ args = ap.parse_args()
 _run = set(s.strip() for s in args.sections.split(','))
 
 # ── outputs ───────────────────────────────────────────────────────────────────
-PY_DATA = os.path.join(PKG_DIR, 'validation', 'port_validation', 'py_data')
-PLOTS   = os.path.join(PKG_DIR, 'validation', 'port_validation', 'qc_plots')
-LOGS    = os.path.join(PKG_DIR, 'validation', 'port_validation', 'logs')
+PHASE2_PY = os.path.join(PKG_DIR, 'validation', 'phase2', 'py_data')   # read LMM ref
+PY_DATA   = os.path.join(PKG_DIR, 'validation', 'phase3', 'py_data')   # write phase3 outputs
+PLOTS     = os.path.join(PKG_DIR, 'validation', 'phase3', 'plots')
+LOGS      = os.path.join(PKG_DIR, 'validation', 'phase3', 'logs')
 for d in (PY_DATA, PLOTS, LOGS): os.makedirs(d, exist_ok=True)
+
+# ── checkpoints ──────────────────────────────────────────────────────────
+_ap_force = '--force' in sys.argv
+def _done_path(key): return os.path.join(PY_DATA, f'{key}.done')
+def _is_done(key):   return not _ap_force and os.path.exists(_done_path(key))
+def _mark_done(key): open(_done_path(key), 'w').close()
 
 _ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 log = logging.getLogger('phase3')
@@ -151,11 +158,12 @@ def record(key, passed, detail):
     st = 'PASS' if passed else ('NA' if passed is None else 'FAIL')
     hi(f'  {st}: {detail}')
     qc_rows.append({'section': key, 'pass': passed, 'detail': detail})
+    if passed: _mark_done(key)
 
 # ── load LMM reference (phase 2 py_data) ─────────────────────────────────────
 hi('\n● loading LMM reference data')
 def _load_py(name):
-    p = os.path.join(PY_DATA, name)
+    p = os.path.join(PHASE2_PY, name)
     if not os.path.exists(p):
         hi(f'  WARN: {name} not found — run validate_port.py first')
         return None
@@ -334,7 +342,7 @@ if os.path.exists(pmap_path):
 # ══════════════════════════════════════════════════════════════════════════════
 # P1 — SCAN_NB
 # ══════════════════════════════════════════════════════════════════════════════
-if 'nb' in _run:
+if 'nb' in _run and not _is_done('scan_nb'):
     hi(f'\n▶ P1 — SCAN_NB  ({len(gene_set)} genes, {args.cell_type})')
     from mosaiqtl.nb import scan_nb, scan_nb_gene, pseudobulk_sum, fit_null_sc
 
@@ -554,7 +562,7 @@ if 'nb' in _run:
 # ══════════════════════════════════════════════════════════════════════════════
 # P2 — SCAN_VQTL
 # ══════════════════════════════════════════════════════════════════════════════
-if 'vqtl' in _run:
+if 'vqtl' in _run and not _is_done('scan_vqtl'):
     hi(f'\n▶ P2 — SCAN_VQTL  ({list(KNOWN_HITS.keys())})')
     from mosaiqtl.vqtl import scan_vqtl, estimate_dispersion_per_subject
 
@@ -690,7 +698,7 @@ if 'vqtl' in _run:
 # ══════════════════════════════════════════════════════════════════════════════
 # P3 — SCAN_EPISTASIS
 # ══════════════════════════════════════════════════════════════════════════════
-if 'epistasis' in _run:
+if 'epistasis' in _run and not _is_done('scan_epistasis'):
     hi('\n▶ P3 — SCAN_EPISTASIS  (Piezo1 chr8 × Ccdc171 chr4)')
     from mosaiqtl.epistasis import scan_epistasis, test_haplotype_combinations
 
@@ -825,7 +833,7 @@ if 'epistasis' in _run:
 # ══════════════════════════════════════════════════════════════════════════════
 # P4 — SCAN_CONDITIONAL_WITH_Y
 # ══════════════════════════════════════════════════════════════════════════════
-if 'conditional' in _run:
+if 'conditional' in _run and not _is_done('scan_conditional'):
     hi('\n▶ P4 — SCAN_CONDITIONAL_WITH_Y  (Piezo1)')
     from mosaiqtl.epistasis import scan_conditional_with_y
     from mosaiqtl.scan import scan_h2lmm

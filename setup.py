@@ -13,6 +13,7 @@ setup(
         'pandas>=1.3',
         'matplotlib>=3.5',
         'seaborn>=0.12',
+        'statsmodels>=0.13',   # multipletests in phase3
         'edgepython>=0.1',
     ],
     extras_require={
@@ -22,7 +23,7 @@ setup(
             'anndata>=0.8',
         ],
         'r_bridge': [
-            'rpy2>=3.4',
+            'rpy2>=3.4',       # required for genome_cache.from_rds() and validation
         ],
     },
 )
