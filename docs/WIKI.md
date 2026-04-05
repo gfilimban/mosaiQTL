@@ -98,7 +98,7 @@ Layer 3 — Mechanistic Resolution  pipeline.resolve(modules=[...])
 
 | Model | Entry point | Kinship | Status |
 |---|---|---|---|
-| NB-GLMM + LOCO (primary) | `scan_nb(..., kinship_loco=K)` | PQL, per chr | ✅ implemented |
+| NB-GLMM + LOCO (primary) | `scan_nb(..., kinship_loco=K)` | PQL + Woodbury, per chr | ✅ implemented |
 | NB GLM (fallback) | `scan_nb(..., kinship_loco=None)` | σ² inflation | ✅ implemented |
 | Gaussian LMM | `scan_h2lmm(...)` | LOCO, FWL | ✅ implemented (miQTL port) |
 
@@ -116,7 +116,9 @@ Implemented in `nb.py`. Two-stage design:
 fit_null = fit_null_sc(counts_cells, strain_ids, covariates_cells)
 # → dispersion_use (EB shrunk), sigma_sample per gene
 ```
-Uses `edgePython.glm_sc_fit(sample=strain_ids)` — exchangeable RE per strain. Not a kinship RE. `sigma_sample` propagates to Stage 2 denominator inflation (fallback path only).
+Uses native NEBULA-LN (`fit_null_sc_native`, `use_native=True` by default) —
+no edgePython required. Design follows He et al. 2021 + Pachter 2026 edgePython.
+Legacy edgePython path still available via `use_native=False`. Not a kinship RE. `sigma_sample` propagates to Stage 2 denominator inflation (fallback path only).
 
 **Stage 2 — per-chromosome PQL null + score test:**
 ```python
@@ -137,8 +139,11 @@ $T_\ell = (H_\ell^\top r_\text{adj})^\top (H_\ell^\top P H_\ell)^{-1} (H_\ell^\t
 
 **Three correctness checks (verify without reading Chen 2016):**
 1. $W_i = \mu_i/(1+\phi\mu_i)$ matches NB variance function ✓
-2. $P\mathbf{X} = 0$ (oblique projection annihilates covariate space) — tested in `test_nb.py`
-3. Score test reduces to diagonal-weight version when $\tau \to 0$ (i.e. $P \to W$-weighted)
+2. $P\mathbf{X} = 0$ — tested in `test_nb.py::TestWoodbuyExactness`
+3. Woodbury $V^{-1}v$ matches explicit inversion at small $n$ to 1e-15 — tested in `test_nb.py`
+
+**n=418, m=48.** $V \in \mathbb{R}^{418\times418}$ — never formed. Woodbury reduces all
+linear algebra to $48\times48$ Cholesky. P is never stored; applied implicitly per locus.
 
 **Note on $P$:** $P$ is an oblique projection in the $V$-metric. $P^2 = P$ only when $V = I$. The correct idempotency property is $P\mathbf{X} = 0$, not $P^2 = P$.
 
@@ -387,7 +392,7 @@ make clean-phase3         # clear phase3 outputs
 | Extension | Module | Blocker |
 |---|---|---|
 | Permutation-based FDR (replace BH-FDR) | `permutation.py` | S6 GEV instability unresolved |
-| NB-LMM at cell level (LOCO kinship in Stage 1) | `nb.py` | requires GLMM likelihood in edgePython |
+| Cell-level scan (no pseudobulk, SAIGE-QTL style) | new module | insufficient cell depth in current data |
 | Multi-tissue extension | `pipeline.py` | data not yet available |
 | sQTL | new module | junction matrix not yet built |
 | Full PyPI publication | — | NB-GLMM phase 3 validation pending |

@@ -50,6 +50,14 @@ validate-force:
 validate-phase3-force:
 	python validation/validate_phase3.py --cell_type type2x --n_genes 500 --force
 
+# validate native NEBULA-LN vs edgepython (P1=local; P2=HPC with --h5ad)
+validate-nebula-ln:
+	python validation/validate_nebula_ln.py
+
+validate-nebula-ln-hpc:
+	python validation/validate_nebula_ln.py --h5ad /path/to/gastroc_all_processed2.h5ad \
+	    --cell_type type2x --n_genes 500
+
 # ── clean ─────────────────────────────────────────────────────────────────────
 clean:
 	find validation/phase2 -name '*.png' -o -name '*.csv' -o -name '*.done' | xargs rm -f

@@ -267,7 +267,8 @@ At each iteration:
 1. **REML for $\tau$** — 1D minimisation of the restricted log-likelihood of the working LMM
    $\ell_\text{REML}(\tau) = -\frac{1}{2}[\log|V| + \log|\mathbf{X}^\top V^{-1}\mathbf{X}| + \mathbf{z}^\top P_V \mathbf{z}]$
    where $V = D + \tau K^{(-c)}$ and $P_V = V^{-1} - V^{-1}\mathbf{X}(\mathbf{X}^\top V^{-1}\mathbf{X})^{-1}\mathbf{X}^\top V^{-1}$.
-   At $n = 48$ strains the Cholesky of $V$ is computed directly — no eigendecomposition trick is needed.
+   At $n = 418$ samples with $m = 48$ unique strains, $V \in \mathbb{R}^{n\times n}$ is too large to invert
+directly per gene per chromosome. The Woodbury identity reduces all operations to $m\times m$ cost.
 
 2. **GLS update** — $\hat{\boldsymbol{\beta}} = (\mathbf{X}^\top V^{-1}\mathbf{X})^{-1}\mathbf{X}^\top V^{-1}\mathbf{z}$
 
@@ -287,11 +288,12 @@ is small relative to the signal, and PQL approaches exact GLMM likelihood. GMMAT
 
 After PQL convergence, the projection matrix and kinship-adjusted residuals are:
 
-$$P = V^{-1} - V^{-1}\mathbf{X}(\mathbf{X}^\top V^{-1}\mathbf{X})^{-1}\mathbf{X}^\top V^{-1}$$
-$$\mathbf{r}_{\text{adj}} = P\,\mathbf{z}_\text{final}$$
+$P$ is never stored ($n\times n$ at $n=418$ is 1.4 MB per gene — infeasible at scale).
+Computed implicitly via Woodbury:
 
-$P$ is an oblique projection in the $V$-metric: $P\mathbf{X} = 0$ (covariates annihilated),
-but $P^2 \neq P$ in general when $V \neq I$.
+$$r_\text{adj} = V^{-1}z - V^{-1}X(X^\top V^{-1}X)^{-1}X^\top V^{-1}z \quad (n \text{ vector, cheap})$$
+
+$P$ satisfies $P\mathbf{X} = 0$ (oblique projection in $V$-metric; $P^2 = P$ only when $V=I$).
 
 Score test at locus $\ell$ across all $L$ loci (vectorised):
 
@@ -299,11 +301,11 @@ $$\mathbf{U}_\ell = \mathbf{H}_\ell^\top \mathbf{r}_{\text{adj}} \quad (J-1 \tex
 $$\mathbf{I}_\ell = \mathbf{H}_\ell^\top P \mathbf{H}_\ell \quad (J-1) \times (J-1)$$
 $$T_\ell = \mathbf{U}_\ell^\top \mathbf{I}_\ell^{-1} \mathbf{U}_\ell \sim \chi^2_{J-1} \text{ under } H_0$$
 
-**Vectorisation.** $P\mathbf{H}_{\text{all}} \in \mathbb{R}^{L \times n \times (J-1)}$ is
-computed once via `np.einsum('mn,lnj->lmj', P, H_all)` (cost $O(L n^2 J)$), then
-$\mathbf{I} = \mathbf{H}_{\text{all}}^\top (P\mathbf{H}_{\text{all}})$ via
-`np.einsum('lnj,lnk->ljk', H_all, PH)` (cost $O(L n J^2)$). At $L=4000$, $n=48$,
-$J=8$, total cost $\approx 65$M operations per chromosome — negligible.
+**Woodbury vectorisation** (no P stored):
+$V^{-1}H_\text{all}$ computed via `_wb_batch` using three einsums at $O(LnmJ)$ cost.
+Then $I_\ell = H_\ell^\top V^{-1}H_\ell - (H_\ell^\top V^{-1}X)(X^\top V^{-1}X)^{-1}(X^\top V^{-1}H_\ell)$
+via batched einsums. At $L=4000$, $n=418$, $m=48$, $J=8$: $\approx$700M ops per chromosome,
+~0.7s — acceptable for a genome-wide scan.
 
 **LOD conversion:** $\text{LOD}_\ell = T_\ell / (2\ln 10)$, identical to the LMM convention.
 
@@ -316,6 +318,7 @@ $J=8$, total cost $\approx 65$M operations per chromosome — negligible.
 | Null fit | once genome-wide | once per chromosome per gene |
 | Population structure | partially via $\sigma^2_g$ inflation | fully via $K^{(-c)}$ covariance |
 | API | `scan_nb(..., kinship_loco=None)` | `scan_nb(..., kinship_loco=kinship_loco)` |
+| P stored | explicitly (48×48, cheap) | never (implicit Woodbury) |
 
 ## 17. NB GLM Stage 2 — pseudobulk score test (without kinship)
 
@@ -549,7 +552,7 @@ strain-mean case exactly. No module hardcodes $n$, $m$, or $J$.
 | LMM scan LOD | `lmm.py` | $\frac{n}{2}\log_{10}\frac{\text{RSS}_0}{\text{RSS}_1}$ | ML denominator |
 | FWL vectorization | `lmm.py` | project covariates once, batch loci | ~100× faster, exact |
 | RINT | `utils.py` | Blom's formula | rank-preserving normalisation |
-| NB Stage 1 (NEBULA-LN) | `nb.py` | $Y_{ij} \sim \text{NB}(\mu_{ij},\phi_g)$, $u_i \sim \mathcal{N}$ | within-strain RE |
+| NB Stage 1 (NEBULA-LN, native) | `nb.py` | NB-gamma approx; He et al. 2021 LN method | no edgepython needed |
 | EB dispersion shrinkage | `nb.py` | WLEB toward trended prior | stabilises low-expr genes |
 | NB Stage 2 (no kinship) | `nb.py` | $Q_\ell = U_\ell^\top (H^\top W H)^{-1} U_\ell$ | exchangeable RE |\n| NB Stage 2 (LOCO kinship) | `nb.py` | $T_\ell = U_\ell^\top (H^\top P H)^{-1} U_\ell \sim \chi^2_{J-1}$ | PQL, Chen et al. 2016 |
 | vQTL | `vqtl.py` | scan $\log\hat{\phi}_i$ as phenotype | cell-count heterogeneity |

@@ -132,7 +132,7 @@ def save_csv(df, name):
 
 def save_plot(fig, name):
     p = os.path.join(PLOTS, name)
-    fig.savefig(p, dpi=300, bbox_inches='tight', transparent=True)
+    fig.savefig(p, dpi=300, bbox_inches='tight')
     plt.close(fig)
     hi(f'  saved {name}')
 
