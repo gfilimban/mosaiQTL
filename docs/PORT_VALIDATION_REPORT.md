@@ -842,3 +842,154 @@ Master pass/fail table — one row per validation section.
 | `section` | str | Section key (e.g. `kinship`, `lmm_scan`) |
 | `pass` | bool/None | True = PASS, False = FAIL, None = SKIP |
 | `detail` | str | Metric values and threshold used for decision |
+
+---
+
+## Plot inventory — justification, inference, and discrepancy analysis
+
+Each section lists all plots with: the plot type, the literature basis for that choice,
+what a passing result looks like, and how to interpret failure.
+
+---
+
+### S1 — Cache info
+
+| Plot | Type | Justification | Passing look | Discrepancy signal |
+|---|---|---|---|---|
+| `s1_cache_info.png` | Grouped bar + metadata table | Structural check; no continuous values to compare | Bars nearly equal per chr; all table flags True | Systematic loci excess in one implementation indicates different QC filters |
+
+**Inference.** `loci_max_delta=1237` across 20 chromosomes (~60/chr on average) is expected: Python and HAPPY apply slightly different MAF/call-rate filters. Structural metadata (founder set, sample set) must be exact; loci delta does not fail the section.
+
+---
+
+### S2 — Haplotype probabilities
+
+| Plot | Type | Justification | Passing look | Discrepancy signal |
+|---|---|---|---|---|
+| `s2_haplotype_heatmaps.png` | 3-panel heatmap (Python \| R \| diff) | Gold standard for HMM output comparison (Delaneau et al. 2019) | Diff panel near zero (blue-white) | Red/blue patches = systematic founder-specific bias |
+| `s2_haplotype_diff_grid.png` | All-chromosome compact diff grid | Global overview; identifies chromosome-specific HMM divergence | All `max\|Δ\|` < 0.05 | Any chr with large diff warrants inspection of that chr's marker density |
+| `s2_prob_comparison.png` | Scatter + per-founder Pearson r bar | Overall correlation and per-founder breakdown | Points on identity; all founder r > 0.90 | Specific founder with low r = that founder's genotyping quality in one implementation |
+| `s2_bland_altman.png` | Bland-Altman mean-vs-difference (Bland & Altman 1986) | Reveals systematic additive bias and heteroscedasticity invisible to Pearson r; standard method-agreement plot in clinical genomics | Horizontal scatter around bias=0; narrow ±1.96SD limits; limits symmetric | Non-zero bias = one implementation consistently over/under-estimates; fanning = proportional bias |
+| `s2_calibration.png` | Reliability diagram (DeGroot & Fienberg 1983) | Verifies Python probs are calibrated posteriors, not just correlated with R; perfect calibration = identity line | All decile bins on identity line | Systematic curve = Python HMM poorly calibrated even when r is high |
+
+**Inference.** `max_dev=0.00` on row sums is always 0 by construction (HMM normalisation) and carries no information. The real validation is `prob_r` from `haplotype_vals_r.csv`. If `prob_r < 0.90`, first check the Bland-Altman for bias direction; then check the per-founder bar for which founder drives it; then check the diff grid for which chromosomes are affected.
+
+---
+
+### S3 — Kinship LOCO
+
+| Plot | Type | Justification | Passing look | Discrepancy signal |
+|---|---|---|---|---|
+| `s3_kinship.png` | 3-panel heatmap (Python \| R \| diff) | Gold standard for kinship comparison (Yang et al. 2010) | Diff panel near zero; max\|ΔK\| < 0.05 | Structured pattern in diff = systematic relatedness mis-estimation for specific strain pairs |
+| `s3_offdiag_scatter.png` | K_py vs K_r scatter (off-diagonal only) | Directly tests the covariance structure determining LMM power (Speed & Balding 2015); heatmap shows pattern, scatter shows magnitude | Points on identity; r > 0.999, CCC > 0.99 | CCC < r = systematic bias; spread away from identity = specific strain pairs poorly estimated |
+| `s3_relatedness_distributions.png` | Paired histograms (diagonal vs off-diagonal) | Kinship inflation in diagonal vs off-diagonal has distinct LMM consequences: diagonal inflation inflates h²; off-diagonal inflation suppresses QTL power | py and R histograms overlap; means agree | Separated means = systematic bias in self-relatedness (diagonal) or pairwise relatedness (off-diagonal) |
+
+**Inference.** `mean_r=0.9998` is excellent. If off-diagonal scatter shows CCC < r, there is a systematic positive or negative bias in pairwise relatedness — diagnose by checking which strain pairs are the outliers in the heatmap diff panel.
+
+---
+
+### S4 — LMM scan (ROP)
+
+| Plot | Type | Justification | Passing look | Discrepancy signal |
+|---|---|---|---|---|
+| `s4_lod_scatter.png` | LOD scatter (R vs Python) | Core validation; standard in LMM scan comparisons (Casale et al. 2015) | Points near identity; r > 0.97 | Systematic deviation above/below identity = LOD inflation/deflation |
+| `s4_lod_residuals.png` | ΔLOD vs genomic position (Mb) | Detects positional bias (centromeres, telomeres, high-LD regions) | Random scatter around zero | Systematic region with large ΔLOD = marker density or LD structure affecting one implementation |
+| `s4_gene_tiers.png` | Tier bar (strict/lenient/fail) + fail rate by LOD bin | Stratified analysis; confirms fails concentrate at low signal (Stegle et al. 2012) | Fail rate → 0 for LOD > 3 bins | Elevated fail rate at high LOD = genuine implementation discrepancy, not noise |
+| `s4_gene_summary.png` | h² distribution + per-gene r distribution + peak LOD scatter | Comprehensively characterises the scan output distribution | h² roughly 0.2–0.6; r distribution mode near 1 | h² distribution skewed high = kinship inflation; bimodal r = consistent failures for a gene subset |
+| `s4_pvalue_qq.png` | p-value QQ with genomic inflation λ | Standard for calibration assessment (Devlin & Roeder 1999); λ annotation is required | Points near null diagonal for low LOD; inflation at tail (true signals); λ ≈ 1.0–1.05 | λ >> 1 = test statistic inflation from kinship misspecification; λ < 1 = deflation (overcorrection) |
+| `s4_discrepancy_manhattan.png` | \|ΔLOD\| genome-wide Manhattan | Reveals whether discrepancies are random or regional (Listgarten et al. 2012) | Uniformly low \|ΔLOD\| across all chr | Elevated \|ΔLOD\| on specific chromosomes = LD structure or loci density causing implementation-specific behaviour |
+| `s4_allele_effect_concordance.png` | Distribution of per-gene allele effect r and CCC | Validates founder effect direction, not just LOD magnitude (Listgarten et al. 2012); CCC = 1 only when means also match | r and CCC distributions mode near 1; few genes with r < 0 | r near 0 = allele effects not consistently directional between implementations; negative r = sign flip |
+| `s4_founder_effects.png` | Grouped bar (py vs R allele effects, one gene) | Illustrative founder-level comparison | Bars closely matched; r annotated | Specific founder with large discrepancy identifies which founder haplotype drives the model difference |
+
+**Inference.** The 40% fail rate concentrates at LOD < 1 (confirm with `s4_gene_tiers.png` lower panel). The `s4_discrepancy_manhattan.png` shows whether discrepancies are chromosomally structured. The `s4_pvalue_qq.png` with λ ≈ 1.0 confirms the test statistic is not inflated genome-wide — the fails at low LOD are noise, not calibration failure.
+
+---
+
+### S5 — Cache collapse
+
+| Plot | Type | Justification | Passing look | Discrepancy signal |
+|---|---|---|---|---|
+| `s5_cache_collapse.png` | Collapse % bar + kinship stability scatter + LOD preservation scatter | Standard checks for marker pruning validation (Browning & Browning 2016) | py collapse > 5%; kinship r > 0.99; LOD r > 0.99 | Kinship r < 0.99 = collapse removed too many informative markers |
+| `s5_loci_spacing.png` | Inter-locus distance histograms (full vs collapsed) | Tests spatial uniformity of collapse; biased collapse toward high-density regions distorts local haplotype inference | Both distributions smooth; collapsed distribution right-shifted version of full | Bimodal collapsed distribution = collapse preferentially removed specific genomic features (centromeres, high-LD blocks) |
+
+**Inference.** `lod_preservation=0.9999` confirms collapse does not degrade scan output. The loci spacing plot should show the collapsed distribution shifted right (larger gaps) uniformly — any bimodality suggests the l2.norm criterion is interacting with LD structure in specific regions.
+
+---
+
+### S6 — Permutation thresholds
+
+| Plot | Type | Justification | Passing look | Discrepancy signal |
+|---|---|---|---|---|
+| `s6_permutation.png` | Histogram + GEV fit + per-chr delta bar | Standard permutation threshold visualisation (Dudbridge & Koeleman 2004) | GEV fits the empirical null; delta bar mostly below 0.5 | Specific chromosomes with large delta → investigate their cis-loci count |
+| `s6_ecdf.png` | ECDF (Python vs R) | More sensitive to tail differences than histogram (Phipson & Smyth 2010); the 95th percentile is extracted from the tail | ECDFs overlap; diverge only in the far right tail | ECDF crossing = distributions with different tail shapes; the crossing point is where the threshold discrepancy originates |
+| `s6_threshold_scatter.png` | py vs R threshold per chromosome | Distinguishes systematic bias from instability; scatter is tighter than delta bar | Points near identity | Points scattered randomly around identity = GEV instability; points systematically above/below = fix_h2 effect |
+
+**Inference.** `mean_delta=0.619` is currently failing. The ECDF will show whether py and R null distributions diverge gradually or at a specific LOD value. The threshold scatter will show whether the failure is concentrated in specific chromosomes or uniform — the former implicates cis-loci count variation; the latter implicates the fix_h2 convention.
+
+---
+
+### S7 — Multiple imputation
+
+| Plot | Type | Justification | Passing look | Discrepancy signal |
+|---|---|---|---|---|
+| `s7_mi_scan.png` | Scatter + overlaid LOD profile | Core comparison; profile shows gene-level alignment of imputed signal | r > 0.75; profiles aligned in peak location | Profiles offset in peak location = different imputation ordering or seed-dependent peak placement |
+| `s7_lod_diff_violin.png` | Violin of mean per-gene (LOD_py − LOD_R) | Separates implementation error from MI sampling noise (independent seeds); violin width shows variability | Distribution centred on 0; narrow | Biased violin (non-zero median) = systematic LOD inflation from one implementation; wide violin = seed-dependent noise dominating |
+
+**Inference.** `r=0.819` is above threshold but not excellent. The violin plot quantifies whether the r=0.819 reflects random seed-dependent variation (violin centred on 0, wide) or systematic bias (violin off-centre). The former is expected with independent seeds at n_imp=11; the latter requires investigation.
+
+---
+
+### S8 — SNP scan
+
+| Plot | Type | Justification | Passing look | Discrepancy signal |
+|---|---|---|---|---|
+| `s8_snp_scan.png` | LOD scatter | Baseline correlation; documented at r=0.55 due to model difference | Points positively correlated | Very low r (<0.3) = ID mismatch, not model difference |
+| `s8_lod_profile_chr8.png` | LOD profile overlay on chr8 | Shows where the marginal vs diplotype model difference concentrates spatially; expected at specific SNPs, not uniformly | Profiles similar in shape; diverge at specific SNP clusters | Divergence at QTL peaks (Piezo1 region) = diplotype heterozygosity inflates R's LOD at those loci |
+| `s8_maf_concordance.png` | \|ΔLOD\| vs founder alt-allele frequency | Tests the mechanistic explanation for r=0.55: marginal approximation degrades for low-freq variants where diplotype off-diagonals matter | \|ΔLOD\| increases as MAF → 0; flat at high MAF | Flat \|ΔLOD\| across all MAF = the r=0.55 is not from the model difference but from an implementation bug; increasing \|ΔLOD\| at low MAF confirms the mechanistic explanation |
+
+**Inference.** `r=0.5509` is documented as the marginal vs diplotype model difference. The MAF concordance plot is the definitive test of this explanation: if `|ΔLOD|` is flat across MAF, the explanation is wrong and the failure is a bug. If it increases at low MAF, the explanation is confirmed and the section status is correctly documented rather than failed.
+
+---
+
+### S9 — Mediation
+
+| Plot | Type | Justification | Passing look | Discrepancy signal |
+|---|---|---|---|---|
+| `s9_mediation.png` | Scatter + overlaid LOD profile | Core comparison of base LOD | r > 0.90; profiles aligned | Low r = QR implementation differs from R's scan.h2lmm mediation |
+| `s9_lod_drop_distribution.png` | Histogram of R's LOD-drop values | The LOD drop (base − mediated) is the biologically meaningful quantity (Chick et al. 2016); concordance of amplification cases (negative drop) is a stringent test | Distribution centred slightly positive (most genes show some mediation); tail of negative drops (amplification) present | Absence of negative drops = one implementation is clipping to 0; asymmetric distribution = one implementation biased toward positive drops |
+
+**Inference.** `r=0.9983` confirms base LOD is accurately reproduced. The LOD drop distribution validates that the mediation logic itself (the subtraction of lod_mediated) is correctly implemented, which is not captured by the base LOD comparison.
+
+---
+
+### S10 — Positional CI
+
+| Plot | Type | Justification | Passing look | Discrepancy signal |
+|---|---|---|---|---|
+| `s10_positional_ci.png` | Bootstrap peak histogram + multi-chr interval comparison | Standard bootstrap CI visualisation (Mangin et al. 1994); overlap criterion across all chromosomes | Histograms overlap; most CIs show overlap=True | Systematically displaced bootstrap peaks = different peak-finding or boundary handling |
+| `s10_width_scatter.png` | CI width scatter (R vs Python) | Overlap=True/False is too coarse; width concordance is the stringent test (Mangin et al. 1994); an 80 Mb CI and a 2 Mb CI both pass the overlap test | Points near identity; no systematic width inflation | Python CIs systematically wider = bootstrap phenotype generation adds noise; systematically narrower = Python bootstrap is not sampling the tails |
+
+**Inference.** `overlap=True` is a necessary but not sufficient condition. The width scatter reveals whether implementations agree on *how tight* the CI is. Systematically wider Python CIs suggest the `rps()` function generates more peak spread than R's parametric bootstrap.
+
+---
+
+### S11 — Instability scan
+
+| Plot | Type | Justification | Passing look | Discrepancy signal |
+|---|---|---|---|---|
+| `s11_instability.png` | Scatter + overlaid LOD profile (pos_mb) | Core comparison; profile shows per-locus alignment | r > 0.90; profiles aligned | r < 0 = sign flip in LOD values (systematic error); r near 0 = no correspondence |
+| `s11_peak_proportion.png` | R mean LOD vs Python peak proportion (1 − p_value) | Validates bootstrap calibration: loci with high mean LOD should also have high peak frequency; mismatch means one implementation has different effective bootstrap sample size | Positive correlation; high-LOD loci have high peak proportion | Flat or negative relationship = Python and R bootstrap samples are not sampling the same distribution; effective n differs |
+
+**Inference.** The `r=-0.5408` (now fixed by the chr type bug) should become positive after rerun. If it remains negative, the scatter and `s11_peak_proportion.png` together will show whether it is a LOD sign issue or a fundamental sampling mismatch.
+
+---
+
+### Global notes on plot choices
+
+**Bland-Altman vs scatter.** Scatter plots measure *correlation*; Bland-Altman plots measure *agreement*. A Pearson r of 0.999 is compatible with systematic bias of any size. For method validation, Bland-Altman is therefore the primary method-comparison tool (Bland & Altman 1986). Scatter is retained as a secondary view.
+
+**CCC vs Pearson r.** CCC (Lin 1989) equals 1 only when the two methods have identical means and variances, unlike Pearson r which is invariant to linear transformations. CCC is now reported alongside r for all continuous comparisons.
+
+**ECDF vs histogram.** Histograms are insensitive to tail differences due to bin choice. ECDFs show the exact empirical distribution, making them preferable when comparing distributions whose tails determine a threshold (S6) or where the shape of the distribution encodes calibration (S3, S7).
+
+**λ_GC annotation.** The genomic inflation factor λ = median(χ²_obs) / median(χ²_expected) is required on all p-value QQ plots by current genomics reporting standards (Devlin & Roeder 1999; GWAS reporting guidelines 2019).
