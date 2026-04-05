@@ -13,7 +13,9 @@ parametric on J founders — no hardcoded assumptions about population size.
 __version__ = '0.2.0'
 
 # primary model — NB GLM (NEBULA-LN cell level + pseudobulk scan)
-from .nb import scan_nb, scan_nb_gene, fit_null_sc, pseudobulk_sum  # noqa: F401
+from .nb import (scan_nb, scan_nb_gene,                             # noqa: F401
+                  fit_null_sc, fit_null_nb_glmm_loco,
+                  pseudobulk_sum)
 
 # gaussian lmm scan
 from .scan import scan_h2lmm, scan_multi_gene, ScanResult  # noqa: F401

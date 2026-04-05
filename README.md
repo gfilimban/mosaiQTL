@@ -38,14 +38,16 @@ res = resolve(disc, covariates,
 
 | Model | Function | Use case |
 |---|---|---|
-| **NB GLM** (primary) | `scan_nb()` | Raw pseudobulk counts — no RINT, library-size offset, overdispersion |
-| **Gaussian LMM** | `scan_h2lmm()` | Normalized expression — LOCO kinship correction |
+| **NB-GLMM + LOCO** (primary) | `scan_nb()` | Raw pseudobulk counts — PQL null with LOCO kinship, score test |
+| **NB GLM** (fallback) | `scan_nb(..., kinship_loco=None)` | No kinship correction — σ² inflation only |
+| **Gaussian LMM** | `scan_h2lmm()` | Normalized expression — LOCO kinship, FWL vectorised |
 | **Dispersion QTL** | `scan_vqtl()` | Transcriptional noise — scan log(φ̂) as phenotype |
 | **Epistasis** | `scan_epistasis()` | Pairwise GxG interaction at haplotype resolution |
 
-The NB GLM uses a vectorised score test — one null fit per gene, all loci scored in a
-single tensor operation via `einsum`. The LMM uses the Frisch-Waugh-Lovell trick for
-equivalent vectorisation. Both are parametric on $J$ with no hardcoded assumptions.
+The NB-GLMM uses PQL (Breslow & Clayton 1993; Chen et al. 2016 AJHG) to fit a null
+NB mixed model with LOCO kinship once per chromosome per gene, then a vectorised
+kinship-corrected score test across all loci via `einsum`. The LMM uses
+Frisch-Waugh-Lovell for equivalent vectorisation. Both are parametric on $J$.
 
 ---
 

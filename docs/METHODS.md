@@ -201,31 +201,15 @@ $$u_i \sim \mathcal{N}(0,\, \sigma^2_g)$$
 $Y_{ij}$: raw UMI count for gene $g$ in cell $j$ of strain $i$.  
 $s_j$: TMM-normalised library size offset.  
 $\mathbf{x}_j$: cell-level covariates (intercept, batch dummies, expression PCs).  
-$u_i$: unstructured per-subject random effect — absorbs between-strain variance
-not explained by fixed covariates. This is not a LOCO-kinship random effect;
-it does not capture genetic relatedness structure. A full NB-LMM with LOCO
-kinship is a planned future extension.  
+$u_i$: exchangeable per-subject random intercept from `edgePython.glm_sc_fit`.
+Absorbs within-strain cell-to-cell variability and mean offsets not captured
+by fixed covariates. Estimated $\sigma^2_g$ (stored as `sigma_sample`) is
+propagated to Stage 2 as a denominator inflation term.  
 $\phi_g$: NB overdispersion parameter for gene $g$ (shared across cells).
 
 **NB parameterisation:** $\text{Var}(Y_{ij}) = \mu_{ij} + \phi_g \mu_{ij}^2$.
-As $\phi_g \to 0$ the model approaches Poisson. As $\phi_g$ increases,
-overdispersion increases. Estimation is performed via NEBULA-LN (He et al. 2021)
-as implemented in `edgePython` (Pachter 2026, GPL-3.0).
-
-**What $u_i$ is and is not.** `edgePython` receives `sample=strain_ids` in
-`glm_sc_fit()`, which fits an **exchangeable (unstructured) random intercept**
-per subject — every strain is independent with the same prior variance $\sigma^2_g$.
-This absorbs within-strain cell-to-cell variability and between-strain mean
-differences not captured by fixed covariates. It does *not* model genetic
-relatedness: there is no kinship matrix $K$, no LOCO correction, and no
-polygenic covariance structure. Two strains sharing 80% of their genome are
-treated identically to two unrelated strains under this random effect.
-
-A full **NB-LMM with LOCO kinship** — replacing the exchangeable $u_i$ with
-$\mathbf{u} \sim \mathcal{N}(\mathbf{0}, \sigma^2_g K^{(-c)})$ inside the
-NB likelihood — requires integrating the LMM eigendecomposition trick into
-the NB score test denominator. This is a **planned future extension** and is
-not currently implemented in `nb.py`.
+Estimation via NEBULA-LN (He et al. 2021) as implemented in `edgePython`
+(Pachter 2026, GPL-3.0). $\phi_g$ is held fixed for Stage 2.
 
 **Empirical Bayes dispersion shrinkage.** Per-gene MLE dispersion estimates are
 noisy for lowly expressed genes. After fitting, `shrink_sc_disp()` applies
@@ -241,7 +225,99 @@ passed to Stage 2.
 
 ---
 
-## 8. NB GLM Stage 2 — pseudobulk score test
+
+---
+
+## 8. NB GLM Stage 2 — pseudobulk NB-GLMM with LOCO kinship
+
+**Module:** `nb.py → fit_null_nb_glmm_loco(), _score_stats_loco()`  
+**Literature:** Breslow & Clayton 1993 (PQL); Chen et al. 2016 AJHG (GMMAT score test)  
+**What it is:** For each gene, for each chromosome, fit a null negative binomial
+GLMM at pseudobulk level with LOCO kinship as the structured random effect covariance.
+Extract kinship-adjusted working residuals and use them in the score test at all loci
+on that chromosome. This is the recommended path when `kinship_loco` is provided
+to `scan_nb()` or `scan_nb_gene()`.
+
+### 8a. Model
+
+$$S_i \sim \text{NB}(\mu_i, \phi_g), \quad \log \mu_i = \mathbf{x}_i^\top \boldsymbol{\beta} + u_i + \text{offset}_i$$
+$$\mathbf{u} \sim \mathcal{N}(\mathbf{0},\, \tau K^{(-c)})$$
+
+$S_i = \sum_j Y_{ij}$: pseudobulk sum for gene $g$ in strain $i$.  
+$\text{offset}_i = \log(n_i \bar{s}_i)$: log total library size for strain $i$.  
+$\phi_g$: dispersion held fixed from Stage 1 EB shrinkage.  
+$\tau$: kinship variance component estimated per gene per chromosome via REML.  
+$K^{(-c)}$: LOCO kinship for chromosome $c$ (precomputed by `kinship.py`).
+
+### 8b. PQL fitting (Breslow & Clayton 1993)
+
+PQL iteratively linearises the NB-GLMM around the current iterate, producing a
+**working linear mixed model** at each step:
+
+$$\mathbf{z}^{(t)} \sim \mathcal{N}\!\left(\mathbf{X}\boldsymbol{\beta} + \mathbf{u},\; \mathbf{D}^{(t)}\right), \quad \mathbf{D}^{(t)} = \operatorname{diag}\!\left(\frac{1}{W_i^{(t)}}\right)$$
+
+**Working weights** (NB link):
+$$W_i^{(t)} = \frac{\hat{\mu}_i^{(t)}}{1 + \phi_g \hat{\mu}_i^{(t)}}$$
+
+**Working response** (log link, offset removed):
+$$z_i^{(t)} = \log \hat{\mu}_i^{(t)} - \text{offset}_i + \frac{S_i - \hat{\mu}_i^{(t)}}{\hat{\mu}_i^{(t)}}$$
+
+At each iteration:
+
+1. **REML for $\tau$** — 1D minimisation of the restricted log-likelihood of the working LMM
+   $\ell_\text{REML}(\tau) = -\frac{1}{2}[\log|V| + \log|\mathbf{X}^\top V^{-1}\mathbf{X}| + \mathbf{z}^\top P_V \mathbf{z}]$
+   where $V = D + \tau K^{(-c)}$ and $P_V = V^{-1} - V^{-1}\mathbf{X}(\mathbf{X}^\top V^{-1}\mathbf{X})^{-1}\mathbf{X}^\top V^{-1}$.
+   At $n = 48$ strains the Cholesky of $V$ is computed directly — no eigendecomposition trick is needed.
+
+2. **GLS update** — $\hat{\boldsymbol{\beta}} = (\mathbf{X}^\top V^{-1}\mathbf{X})^{-1}\mathbf{X}^\top V^{-1}\mathbf{z}$
+
+3. **BLUP update** — $\hat{\mathbf{u}} = \tau K^{(-c)} V^{-1}(\mathbf{z} - \mathbf{X}\hat{\boldsymbol{\beta}})$
+
+4. **Mean update** — $\hat{\mu}_i = \exp(\mathbf{x}_i^\top \hat{\boldsymbol{\beta}} + \hat{u}_i + \text{offset}_i)$
+
+Iterate until $\max_i |\hat{\mu}_i^{(t+1)} - \hat{\mu}_i^{(t)}| / |\hat{\mu}_i^{(t)}| < 10^{-4}$ (typically 3–5 iterations).
+
+**PQL accuracy.** PQL is an approximation — it is biased for binary outcomes with
+small group sizes (Breslow & Lin 1995). For pseudobulk counts $S_i \gg 1$ (which
+holds at our cell numbers per strain), the NB working response variance $1/W_i$
+is small relative to the signal, and PQL approaches exact GLMM likelihood. GMMAT
+(Chen et al. 2016) uses the same PQL approach for GWAS with large cohorts.
+
+### 8c. Kinship-corrected score test
+
+After PQL convergence, the projection matrix and kinship-adjusted residuals are:
+
+$$P = V^{-1} - V^{-1}\mathbf{X}(\mathbf{X}^\top V^{-1}\mathbf{X})^{-1}\mathbf{X}^\top V^{-1}$$
+$$\mathbf{r}_{\text{adj}} = P\,\mathbf{z}_\text{final}$$
+
+$P$ is an oblique projection in the $V$-metric: $P\mathbf{X} = 0$ (covariates annihilated),
+but $P^2 \neq P$ in general when $V \neq I$.
+
+Score test at locus $\ell$ across all $L$ loci (vectorised):
+
+$$\mathbf{U}_\ell = \mathbf{H}_\ell^\top \mathbf{r}_{\text{adj}} \quad (J-1 \text{ vector})$$
+$$\mathbf{I}_\ell = \mathbf{H}_\ell^\top P \mathbf{H}_\ell \quad (J-1) \times (J-1)$$
+$$T_\ell = \mathbf{U}_\ell^\top \mathbf{I}_\ell^{-1} \mathbf{U}_\ell \sim \chi^2_{J-1} \text{ under } H_0$$
+
+**Vectorisation.** $P\mathbf{H}_{\text{all}} \in \mathbb{R}^{L \times n \times (J-1)}$ is
+computed once via `np.einsum('mn,lnj->lmj', P, H_all)` (cost $O(L n^2 J)$), then
+$\mathbf{I} = \mathbf{H}_{\text{all}}^\top (P\mathbf{H}_{\text{all}})$ via
+`np.einsum('lnj,lnk->ljk', H_all, PH)` (cost $O(L n J^2)$). At $L=4000$, $n=48$,
+$J=8$, total cost $\approx 65$M operations per chromosome — negligible.
+
+**LOD conversion:** $\text{LOD}_\ell = T_\ell / (2\ln 10)$, identical to the LMM convention.
+
+### 8d. Comparison to original score test (without kinship)
+
+| Property | Without kinship | With LOCO kinship |
+|---|---|---|
+| Random effect | exchangeable $u_i \sim \mathcal{N}(0, \sigma^2_g)$ | structured $\mathbf{u} \sim \mathcal{N}(0, \tau K^{(-c)})$ |
+| Score denominator | $\mathbf{H}^\top W \mathbf{H}$ (diagonal weights) | $\mathbf{H}^\top P \mathbf{H}$ (kinship-corrected information) |
+| Null fit | once genome-wide | once per chromosome per gene |
+| Population structure | partially via $\sigma^2_g$ inflation | fully via $K^{(-c)}$ covariance |
+| API | `scan_nb(..., kinship_loco=None)` | `scan_nb(..., kinship_loco=kinship_loco)` |
+
+## 17. NB GLM Stage 2 — pseudobulk score test (without kinship)
 
 **Module:** `nb.py → scan_nb_gene()`, `_score_stats_chromosome()`  
 **What it is:** For each gene, aggregate cell-level counts to per-strain
@@ -475,7 +551,7 @@ strain-mean case exactly. No module hardcodes $n$, $m$, or $J$.
 | RINT | `utils.py` | Blom's formula | rank-preserving normalisation |
 | NB Stage 1 (NEBULA-LN) | `nb.py` | $Y_{ij} \sim \text{NB}(\mu_{ij},\phi_g)$, $u_i \sim \mathcal{N}$ | within-strain RE |
 | EB dispersion shrinkage | `nb.py` | WLEB toward trended prior | stabilises low-expr genes |
-| NB Stage 2 score test | `nb.py` | $Q_\ell = U_\ell^\top I_\ell^{-1} U_\ell \sim \chi^2_{J-1}$ | no alt-model fit needed |
+| NB Stage 2 (no kinship) | `nb.py` | $Q_\ell = U_\ell^\top (H^\top W H)^{-1} U_\ell$ | exchangeable RE |\n| NB Stage 2 (LOCO kinship) | `nb.py` | $T_\ell = U_\ell^\top (H^\top P H)^{-1} U_\ell \sim \chi^2_{J-1}$ | PQL, Chen et al. 2016 |
 | vQTL | `vqtl.py` | scan $\log\hat{\phi}_i$ as phenotype | cell-count heterogeneity |
 | Mediation LOD-drop | `mediation.py` | LOD\_base $-$ LOD\_mediated | negative drop = amplification |
 | Khatri-Rao epistasis | `epistasis.py` | $H^a \odot H^b \in \mathbb{R}^{(J-1)^2}$ | pairwise haplotype interaction |

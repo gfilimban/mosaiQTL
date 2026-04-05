@@ -42,6 +42,7 @@ import numpy as np
 import logging
 from scipy.special import gammaln as _gammaln
 from scipy import stats as _stats
+from scipy.optimize import minimize_scalar as _minimize_scalar
 
 logger = logging.getLogger('mosaiqtl')
 
@@ -157,6 +158,168 @@ def _nb_loglik(y, mu, phi):
                   + y * np.log(mu / (r + mu))).sum())
 
 
+
+def _pql_tau_reml(z, x, k_mat, w_vec, tau_init=0.1):
+    """REML estimate of kinship variance component tau in the PQL working LMM.
+
+    working model: z ~ N(X*beta, diag(1/w) + tau*K)
+    with n=48 strains a direct Cholesky is cheap — no eigendecomp trick needed.
+
+    parameters
+    ----------
+    z       : (n,)    working response
+    x       : (n, p)  covariate matrix
+    k_mat   : (n, n)  LOCO kinship matrix for current chromosome
+    w_vec   : (n,)    NB working weights W_ii = mu_i/(1 + phi*mu_i)
+    tau_init: float   initial value for warm start
+
+    returns
+    -------
+    tau : float  REML estimate, clipped to [1e-8, inf)
+    """
+    def _neg_reml(log_tau):
+        tau = np.exp(log_tau)
+        V   = np.diag(1.0 / w_vec) + tau * k_mat
+        try:
+            chol = np.linalg.cholesky(V)          # raises if not PD
+        except np.linalg.LinAlgError:
+            return 1e10
+        V_inv              = np.linalg.inv(V)      # cheap at n<=48
+        VX                 = V_inv @ x
+        A                  = x.T @ VX              # (p, p)
+        sign, logdet_xtVx  = np.linalg.slogdet(A)
+        if sign <= 0:
+            return 1e10
+        P      = V_inv - VX @ np.linalg.solve(A, VX.T)
+        logdet = 2.0 * np.sum(np.log(np.diag(chol)))
+        return 0.5 * (logdet + logdet_xtVx + float(z @ P @ z))
+
+    log_tau0 = float(np.log(max(tau_init, 1e-6)))
+    res = _minimize_scalar(_neg_reml, bounds=(log_tau0 - 6, log_tau0 + 6),
+                           method='bounded')
+    return float(max(np.exp(res.x), 1e-8))
+
+
+def fit_null_nb_glmm_loco(S, x, offsets, K, phi, max_iter=5, tol=1e-4):
+    """PQL null NB-GLMM with LOCO kinship for pseudobulk counts.
+
+    implements the GMMAT-style PQL approach (Breslow & Clayton 1993;
+    Chen et al. 2016 AJHG) adapted for the NB family at pseudobulk level.
+
+    model:
+        S_i ~ NB(mu_i, phi),  log mu_i = x_i^T beta + u_i + offset_i
+        u   ~ N(0, tau * K)
+
+    parameters
+    ----------
+    S       : (n,)    pseudobulk counts per strain
+    x       : (n, p)  covariate matrix (intercept + covariates, no offset)
+    offsets : (n,)    log library size offsets (log(n_cells * mean_lib_size))
+    K       : (n, n)  LOCO kinship matrix for current chromosome
+    phi     : float   NB dispersion (held fixed from Stage 1 EB shrinkage)
+    max_iter: int     PQL iterations (3-5 is sufficient for pseudobulk)
+    tol     : float   convergence criterion on relative mu change
+
+    returns
+    -------
+    dict with keys:
+        mu    : (n,)    fitted null means
+        tau   : float   kinship variance component estimate
+        W     : (n,)    NB working weights mu/(1 + phi*mu)
+        r_adj : (n,)    kinship+covariate adjusted working residuals (P @ z)
+        P     : (n, n)  projection matrix V^{-1} - V^{-1}X(X^T V^{-1}X)^{-1}X^T V^{-1}
+    """
+    n   = len(S)
+    phi = max(float(phi), 1e-6)
+    # initialise mu from raw counts (clipped to avoid log(0))
+    mu  = np.maximum(S.astype(np.float64), 0.5)
+    tau = 0.1
+
+    for it in range(max_iter):
+        # NB working weight: W_ii = mu_i / (1 + phi * mu_i)
+        W   = mu / (1.0 + phi * mu)                             # (n,)
+        # working response in terms of X*beta + u (offset removed):
+        # z_i = (log mu_i - offset_i) + (S_i - mu_i) / mu_i
+        z   = (np.log(mu) - offsets) + (S - mu) / mu            # (n,)
+
+        # REML estimate of tau in working LMM: z ~ N(Xb + u, diag(1/W) + tau*K)
+        tau = _pql_tau_reml(z, x, K, W, tau_init=tau)
+
+        # full marginal covariance
+        V     = np.diag(1.0 / W) + tau * K                      # (n, n)
+        V_inv = np.linalg.inv(V)
+        VX    = V_inv @ x                                        # (n, p)
+        A     = x.T @ VX                                         # (p, p)
+
+        # GLS update for beta
+        beta  = np.linalg.solve(A, VX.T @ z)                    # (p,)
+
+        # BLUP: u_hat = tau K V^{-1} (z - X beta)
+        resid = z - x @ beta                                     # (n,)
+        u_hat = tau * (K @ (V_inv @ resid))                      # (n,)
+
+        # update mu = exp(X beta + u_hat + offsets)
+        mu_new = np.exp(x @ beta + u_hat + offsets)
+        delta  = float(np.max(np.abs(mu_new - mu) / (np.abs(mu) + 1e-8)))
+        mu     = mu_new
+
+        if delta < tol and it > 0:
+            break
+
+    # ── final quantities for score test ──────────────────────────────────────
+    W     = mu / (1.0 + phi * mu)
+    V     = np.diag(1.0 / W) + tau * K
+    V_inv = np.linalg.inv(V)
+    VX    = V_inv @ x
+    A     = x.T @ VX
+
+    # P = V^{-1} - V^{-1}X(X^T V^{-1}X)^{-1}X^T V^{-1}
+    P     = V_inv - VX @ np.linalg.solve(A, VX.T)               # (n, n)
+
+    # final working response and kinship-adjusted residuals
+    z_final = (np.log(mu) - offsets) + (S - mu) / mu
+    r_adj   = P @ z_final                                        # (n,) — P @ z
+
+    return {'mu': mu, 'tau': float(tau), 'W': W, 'P': P, 'r_adj': r_adj}
+
+
+def _score_stats_loco(H_all, r_adj, P_mat):
+    """vectorised NB-GLMM score statistics with LOCO kinship correction.
+
+    replaces _score_stats_chromosome when kinship_loco is provided.
+    implements T_l = U_l^T I_l^{-1} U_l ~ chi2(J-1) where:
+        U_l = H_l^T r_adj           (score vector)
+        I_l = H_l^T P H_l           (kinship-corrected information)
+
+    parameters
+    ----------
+    H_all : (L, n, J-1)  haplotype design at all loci (drop-last founder)
+    r_adj : (n,)          kinship+covariate adjusted working residuals
+    P_mat : (n, n)        projection matrix (precomputed per gene per chr)
+
+    returns
+    -------
+    (L,) score statistics Q_l ~ chi2(J-1) under H_0
+    """
+    L, n, nf1 = H_all.shape
+
+    # score: U_l = H_l^T r_adj  →  (L, J-1)
+    U  = np.einsum('lnj,n->lj', H_all, r_adj, optimize=True)
+
+    # information: I_l = H_l^T P H_l
+    # PH[l] = P @ H[l]:  (n,n) @ (n,J-1)  →  (L, n, J-1)
+    PH = np.einsum('mn,lnj->lmj', P_mat, H_all, optimize=True)
+    I  = np.einsum('lnj,lnk->ljk', H_all, PH, optimize=True)   # (L, J-1, J-1)
+    I += np.eye(nf1)[None] * 1e-10                              # regularise
+
+    sc = np.zeros(L)
+    for l in range(L):
+        try:
+            sc[l] = max(float(U[l] @ np.linalg.solve(I[l], U[l])), 0.0)
+        except np.linalg.LinAlgError:
+            sc[l] = 0.0
+    return sc
+
 def _score_stats_chromosome(H_all, r_vec, w_vec):
     """vectorised NB score statistics for all loci on one chromosome.
 
@@ -186,6 +349,7 @@ def _score_stats_chromosome(H_all, r_vec, w_vec):
 def scan_nb_gene(counts_pb, genome_cache, strain_order,
                   phi, sigma_sample=0.0,
                   covariates=None, lib_sizes=None,
+                  kinship_loco=None,
                   use_lrt=False, just_these_loci=None,
                   phenotype_id='unknown'):
     """NB score-test scan for one gene on pseudobulk counts.
@@ -201,6 +365,11 @@ def scan_nb_gene(counts_pb, genome_cache, strain_order,
                     inflates score denominator when >0
     covariates    : np.ndarray (n_strains, p) or None
     lib_sizes     : np.ndarray (n_strains,) or None  log-offset per strain
+    kinship_loco  : dict {chr: np.ndarray (n_strains, n_strains)} or None
+                    LOCO kinship matrices from kinship.calc_kinship(method='loco').
+                    when provided, replaces the exchangeable u_i with a structured
+                    N(0, tau K^(-c)) random effect via PQL (Chen et al. 2016 AJHG).
+                    this is the recommended setting for multiparent populations.
     use_lrt       : bool  fit alt model per locus for exact betas (slow)
     just_these_loci : set or None
     phenotype_id  : str
@@ -234,23 +403,26 @@ def scan_nb_gene(counts_pb, genome_cache, strain_order,
         x = np.hstack([np.ones((n, 1)), x])
 
     s = lib_sizes[valid] if lib_sizes is not None else np.ones(n)
+    offsets = np.log(np.maximum(s, 1e-8))                 # log library size offset
 
-    # ── null model via edgepython glm_fit ─────────────────────────────────
-    dg = ep.make_dgelist(counts=y.reshape(1, -1))
-    dg['samples']['lib.size'] = s.astype(float)
-    dg = ep.calc_norm_factors(dg)
-    mu_null, _, _ = _fit_nb_ep(dg, x, phi, ep)
+    # ── null model ────────────────────────────────────────────────────────
+    # with kinship: PQL NB-GLMM per chromosome (fit_null_nb_glmm_loco)
+    # without kinship: standard NB GLM via edgePython (original path)
+    use_kinship = kinship_loco is not None and len(kinship_loco) > 0
 
-    # score working quantities
-    denom  = 1.0 + phi * mu_null
-    # inflate denominator by sigma_sample: increases effective variance at each cell
-    # approximation: var(S_i) ≈ (φ + σ²) μ_i² + μ_i   (pseudobulk, sum over cells)
-    w_inf  = max(1.0 + sigma_sample, 1.0)
-    r_vec  = (y - mu_null) / (denom * w_inf)
-    w_vec  = mu_null / (denom * w_inf)
+    if not use_kinship:
+        # original path — exchangeable RE via sigma_sample inflation
+        dg = ep.make_dgelist(counts=y.reshape(1, -1))
+        dg['samples']['lib.size'] = s.astype(float)
+        dg = ep.calc_norm_factors(dg)
+        mu_null, _, _ = _fit_nb_ep(dg, x, phi, ep)
+        denom  = 1.0 + phi * mu_null
+        w_inf  = max(1.0 + sigma_sample, 1.0)
+        r_vec_global = (y - mu_null) / (denom * w_inf)
+        w_vec_global = mu_null / (denom * w_inf)
+        null_ll      = _nb_loglik(y, mu_null, phi)
 
-    null_ll = _nb_loglik(y, mu_null, phi)
-    nf1     = genome_cache.n_founders - 1
+    nf1 = genome_cache.n_founders - 1
 
     all_lids, all_chrs, all_pos = [], [], []
     all_lod, all_pval, all_betas = [], [], []
@@ -268,17 +440,40 @@ def scan_nb_gene(counts_pb, genome_cache, strain_order,
         H = (np.einsum('nm,lmj->lnj', z_sub, probs[:, :, :nf1], optimize=True)
              if z_sub is not None else probs[:, valid, :nf1])
 
+        # per-chromosome null (LOCO kinship path)
+        if use_kinship and str(chrom) in {str(k) for k in kinship_loco}:
+            _kkey  = (chrom if chrom in kinship_loco
+                      else str(chrom))
+            K_c    = np.asarray(kinship_loco[_kkey], dtype=np.float64)
+            # restrict K to valid strains (same alignment as y/x)
+            if K_c.shape[0] != n:
+                cache_arr = np.array(list(genome_cache.sample_ids))
+                valid_idx  = np.where(valid)[0]
+                K_c        = K_c[np.ix_(valid_idx, valid_idx)]
+            glmm_fit   = fit_null_nb_glmm_loco(y, x, offsets, K_c, phi)
+            r_adj_chr  = glmm_fit['r_adj']
+            P_chr      = glmm_fit['P']
+            mu_chr     = glmm_fit['mu']
+            null_ll    = _nb_loglik(y, mu_chr, phi)
+        else:
+            # no kinship for this chromosome — fall back to global null
+            r_adj_chr = r_vec_global
+            P_chr     = None
+
         if not use_lrt:
-            sc   = _score_stats_chromosome(H, r_vec, w_vec)
-            lods = sc / (2.0 * np.log(10))
-            pv   = 1.0 - _stats.chi2.cdf(sc, df=nf1)
+            if P_chr is not None:
+                sc = _score_stats_loco(H, r_adj_chr, P_chr)
+            else:
+                sc = _score_stats_chromosome(H, r_adj_chr, w_vec_global)
+            lods  = sc / (2.0 * np.log(10))
+            pv    = 1.0 - _stats.chi2.cdf(sc, df=nf1)
             betas = np.zeros((len(lids), nf1))
         else:
             lods  = np.zeros(len(lids)); pv = np.ones(len(lids))
             betas = np.zeros((len(lids), nf1))
             dg_l  = ep.make_dgelist(counts=y.reshape(1, -1))
             dg_l['samples']['lib.size'] = s.astype(float)
-            dg_l = ep.calc_norm_factors(dg_l)
+            dg_l  = ep.calc_norm_factors(dg_l)
             for i_l in range(len(lids)):
                 x_alt = np.hstack([H[i_l], x])
                 mu_alt, coefs, _ = _fit_nb_ep(dg_l, x_alt, phi, ep)
@@ -313,6 +508,7 @@ def scan_nb_gene(counts_pb, genome_cache, strain_order,
 def scan_nb(counts_cells, genome_cache, strain_ids_cells,
              gene_ids=None, covariates_cells=None,
              covariates_strains=None, lib_sizes=None,
+             kinship_loco=None,
              norm_method='TMM', shrink_disp=True,
              use_lrt=False, cis_loci_dict=None,
              n_cores=1, verbose=False):
@@ -332,6 +528,9 @@ def scan_nb(counts_cells, genome_cache, strain_ids_cells,
         strain-level covariates for the scan (batch + PCs).
         if None, derived from covariates_cells by strain mean.
     lib_sizes         : np.ndarray (n_strains,) or None
+    kinship_loco      : dict {chr: np.ndarray} or None
+                        LOCO kinship from kinship.calc_kinship(method='loco').
+                        strongly recommended for multiparent populations.
     norm_method       : str  'TMM' or 'none'
     shrink_disp       : bool  EB dispersion shrinkage (default True)
     use_lrt           : bool  exact betas via LRT (slow, use for peak loci)
@@ -384,6 +583,7 @@ def scan_nb(counts_cells, genome_cache, strain_ids_cells,
             pb_counts[gi], genome_cache, strains,
             phi=disp_pass[gi], sigma_sample=float(sigma_pass[gi]),
             covariates=covariates_strains, lib_sizes=lib_sizes,
+            kinship_loco=kinship_loco,
             use_lrt=use_lrt, just_these_loci=cis,
             phenotype_id=gid)
 

@@ -5,7 +5,7 @@
 #   (b) phase 2 LMM py_data outputs for cross-model discrepancy analysis
 #
 # sections:
-#   p1. scan_nb          — NB GLM genome-wide scan (primary model)
+#   p1. scan_nb          — NB-GLMM genome-wide scan with LOCO kinship (primary model)
 #   p2. scan_vqtl        — dispersion QTL on known candidates
 #   p3. scan_epistasis   — GxG interaction: Piezo1 × Ccdc171
 #   p4. scan_conditional — forward-stepwise multi-signal decomposition
@@ -379,6 +379,7 @@ if 'nb' in _run and not _is_done('scan_nb'):
             gene_ids           = gene_set,
             covariates_cells   = covar_cells,
             covariates_strains = covar_strains,
+            kinship_loco       = kinship_py,   # LOCO kinship: PQL NB-GLMM per chr
             norm_method        = 'TMM',
             shrink_disp        = True,
             cis_loci_dict      = cis_loci_dict,

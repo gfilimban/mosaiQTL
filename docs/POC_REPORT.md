@@ -72,19 +72,27 @@ variance). Not a LOCO-kinship random effect — that is a planned extension.
 Implemented via `edgePython.glm_sc_fit()` (Pachter 2026, GPL-3.0) + empirical
 Bayes dispersion shrinkage via `shrink_sc_disp()`.
 
-**Stage 2 — pseudobulk score test (vectorised over all loci):**
+**Stage 2 — NB-GLMM with LOCO kinship + score test (recommended):**
 
-$$S_{ig} = \sum_j Y_{ij}, \quad
-H_0: \log \mathbb{E}[S_{ig}] = X_i \beta_0 + \log(n_i \bar{s}_i), \quad
-H_1: \log \mathbb{E}[S_{ig}] = H_{i\ell} \gamma + X_i \beta + \log(n_i \bar{s}_i)$$
+For each chromosome $c$, fits a null NB-GLMM using PQL (Breslow & Clayton 1993;
+Chen et al. 2016 AJHG) with the LOCO kinship $K^{(-c)}$ as structured covariance:
 
-Score test statistic:
-$Q_\ell = U_\ell^\top I_\ell^{-1} U_\ell \sim \chi^2(J-1)$
+$$S_i \sim \text{NB}(\mu_i, \phi_g), \quad
+\log \mu_i = \mathbf{x}_i^\top \boldsymbol{\beta} + u_i + \log(n_i \bar{s}_i),
+\quad \mathbf{u} \sim \mathcal{N}(\mathbf{0}, \tau K^{(-c)})$$
 
-$\sigma_\text{sample}$ from Stage 1 optionally inflates the score test
-denominator to account for residual subject-level variance.
+PQL converges in 3–5 iterations. The projection matrix $P = V^{-1} - V^{-1}X(X^\top V^{-1}X)^{-1}X^\top V^{-1}$
+(where $V = \operatorname{diag}(1/W) + \tau K^{(-c)}$) is computed once per chromosome per gene,
+then vectorised over all $L$ loci:
 
-Entry point: `nb.scan_nb(counts_cells, genome_cache, strain_ids_cells, ...)`.
+$$T_\ell = \mathbf{U}_\ell^\top \mathbf{I}_\ell^{-1} \mathbf{U}_\ell \sim \chi^2_{J-1}, \quad
+\mathbf{U}_\ell = H_\ell^\top (P\mathbf{z}), \quad
+\mathbf{I}_\ell = H_\ell^\top P H_\ell$$
+
+Without kinship (fallback when `kinship_loco=None`): $\sigma_\text{sample}$ from
+Stage 1 inflates the diagonal information matrix.
+
+Entry point: `nb.scan_nb(counts_cells, genome_cache, strain_ids_cells, kinship_loco=kinship_loco, ...)`.
 Returns `dict {gene_id: ScanResult}`.
 
 ### 1b. Gaussian LMM scan (miQTL port, validation only)
