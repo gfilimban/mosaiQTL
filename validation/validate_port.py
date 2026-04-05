@@ -935,7 +935,7 @@ if section(4, 'LMM SCAN (ROP)'):
             _ae_rs = []
             if r_ae is not None:
                 for _g, (_chb, _peak_loc, _fns, _py_eff) in py_betas.items():
-                    _r_sub = r_ae[(r_ae['gene_id']==_g)&(_r_ae['locus']==_peak_loc)]
+                    _r_sub = r_ae[(r_ae['gene_id']==_g)&(r_ae['locus']==_peak_loc)]
                     if _r_sub.empty: continue
                     _code_map = {chr(65+i): f for i, f in enumerate(FOUNDER_COLS)}
                     _r_eff = [float(_r_sub.loc[_r_sub['founder']==_code_map.get(chr(65+i),''), 'effect'].iloc[0])
