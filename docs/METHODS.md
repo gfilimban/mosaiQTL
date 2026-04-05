@@ -212,6 +212,21 @@ As $\phi_g \to 0$ the model approaches Poisson. As $\phi_g$ increases,
 overdispersion increases. Estimation is performed via NEBULA-LN (He et al. 2021)
 as implemented in `edgePython` (Pachter 2026, GPL-3.0).
 
+**What $u_i$ is and is not.** `edgePython` receives `sample=strain_ids` in
+`glm_sc_fit()`, which fits an **exchangeable (unstructured) random intercept**
+per subject — every strain is independent with the same prior variance $\sigma^2_g$.
+This absorbs within-strain cell-to-cell variability and between-strain mean
+differences not captured by fixed covariates. It does *not* model genetic
+relatedness: there is no kinship matrix $K$, no LOCO correction, and no
+polygenic covariance structure. Two strains sharing 80% of their genome are
+treated identically to two unrelated strains under this random effect.
+
+A full **NB-LMM with LOCO kinship** — replacing the exchangeable $u_i$ with
+$\mathbf{u} \sim \mathcal{N}(\mathbf{0}, \sigma^2_g K^{(-c)})$ inside the
+NB likelihood — requires integrating the LMM eigendecomposition trick into
+the NB score test denominator. This is a **planned future extension** and is
+not currently implemented in `nb.py`.
+
 **Empirical Bayes dispersion shrinkage.** Per-gene MLE dispersion estimates are
 noisy for lowly expressed genes. After fitting, `shrink_sc_disp()` applies
 weighted likelihood empirical Bayes (WLEB) shrinkage toward a trended prior
