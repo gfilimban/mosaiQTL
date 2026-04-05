@@ -839,6 +839,7 @@ if section(5, 'CACHE COLLAPSE'):
         coll_pass = mean_py >= 5.0 and rows_ok and mean_k_r > 0.99
 
         # LOD QC: scan same genes with full vs collapsed cache
+        lf = []; lc = []; r_fc = np.nan   # initialised here; set inside if block
         if pheno_strain is not None and r_lod is not None:
             _chrs_s5 = [c for c in chromosomes if c in cache_py._data][:2]
             lf=[]; lc=[]
