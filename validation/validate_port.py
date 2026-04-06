@@ -353,8 +353,23 @@ if section(2, 'HAPLOTYPE PROBS'):
             hmap_data[chrom] = (H_py_mid, H_r_mid, rep_lid)
 
         if val_rows_all:
-            vdf = pd.DataFrame(val_rows_all).dropna()
+            vdf = _col(pd.DataFrame(val_rows_all).dropna(),
+                       ['chr', 'locus', 'sample_id', 'founder', 'r_prob', 'py_prob'])
             save_csv(vdf, 'haplotype_val_comparison.csv')
+            # serialize hmap_data arrays for standalone replot
+            if hmap_data:
+                _hm_rows = []
+                for _hc, (_Hpy, _Hr, _rlid) in hmap_data.items():
+                    for _si in range(_Hpy.shape[0]):
+                        for _fi in range(_Hpy.shape[1]):
+                            _hm_rows.append({'chr': _hc, 'locus': _rlid,
+                                             'sample_idx': _si, 'founder_idx': _fi,
+                                             'prob_py': float(_Hpy[_si, _fi]),
+                                             'prob_r': float(_Hr[_si, _fi])})
+                save_csv(_col(pd.DataFrame(_hm_rows),
+                              ['chr', 'locus', 'sample_idx', 'founder_idx',
+                               'prob_py', 'prob_r']),
+                         'haplotype_heatmap_py.csv')
             rpa = np.array(all_r_probs); ppa = np.array(all_py_probs)
             ok  = np.isfinite(rpa) & np.isfinite(ppa)
             if ok.sum() > 3:
@@ -561,7 +576,20 @@ if section(4, 'LMM SCAN (ROP)'):
                                        'ccc_allele':ccc(_py_eff, _r_eff)})
             _ae_df = pd.DataFrame(_ae_rs) if _ae_rs else None
             if _ae_df is not None:
-                save_csv(_ae_df, 'allele_effect_concordance.csv')
+                save_csv(_col(_ae_df, ['gene_id', 'r_allele', 'ccc_allele']),
+                         'allele_effect_concordance.csv')
+
+            # serialize peak founder effects for standalone replot
+            if py_betas:
+                _pfe_rows = []
+                for _g, (_chb, _ploc, _fns, _peff) in py_betas.items():
+                    for _fn, _pe in zip(_fns, _peff):
+                        _pfe_rows.append({'gene_id': _g, 'chr': _chb,
+                                          'locus': _ploc, 'founder': _fn,
+                                          'effect_py': float(_pe)})
+                save_csv(_col(pd.DataFrame(_pfe_rows),
+                              ['gene_id', 'chr', 'locus', 'founder', 'effect_py']),
+                         'peak_founder_effects_py.csv')
 
             plot_phase2.plot_s4(comp_df, stat_df, chr_colors,
                                 py_betas, r_ae, n_s, n_l, n_f,
@@ -969,6 +997,13 @@ if section(10, 'POSITIONAL CI'):
             save_csv(_col(ci_comp[['gene_id','chr','locus','ci_lo_py','ci_hi_py']]
                           .rename(columns={'ci_lo_py':'ci_lo_mb','ci_hi_py':'ci_hi_mb'}),
                           ['gene_id','chr','locus','ci_lo_mb','ci_hi_mb']), 'ci_py.csv')
+            # serialize boot_pos for standalone replot
+            if boot_pos is not None and hasattr(boot_pos, '__len__'):
+                _bp = np.asarray(boot_pos, dtype=float)
+                save_csv(_col(pd.DataFrame({'gene_id': ci_gene, 'chr': ci_chr,
+                                            'boot_pos': _bp[~np.isnan(_bp)]}),
+                              ['gene_id', 'chr', 'boot_pos']),
+                         'boot_pos_py.csv')
             n_overlap = int(ci_comp['overlap'].sum())
             plot_phase2.plot_s10(ci_comp, boot_pos, r_boot, ci_gene, ci_chr, n_overlap)
 
@@ -985,7 +1020,7 @@ if section(11, 'INSTABILITY SCAN'):
     else:
         from mosaiqtl.scan import instability_lm_scan as _inst
         fx_pairs = r_fx[['gene_id','chr']].drop_duplicates().itertuples(index=False)
-        fx_all   = []
+        fx_all   = []; inst_pval_rows = []  # accumulate pvals across all genes
         for fp in fx_pairs:
             fx_gene = str(fp.gene_id); fx_chr = str(fp.chr)
             y_fx = _get_y(fx_gene)
@@ -1007,6 +1042,11 @@ if section(11, 'INSTABILITY SCAN'):
             if len(mg) < 2: continue
             mg['gene_id'] = fx_gene
             fx_all.append(mg)
+            # collect p_values if available (locus-level peak proportion statistic)
+            if hasattr(inst_py, 'p_value') and inst_py.p_value is not None:
+                for _lid, _pv in zip(inst_py.locus_ids, inst_py.p_value):
+                    inst_pval_rows.append({'gene_id': fx_gene, 'locus': _lid,
+                                           'p_value': float(_pv)})
             log.info(f'  instability chr{fx_chr} {fx_gene}: n={len(mg)}  '
                      f'py_range=[{mg["lod_py"].min():.3f},{mg["lod_py"].max():.3f}]  '
                      f'r_range=[{mg["lod_r"].min():.3f},{mg["lod_r"].max():.3f}]')
@@ -1021,6 +1061,11 @@ if section(11, 'INSTABILITY SCAN'):
             save_csv(_col(mg_fx[['gene_id','chr','locus','pos_mb_r','lod_py']]
                           .rename(columns={'pos_mb_r':'pos_mb','lod_py':'lod'}),
                           ['gene_id','chr','locus','pos_mb','lod']), 'fixef_py.csv')
+            # serialize instability p-values for standalone replot
+            if inst_pval_rows:
+                save_csv(_col(pd.DataFrame(inst_pval_rows),
+                              ['gene_id', 'locus', 'p_value']),
+                         'instability_pvals_py.csv')
             r_fx_v = (float(np.corrcoef(mg_fx['lod_r'], mg_fx['lod_py'])[0,1])
                       if len(mg_fx) > 3 else np.nan)
             plot_phase2.plot_s11(mg_fx, r_fx_v, inst_py)

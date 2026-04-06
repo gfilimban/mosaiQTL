@@ -828,8 +828,11 @@ def plot_s11(mg_fx, r_fx_v, inst_py):
 # ─────────────────────────────────────────────────────────────────────────────
 # standalone replot: python validation/plot_phase2.py [--py_data ...] [--r_data ...] [--plots ...] [--sections 1,4,6]
 # regenerates all plots from CSVs already written by validate_port.py.
-# complex objects (hmap_data, py_betas, inst_py, boot_pos) are unavailable
-# from CSVs — those sub-plots are silently skipped.
+# complex objects are reconstructed from their serialized CSVs:
+#   hmap_data        ← haplotype_heatmap_py.csv
+#   py_betas         ← peak_founder_effects_py.csv
+#   boot_pos         ← boot_pos_py.csv
+#   inst_py.p_value  ← instability_pvals_py.csv
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
     import argparse, logging as _logging
@@ -862,15 +865,28 @@ if __name__ == '__main__':
             _rsid = _rs['sample_id'].tolist() if _rs is not None else []
             plot_s1(_d, _rfnd, _rfnd, _rsid, _rsid, None, None)
 
-    # S2 — heatmaps need raw arrays; skip hmap_data, replot prob comparison ──
+    # S2 — reconstruct hmap_data arrays from CSV if available; else prob-scatter only
     if 2 in _run:
-        _d = _ld('haplotype_val_comparison.csv')
+        _hm_csv = _ld('haplotype_heatmap_py.csv')
+        _d      = _ld('haplotype_val_comparison.csv')
+        _hmap   = {}
+        if _hm_csv is not None:
+            for _hc, _grp in _hm_csv.groupby('chr'):
+                _n_s = int(_grp['sample_idx'].max()) + 1
+                _n_f = int(_grp['founder_idx'].max()) + 1
+                _Hpy = np.zeros((_n_s, _n_f)); _Hr = np.zeros((_n_s, _n_f))
+                for _, _row in _grp.iterrows():
+                    _Hpy[int(_row['sample_idx']), int(_row['founder_idx'])] = _row['prob_py']
+                    _Hr [int(_row['sample_idx']), int(_row['founder_idx'])] = _row['prob_r']
+                _hmap[str(_hc)] = (_Hpy, _Hr, str(_grp['locus'].iloc[0]))
         if _d is not None:
             _rp = _d['r_prob'].values; _pp = _d['py_prob'].values
             _ok = np.isfinite(_rp) & np.isfinite(_pp)
             _vr  = float(np.corrcoef(_rp[_ok], _pp[_ok])[0,1]) if _ok.sum()>3 else np.nan
             _mad = float(np.abs(_rp[_ok]-_pp[_ok]).mean()) if _ok.sum()>0 else np.nan
-            plot_s2({}, [], [], [], _rp.tolist(), _pp.tolist(), _vr, _mad, _d.to_dict('records'))
+            _fnames_s2 = sorted(_hmap.keys(), key=lambda c: int(c) if c.isdigit() else 99)
+            plot_s2(_hmap, _fnames_s2, [], [],
+                    _rp.tolist(), _pp.tolist(), _vr, _mad, _d.to_dict('records'))
 
     # S3 — load first chr matrix pair ────────────────────────────────────────
     if 3 in _run:
@@ -892,10 +908,19 @@ if __name__ == '__main__':
     if 4 in _run:
         _comp = _ld('lod_comparison.csv'); _stat = _ld('gene_summary.csv')
         _ae   = _ld('allele_effect_concordance.csv')
+        _pfe  = _ld('peak_founder_effects_py.csv')
         if _comp is not None and _stat is not None:
             _co   = sorted(_comp['chr'].astype(str).unique(), key=_cs)
             _ccfn = lambda s: chr_colors(s, _co)
-            plot_s4(_comp, _stat, _ccfn, {}, None,
+            _pybeta = {}
+            if _pfe is not None:
+                for _gid, _grp in _pfe.groupby('gene_id'):
+                    _grp = _grp.sort_values('founder')
+                    _pybeta[_gid] = (str(_grp['chr'].iloc[0]),
+                                     str(_grp['locus'].iloc[0]),
+                                     _grp['founder'].tolist(),
+                                     _grp['effect_py'].tolist())
+            plot_s4(_comp, _stat, _ccfn, _pybeta, None,
                     int((_stat['tier']=='strict').sum()),
                     int((_stat['tier']=='lenient').sum()),
                     int((_stat['tier']=='fail').sum()),
@@ -946,16 +971,26 @@ if __name__ == '__main__':
     # S10 ────────────────────────────────────────────────────────────────────
     if 10 in _run:
         _d = _ld('ci_comparison.csv'); _rb = _ld('boot_pos_r.csv', 'r')
+        _bp_df = _ld('boot_pos_py.csv')
         if _d is not None:
-            plot_s10(_d, None, _rb,
+            _bp_arr = _bp_df['boot_pos'].values if _bp_df is not None else None
+            plot_s10(_d, _bp_arr, _rb,
                      str(_d['gene_id'].iloc[-1]), str(_d['chr'].iloc[-1]),
                      int(_d['overlap'].sum()))
 
-    # S11 — inst_py=None skips peak_proportion subplot ───────────────────────
+    # S11 ────────────────────────────────────────────────────────────────────
     if 11 in _run:
-        _d = _ld('fixef_comparison.csv')
+        _d = _ld('fixef_comparison.csv'); _ipv = _ld('instability_pvals_py.csv')
         if _d is not None:
             _r = float(np.corrcoef(_d['lod_r'],_d['lod_py'])[0,1]) if len(_d)>3 else np.nan
-            plot_s11(_d, _r, None)
+            class _InstProxy:  # lightweight stand-in for instability scan result object
+                pass
+            _iprx = _InstProxy()
+            if _ipv is not None:
+                _iprx.locus_ids = _ipv['locus'].tolist()
+                _iprx.p_value   = _ipv['p_value'].tolist()
+            else:
+                _iprx.p_value = None
+            plot_s11(_d, _r, _iprx)
 
     print(f'plots written to {_a.plots}/')
