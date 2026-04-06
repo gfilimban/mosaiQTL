@@ -968,8 +968,10 @@ def plot_s11(mg_fx, r_fx_v, inst_py):
     plt.tight_layout(); save_plot(fig, 's11_instability.png')
 
     # peak proportion vs R mean LOD; validates bootstrap sample size equivalence
-    if hasattr(inst_py, 'p_value') and len(mg_fx) > 1:
-        _pv_map = dict(zip(inst_py.locus_ids.tolist(), inst_py.p_value.tolist()))
+    if hasattr(inst_py, 'p_value') and inst_py.p_value is not None and len(mg_fx) > 1:
+        _lids = list(inst_py.locus_ids) if hasattr(inst_py.locus_ids, '__iter__') else []
+        _pvs  = list(inst_py.p_value)
+        _pv_map = dict(zip(_lids, _pvs))
         mg_fx = mg_fx.copy()
         mg_fx['pv_py'] = mg_fx['locus'].map(_pv_map)
         _pv = mg_fx.dropna(subset=['pv_py', 'lod_r'])
