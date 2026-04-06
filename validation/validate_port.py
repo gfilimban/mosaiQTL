@@ -126,6 +126,9 @@ qc_rows = []
 def _col(df, first):
     '''reorder df columns: identifiers first, then remainder in original order'''
     return df[first + [c for c in df.columns if c not in first]]
+
+def load_r(name):
+    '''load a CSV from R_DATA; return None if missing; cast chr col to str.'''
     p = os.path.join(R_DATA, name)
     if not os.path.exists(p): return None
     df = pd.read_csv(p, low_memory=False)   # low_memory=False: chr col is mixed int/str after genome-wide merge

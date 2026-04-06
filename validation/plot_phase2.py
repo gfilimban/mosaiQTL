@@ -249,7 +249,7 @@ def plot_s2(hmap_data, chr_order, fnames, disp_s,
         ax_cal.plot([0, 1], [0, 1], '--', color='#D83026', lw=1, label='perfect calibration')
         ax_cal.set(xlim=(0, 1), ylim=(0, 1),
                    xlabel='mean Python prob (bin)', ylabel='mean R prob (bin)')
-        ax_cal.legend(fontsize=8); sns.despine(ax_cal)
+        ax_cal.legend(fontsize=8); sns.despine(ax=ax_cal)
         plt.tight_layout(); save_plot(fig_cal, 's2_calibration.png')
     else:
         # placeholder when R data missing
