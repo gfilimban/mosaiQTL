@@ -210,9 +210,9 @@ def plot_s2(hmap_data, chr_order, fnames, disp_s,
                                                   min(20000, ok.sum()), replace=False)
         vdf = pd.DataFrame(val_rows_all).dropna()
         _fc_r = fc_r if fc_r is not None else vdf['founder'].unique().tolist()
-        fnd_r_vals = (vdf.groupby('founder')
+        fnd_r_vals = (vdf.groupby('founder')[['r_prob', 'py_prob']]
                       .apply(lambda g: float(np.corrcoef(g['r_prob'], g['py_prob'])[0, 1])
-                             if len(g) > 3 else np.nan)
+                             if len(g) > 3 else np.nan, include_groups=False)
                       .reindex(_fc_r).fillna(0))
         fig_sc, axes_sc = plt.subplots(1, 2, figsize=(11, 4))
         axes_sc[0].scatter(rpa[idx_s], ppa[idx_s], s=2, alpha=0.3,
@@ -579,8 +579,8 @@ def plot_s4(comp_df, stat_df, chr_colors_fn, py_betas, r_ae, n_s, n_l, n_f, J,
         return peak_df
 
     # merge chr back from comp_df peak locus
-    _chr_map = comp_df.groupby('gene_id').apply(
-        lambda g: g.loc[g['lod_py'].idxmax(), 'chr']).reset_index()
+    _chr_map = comp_df.groupby('gene_id')[['lod_py', 'chr']].apply(
+        lambda g: g.loc[g['lod_py'].idxmax(), 'chr'], include_groups=False).reset_index()
     _chr_map.columns = ['gene_id', 'chr']
 
     _pk_r2  = _bh_flags(_pk_r.merge(_chr_map, on='gene_id'),  'peak_lod', J - 1)
@@ -1113,7 +1113,8 @@ if __name__ == '__main__':
     if 7 in _run:
         _d = _ld('mi_lod_comparison.csv')
         if _d is not None:
-            _diffs = _d.groupby('gene_id').apply(lambda g: float((g['lod_py']-g['lod_r']).mean())).values
+            _diffs = _d.groupby('gene_id')[['lod_py', 'lod_r']].apply(
+                lambda g: float((g['lod_py']-g['lod_r']).mean()), include_groups=False).values
             plot_s7(_d, mi_diffs=_diffs if len(_diffs)>1 else None)
 
     # S8 ─────────────────────────────────────────────────────────────────────
@@ -1150,7 +1151,8 @@ if __name__ == '__main__':
                 _iprx.locus_ids = _ipv['locus'].tolist()
                 _iprx.p_value   = _ipv['p_value'].tolist()
             else:
-                _iprx.p_value = None
+                _iprx.locus_ids = []
+                _iprx.p_value   = None
             plot_s11(_d, _r, _iprx)
 
     print(f'plots written to {_a.plots}/')
