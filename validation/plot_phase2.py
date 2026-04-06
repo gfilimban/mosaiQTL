@@ -407,10 +407,32 @@ def plot_s4(comp_df, stat_df, chr_colors_fn, py_betas, r_ae, n_s, n_l, n_f, J,
               for c in _eg_sorted]
     _cc_eg = [CHR_PAL[_eg_sorted.index(c) % 2] for c in _eg['chr_s']]
     fig_em, ax_em = plt.subplots(figsize=(14, 3))
+    # BH-FDR eGene count: LOD → chi2 p-value (df=J-1), then BH correction
+    _df_em   = J - 1
+    _chi2_eg = 2 * np.log(10) * _eg['peak_lod_py'].values
+    _p_eg    = sp_stats.chi2.sf(np.maximum(_chi2_eg, 0), df=_df_em)
+    _n_eg    = len(_p_eg)
+    _p_rank  = np.argsort(_p_eg)                          # ascending p-value order
+    _bh_thr  = (np.arange(1, _n_eg + 1) / _n_eg) * 0.05  # BH at FDR=5%
+    _bh_mask = _p_eg[_p_rank] <= _bh_thr
+    _n_egene = int(_bh_mask.sum())                        # count BH-significant genes
+    # LOD threshold corresponding to BH cutoff (for horizontal reference line)
+    if _n_egene > 0:
+        _bh_lod_thr = float(_eg['peak_lod_py'].values[_p_rank[_bh_mask]].min())
+    else:
+        _bh_lod_thr = None
+
     for tier in ['fail', 'lenient', 'strict']:
         sub = _eg[_eg['tier'] == tier]
         ax_em.scatter(sub['x_eg'], sub['peak_lod_py'], c=tc[tier],
                       s=3, alpha=0.6, edgecolors='none', label=tier)
+    # horizontal line + annotation for BH-FDR threshold
+    if _bh_lod_thr is not None:
+        ax_em.axhline(_bh_lod_thr, color='#683C91', lw=0.8, ls='--', alpha=0.8)
+    ax_em.text(0.99, 0.97,
+               f'eGenes (BH FDR 5%) = {_n_egene} / {_n_eg}',
+               transform=ax_em.transAxes, fontsize=8,
+               va='top', ha='right', color='#683C91')
     ax_em.set(xticks=_xt_eg, xticklabels=_eg_sorted,
               xlabel='chromosome', ylabel='peak LOD (Python)',
               title='s4: genome-wide eGene distribution — peak LOD per gene', ylim=(0, None))
