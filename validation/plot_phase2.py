@@ -823,3 +823,139 @@ def plot_s11(mg_fx, r_fx_v, inst_py):
                       xlim=(0, None), ylim=(0, 1))
             sns.despine(ax=ax_pv)
             plt.tight_layout(); save_plot(fig_pv, 's11_peak_proportion.png')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# standalone replot: python validation/plot_phase2.py [--py_data ...] [--r_data ...] [--plots ...] [--sections 1,4,6]
+# regenerates all plots from CSVs already written by validate_port.py.
+# complex objects (hmap_data, py_betas, inst_py, boot_pos) are unavailable
+# from CSVs — those sub-plots are silently skipped.
+# ─────────────────────────────────────────────────────────────────────────────
+if __name__ == '__main__':
+    import argparse, logging as _logging
+    ap = argparse.ArgumentParser(description='replot phase2 from CSVs')
+    ap.add_argument('--py_data',  default='validation/phase2/py_data')
+    ap.add_argument('--r_data',   default='validation/phase2/r_data')
+    ap.add_argument('--plots',    default='validation/phase2/plots')
+    ap.add_argument('--sections', default=None, help='comma-separated, e.g. 1,4,6')
+    _a = ap.parse_args()
+
+    _log = _logging.getLogger('replot')
+    init(_a.plots, _a.py_data, _log)
+    _run = (set(int(s) for s in _a.sections.split(',')) if _a.sections else set(range(1, 12)))
+    _cs  = lambda c: int(c) if str(c).isdigit() else (20 if str(c).upper()=='X' else 99)
+
+    def _ld(name, side='py'):
+        '''load CSV from py_data or r_data; return None if missing.'''
+        p = os.path.join(_a.r_data if side == 'r' else _a.py_data, name)
+        if not os.path.exists(p): return None
+        df = pd.read_csv(p, low_memory=False)
+        if 'chr' in df.columns: df['chr'] = df['chr'].astype(str)
+        return df
+
+    # S1 ─────────────────────────────────────────────────────────────────────
+    if 1 in _run:
+        _d = _ld('cache_info_py.csv')
+        if _d is not None:
+            _rf = _ld('founders_r.csv', 'r'); _rs = _ld('sample_ids_r.csv', 'r')
+            _rfnd = _rf['founder'].tolist() if _rf is not None else []
+            _rsid = _rs['sample_id'].tolist() if _rs is not None else []
+            plot_s1(_d, _rfnd, _rfnd, _rsid, _rsid, None, None)
+
+    # S2 — heatmaps need raw arrays; skip hmap_data, replot prob comparison ──
+    if 2 in _run:
+        _d = _ld('haplotype_val_comparison.csv')
+        if _d is not None:
+            _rp = _d['r_prob'].values; _pp = _d['py_prob'].values
+            _ok = np.isfinite(_rp) & np.isfinite(_pp)
+            _vr  = float(np.corrcoef(_rp[_ok], _pp[_ok])[0,1]) if _ok.sum()>3 else np.nan
+            _mad = float(np.abs(_rp[_ok]-_pp[_ok]).mean()) if _ok.sum()>0 else np.nan
+            plot_s2({}, [], [], [], _rp.tolist(), _pp.tolist(), _vr, _mad, _d.to_dict('records'))
+
+    # S3 — load first chr matrix pair ────────────────────────────────────────
+    if 3 in _run:
+        _kc = _ld('kinship_comparison.csv')
+        if _kc is not None:
+            _chk = str(_kc['chr'].iloc[0])
+            _kp_df = _ld(f'kinship_py_chr{_chk}.csv')
+            _kr_df = _ld(f'kinship_mat_r_chr{_chk}.csv', 'r')
+            if _kp_df is not None and _kr_df is not None:
+                _sp = _kp_df['sample_id'].tolist(); _sr = _kr_df['sample_id'].tolist()
+                _sh = [s for s in _sp if s in _sr]
+                _pi = np.array([_sp.index(s) for s in _sh])
+                _ri = np.array([_sr.index(s) for s in _sh])
+                _kp = _kp_df.drop(columns='sample_id').values.astype(float)[np.ix_(_pi,_pi)]
+                _kr = _kr_df.drop(columns='sample_id').values.astype(float)[np.ix_(_ri,_ri)]
+                plot_s3(_kp, _kr, _sh, _chk, float(np.abs(_kp-_kr).max()))
+
+    # S4 ─────────────────────────────────────────────────────────────────────
+    if 4 in _run:
+        _comp = _ld('lod_comparison.csv'); _stat = _ld('gene_summary.csv')
+        _ae   = _ld('allele_effect_concordance.csv')
+        if _comp is not None and _stat is not None:
+            _co   = sorted(_comp['chr'].astype(str).unique(), key=_cs)
+            _ccfn = lambda s: chr_colors(s, _co)
+            plot_s4(_comp, _stat, _ccfn, {}, None,
+                    int((_stat['tier']=='strict').sum()),
+                    int((_stat['tier']=='lenient').sum()),
+                    int((_stat['tier']=='fail').sum()),
+                    9, ae_df=_ae)
+
+    # S5 ─────────────────────────────────────────────────────────────────────
+    if 5 in _run:
+        _cd = _ld('collapse_comparison.csv'); _kc = _ld('kinship_comparison.csv')
+        if _cd is not None and _kc is not None:
+            _kcors = _kc['r'].tolist()
+            plot_s5(_cd, _kcors,
+                    float(_cd['pct_py'].mean()),
+                    float(_cd['pct_r'].mean(skipna=True)) if 'pct_r' in _cd else np.nan,
+                    float(np.mean(_kcors)) if _kcors else 0.0)
+
+    # S6 — refit GEV from pooled perm lods ───────────────────────────────────
+    if 6 in _run:
+        _pp = _ld('perm_lods_py.csv'); _tc = _ld('threshold_comparison.csv')
+        _rp = _ld('perm_lods_r.csv', 'r')
+        if _pp is not None and _tc is not None:
+            _ml = _pp['perm_lod'].dropna().values
+            _c, _loc, _sc = _gev.fit(_ml)
+            _gp = {'c':_c,'loc':_loc,'scale':_sc}
+            plot_s6(_ml, _gp,
+                    float(_gev.ppf(0.95, _c, loc=_loc, scale=_sc)),
+                    float(_tc['threshold_r'].mean()),
+                    float(_tc['delta'].mean()), _rp, _tc)
+
+    # S7 ─────────────────────────────────────────────────────────────────────
+    if 7 in _run:
+        _d = _ld('mi_lod_comparison.csv')
+        if _d is not None:
+            _diffs = _d.groupby('gene_id').apply(lambda g: float((g['lod_py']-g['lod_r']).mean())).values
+            plot_s7(_d, mi_diffs=_diffs if len(_diffs)>1 else None)
+
+    # S8 ─────────────────────────────────────────────────────────────────────
+    if 8 in _run:
+        _d = _ld('snp_lod_comparison.csv')
+        if _d is not None: plot_s8(_d)
+
+    # S9 ─────────────────────────────────────────────────────────────────────
+    if 9 in _run:
+        _d = _ld('mediation_comparison.csv'); _rf = _ld('mediation_r.csv', 'r')
+        if _d is not None:
+            _drop = _rf['lod_drop'].dropna().values if (_rf is not None and 'lod_drop' in _rf.columns) else None
+            plot_s9(_d, float(np.corrcoef(_d['lod_r'],_d['lod_py'])[0,1]), drop_r=_drop)
+
+    # S10 ────────────────────────────────────────────────────────────────────
+    if 10 in _run:
+        _d = _ld('ci_comparison.csv'); _rb = _ld('boot_pos_r.csv', 'r')
+        if _d is not None:
+            plot_s10(_d, None, _rb,
+                     str(_d['gene_id'].iloc[-1]), str(_d['chr'].iloc[-1]),
+                     int(_d['overlap'].sum()))
+
+    # S11 — inst_py=None skips peak_proportion subplot ───────────────────────
+    if 11 in _run:
+        _d = _ld('fixef_comparison.csv')
+        if _d is not None:
+            _r = float(np.corrcoef(_d['lod_r'],_d['lod_py'])[0,1]) if len(_d)>3 else np.nan
+            plot_s11(_d, _r, None)
+
+    print(f'plots written to {_a.plots}/')
