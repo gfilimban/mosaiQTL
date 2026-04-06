@@ -113,26 +113,28 @@ def ecdf_plot(ax, data_list, labels, colors, xlabel, title):
 # ── per-section plot functions ────────────────────────────────────────────────
 
 def plot_s1(info_df, py_founders, r_founders, py_sids, r_sids, fnd_match, sid_match):
-    '''s1: loci-per-chr grouped bar + cache metadata table.'''
+    '''s1: loci-per-chr grouped bar + py-vs-R loci scatter (validation).'''
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    # panel 1 — grouped bar per chromosome
     ax = axes[0]; x = np.arange(len(info_df)); w = 0.35
     ax.bar(x - w/2, info_df['n_loci_py'], w, color='#4F6EAF', edgecolor='none',
            label='mosaiQTL (Python)')
     ax.bar(x + w/2, info_df['n_loci_r'].fillna(0), w, color='#55AF5B',
            edgecolor='none', alpha=0.85, label='miQTL (R)')
     ax.set(xticks=x, xticklabels=info_df['chr'].tolist(),
-           xlabel='chromosome', ylabel='loci', title='loci per chromosome')
-    plt.xticks(rotation=45, ha='right', fontsize=8)
+           xlabel='chromosome', ylabel='loci',
+           title='s1: loci per chromosome — Python vs R')
+    plt.setp(ax.get_xticklabels(), rotation=45, ha='right', fontsize=8)
     ax.legend(fontsize=9); sns.despine(ax=ax)
-    axes[1].axis('off')
-    tbl = [['', 'Python', 'R'],
-           ['n_founders', str(len(py_founders)), str(len(r_founders))],
-           ['n_samples',  str(len(py_sids)),     str(len(r_sids))],
-           ['founders match', '—', str(fnd_match)],
-           ['samples match',  '—', str(sid_match)]]
-    t = axes[1].table(tbl, loc='center', cellLoc='center')
-    t.auto_set_font_size(False); t.set_fontsize(10)
-    axes[1].set_title('cache metadata', fontsize=11)
+    # panel 2 — scatter py vs R loci count per chr (validation of cache parity)
+    ok = info_df['n_loci_r'].notna()
+    scatter_qc(axes[1],
+               info_df.loc[ok, 'n_loci_r'].values,
+               info_df.loc[ok, 'n_loci_py'].values,
+               'loci per chr (R)', 'loci per chr (Python)',
+               f's1: loci concordance — founders={len(py_founders)}  '
+               f'samples={len(py_sids)}\n'
+               f'fnd_match={fnd_match}  sid_match={sid_match}')
     plt.tight_layout(); save_plot(fig, 's1_cache_info.png')
 
 
@@ -187,12 +189,17 @@ def plot_s2(hmap_data, chr_order, fnames, disp_s,
             H_py_c, H_r_c, _ = hmap_data[chrom]
             diff_c = H_py_c - H_r_c
             ab_c = max(abs(diff_c.min()), abs(diff_c.max())) + 1e-9
+            _ylab = disp_s if ai % ncols == 0 else False   # y-labels only on leftmost column
             sns.heatmap(diff_c, ax=axs_flat[ai], cmap='RdBu_r', vmin=-ab_c, vmax=ab_c,
-                        xticklabels=False, yticklabels=False, cbar_kws={'shrink': 0.5})
+                        xticklabels=False, yticklabels=_ylab, cbar_kws={'shrink': 0.5})
+            if ai % ncols == 0 and _ylab:
+                axs_flat[ai].set_yticklabels(axs_flat[ai].get_yticklabels(),
+                                              fontsize=max(3, min(6, int(120/max(len(disp_s),1)))),
+                                              rotation=0)
             axs_flat[ai].set_title(f'chr{chrom}  |d|={ab_c:.3f}', fontsize=8)
         for ai in range(len(chrs_d), len(axs_flat)):
             axs_flat[ai].set_visible(False)
-        plt.suptitle('Haplotype prob difference (Python - R) — all chromosomes', fontsize=10)
+        plt.suptitle('s2: haplotype prob difference (Python − R) — all chromosomes', fontsize=10)
         plt.tight_layout(); save_plot(fig_gd, 's2_haplotype_diff_grid.png')
 
     # ── probability scatter + bland-altman + calibration ─────────────────────
@@ -307,97 +314,136 @@ def plot_s3(kp, kr, disp, chrom_k, ab):
 
 def plot_s4(comp_df, stat_df, chr_colors_fn, py_betas, r_ae, n_s, n_l, n_f, J,
             ae_df=None):
-    '''s4: lod scatter, residuals, gene tiers, gene summary, p-value QQ,
-    founder effects, discrepancy manhattan, allele effect concordance.
-    chr_colors_fn: callable list[str] -> list[color] using alternating CHR_PAL.'''
+    '''s4: lod scatter, residuals (cumul. Mb), gene_summary×2, egene manhattan,
+    p-value QQ (py+R), founder effects, discrepancy manhattan, allele concordance.'''
     tc = {'strict': '#4F6EAF', 'lenient': '#55AF5B', 'fail': '#D83026'}
     stat_df = stat_df.copy()
 
-    # lod scatter
+    # ── lod scatter ───────────────────────────────────────────────────────────
     fig1, ax1 = plt.subplots(figsize=(5, 5))
     scatter_qc(ax1, comp_df['lod_r'], comp_df['lod_py'],
-               'LOD (miQTL R)', 'LOD (mosaiQTL Python)', 'LOD comparison')
+               'LOD (miQTL R)', 'LOD (mosaiQTL Python)', 's4: LOD comparison')
     plt.tight_layout(); save_plot(fig1, 's4_lod_scatter.png')
 
-    # lod residuals along genome position
-    fig2, ax2 = plt.subplots(figsize=(10, 4))
+    # ── lod residuals — cumulative genomic Mb x-axis (Manhattan style) ────────
+    _sorted_chrs = sorted(comp_df['chr'].astype(str).unique(), key=_chr_sort)
+    _off = {}; _cum = 0
+    for _c in _sorted_chrs:
+        _off[_c] = _cum
+        _cum += float(comp_df.loc[comp_df['chr'].astype(str) == _c, 'pos_mb'].max()) + 10
+    _xplot = comp_df.apply(lambda r: _off[str(r['chr'])] + r['pos_mb'], axis=1)
+    _xt = [_off[c] + float(comp_df.loc[comp_df['chr'].astype(str)==c,'pos_mb'].median())
+           for c in _sorted_chrs]
     diff = comp_df['lod_py'] - comp_df['lod_r']
-    xpos = comp_df['pos_mb'] if 'pos_mb' in comp_df.columns else np.arange(len(diff))
-    ax2.scatter(xpos, diff, c=chr_colors_fn(comp_df['chr'].tolist()),
-                s=2, alpha=1.0, edgecolors='none')
+    fig2, ax2 = plt.subplots(figsize=(14, 3))
+    ax2.scatter(_xplot, diff, c=chr_colors_fn(comp_df['chr'].tolist()),
+                s=1, alpha=0.6, edgecolors='none')
     ax2.axhline(0, color='#D83026', lw=0.8, ls='--')
     ax2.text(0.99, 0.97, f'mean={diff.mean():.3f}  sd={diff.std():.3f}',
              transform=ax2.transAxes, fontsize=8, va='top', ha='right')
-    ax2.set(xlabel='position (Mb)', ylabel=r'$\Delta$LOD (py$-$R)', title='LOD residuals')
+    ax2.set(xticks=_xt, xticklabels=_sorted_chrs,
+            xlabel='position (cumulative Mb)', ylabel=r'$\Delta$LOD (py$-$R)',
+            title='s4: LOD residuals — genome-wide')
+    plt.setp(ax2.get_xticklabels(), rotation=45, ha='right', fontsize=7)
     sns.despine(ax=ax2); plt.tight_layout(); save_plot(fig2, 's4_lod_residuals.png')
 
-    # gene tiers bar + fail rate by peak LOD bin
-    fig3, axes3 = plt.subplots(1, 2, figsize=(11, 4))
-    axes3[0].bar(['strict', 'lenient', 'fail'], [n_s, n_l, n_f],
-                 color=[tc['strict'], tc['lenient'], tc['fail']], edgecolor='none')
-    axes3[0].set(xlabel='tier', ylabel='genes',
-                 title=f'gene tiers  strict={n_s}  lenient={n_l}  fail={n_f}')
-    sns.despine(ax=axes3[0])
-    bins = [0, 1, 3, 5, np.inf]; blabs = ['[0,1)', '[1,3)', '[3,5)', '[5,∞)']
-    stat_df['lod_bin'] = pd.cut(stat_df['peak_lod_r'], bins=bins, labels=blabs, right=False)
-    grp = stat_df.groupby('lod_bin', observed=False)['tier'].value_counts(
-        normalize=True).unstack(fill_value=0)
-    if 'fail' in grp.columns:
-        axes3[1].bar(range(len(blabs)), grp.reindex(blabs)['fail'].fillna(0),
-                     color='#D83026', edgecolor='none')
-    axes3[1].set(xticks=range(len(blabs)), xticklabels=blabs,
-                 xlabel='peak LOD (R)', ylabel='fail rate',
-                 title='fail rate by LOD bin', ylim=(0, 1))
-    sns.despine(ax=axes3[1]); plt.tight_layout(); save_plot(fig3, 's4_gene_tiers.png')
-
-    # gene summary: h2 distribution + per-gene r + peak LOD scatter
-    fig_gs, axes_gs = plt.subplots(1, 3, figsize=(14, 4))
-    sns.histplot(stat_df['h2_null'].dropna(), bins=30, color='#4F6EAF',
-                 edgecolor='none', ax=axes_gs[0])
-    axes_gs[0].set(xlabel='$h^2$ (null)', ylabel='genes',
-                   title='heritability distribution', xlim=(0, None), ylim=(0, None))
-    sns.despine(ax=axes_gs[0])
-    sns.histplot(stat_df['r'].dropna(), bins=30, color='#55AF5B',
-                 edgecolor='none', ax=axes_gs[1])
-    axes_gs[1].axvline(0.999, color='#D83026', lw=1, ls='--', label='r=0.999')
-    axes_gs[1].set(xlabel='Pearson $r$ (LOD py vs R)', ylabel='genes',
-                   title='per-gene LOD correlation', xlim=(0, None), ylim=(0, None))
-    axes_gs[1].legend(fontsize=8); sns.despine(ax=axes_gs[1])
-    for tier in ['strict', 'lenient', 'fail']:
+    # ── gene summary plot 1: LOD relative error histogram by tier ─────────────
+    # mirrors the left panel of the reference figure (rel_error bins, tier colors)
+    rel_bins  = [0, 0.05, 0.10, 0.20, 0.40, 0.80]
+    rel_labs  = ['0–5%', '5–10%', '10–20%', '20–40%', '40–80%']
+    stat_df['rel_bin'] = pd.cut(stat_df['rel_error'], bins=rel_bins,
+                                 labels=rel_labs, right=False)
+    fig_gs1, ax_gs1 = plt.subplots(figsize=(7, 5))
+    x_pos = np.arange(len(rel_labs)); w = 0.25
+    for i, (tier, color) in enumerate(tc.items()):
         sub = stat_df[stat_df['tier'] == tier]
-        if sub.empty: continue
-        axes_gs[2].scatter(sub['peak_lod_r'], sub['peak_lod_py'],
-                           s=4, alpha=0.7, edgecolors='none', color=tc[tier], label=tier)
-    _lim = max(stat_df['peak_lod_r'].max(), stat_df['peak_lod_py'].max()) * 1.05
-    axes_gs[2].plot([0, _lim], [0, _lim], '--', color='#888', lw=1)
-    axes_gs[2].set(xlim=(0, _lim), ylim=(0, _lim),
-                   xlabel='peak LOD (R)', ylabel='peak LOD (Python)', title='peak LOD per gene')
-    axes_gs[2].legend(fontsize=8); sns.despine(ax=axes_gs[2])
-    plt.tight_layout(); save_plot(fig_gs, 's4_gene_summary.png')
+        counts = sub['rel_bin'].value_counts().reindex(rel_labs, fill_value=0)
+        ax_gs1.bar(x_pos + (i-1)*w, counts.values, w, color=color,
+                   edgecolor='none', label=f'{tier} ({len(sub):,})')
+    # tier boundary dashed lines at 10% and 20%
+    ax_gs1.axvline(1.5, color='#888', lw=1, ls='--')   # between 5-10% and 10-20%
+    ax_gs1.axvline(2.5, color='#55AF5B', lw=1, ls='--')  # between 10-20% and 20-40%
+    ax_gs1.set(xticks=x_pos, xticklabels=rel_labs,
+               xlabel=r'relative error ($\max|\Delta\mathrm{LOD}|$ / peak LOD R)',
+               ylabel='genes',
+               title=f's4: LOD relative error by tier\nstrict={n_s:,}  lenient={n_l:,}  fail={n_f:,}')
+    ax_gs1.legend(fontsize=9); sns.despine(ax=ax_gs1)
+    plt.tight_layout(); save_plot(fig_gs1, 's4_gene_summary_error.png')
 
-    # p-value QQ: lod -> chi2(J-1) -> p; lambda_GC flags LMM miscalibration
+    # ── gene summary plot 2: peak locus concordance by tier ───────────────────
+    # right panel of reference figure — peak_match vs mismatch stacked per tier
+    fig_gs2, ax_gs2 = plt.subplots(figsize=(6, 5))
+    tiers_ord = ['fail', 'lenient', 'strict']; x_pos2 = np.arange(len(tiers_ord)); w2 = 0.35
+    for i, (tier, color) in enumerate(tc.items()):
+        sub = stat_df[stat_df['tier'] == tier]
+        n_match   = int(sub['peak_match'].sum())
+        n_mismatch = len(sub) - n_match
+        xi = tiers_ord.index(tier)
+        ax_gs2.bar(xi - w2/2, n_mismatch, w2, color='#C0BFBF', edgecolor='none',
+                   label='peak mismatch' if i == 0 else '_')
+        ax_gs2.bar(xi + w2/2, n_match,    w2, color=color,    edgecolor='none',
+                   label=f'peak match ({tier})' if i == 0 else tier)
+    ax_gs2.set(xticks=np.arange(len(tiers_ord)), xticklabels=tiers_ord,
+               ylabel='genes',
+               title='s4: peak locus concordance by tier\n'
+                     '(soft: R LOD at Python peak ≥ 99% of R peak)')
+    ax_gs2.legend(fontsize=8); sns.despine(ax=ax_gs2)
+    plt.tight_layout(); save_plot(fig_gs2, 's4_gene_summary_concordance.png')
+
+    # ── genome-wide eGene distribution (peak LOD Manhattan per gene) ──────────
+    # compute peak locus position per gene from comp_df
+    _peak_rows = comp_df.loc[comp_df.groupby('gene_id')['lod_py'].idxmax(),
+                              ['gene_id', 'chr', 'pos_mb']].copy()
+    _peak_rows.columns = ['gene_id', 'chr', 'peak_pos_mb']
+    _eg = stat_df.merge(_peak_rows, on='gene_id', how='left', suffixes=('', '_r'))
+    _eg['chr_s'] = _eg['chr'].astype(str)
+    _eg_sorted   = sorted(_eg['chr_s'].unique(), key=_chr_sort)
+    _off2 = {}; _cum2 = 0
+    for _c in _eg_sorted:
+        _off2[_c] = _cum2
+        _cum2 += float(_eg.loc[_eg['chr_s']==_c, 'peak_pos_mb'].max(skipna=True)) + 10
+    _eg['x_eg'] = _eg.apply(lambda r: _off2.get(r['chr_s'], 0) + r['peak_pos_mb'], axis=1)
+    _xt_eg = [_off2[c] + float(_eg.loc[_eg['chr_s']==c,'peak_pos_mb'].median(skipna=True))
+              for c in _eg_sorted]
+    _cc_eg = [CHR_PAL[_eg_sorted.index(c) % 2] for c in _eg['chr_s']]
+    fig_em, ax_em = plt.subplots(figsize=(14, 3))
+    for tier in ['fail', 'lenient', 'strict']:
+        sub = _eg[_eg['tier'] == tier]
+        ax_em.scatter(sub['x_eg'], sub['peak_lod_py'], c=tc[tier],
+                      s=3, alpha=0.6, edgecolors='none', label=tier)
+    ax_em.set(xticks=_xt_eg, xticklabels=_eg_sorted,
+              xlabel='chromosome', ylabel='peak LOD (Python)',
+              title='s4: genome-wide eGene distribution — peak LOD per gene', ylim=(0, None))
+    plt.setp(ax_em.get_xticklabels(), rotation=45, ha='right', fontsize=7)
+    ax_em.legend(fontsize=8, markerscale=3); sns.despine(ax=ax_em)
+    plt.tight_layout(); save_plot(fig_em, 's4_egene_manhattan.png')
+
+    # ── p-value QQ: both py and R, lambda_GC flags LMM miscalibration ─────────
     _df_pq = J - 1
-    _chi2o = np.sort(2 * np.log(10) * comp_df['lod_py'].dropna().values)[::-1]
-    _n_pq  = len(_chi2o)
-    _p_obs = sp_stats.chi2.sf(_chi2o, df=_df_pq)
-    _p_exp = np.linspace(1 / _n_pq, 1.0, _n_pq)
-    _step  = max(1, _n_pq // 5000)
-    _lam   = float(np.nanmedian(_chi2o) / sp_stats.chi2.ppf(0.5, df=_df_pq))
-    _qlim  = max(float(-np.log10(_p_obs[0])), 1.0) * 1.05
     fig_qq, ax_qq = plt.subplots(figsize=(5, 5))
-    ax_qq.scatter(-np.log10(_p_exp[::_step]), -np.log10(_p_obs[::_step]),
-                  s=2, alpha=0.5, color='#4F6EAF', edgecolors='none')
-    ax_qq.plot([0, _qlim], [0, _qlim], '--', color='#D83026', lw=1, label='null')
+    for _lods, _label, _color in [
+        (comp_df['lod_py'].dropna().values, 'Python', '#4F6EAF'),
+        (comp_df['lod_r'].dropna().values,  'R',      '#D83026'),
+    ]:
+        _chi2o = np.sort(2 * np.log(10) * _lods)[::-1]
+        _n     = len(_chi2o)
+        _p_obs = sp_stats.chi2.sf(_chi2o, df=_df_pq)
+        _p_exp = np.linspace(1 / _n, 1.0, _n)
+        _step  = max(1, _n // 5000)
+        _lam   = float(np.nanmedian(_chi2o) / sp_stats.chi2.ppf(0.5, df=_df_pq))
+        _qlim  = max(float(-np.log10(_p_obs[0])), 1.0) * 1.05
+        ax_qq.scatter(-np.log10(_p_exp[::_step]), -np.log10(_p_obs[::_step]),
+                      s=2, alpha=0.5, color=_color, edgecolors='none',
+                      label=f'{_label} $\\lambda_{{GC}}$={_lam:.3f}')
+    ax_qq.plot([0, _qlim], [0, _qlim], '--', color='#888', lw=1)
     ax_qq.set(xlim=(0, _qlim), ylim=(0, None),
               xlabel=r'expected $-\log_{10}(p)$',
               ylabel=r'observed $-\log_{10}(p)$',
-              title=f'LMM $p$-value QQ ($\\chi^2$ df={_df_pq})')
-    ax_qq.text(0.05, 0.95, f'$\\lambda_{{GC}}$={_lam:.3f}',
-               transform=ax_qq.transAxes, fontsize=9, va='top')
+              title=f's4: LMM $p$-value QQ ($\\chi^2$ df={_df_pq})')
     ax_qq.legend(fontsize=8); sns.despine(ax=ax_qq)
     plt.tight_layout(); save_plot(fig_qq, 's4_pvalue_qq.png')
 
-    # founder effects for highest-LOD gene with R reference
+    # ── founder effects — highest-LOD gene with R reference ───────────────────
     if r_ae is not None and py_betas:
         best = next((g for g in
                      stat_df[stat_df['gene_id'].isin(r_ae['gene_id'].unique())]
@@ -411,8 +457,15 @@ def plot_s4(comp_df, stat_df, chr_colors_fn, py_betas, r_ae, n_s, n_l, n_f, J,
             ax.bar(x - w/2, py_eff, w, color=cf, edgecolor='white', lw=0.5,
                    label='mosaiQTL (Python)')
             if not r_sub.empty:
-                r_eff = [float(r_sub.loc[r_sub['founder'] == f, 'effect'].iloc[0])
-                         if f in r_sub['founder'].values else 0.0 for f in f_names]
+                # r_ae founder col may use single-letter HAPPY codes (A–H) or full names
+                _code_map = {chr(65+i): fn for i, fn in enumerate(FOUNDER_COLORS.keys())}
+                _r_founders = r_sub['founder'].values
+                def _lookup(fn):
+                    if fn in _r_founders: return float(r_sub.loc[r_sub['founder']==fn,'effect'].iloc[0])
+                    code = chr(65 + list(FOUNDER_COLORS.keys()).index(fn)) if fn in FOUNDER_COLORS else None
+                    if code and code in _r_founders: return float(r_sub.loc[r_sub['founder']==code,'effect'].iloc[0])
+                    return 0.0
+                r_eff = [_lookup(fn) for fn in f_names]
                 ax.bar(x + w/2, r_eff, w, color=cf, hatch='///', edgecolor='#333',
                        lw=0.6, alpha=0.7, label='miQTL (R)')
                 _r2 = (float(np.corrcoef(py_eff, r_eff)[0, 1])
@@ -421,46 +474,42 @@ def plot_s4(comp_df, stat_df, chr_colors_fn, py_betas, r_ae, n_s, n_l, n_f, J,
                         transform=ax.transAxes, fontsize=10, va='top')
             ax.axhline(0, color='#444', lw=0.5)
             ax.set(xticks=x, ylabel='effect size',
-                   title=f'founder effects — {best}  chr{chrom_b}  {peak_loc}')
+                   title=f's4: founder effects — {best}  chr{chrom_b}  {peak_loc}')
             ax.set_xticklabels(f_names, rotation=45, ha='right', fontsize=10)
-            ax.legend(fontsize=9); sns.despine(); plt.tight_layout()
+            ax.legend(fontsize=9); sns.despine(ax=ax); plt.tight_layout()
             save_plot(fig, 's4_founder_effects.png')
 
-    # discrepancy manhattan: |ΔLOD| per genomic position (Casale et al. 2015)
+    # ── discrepancy manhattan ─────────────────────────────────────────────────
     _dm = comp_df.copy()
     _dm['abs_delta'] = (_dm['lod_py'] - _dm['lod_r']).abs()
     _dm['chr_str']   = _dm['chr'].astype(str)
-    _sorted = sorted(_dm['chr_str'].unique(), key=_chr_sort)
-    _off = {}; _cum = 0
-    for _c in _sorted:
-        _off[_c] = _cum; _cum += float(_dm[_dm['chr_str'] == _c]['pos_mb'].max()) + 10
-    _dm['x_plot'] = _dm.apply(lambda r: _off[r['chr_str']] + r['pos_mb'], axis=1)
-    _xt = [_off[c] + float(_dm[_dm['chr_str'] == c]['pos_mb'].median()) for c in _sorted]
-    _cc = [CHR_PAL[i % 2] for i, c in enumerate(_sorted)
-           for _ in range((_dm['chr_str'] == c).sum())]
+    _dm['x_plot']    = _dm.apply(lambda r: _off.get(r['chr_str'], 0) + r['pos_mb'], axis=1)
+    _xt2 = [_off.get(c, 0) + float(_dm[_dm['chr_str']==c]['pos_mb'].median())
+            for c in _sorted_chrs if c in _off]
+    _cc2 = [CHR_PAL[_sorted_chrs.index(c) % 2] if c in _sorted_chrs else '#aaa'
+            for c in _dm['chr_str']]
     fig_dm, ax_dm = plt.subplots(figsize=(14, 3))
-    ax_dm.scatter(_dm['x_plot'], _dm['abs_delta'], c=_cc, s=1, alpha=0.6, edgecolors='none')
-    ax_dm.set(xticks=_xt, xticklabels=_sorted,
+    ax_dm.scatter(_dm['x_plot'], _dm['abs_delta'], c=_cc2, s=1, alpha=0.6, edgecolors='none')
+    ax_dm.set(xticks=_xt2, xticklabels=[c for c in _sorted_chrs if c in _off],
               xlabel='chromosome', ylabel='|ΔLOD| (py − R)',
-              title='LMM discrepancy Manhattan — |ΔLOD| per locus')
+              title='s4: LMM discrepancy Manhattan — |ΔLOD| per locus')
     plt.setp(ax_dm.get_xticklabels(), rotation=45, ha='right', fontsize=7)
     sns.despine(ax=ax_dm); plt.tight_layout(); save_plot(fig_dm, 's4_discrepancy_manhattan.png')
 
-    # allele effect concordance distribution (Listgarten et al. 2012)
+    # ── allele effect concordance ─────────────────────────────────────────────
     if ae_df is not None and len(ae_df):
         fig_ae, axes_ae = plt.subplots(1, 2, figsize=(10, 4))
         sns.histplot(ae_df['r_allele'].dropna(), bins=30, color='#4F6EAF',
                      edgecolor='none', ax=axes_ae[0])
         axes_ae[0].axvline(0, color='#D83026', lw=1, ls='--')
         axes_ae[0].set(xlabel='Pearson $r$ (allele effects py vs R)',
-                       ylabel='genes', title='allele effect concordance distribution',
-                       xlim=(-1, 1))
+                       ylabel='genes', title='s4: allele effect concordance', xlim=(-1, 1))
         sns.despine(ax=axes_ae[0])
         sns.histplot(ae_df['ccc_allele'].dropna(), bins=30, color='#55AF5B',
                      edgecolor='none', ax=axes_ae[1])
         axes_ae[1].axvline(0, color='#D83026', lw=1, ls='--')
         axes_ae[1].set(xlabel='CCC (Lin 1989) — allele effects py vs R',
-                       ylabel='genes', title='allele effect CCC distribution', xlim=(-1, 1))
+                       ylabel='genes', title='s4: allele effect CCC', xlim=(-1, 1))
         sns.despine(ax=axes_ae[1])
         plt.tight_layout(); save_plot(fig_ae, 's4_allele_effect_concordance.png')
 
@@ -477,7 +526,10 @@ def plot_s5(coll_df, k_cors, mean_py, mean_r, mean_k_r,
            alpha=0.85, label='miQTL (R)')
     ax.set(xticks=x, xticklabels=coll_df['chr'].tolist(),
            xlabel='chromosome', ylabel='loci reduced (%)',
-           title=f'collapse l2.norm tol=0.02\npy={mean_py:.1f}%  r={mean_r:.1f}%')
+           title=f's5: cache collapse — loci removed by l2.norm (tol=0.02)\n'
+                 f'py={mean_py:.1f}%  r={mean_r:.1f}%  '
+                 f'(reduction = loci with redundant haplotype structure; '
+                 f'kinship+LOD panels confirm no downstream distortion)')
     plt.setp(ax.get_xticklabels(), rotation=45, ha='right', fontsize=8)
     ax.legend(fontsize=9); sns.despine(ax=ax)
 

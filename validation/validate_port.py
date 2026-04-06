@@ -420,6 +420,16 @@ if section(3, 'KINSHIP LOCO'):
     if kin_cors:
         kc_df = pd.DataFrame(kin_cors)
         save_csv(kc_df, 'kinship_comparison.csv')
+        # kinship_py.csv already saved above (summary stats per chr)
+        # per-chr matrix CSVs written below for phase3 validation target
+        for _krow in kin_cors:
+            _kc = _krow['chr']
+            if _kc not in kinship_py: continue
+            _kmat = kinship_py[_kc]
+            _sids = list(cache_py.sample_ids)
+            _kdf  = pd.DataFrame(_kmat, index=_sids, columns=_sids)
+            _kdf.index.name = 'sample_id'
+            save_csv(_kdf.reset_index(), f'kinship_py_chr{_kc}.csv')
 
         # 3-panel heatmap for first chromosome — consistent with validate_vs_r.py
         chrom_k = kc_df['chr'].iloc[0]
@@ -528,6 +538,10 @@ if section(4, 'LMM SCAN (ROP)'):
                                       'peak_match', 'peak_lod_r', 'peak_lod_py', 'h2_null'])
             save_csv(comp_df, 'lod_comparison.csv')
             save_csv(stat_df, 'gene_summary.csv')
+            # standalone py-side LOD — same format as lod_r.csv; phase3 validates against this
+            save_csv(_col(comp_df[['gene_id','chr','locus','pos_mb','lod_py']]
+                          .rename(columns={'lod_py':'lod'}),
+                          ['gene_id','chr','locus','pos_mb','lod']), 'lod_py.csv')
             n_s = (stat_df['tier']=='strict').sum()
             n_l = (stat_df['tier']=='lenient').sum()
             n_f = (stat_df['tier']=='fail').sum()
@@ -771,6 +785,9 @@ if section(7, 'MULTIPLE IMPUTATION'):
             mi_comp = pd.concat(mi_comparisons, ignore_index=True)
             mi_comp = _col(mi_comp, ['gene_id', 'chr', 'locus', 'pos_mb', 'lod_r', 'lod_py'])
             save_csv(mi_comp, 'mi_lod_comparison.csv')
+            save_csv(_col(mi_comp[['gene_id','chr','locus','pos_mb','lod_py']]
+                          .rename(columns={'lod_py':'lod'}),
+                          ['gene_id','chr','locus','pos_mb','lod']), 'mi_lod_py.csv')
             _mi_diffs = (mi_comp.groupby('gene_id')
                          .apply(lambda g: float((g['lod_py']-g['lod_r']).mean()))
                          .values)
@@ -836,6 +853,9 @@ if section(8, 'SNP SCAN'):
             snp_comp = pd.concat(snp_comparisons, ignore_index=True)
             snp_comp = _col(snp_comp, ['gene_id', 'chr', 'snp', 'lod_r', 'lod_py'])
             save_csv(snp_comp, 'snp_lod_comparison.csv')
+            save_csv(_col(snp_comp[['gene_id','chr','snp','lod_py']]
+                          .rename(columns={'lod_py':'lod'}),
+                          ['gene_id','chr','snp','lod']), 'snp_lod_py.csv')
             # build snp_maf_df for MAF concordance plot (optional)
             _snp_maf_df = None
             if 'lod_r' in snp_comp.columns and 'snp' in snp_genos.columns:
@@ -893,6 +913,9 @@ if section(9, 'MEDIATION'):
             med_comp = pd.concat(med_comparisons, ignore_index=True)
             med_comp = _col(med_comp, ['gene_id','chr','locus','pos_mb','lod_r','lod_py'])
             save_csv(med_comp, 'mediation_comparison.csv')
+            save_csv(_col(med_comp[['gene_id','chr','locus','pos_mb','lod_py']]
+                          .rename(columns={'lod_py':'lod'}),
+                          ['gene_id','chr','locus','pos_mb','lod']), 'mediation_py.csv')
             r_med_v = float(np.corrcoef(med_comp['lod_r'], med_comp['lod_py'])[0, 1])
             _drop_r = None
             _r_med_full = load_r('mediation_r.csv')
@@ -943,6 +966,9 @@ if section(10, 'POSITIONAL CI'):
             ci_comp = _col(pd.DataFrame(ci_comparisons),
                            ['gene_id','chr','locus','ci_lo_r','ci_lo_py','ci_hi_r','ci_hi_py','overlap'])
             save_csv(ci_comp, 'ci_comparison.csv')
+            save_csv(_col(ci_comp[['gene_id','chr','locus','ci_lo_py','ci_hi_py']]
+                          .rename(columns={'ci_lo_py':'ci_lo_mb','ci_hi_py':'ci_hi_mb'}),
+                          ['gene_id','chr','locus','ci_lo_mb','ci_hi_mb']), 'ci_py.csv')
             n_overlap = int(ci_comp['overlap'].sum())
             plot_phase2.plot_s10(ci_comp, boot_pos, r_boot, ci_gene, ci_chr, n_overlap)
 
@@ -992,6 +1018,9 @@ if section(11, 'INSTABILITY SCAN'):
             mg_fx = pd.concat(fx_all, ignore_index=True)
             mg_fx = _col(mg_fx, ['gene_id','chr','locus','pos_mb_r','lod_r','lod_py'])
             save_csv(mg_fx, 'fixef_comparison.csv')
+            save_csv(_col(mg_fx[['gene_id','chr','locus','pos_mb_r','lod_py']]
+                          .rename(columns={'pos_mb_r':'pos_mb','lod_py':'lod'}),
+                          ['gene_id','chr','locus','pos_mb','lod']), 'fixef_py.csv')
             r_fx_v = (float(np.corrcoef(mg_fx['lod_r'], mg_fx['lod_py'])[0,1])
                       if len(mg_fx) > 3 else np.nan)
             plot_phase2.plot_s11(mg_fx, r_fx_v, inst_py)
