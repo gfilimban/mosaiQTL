@@ -535,6 +535,144 @@ def plot_s4(comp_df, stat_df, chr_colors_fn, py_betas, r_ae, n_s, n_l, n_f, J,
         sns.despine(ax=axes_ae[1])
         plt.tight_layout(); save_plot(fig_ae, 's4_allele_effect_concordance.png')
 
+    # ── per-gene peak LOD histogram: R vs Python ──────────────────────────────
+    # derive per-gene peak for each side from comp_df
+    _pk_r  = comp_df.groupby('gene_id')['lod_r'].max().reset_index().rename(
+                columns={'lod_r': 'peak_lod'})
+    _pk_py = comp_df.groupby('gene_id')['lod_py'].max().reset_index().rename(
+                columns={'lod_py': 'peak_lod'})
+
+    def _bh_egene_count(peak_lods, df):
+        '''BH-FDR 5% eGene count from peak LODs via chi2(df).'''
+        chi2v = 2 * np.log(10) * np.maximum(peak_lods, 0)
+        pv    = sp_stats.chi2.sf(chi2v, df=df)
+        n     = len(pv)
+        order = np.argsort(pv)
+        sig   = pv[order] <= (np.arange(1, n + 1) / n) * 0.05
+        return int(sig.sum())
+
+    _n_r_eg  = _bh_egene_count(_pk_r['peak_lod'].values,  J - 1)
+    _n_py_eg = _bh_egene_count(_pk_py['peak_lod'].values, J - 1)
+    _lod_max = max(_pk_r['peak_lod'].max(), _pk_py['peak_lod'].max())
+    _bins    = np.linspace(0, min(_lod_max * 1.05, 40), 50)
+
+    fig_lh, ax_lh = plt.subplots(figsize=(7, 4))
+    ax_lh.hist(_pk_r['peak_lod'].values,  bins=_bins, color='#D83026',
+               alpha=0.55, label=f'miQTL R  (n={_n_r_eg:,} eGenes)', edgecolor='none')
+    ax_lh.hist(_pk_py['peak_lod'].values, bins=_bins, color='#4F6EAF',
+               alpha=0.55, label=f'mosaiQTL Python  (n={_n_py_eg:,} eGenes)', edgecolor='none')
+    ax_lh.set(xlabel='peak LOD score', ylabel='gene count',
+              xlim=(0, None), ylim=(0, None),
+              title='s4: per-gene peak LOD distribution (5% BH-FDR)')
+    ax_lh.legend(fontsize=9); sns.despine(ax=ax_lh)
+    plt.tight_layout(); save_plot(fig_lh, 's4_egene_lod_hist.png')
+
+    # ── eGene count per chromosome: R vs Python ───────────────────────────────
+    # BH significance flag per gene per side
+    def _bh_flags(peak_df, lod_col, df):
+        pv    = sp_stats.chi2.sf(
+                    2 * np.log(10) * np.maximum(peak_df[lod_col].values, 0), df=df)
+        n     = len(pv); order = np.argsort(pv)
+        sig   = np.zeros(n, dtype=bool)
+        sig[order] = pv[order] <= (np.arange(1, n + 1) / n) * 0.05
+        peak_df = peak_df.copy(); peak_df['sig'] = sig
+        return peak_df
+
+    # merge chr back from comp_df peak locus
+    _chr_map = comp_df.groupby('gene_id').apply(
+        lambda g: g.loc[g['lod_py'].idxmax(), 'chr']).reset_index()
+    _chr_map.columns = ['gene_id', 'chr']
+
+    _pk_r2  = _bh_flags(_pk_r.merge(_chr_map, on='gene_id'),  'peak_lod', J - 1)
+    _pk_py2 = _bh_flags(_pk_py.merge(_chr_map, on='gene_id'), 'peak_lod', J - 1)
+
+    _eg_chrs = sorted(comp_df['chr'].astype(str).unique(), key=_chr_sort)
+    _cnt_r   = _pk_r2[_pk_r2['sig']].groupby('chr').size().reindex(_eg_chrs, fill_value=0)
+    _cnt_py  = _pk_py2[_pk_py2['sig']].groupby('chr').size().reindex(_eg_chrs, fill_value=0)
+    _xb = np.arange(len(_eg_chrs)); _wb = 0.38
+
+    fig_cb, ax_cb = plt.subplots(figsize=(14, 4))
+    ax_cb.bar(_xb - _wb/2, _cnt_r.values,  _wb, color='#D83026', alpha=0.75,
+              label='miQTL R',  edgecolor='none')
+    ax_cb.bar(_xb + _wb/2, _cnt_py.values, _wb, color='#4F6EAF', alpha=0.75,
+              label='mosaiQTL Python', edgecolor='none')
+    ax_cb.set(xticks=_xb, xticklabels=_eg_chrs,
+              xlabel='chromosome of lead locus', ylabel='eGene count',
+              xlim=(-0.5, len(_eg_chrs) - 0.5), ylim=(0, None),
+              title='s4: eGene count per chromosome (5% BH-FDR)')
+    ax_cb.legend(fontsize=9); sns.despine(ax=ax_cb)
+    plt.tight_layout(); save_plot(fig_cb, 's4_egene_chr_bar.png')
+
+    # ── scan summary table: R vs Python ───────────────────────────────────────
+    def _summary_stats(peak_df, lod_col, comp_all, df, side_label):
+        pv    = sp_stats.chi2.sf(
+                    2 * np.log(10) * np.maximum(peak_df[lod_col].values, 0), df=df)
+        n     = len(pv); order = np.argsort(pv)
+        sig   = pv[order] <= (np.arange(1, n + 1) / n) * 0.05
+        n_eg  = int(sig.sum())
+        min_q = float(pv[order][sig].max()) if n_eg else np.nan   # largest p still passing = weakest
+        # min q-value = min BH-adjusted p (rank * alpha / n)
+        min_q_bh = float((np.arange(1, n + 1) / n * 0.05)[sig].min()) if n_eg else np.nan
+        return {
+            'side':         side_label,
+            'n_genes':      n,
+            'n_loci':       len(comp_all),
+            'n_egene':      n_eg,
+            'egene_rate':   n_eg / n if n else 0,
+            'median_lod':   float(np.median(peak_df[lod_col])),
+            'max_lod':      float(peak_df[lod_col].max()),
+            'min_q':        min_q_bh,
+            'n_chr':        int(comp_all['chr'].astype(str).nunique()),
+        }
+
+    _ss_r  = _summary_stats(_pk_r,  'peak_lod', comp_df, J - 1, 'miQTL R')
+    _ss_py = _summary_stats(_pk_py, 'peak_lod', comp_df, J - 1, 'mosaiQTL Python')
+
+    _metrics = [
+        ('Genes surveyed',    f'{_ss_r["n_genes"]:,}',
+                              f'{_ss_py["n_genes"]:,}'),
+        ('Cis-loci tested',   f'{_ss_r["n_loci"]:,}',
+                              f'{_ss_py["n_loci"]:,}'),
+        ('eGenes (5% BH-FDR)',f'{_ss_r["n_egene"]:,}',
+                              f'{_ss_py["n_egene"]:,}'),
+        ('eGene rate',        f'{_ss_r["egene_rate"]:.1%}',
+                              f'{_ss_py["egene_rate"]:.1%}'),
+        ('Median peak LOD',   f'{_ss_r["median_lod"]:.1f}',
+                              f'{_ss_py["median_lod"]:.1f}'),
+        ('Max peak LOD',      f'{_ss_r["max_lod"]:.1f}',
+                              f'{_ss_py["max_lod"]:.1f}'),
+        ('Min q-value',       (f'{_ss_r["min_q"]:.2e}'  if np.isfinite(_ss_r["min_q"])  else 'n/a'),
+                              (f'{_ss_py["min_q"]:.2e}' if np.isfinite(_ss_py["min_q"]) else 'n/a')),
+        ('Chromosomes',       f'{_ss_r["n_chr"]} / 20',
+                              f'{_ss_py["n_chr"]} / 20'),
+        ('LMM df',            f'{J - 1}',
+                              f'{J - 1}'),
+    ]
+
+    fig_tb, ax_tb = plt.subplots(figsize=(8, len(_metrics) * 0.55 + 0.8))
+    ax_tb.axis('off')
+    col_labels = ['METRIC', 'miQTL R', 'mosaiQTL Python']
+    tbl = ax_tb.table(
+        cellText=_metrics,
+        colLabels=col_labels,
+        loc='center', cellLoc='center',
+    )
+    tbl.auto_set_font_size(False); tbl.set_fontsize(10)
+    tbl.auto_set_column_width([0, 1, 2])
+    # header row styling
+    for col in range(3):
+        tbl[(0, col)].set_facecolor('#2b2b2b')
+        tbl[(0, col)].set_text_props(color='white', fontweight='bold')
+    # alternating row shading + value colours
+    for row in range(1, len(_metrics) + 1):
+        tbl[(row, 0)].set_facecolor('#f5f5f5' if row % 2 else 'white')
+        tbl[(row, 1)].set_facecolor('#f5f5f5' if row % 2 else 'white')
+        tbl[(row, 1)].set_text_props(color='#D83026')
+        tbl[(row, 2)].set_facecolor('#f5f5f5' if row % 2 else 'white')
+        tbl[(row, 2)].set_text_props(color='#4F6EAF')
+    ax_tb.set_title('s4: scan summary — R vs Python', fontsize=11, pad=6)
+    plt.tight_layout(); save_plot(fig_tb, 's4_scan_summary.png')
+
 
 def plot_s5(coll_df, k_cors, mean_py, mean_r, mean_k_r,
             df_fc=None, r_fc=np.nan, cache_py=None, cache_coll=None, chr_order=None):
