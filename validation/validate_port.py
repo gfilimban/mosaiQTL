@@ -194,6 +194,7 @@ if os.path.isdir(_happy_root):
             _gm_diag = _gm_diag.set_index('marker')
         _gm_diag = _gm_diag.replace('N', '-')
         _fcols = list(FOUNDER_COLS)
+        _n_f   = len(_fcols)
         for _chrom in chr_order[:3]:
             _mf = os.path.join(_happy_root, f'chr{_chrom}', 'markers.RData')
             if not os.path.exists(_mf): continue
@@ -203,16 +204,39 @@ if os.path.isdir(_happy_root):
             _py_lids = set(cache_py._data[_chrom]['locus_ids']) if _chrom in cache_py._data else set()
             _py_only = sorted(_py_lids - _r_mks)
             if _py_only:
-                hi(f'  [diag] chr{_chrom}: {len(_py_only)} py_only — sample founder calls:')
+                # categorise all py_only markers
+                _cats = {'f_all_miss': 0, 'f_all_typed_mono': 0,
+                         'f_partial_miss_mono': 0, 'cc_all_miss': 0, 'other': 0}
+                hi(f'  [diag] chr{_chrom}: {len(_py_only)} py_only — categories + sample calls:')
+                for _m in _py_only:
+                    if _m not in _gm_diag.index:
+                        _cats['other'] += 1; continue
+                    _fc = _gm_diag.loc[_m, _fcols].values.astype(str)
+                    _fv = _fc[_fc != '-']
+                    _cc = _gm_diag.loc[_m, CC_COLS].values.astype(str)
+                    _ccv = _cc[_cc != '-']
+                    if len(_fv) == 0:
+                        _cats['f_all_miss'] += 1
+                    elif len(_fv) == _n_f and len(set(_fv)) == 1:
+                        _cats['f_all_typed_mono'] += 1
+                    elif len(_fv) < _n_f and len(set(_fv)) == 1:
+                        _cats['f_partial_miss_mono'] += 1
+                    elif len(_ccv) == 0:
+                        _cats['cc_all_miss'] += 1
+                    else:
+                        _cats['other'] += 1
+                hi(f'    categories: {_cats}')
                 for _m in _py_only[:5]:
                     if _m in _gm_diag.index:
-                        _calls = _gm_diag.loc[_m, _fcols].values.astype(str)
-                        _valid = _calls[_calls != '-']
-                        hi(f'    {_m}: valid={list(_valid)[:8]}  unique={sorted(set(_valid))}')
-                    else:
-                        hi(f'    {_m}: NOT IN GM CSV')
+                        _fc = _gm_diag.loc[_m, _fcols].values.astype(str)
+                        _fv = _fc[_fc != '-']
+                        _cc = _gm_diag.loc[_m, CC_COLS].values.astype(str)
+                        _ccv = _cc[_cc != '-']
+                        hi(f'    {_m}: f_valid={list(_fv)[:8]} f_unique={sorted(set(_fv))} cc_typed={len(_ccv)}/{len(_cc)}')
             else:
                 hi(f'  [diag] chr{_chrom}: no py_only markers')
+    except Exception as _e:
+        hi(f'  [diag] skipped: {_e}')
     except Exception as _e:
         hi(f'  [diag] skipped: {_e}')
 
