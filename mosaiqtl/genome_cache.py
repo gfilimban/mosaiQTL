@@ -355,20 +355,22 @@ class GenomeCache:
         # ref: qtl2 R/drop_markers.R drop_nullmarkers()
         if qc is None or qc.get('drop_null', True):
             fg = gm_raw.loc[shared, list(founder_cols)].replace({'N': '-', 'nan': '-', '': '-'})
-            # cc geno — drop markers where all CC calls are missing (n_typed == 0)
             cg = gm_raw.loc[shared, cc_cols].replace({'N': '-', 'nan': '-', '': '-'})
+            n_founders = len(list(founder_cols))
             keep_null = []
             for m in shared:
-                # founder checks
                 calls = fg.loc[m].values.astype(str)
                 valid = calls[calls != '-']
-                if len(valid) == 0:               # (a) founders all missing
+                # (a) all founders missing — drop (qtl2: ntyped==0)
+                if len(valid) == 0:
                     continue
-                if len(set(valid)) == 1:          # (b) founders monomorphic
+                # (b) all founders typed AND monomorphic — drop
+                # qtl2: only checks monomorphism when ntyped==nrow(fg), i.e. no missing founders
+                if len(valid) == n_founders and len(set(valid)) == 1:
                     continue
-                # CC check: drop if all CC genotypes are missing
+                # (c) all CC genotypes missing — drop (qtl2: n_typed(cross)==0)
                 cc_calls = cg.loc[m].values.astype(str)
-                if len(cc_calls[cc_calls != '-']) == 0:  # (c) CC all missing
+                if len(cc_calls[cc_calls != '-']) == 0:
                     continue
                 keep_null.append(m)
             n_null = len(shared) - len(keep_null)
