@@ -231,7 +231,7 @@ if section(1, 'CACHE INFO'):
     r_fnd  = load_r('founders_r.csv')
     r_sid  = load_r('sample_ids_r.csv')
 
-    rows_info = []
+    rows_info = []; r_lids_by_chr = {}
     for chrom in chromosomes:
         if chrom not in cache_py._data: continue
         lids, pos, _ = cache_py.get_chromosome(chrom)
@@ -240,9 +240,37 @@ if section(1, 'CACHE INFO'):
                 if r_info is not None and (r_info['chr']==chrom).any() else np.nan)
         rows_info.append({'chr':chrom,'n_loci_py':n_py,'n_loci_r':n_r,
                           'min_mb_py':float(pos.min()),'max_mb_py':float(pos.max())})
-        log.info(f'  chr{chrom}: py={n_py}  r={n_r}')
+        log.info(f'  chr{chrom}: py={n_py}  r={n_r}  delta={n_py - int(n_r) if not np.isnan(n_r) else "?"}')
     info_df = pd.DataFrame(rows_info)
     save_csv(info_df,'cache_info_py.csv')
+
+    # export per-chr marker diff: loci in Python but not in R's markers.RData
+    # load R marker lists to identify the extra Python loci
+    _r_marker_rows = []
+    for chrom in chromosomes:
+        _mf = os.path.join(R_DATA, '..', '..', '..', '..', 'output',
+                           'genomecache', 'additive', f'chr{chrom}', 'markers.RData')
+        _mf = os.path.normpath(_mf)
+        if not os.path.exists(_mf): continue
+        try:
+            import rpy2.robjects as _ro2
+            _env2 = _ro2.r['new.env']()
+            _ro2.r['load'](_mf, envir=_env2)
+            _r_mks = set(_ro2.r['get']('markers', envir=_env2))
+            if chrom in cache_py._data:
+                _py_lids = set(cache_py._data[chrom]['locus_ids'])
+                _py_only = sorted(_py_lids - _r_mks)
+                _r_only  = sorted(_r_mks  - _py_lids)
+                for _l in _py_only:
+                    _r_marker_rows.append({'chr': chrom, 'locus': _l, 'side': 'py_only'})
+                for _l in _r_only:
+                    _r_marker_rows.append({'chr': chrom, 'locus': _l, 'side': 'r_only'})
+                log.info(f'  chr{chrom} marker diff: py_only={len(_py_only)}  r_only={len(_r_only)}')
+        except Exception as _e:
+            log.debug(f'  marker diff chr{chrom} skipped: {_e}')
+    if _r_marker_rows:
+        save_csv(_col(pd.DataFrame(_r_marker_rows), ['chr', 'locus', 'side']),
+                 'marker_diff.csv')
 
     py_founders = list(cache_py.founders)
     py_sids     = list(cache_py.sample_ids)
@@ -435,7 +463,14 @@ if section(3, 'KINSHIP LOCO'):
             if _kc not in kinship_py: continue
             _kmat = kinship_py[_kc]
             _sids = list(cache_py.sample_ids)
-            _kdf  = pd.DataFrame(_kmat, index=_sids, columns=_sids)
+            # reorder to match R convention: founders+F1s first, then CC strains
+            # R does: c(non-CC subjects, CC subjects) from h$getSubjects()
+            _non_cc = [s for s in _sids if not s.startswith('CC')]
+            _cc     = [s for s in _sids if s.startswith('CC')]
+            _ordered = _non_cc + _cc
+            _oi = [_sids.index(s) for s in _ordered]
+            _kmat_ord = _kmat[np.ix_(_oi, _oi)]
+            _kdf = pd.DataFrame(_kmat_ord, index=_ordered, columns=_ordered)
             _kdf.index.name = 'sample_id'
             save_csv(_kdf.reset_index(), f'kinship_py_chr{_kc}.csv')
 
