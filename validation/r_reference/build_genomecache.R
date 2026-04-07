@@ -51,6 +51,7 @@ n_cores  <- if (length(args) >= 2) as.integer(args[2]) else 4L
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 gigamuga_path    <- file.path(base_dir, 'input', 'GM_ccfo_mm39.csv')
+crossinfo_path   <- file.path(base_dir, 'input', 'cc_crossinfo.csv')
 gmap_dir         <- file.path(base_dir, 'input', 'GM', 'gmap')
 pmap_dir         <- file.path(base_dir, 'input', 'GM', 'pmap')
 geno_dir         <- file.path(base_dir, 'input', 'geno')
@@ -218,9 +219,6 @@ message('\n[7] running HMM (calc_genoprob) — ', length(cc_cols),
 # qtl2's do HMM uses this to set per-strain initial state distributions and
 # transition scaling. using the actual crossinfo is more accurate than a uniform
 # ngen=20 for all strains.
-crossinfo_path <- file.path(dirname(yaml_path), '..', '..', 'validation',
-                            'r_reference', 'cc_crossinfo.csv')
-crossinfo_path <- normalizePath(crossinfo_path, mustWork = FALSE)
 if (file.exists(crossinfo_path)) {
   ci        <- read.csv(crossinfo_path, row.names = 1, stringsAsFactors = FALSE)
   cc_in_ci  <- intersect(rownames(cross$cross_info), rownames(ci))
