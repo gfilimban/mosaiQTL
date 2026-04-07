@@ -247,12 +247,12 @@ consistency and concordance with known LMM top hits.
 
 ## Genome cache construction
 
-The HAPPY genome cache is built by `scripts/build_genomecache.R` (replaces the
+The HAPPY genome cache is built by `validation/r_reference/build_genomecache.R` (replaces the
 former `founders_f1_genomecache.ipynb`). The script is a single executable R file
 covering all steps from raw GigaMUGA matrix to HAPPY cache and LOCO kinship:
 
 ```
-Rscript scripts/build_genomecache.R [base_dir] [n_cores]
+Rscript validation/r_reference/build_genomecache.R [base_dir] [n_cores]
 ```
 
 **Key filtering step (step 3).** `qtl2convert::find_unique_geno()` is applied to
@@ -366,7 +366,7 @@ The HAPPY cache and `from_gigamuga` always use genotyped markers only.
   (compares against R CSVs)
 No intermediate objects are shared. S1 is the entry-point consistency check.
 
-**Files changed:** `scripts/build_genomecache.R`, `mosaiqtl/genome_cache.py`,
+**Files changed:** `validation/r_reference/build_genomecache.R`, `mosaiqtl/genome_cache.py`,
 `validation/validate_port.py` (S1 gate hardened), `docs/POC_REPORT.md`.
 111/111 tests pass post-fix.
 

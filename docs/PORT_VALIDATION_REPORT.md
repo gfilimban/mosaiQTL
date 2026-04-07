@@ -10,7 +10,7 @@
 
 ## Genome cache construction
 
-The HAPPY genome cache is built by `scripts/build_genomecache.R`. Python's
+The HAPPY genome cache is built by `validation/r_reference/build_genomecache.R`. Python's
 `GenomeCache.from_gigamuga()` replicates its filtering pipeline exactly.
 
 **Marker filtering (step 3):** `find_unique_geno(geno = geno_founders_clean)` —
