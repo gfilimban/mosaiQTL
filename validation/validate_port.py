@@ -169,36 +169,14 @@ def record(key, passed, detail):
 
 # ── build Python genome cache ─────────────────────────────────────────────────
 hi('\n● building Python genome cache...')
-# use HAPPY cache marker list as allowlist — this is the set qtl2 considered
-# genotypically informative after internal HMM QC during calc_genoprob().
-# ~18k GigaMUGA markers are silently dropped by qtl2 (uninformative for
-# haplotype inference given founder call quality); this is not recoverable
-# from any explicit QC threshold — it is qtl2's internal HMM filter.
-# loading the HAPPY marker list is principled: it defines the valid marker
-# universe for this cross, independent of any downstream scan results.
-_happy_root = os.path.join(miqtl_dir, 'output', 'genomecache', 'additive')
-_happy_markers = None
-if os.path.isdir(_happy_root):
-    try:
-        import rpy2.robjects as _ro
-        _mks = []
-        for _chrom in [str(c) for c in range(1, 20)] + ['X']:
-            _mf = os.path.join(_happy_root, f'chr{_chrom}', 'markers.RData')
-            if not os.path.exists(_mf): continue
-            _env = _ro.r['new.env']()
-            _ro.r['load'](_mf, envir=_env)
-            _mks.extend(list(_ro.r['get']('markers', envir=_env)))
-        _happy_markers = _mks
-        hi(f'  HAPPY allowlist: {len(_happy_markers):,} markers (qtl2 informative set)')
-    except Exception as _e:
-        hi(f'  WARN: could not load HAPPY allowlist ({_e}) — using full gmap intersection')
-else:
-    hi(f'  WARN: HAPPY cache not found at {_happy_root} — using full gmap intersection')
-
+# drop_nullmarkers QC mirrors qtl2's drop_nullmarkers() applied before
+# calc_genoprob(): drops markers where founder calls are all-missing or
+# monomorphic (all non-missing founders share the same allele). this
+# independently replicates the ~18k marker drop seen in the HAPPY cache.
 cache_py = GenomeCache.from_gigamuga(
     gigamuga_path=GM_CSV, gmap_dir=GM_GMAP, pmap_dir=GM_PMAP,
     cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES,
-    just_these_loci=_happy_markers)  # restrict to qtl2-informative marker set
+    qc={'drop_null': True})  # mirrors qtl2 drop_nullmarkers()
 chr_order  = sorted(cache_py.chromosomes, key=_chr_sort)
 chr_colors = lambda s: plot_phase2.chr_colors(s, chr_order)   # alternating palette per chr
 chromosomes = ([c.strip() for c in args.chr.split(',')]

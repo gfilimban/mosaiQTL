@@ -338,28 +338,47 @@ class GenomeCache:
         pmap_idx = pmap.set_index('locus').loc[shared]
         logger.info(f'shared markers: {len(shared)}')
 
-        # ── just_these_loci allowlist (e.g. match HAPPY cache for validation) ──
+        # ── just_these_loci allowlist ─────────────────────────────────────────────
         if just_these_loci is not None:
             allow = set(just_these_loci)
             shared = [m for m in shared if m in allow]
             logger.info(f'just_these_loci filter: {len(shared)} markers retained')
 
-        # ── user QC filters ──────────────────────────────────────────────────────
+        # ── drop_nullmarkers-equivalent QC (mirrors qtl2's drop_nullmarkers()) ────
+        # qtl2 drops a marker when founder_geno is:
+        #   (a) all missing — no founder has a valid call
+        #   (b) monomorphic — all non-missing founders share the same allele
+        # this is the exact filter applied before calc_genoprob() in the CC workflow.
+        # ref: qtl2 R/drop_markers.R drop_nullmarkers()
+        if qc is None or qc.get('drop_null', True):
+            fg = gm_raw.loc[shared, list(founder_cols)].replace({'N': '-', 'nan': '-', '': '-'})
+            keep_null = []
+            for m in shared:
+                calls = fg.loc[m].values.astype(str)
+                valid = calls[calls != '-']
+                if len(valid) == 0:               # (a) all missing
+                    continue
+                if len(set(valid)) == 1:          # (b) monomorphic across founders
+                    continue
+                keep_null.append(m)
+            n_null = len(shared) - len(keep_null)
+            if n_null:
+                logger.info(f'drop_nullmarkers: dropped {n_null} markers '
+                            f'(all-missing or monomorphic in founders)')
+            shared = keep_null
+
+        # ── additional user QC filters ────────────────────────────────────────────
         if qc:
-            gm_filt = gm_raw.loc[shared, founder_cols]  # founders only for QC
             keep = pd.Series(True, index=shared)
-            if 'min_maf' in qc:                          # MAF across founder cols
-                freq = (gm_filt != gm_filt.iloc[:, 0].values[:, None]).mean(axis=1)
-                maf  = freq.clip(upper=0.5)              # minor allele freq
-                keep &= maf >= qc['min_maf']
-            if 'max_missing' in qc:                      # missing rate all cols
-                all_cols = [c for c in founder_cols + cc_cols if c in gm_raw.columns]
+            if 'max_missing' in qc:              # missing rate across all samples
+                all_cols = [c for c in list(founder_cols) + cc_cols if c in gm_raw.columns]
                 miss = (gm_raw.loc[shared, all_cols] == '-').mean(axis=1)
                 keep &= miss <= qc['max_missing']
             n_before = len(shared)
             shared = [m for m in shared if keep[m]]
-            logger.info(f'qc filter: {n_before} -> {len(shared)} markers '
-                        f'(dropped {n_before - len(shared)})')
+            if n_before > len(shared):
+                logger.info(f'user qc: {n_before} -> {len(shared)} markers '
+                            f'(dropped {n_before - len(shared)})')
 
 
         # chr column already str — build sorted chromosome list
