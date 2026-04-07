@@ -177,6 +177,38 @@ cache_py = GenomeCache.from_gigamuga(
     gigamuga_path=GM_CSV, gmap_dir=GM_GMAP, pmap_dir=GM_PMAP,
     cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES,
     qc={'drop_null': True})  # mirrors qtl2 drop_nullmarkers()
+
+# ── diagnostic: compare py loci vs HAPPY marker list to understand residual delta ──
+_happy_root = os.path.join(miqtl_dir, 'output', 'genomecache', 'additive')
+if os.path.isdir(_happy_root):
+    try:
+        import rpy2.robjects as _ro
+        import pandas as _pd_diag
+        # load GM raw for inspection of py_only markers
+        _gm_diag = _pd_diag.read_csv(GM_CSV, low_memory=False)
+        if 'marker' in _gm_diag.columns:
+            _gm_diag = _gm_diag.set_index('marker')
+        _gm_diag = _gm_diag.replace('N', '-')
+        _fcols = list(FOUNDER_COLS)
+        for _chrom in (chr_order[:3] if len(chr_order) >= 3 else chr_order):
+            _mf = os.path.join(_happy_root, f'chr{_chrom}', 'markers.RData')
+            if not os.path.exists(_mf): continue
+            _env = _ro.r['new.env']()
+            _ro.r['load'](_mf, envir=_env)
+            _r_mks = set(_ro.r['get']('markers', envir=_env))
+            _py_lids = set(cache_py._data[_chrom]['locus_ids']) if _chrom in cache_py._data else set()
+            _py_only = sorted(_py_lids - _r_mks)
+            if _py_only:
+                hi(f'  [diag] chr{_chrom}: {len(_py_only)} py_only markers — inspecting founder calls:')
+                for _m in _py_only[:5]:
+                    if _m in _gm_diag.index:
+                        _calls = _gm_diag.loc[_m, _fcols].values.astype(str)
+                        _valid = _calls[_calls != '-']
+                        hi(f'    {_m}: valid={list(_valid)[:8]}  unique={sorted(set(_valid))}')
+                    else:
+                        hi(f'    {_m}: NOT IN GM CSV')
+    except Exception as _e:
+        hi(f'  [diag] skipped: {_e}')
 chr_order  = sorted(cache_py.chromosomes, key=_chr_sort)
 chr_colors = lambda s: plot_phase2.chr_colors(s, chr_order)   # alternating palette per chr
 chromosomes = ([c.strip() for c in args.chr.split(',')]
