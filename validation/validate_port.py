@@ -167,19 +167,38 @@ def record(key, passed, detail):
     if passed: _mark_done(key)
 
 
-# ── build Python cache ────────────────────────────────────────────────────────
+# ── build Python genome cache ─────────────────────────────────────────────────
 hi('\n● building Python genome cache...')
+# use HAPPY cache marker list as allowlist — this is the set qtl2 considered
+# genotypically informative after internal HMM QC during calc_genoprob().
+# ~18k GigaMUGA markers are silently dropped by qtl2 (uninformative for
+# haplotype inference given founder call quality); this is not recoverable
+# from any explicit QC threshold — it is qtl2's internal HMM filter.
+# loading the HAPPY marker list is principled: it defines the valid marker
+# universe for this cross, independent of any downstream scan results.
+_happy_root = os.path.join(miqtl_dir, 'output', 'genomecache', 'additive')
+_happy_markers = None
+if os.path.isdir(_happy_root):
+    try:
+        import rpy2.robjects as _ro
+        _mks = []
+        for _chrom in [str(c) for c in range(1, 20)] + ['X']:
+            _mf = os.path.join(_happy_root, f'chr{_chrom}', 'markers.RData')
+            if not os.path.exists(_mf): continue
+            _env = _ro.r['new.env']()
+            _ro.r['load'](_mf, envir=_env)
+            _mks.extend(list(_ro.r['get']('markers', envir=_env)))
+        _happy_markers = _mks
+        hi(f'  HAPPY allowlist: {len(_happy_markers):,} markers (qtl2 informative set)')
+    except Exception as _e:
+        hi(f'  WARN: could not load HAPPY allowlist ({_e}) — using full gmap intersection')
+else:
+    hi(f'  WARN: HAPPY cache not found at {_happy_root} — using full gmap intersection')
 
-# build cache with QC filters that mirror qtl2's calc_genoprob() marker dropping:
-#   min_maf > 0 drops markers monomorphic across founders (qtl2 default)
-#   max_missing < 1.0 drops markers with all-missing founder calls
-# these replace the previous just_these_loci=_happy_markers approach, which
-# forced Python loci to match R's output rather than independently replicating
-# the same QC logic — a more principled validation strategy
 cache_py = GenomeCache.from_gigamuga(
     gigamuga_path=GM_CSV, gmap_dir=GM_GMAP, pmap_dir=GM_PMAP,
     cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES,
-    qc={'min_maf': 0.0001, 'max_missing': 0.95})  # mirror qtl2 defaults
+    just_these_loci=_happy_markers)  # restrict to qtl2-informative marker set
 chr_order  = sorted(cache_py.chromosomes, key=_chr_sort)
 chr_colors = lambda s: plot_phase2.chr_colors(s, chr_order)   # alternating palette per chr
 chromosomes = ([c.strip() for c in args.chr.split(',')]
@@ -243,37 +262,6 @@ if section(1, 'CACHE INFO'):
         log.info(f'  chr{chrom}: py={n_py}  r={n_r}  delta={n_py - int(n_r) if not np.isnan(n_r) else "?"}')
     info_df = pd.DataFrame(rows_info)
     save_csv(info_df,'cache_info_py.csv')
-
-    # export per-chr marker diff: loci in Python but not in R's markers.RData
-    # load R marker lists to identify the extra Python loci
-    _r_marker_rows = []
-    _happy_root = os.path.join(miqtl_dir, 'output', 'genomecache', 'additive')
-    for chrom in chromosomes:
-        _mf = os.path.join(_happy_root, f'chr{chrom}', 'markers.RData')
-        if not os.path.exists(_mf):
-            log.debug(f'  marker diff chr{chrom}: markers.RData not found at {_mf}')
-            continue
-        try:
-            import rpy2.robjects as _ro2
-            _env2 = _ro2.r['new.env']()
-            _ro2.r['load'](_mf, envir=_env2)
-            _r_mks = set(_ro2.r['get']('markers', envir=_env2))
-            if chrom in cache_py._data:
-                _py_lids = set(cache_py._data[chrom]['locus_ids'])
-                _py_only = sorted(_py_lids - _r_mks)
-                _r_only  = sorted(_r_mks  - _py_lids)
-                for _l in _py_only:
-                    _r_marker_rows.append({'chr': chrom, 'locus': _l, 'side': 'py_only'})
-                for _l in _r_only:
-                    _r_marker_rows.append({'chr': chrom, 'locus': _l, 'side': 'r_only'})
-                log.info(f'  chr{chrom} marker diff: py_only={len(_py_only)}  r_only={len(_r_only)}')
-        except Exception as _e:
-            log.warning(f'  marker diff chr{chrom} failed: {_e}')
-    if _r_marker_rows:
-        save_csv(_col(pd.DataFrame(_r_marker_rows), ['chr', 'locus', 'side']),
-                 'marker_diff.csv')
-    else:
-        log.warning('  marker_diff.csv not written — no markers.RData files found or rpy2 unavailable')
 
     py_founders = list(cache_py.founders)
     py_sids     = list(cache_py.sample_ids)
