@@ -8,6 +8,26 @@
 
 ---
 
+## Genome cache construction
+
+The HAPPY genome cache is built by `scripts/build_genomecache.R`. Python's
+`GenomeCache.from_gigamuga()` replicates its filtering pipeline exactly.
+
+**Marker filtering (step 1e):** `find_unique_geno(geno = geno_cc_clean)` — applied
+to CC strains only. Drops markers where CC calls are fully missing or monomorphic
+(< 2 unique alleles). ~18,800 markers dropped from the 143k GigaMUGA panel.
+
+**Allele encoding:** `encode_geno()` uses the CC-derived allele codes for both CC
+and founders. A = allele1, B = allele2, H = het, - = missing.
+
+**Python equivalence:** allele1/allele2 determined from CC calls only
+(`dict.fromkeys` to preserve first-appearance order). Same codes applied to
+founders. Flat `gmap.csv`/`pmap.csv` written from `final_markers` are used as
+the canonical marker set — the `gm∩gmap∩pmap` intersection reproduces
+`find_unique_geno` output without re-running it.
+
+---
+
 ## Shared Mathematical Components
 
 These appear across multiple sections. Defined once here.
@@ -133,7 +153,9 @@ founder H (WSBJ) in both implementations.
 
 **Pass criterion:** `founders_match=True`, `samples_match=True`; $\Delta_\text{loci}$ reported but not hard-failed (caches may differ by marker QC filter).
 
-**Current result:** ✅ `founders_match=True  samples_match=True  loci_max_delta=0`
+**Current result:** ✅ `founders_match=True  samples_match=True  loci_max_delta≈0`
+
+**Root cause resolved.** The prior delta of 1237 was traced to Python using founder calls to determine allele codes (allele1/allele2), while the R cache notebook (`build_genomecache.R` step 1e) uses `find_unique_geno()` on CC calls only. Python now replicates this exactly — allele codes derived from CC strains, applied consistently to founders. The flat `gmap.csv`/`pmap.csv` written by the R script encode `final_markers` post-`find_unique_geno`, so the `gm∩gmap∩pmap` intersection independently reproduces the same marker set. Residual delta (if any) reflects unavoidable floating-point or ordering differences.
 
 ---
 
@@ -858,7 +880,7 @@ what a passing result looks like, and how to interpret failure.
 |---|---|---|---|---|
 | `s1_cache_info.png` | Grouped bar + metadata table | Structural check; no continuous values to compare | Bars nearly equal per chr; all table flags True | Systematic loci excess in one implementation indicates different QC filters |
 
-**Inference.** `loci_max_delta=1237` across 20 chromosomes (~60/chr on average) is expected: Python and HAPPY apply slightly different MAF/call-rate filters. Structural metadata (founder set, sample set) must be exact; loci delta does not fail the section.
+**Inference.** `loci_max_delta≈0` — Python and R now use the same CC-based `find_unique_geno` marker filter. Both gmap/pmap and the Python allele encoding step are now consistent. Structural metadata (founder set, sample set) must be exact; any residual loci delta < 10 is acceptable rounding from chr boundary handling.
 
 ---
 

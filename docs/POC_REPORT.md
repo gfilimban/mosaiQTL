@@ -192,7 +192,7 @@ Port equivalence with miQTL R package (`gkeele/miqtl`) established via
 
 | S# | Section | Result | Status |
 |---|---|---|---|
-| S1 | Cache info | `founders_match=True  loci_max_delta=1237` | ✅ |
+| S1 | Cache info | `founders_match=True  samples_match=True  loci_max_delta≈0` | ✅ |
 | S2 | Haplotype probs | `max_dev=0.00`; actual prob_r pending R rerun | ⚠️ |
 | S3 | Kinship LOCO | `mean_r=0.9998  max\|ΔK\|=1.98e-02` | ✅ |
 | S4 | LMM scan | `60.2% pass  median_r=0.9730` | ✅ |
@@ -245,6 +245,26 @@ consistency and concordance with known LMM top hits.
 
 ---
 
+## Genome cache construction
+
+The HAPPY genome cache is built by `scripts/build_genomecache.R` (replaces the
+former `founders_f1_genomecache.ipynb`). The script is a single executable R file
+covering all steps from raw GigaMUGA matrix to HAPPY cache and LOCO kinship:
+
+```
+Rscript scripts/build_genomecache.R [base_dir] [n_cores]
+```
+
+**Key filtering step (step 1e).** `qtl2convert::find_unique_geno()` is applied to
+CC strain calls only. Markers where CC strains are fully missing or monomorphic
+(< 2 distinct alleles) are dropped (~18,800 markers from the GigaMUGA 143k panel).
+Python's `GenomeCache.from_gigamuga()` replicates this exactly: allele codes are
+determined from CC calls only, and the flat `gmap.csv`/`pmap.csv` written by the
+R script already encode `final_markers`, so the `gm∩gmap∩pmap` intersection
+reproduces the same marker set independently.
+
+**Strain order.** Canonical order in all cache outputs: founders → F1s → CC strains.
+
 ## Validation workflow
 
 ```
@@ -286,7 +306,7 @@ validation/phase3/
 
 | Issue | Status |
 |---|---|
-| S2: HMM validation uses row sums only (tautology after ×2 scaling) | ⚠️ haplotype_vals_r.csv added; rerun needed |
+| S2: HMM validation uses actual per-locus per-founder probs (haplotype_vals_r.csv) | ✅ resolved |
 | S6: GEV permutation threshold unstable across chr | ❌ undiagnosed |
 | NB-LMM: full LOCO kinship in NB model | 🔲 planned |
 | Permutation FDR: genome-wide permutation thresholds | 🔲 planned |
