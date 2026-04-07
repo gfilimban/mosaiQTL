@@ -247,11 +247,12 @@ if section(1, 'CACHE INFO'):
     # export per-chr marker diff: loci in Python but not in R's markers.RData
     # load R marker lists to identify the extra Python loci
     _r_marker_rows = []
+    _happy_root = os.path.join(miqtl_dir, 'output', 'genomecache', 'additive')
     for chrom in chromosomes:
-        _mf = os.path.join(R_DATA, '..', '..', '..', '..', 'output',
-                           'genomecache', 'additive', f'chr{chrom}', 'markers.RData')
-        _mf = os.path.normpath(_mf)
-        if not os.path.exists(_mf): continue
+        _mf = os.path.join(_happy_root, f'chr{chrom}', 'markers.RData')
+        if not os.path.exists(_mf):
+            log.debug(f'  marker diff chr{chrom}: markers.RData not found at {_mf}')
+            continue
         try:
             import rpy2.robjects as _ro2
             _env2 = _ro2.r['new.env']()
@@ -267,10 +268,12 @@ if section(1, 'CACHE INFO'):
                     _r_marker_rows.append({'chr': chrom, 'locus': _l, 'side': 'r_only'})
                 log.info(f'  chr{chrom} marker diff: py_only={len(_py_only)}  r_only={len(_r_only)}')
         except Exception as _e:
-            log.debug(f'  marker diff chr{chrom} skipped: {_e}')
+            log.warning(f'  marker diff chr{chrom} failed: {_e}')
     if _r_marker_rows:
         save_csv(_col(pd.DataFrame(_r_marker_rows), ['chr', 'locus', 'side']),
                  'marker_diff.csv')
+    else:
+        log.warning('  marker_diff.csv not written — no markers.RData files found or rpy2 unavailable')
 
     py_founders = list(cache_py.founders)
     py_sids     = list(cache_py.sample_ids)
