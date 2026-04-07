@@ -185,6 +185,8 @@ write.csv(gmap_flat, file.path(base_dir, 'input', 'gmap.csv'), quote = FALSE, ro
 write.csv(pmap_flat, file.path(base_dir, 'input', 'pmap.csv'), quote = FALSE, row.names = FALSE)
 
 yaml_path <- file.path(base_dir, 'input', 'control.yaml')
+# crosstype: do is correct for CC — CC and DO share the same 8-founder HMM
+# structure in qtl2. the distinction is in cross_info/ngen below, not crosstype.
 writeLines(c('crosstype: do',
              'geno:',         paste0('  - geno/cc_chr',             chromosomes, '.csv'),
              'founder_geno:', paste0('  - founder_geno/founder_chr', chromosomes, '.csv'),
@@ -211,6 +213,12 @@ if (length(high_miss))
 # only reads markers present in gmap.csv → loci mismatch. Ground truth = gmap.csv.
 message('\n[7] running HMM (calc_genoprob) — ', length(cc_cols),
         ' CC strains, genotyped markers only, cores = ', n_cores)
+# ngen=20: number of CC intercrossing generations before inbreeding.
+# qtl2's do HMM uses this to scale transition probabilities (r_eff formula
+# differs from Python's n_gen). the CC consensus map encodes cumulative
+# recombination, so qtl2 uses ngen to set the equilibrium distribution;
+# Python hmm.py uses n_gen=1 (r_eff = r * 1) to use r directly from the
+# same map — equivalent result from different parameterisations.
 cross$cross_info <- matrix(20L, nrow = nrow(cross$cross_info), ncol = 1,
                            dimnames = list(rownames(cross$cross_info), 'ngen'))
 probs <- calc_genoprob(cross = cross, map = cross$gmap,

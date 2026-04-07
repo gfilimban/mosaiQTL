@@ -79,7 +79,7 @@ def haldane_recomb(d_morgan):
     return 0.5 * (1 - np.exp(-2 * np.abs(d_morgan)))
 
 
-def transition_matrix(r, n_founders=8, n_gen=20):
+def transition_matrix(r, n_founders=8, n_gen=1):
     """compute diplotype transition matrix at recombination fraction r.
 
     for CC mice the genetic map (from the CC consensus map) already
@@ -275,7 +275,7 @@ def uniform_init(n_founders=8):
 # ── top-level: compute haplotype probs for CC strains ────────────────────────
 
 def calc_genoprob_cc(geno_matrix, founder_genos, gmap_positions,
-                     n_founders=8, n_gen=20, error_prob=0.002,
+                     n_founders=8, n_gen=1, error_prob=0.002,
                      return_additive=True):
     """compute founder haplotype probabilities for CC inbred strains.
 
@@ -289,7 +289,13 @@ def calc_genoprob_cc(geno_matrix, founder_genos, gmap_positions,
         founder_genos : (n_markers, J) array of founder genotype calls
         gmap_positions: (n_markers,) genetic positions in Morgans (not cM)
         n_founders    : J (8 for CC)
-        n_gen         : inbreeding generations (20 for CC)
+        n_gen         : transition scaling factor. MUST be 1 for CC with the
+                        consensus genetic map (JAX/UNC GigaMUGA map), because
+                        that map already encodes the cumulative recombination
+                        from ~20 generations of intercrossing — r is used
+                        directly (r_eff = r * n_gen). use n_gen > 1 only for
+                        outbred populations (e.g. DO) where the map does not
+                        encode generational history.
         error_prob    : GigaMUGA genotyping error rate (0.002)
         return_additive: if True return (n_cc, J, n_markers) additive probs
                          if False return (n_cc, n_states, n_markers) diplotype

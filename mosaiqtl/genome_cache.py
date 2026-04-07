@@ -233,7 +233,7 @@ class GenomeCache:
     @staticmethod
     def from_gigamuga(gigamuga_path, gmap_dir, pmap_dir,
                       cc_cols, founder_cols, f1_crosses,
-                      n_founders=8, n_gen=20, error_prob=0.002,
+                      n_founders=8, n_gen=1, error_prob=0.002,
                       just_these_loci=None, qc=None):
         """build genome cache from raw GigaMUGA genotype data.
         this is the fully Python-native path: reads the GigaMUGA consensus
@@ -267,7 +267,9 @@ class GenomeCache:
         n_founders : int
             number of founders J (8 for CC)
         n_gen : int
-            inbreeding generations (20 for CC)
+            transition scaling factor passed to calc_genoprob_cc. must be 1
+            for CC with the GigaMUGA consensus map (map already encodes
+            cumulative recombination history; r used directly). default 1.
         error_prob : float
             GigaMUGA genotyping error rate (0.002)
         just_these_loci : list of str or None
