@@ -1,28 +1,43 @@
 # build_genomecache.R
-# Builds the mosaiQTL genome cache from the GigaMUGA consensus matrix.
-# Replaces founders_f1_genomecache.ipynb with a single executable R script.
+# Builds the mosaiQTL HAPPY genome cache from the GigaMUGA consensus matrix.
+#
+# Design rationale (qtl2-informed):
+#   The canonical qtl2convert workflow (Broman lab, kbroman.org/qtl2/pages/prep_do_data.html)
+#   uses find_unique_geno() on FOUNDER genotypes to identify the two alleles per marker,
+#   then encode_geno() to recode both founders and study samples (CC strains) into A/H/B/-
+#   using those founder-derived codes. Markers where founders are monomorphic or fully
+#   missing across all 8 lines are dropped — they carry zero haplotype-discrimination
+#   power for the HAPPY HMM, which assigns founder haplotypes.
+#
+#   The prior version applied find_unique_geno to CC strains — incorrect because:
+#   (a) it conflates missingness in the 33 CC panel with true founder monomorphism;
+#   (b) it admits markers biallelic only by chance among CC strains but uninformative
+#       for founder-haplotype assignment;
+#   (c) it contradicts the qtl2 reference pipeline, which uses founder genotypes as
+#       the allele-code source ("find_unique_geno() to determine the SNP alleles [from
+#       founders]", kbroman.org/qtl2/pages/prep_do_data.html).
+#
+#   Pseudomarkers (insert_pseudomarkers) are NOT used. They are an interpolation device
+#   for qtl2-native scan1() only. Including them would make HAPPY cache loci disagree
+#   with the gmap/pmap CSVs that Python's from_gigamuga reads, producing loci_max_delta
+#   >> 0 in S1 validation.
 #
 # Steps:
 #   1. Load GigaMUGA consensus matrix + genetic/physical maps
-#   2. Intersect markers across all three sources
-#   3. find_unique_geno() on CC strains → drop monomorphic/missing markers
-#   4. encode_geno() A/H/B/- on CC and founders using shared allele codes
-#   5. Write per-chr geno CSVs + gmap.csv + pmap.csv + control.yaml
-#   6. read_cross2() → calc_genoprob() on CC strains (HMM, error_prob=0.002)
+#   2. Intersect markers: gm ∩ gmap ∩ pmap
+#   3. find_unique_geno() on FOUNDERS → drop monomorphic/missing markers
+#   4. encode_geno() on founders (allele codes) + encode_geno() on CC with same codes
+#   5. Write per-chr geno CSVs + flat gmap.csv + pmap.csv + control.yaml
+#   6. read_cross2() → calc_genoprob() (genotyped markers only, no pseudomarkers)
 #   7. Build deterministic founder + F1 prob arrays
-#   8. Merge CC + founder + F1 → genoprob_to_alleleprob() → calc_kinship(loco)
+#   8. Merge CC + founders + F1s → genoprob_to_alleleprob() → calc_kinship(loco)
 #   9. convert.qtl2.to.HAPPY() → HAPPY cache
 #
-# Usage (local):  Rscript build_genomecache.R
-# Usage (HPC):    Rscript build_genomecache.R /path/to/base_dir [n_cores]
-#
-# Arguments:
-#   arg1  base_dir  — root project directory (default: hardcoded path below)
-#   arg2  cores     — number of cores for calc_genoprob (default: 4)
+# Usage: Rscript build_genomecache.R [base_dir] [n_cores]
 
 suppressPackageStartupMessages({
-  library(qtl2)        # calc_genoprob, read_cross2, insert_pseudomarkers, calc_kinship
-  library(qtl2convert) # find_unique_geno, encode_geno
+  library(qtl2)        # read_cross2, calc_genoprob, genoprob_to_alleleprob, calc_kinship
+  library(qtl2convert) # find_unique_geno + encode_geno — applied to founders (allele-code ground truth)
   library(abind)       # abind — merge sample arrays along dim 1
   library(miqtl)       # convert.qtl2.to.HAPPY
   library(data.table)  # fread — fast GigaMUGA loading
@@ -56,6 +71,7 @@ cc_cols <- c(
   'CC024','CC025','CC028','CC029','CC030','CC032','CC036','CC037',
   'CC038','CC041','CC043','CC057','CC060','CC062','CC065','CC071','CC074')
 
+# canonical qtl2/CC founder order and single-letter codes (A-H)
 founder_cols  <- c('AJ','B6J','129S1J','NODJ','NZOJ','CASTJ','PWKJ','WSBJ')
 founder_codes <- c('A','B',  'C',     'D',   'E',   'F',    'G',   'H')
 
@@ -72,7 +88,7 @@ gm <- fread(gigamuga_path, data.table = FALSE)
 rownames(gm) <- gm$marker
 message('  loaded ', nrow(gm), ' markers')
 
-# ── load maps ──────────────────────────────────────────────────────────────────
+# ── load genetic + physical maps ───────────────────────────────────────────────
 read_map <- function(dir) {
   do.call(rbind, lapply(
     list.files(dir, pattern = '^GM_(g|p)map[0-9XYM]+\\.csv$', full.names = TRUE),
@@ -81,7 +97,7 @@ read_map <- function(dir) {
 gmap_raw <- read_map(gmap_dir); rownames(gmap_raw) <- gmap_raw$marker
 pmap_raw <- read_map(pmap_dir); rownames(pmap_raw) <- pmap_raw$marker
 
-# ── step 1d: intersect gm ∩ gmap ∩ pmap ────────────────────────────────────────
+# ── step 2: intersect gm ∩ gmap ∩ pmap ────────────────────────────────────────
 shared_markers <- Reduce(intersect, list(rownames(gm), rownames(gmap_raw), rownames(pmap_raw)))
 message('[2] shared markers (gm ∩ gmap ∩ pmap): ', length(shared_markers))
 
@@ -89,43 +105,46 @@ gm       <- gm[shared_markers, ]
 gmap_raw <- gmap_raw[shared_markers, ]
 pmap_raw <- pmap_raw[shared_markers, ]
 
-geno_cc       <- as.matrix(gm[, cc_cols])
+# replace N (GigaMUGA missing code) with - (qtl2 convention)
 geno_founders <- as.matrix(gm[, founder_cols])
-
-# ── step 1e: find_unique_geno on CC + encode A/H/B/- ──────────────────────────
-# replace N (GigaMUGA missing) with - (qtl2 missing)
-geno_cc_clean       <- replace(geno_cc,       geno_cc == 'N',       '-')
+geno_cc       <- as.matrix(gm[, cc_cols])
 geno_founders_clean <- replace(geno_founders, geno_founders == 'N', '-')
+geno_cc_clean       <- replace(geno_cc,       geno_cc == 'N',       '-')
 
-# find_unique_geno identifies two alleles per marker across CC only
-# returns marker × 2 matrix; NA row = monomorphic or fully-missing in CC → drop
-allele_codes  <- find_unique_geno(geno = geno_cc_clean)
+# ── step 3: find_unique_geno on FOUNDERS (qtl2 allele-code ground truth) ───────
+# Applied to the 8 founder columns — exactly as in the qtl2 reference pipeline.
+# Returns marker x 2 matrix; NA row = monomorphic or fully-missing in founders.
+# These markers have no power to distinguish founder haplotypes → drop them.
+allele_codes  <- find_unique_geno(geno = geno_founders_clean)
 valid_markers <- rownames(allele_codes)[!apply(is.na(allele_codes), 1, any)]
 message('[3] dropping ', nrow(allele_codes) - length(valid_markers),
-        ' monomorphic or fully-missing markers (find_unique_geno)')
+        ' markers monomorphic/missing across 8 founders (find_unique_geno on founders)')
 message('    valid markers: ', length(valid_markers))
 
-allele_codes          <- allele_codes[valid_markers, , drop = FALSE]
-geno_cc_clean         <- geno_cc_clean[valid_markers, , drop = FALSE]
-geno_founders_clean   <- geno_founders_clean[valid_markers, , drop = FALSE]
-gmap_raw              <- gmap_raw[valid_markers, ]
-pmap_raw              <- pmap_raw[valid_markers, ]
+allele_codes        <- allele_codes[valid_markers, , drop = FALSE]
+geno_founders_clean <- geno_founders_clean[valid_markers, , drop = FALSE]
+geno_cc_clean       <- geno_cc_clean[valid_markers, , drop = FALSE]
+gmap_raw            <- gmap_raw[valid_markers, ]
+pmap_raw            <- pmap_raw[valid_markers, ]
 
-# encode using shared allele_codes — same A/B frame for CC and founders
-geno_cc_encoded       <- encode_geno(geno = geno_cc_clean,       allele_codes = allele_codes)
+# ── step 4: encode_geno on founders then CC using founder-derived allele codes ─
+# Founder-derived allele_codes define the A/B frame; both founders and CC strains
+# are encoded with the same codes so haplotype assignments are founder-reference
+# consistent throughout the pipeline.
 geno_founders_encoded <- encode_geno(geno = geno_founders_clean, allele_codes = allele_codes)
-message('[4] encoding complete: ', nrow(geno_cc_encoded), ' markers')
+geno_cc_encoded       <- encode_geno(geno = geno_cc_clean,       allele_codes = allele_codes)
+message('[4] encoding complete: ', nrow(geno_founders_encoded), ' markers')
 
-# ── step 1f: final sync — drop NA chr rows, reconcile all objects ──────────────
+# ── step 5: final sync — drop NA-chr rows, reconcile ──────────────────────────
 gmap_raw <- gmap_raw[!is.na(gmap_raw$chr), ]
 pmap_raw <- pmap_raw[!is.na(pmap_raw$chr), ]
 
 final_markers <- Reduce(intersect, list(
-  rownames(geno_cc_encoded), rownames(geno_founders_encoded),
-  rownames(gmap_raw),        rownames(pmap_raw)))
+  rownames(geno_founders_encoded), rownames(geno_cc_encoded),
+  rownames(gmap_raw),              rownames(pmap_raw)))
 
-geno_cc_encoded       <- geno_cc_encoded[final_markers, , drop = FALSE]
 geno_founders_encoded <- geno_founders_encoded[final_markers, , drop = FALSE]
+geno_cc_encoded       <- geno_cc_encoded[final_markers, , drop = FALSE]
 gmap_raw              <- gmap_raw[final_markers, ]
 pmap_raw              <- pmap_raw[final_markers, ]
 
@@ -144,7 +163,7 @@ pmap_list <- lapply(setNames(chromosomes, chromosomes), function(chr) {
 message('[5] final markers: ', length(final_markers),
         '  chromosomes: ', paste(chromosomes, collapse = ', '))
 
-# ── step 1g: write CSVs + YAML + build cross ──────────────────────────────────
+# ── step 6: write per-chr CSVs + flat map files + control.yaml ────────────────
 for (chr in chromosomes) {
   m <- names(gmap_list[[chr]])
   write.csv(t(geno_cc_encoded[m, , drop = FALSE]),
@@ -153,6 +172,8 @@ for (chr in chromosomes) {
             file = file.path(founder_dir, paste0('founder_chr', chr, '.csv')), quote = FALSE)
 }
 
+# flat gmap/pmap — written from final_markers; Python from_gigamuga reads these
+# to reproduce the exact same marker set → loci_max_delta = 0 in S1
 gmap_flat <- do.call(rbind, lapply(names(gmap_list), function(chr)
   data.frame(marker = names(gmap_list[[chr]]), chr = chr,
              pos = unname(gmap_list[[chr]]), stringsAsFactors = FALSE)))
@@ -165,7 +186,7 @@ write.csv(pmap_flat, file.path(base_dir, 'input', 'pmap.csv'), quote = FALSE, ro
 
 yaml_path <- file.path(base_dir, 'input', 'control.yaml')
 writeLines(c('crosstype: do',
-             'geno:',   paste0('  - geno/cc_chr',             chromosomes, '.csv'),
+             'geno:',         paste0('  - geno/cc_chr',             chromosomes, '.csv'),
              'founder_geno:', paste0('  - founder_geno/founder_chr', chromosomes, '.csv'),
              'gmap: gmap.csv', 'pmap: pmap.csv', 'na.strings: "-"',
              'alleles: [A, B, C, D, E, F, G, H]', 'x_chr: X',
@@ -175,7 +196,7 @@ writeLines(c('crosstype: do',
 cross <- read_cross2(yaml_path)
 message('[6] cross loaded: ', nrow(cross$geno[[1]]), ' CC strains')
 
-# ── step 1h: per-strain missing rate QC (informational) ───────────────────────
+# per-strain missing rate QC (informational)
 miss <- apply(geno_cc_encoded == '-', 2, mean)
 message('[QC] per-strain missing rate — min: ', round(min(miss), 3),
         '  median: ', round(median(miss), 3), '  max: ', round(max(miss), 3))
@@ -183,23 +204,21 @@ high_miss <- names(miss)[miss > 0.10]
 if (length(high_miss))
   message('  WARNING >10% missing: ', paste(high_miss, collapse = ', '))
 
-# ── step 2: HMM — CC genoprobs ─────────────────────────────────────────────────
-message('\n[7] running HMM (calc_genoprob) on ', length(cc_cols),
-        ' CC strains — cores = ', n_cores, '...')
-
-# ngen = 20 CC inbreeding generations; required before calc_genoprob
+# ── step 7: HMM — CC genoprobs ─────────────────────────────────────────────────
+# cross$gmap = genotyped markers only. No insert_pseudomarkers: pseudomarkers are
+# for scan1() interpolation and would add synthetic loci to probs_combined, causing
+# convert.qtl2.to.HAPPY() to write those loci into the cache. Python's from_gigamuga
+# only reads markers present in gmap.csv → loci mismatch. Ground truth = gmap.csv.
+message('\n[7] running HMM (calc_genoprob) — ', length(cc_cols),
+        ' CC strains, genotyped markers only, cores = ', n_cores)
 cross$cross_info <- matrix(20L, nrow = nrow(cross$cross_info), ncol = 1,
                            dimnames = list(rownames(cross$cross_info), 'ngen'))
-
-# pseudomarkers at 0.2 cM spacing
-map_with_pseudo <- insert_pseudomarkers(map = cross$gmap, step = 0.2)
-
-probs <- calc_genoprob(cross = cross, map = map_with_pseudo,
+probs <- calc_genoprob(cross = cross, map = cross$gmap,
                        error_prob = 0.002, cores = n_cores)
 saveRDS(probs, probs_cc_out)
 message('  saved: ', probs_cc_out)
 
-# ── step 3: founder prob arrays (deterministic) ────────────────────────────────
+# ── step 8: deterministic founder prob arrays ──────────────────────────────────
 message('\n[8] building deterministic founder prob arrays...')
 make_founder_probs <- function(probs_ref, strain_id, founder_code) {
   state <- paste0(founder_code, founder_code)  # homozygous diplotype e.g. 'AA'
@@ -217,7 +236,7 @@ names(founder_probs_list) <- founder_cols
 saveRDS(founder_probs_list, probs_f_out)
 message('  saved: ', probs_f_out)
 
-# ── step 4: F1 prob arrays (deterministic) ─────────────────────────────────────
+# ── step 9: deterministic F1 prob arrays ──────────────────────────────────────
 message('\n[9] building deterministic F1 prob arrays...')
 make_f1_probs <- function(probs_ref, strain_id, code1, code2) {
   state <- paste0(sort(c(code1, code2)), collapse = '')  # alphabetical diplotype
@@ -236,7 +255,7 @@ names(f1_probs_list) <- f1_crosses$sample_id
 saveRDS(f1_probs_list, probs_f1_out)
 message('  saved: ', probs_f1_out)
 
-# ── step 5: merge CC + founders + F1s → allele probs → LOCO kinship ───────────
+# ── step 10: merge CC + founders + F1s → allele probs → LOCO kinship ──────────
 message('\n[10] merging 48 genotypes and computing LOCO kinship...')
 probs_combined <- lapply(names(probs), function(chr) {
   abind(probs[[chr]],
@@ -246,17 +265,17 @@ probs_combined <- lapply(names(probs), function(chr) {
 })
 names(probs_combined) <- names(probs)
 attributes(probs_combined) <- attributes(probs)
-names(probs_combined)      <- names(probs)  # restore after attributes() overwrite
+names(probs_combined)      <- names(probs)
 
 probs_allele <- genoprob_to_alleleprob(probs = probs_combined)
 kinship_loco <- calc_kinship(probs = probs_allele, type = 'loco')
 saveRDS(kinship_loco, kinship_out)
 message('  kinship saved: ', kinship_out)
-message('  kinship dim (chr1): ', paste(dim(kinship_loco[['1']]), collapse = ' × '))
+message('  kinship dim (chr1): ', paste(dim(kinship_loco[['1']]), collapse = ' x '))
 diag_v <- diag(kinship_loco[['1']])
 message('  diagonal — min: ', round(min(diag_v), 3), '  max: ', round(max(diag_v), 3))
 
-# ── step 6: convert to HAPPY cache ────────────────────────────────────────────
+# ── step 11: convert to HAPPY cache ───────────────────────────────────────────
 message('\n[11] writing HAPPY genome cache...')
 convert.qtl2.to.HAPPY(qtl2.object = probs_combined, cross.object = cross,
                        HAPPY.output.path = genomecache_path)

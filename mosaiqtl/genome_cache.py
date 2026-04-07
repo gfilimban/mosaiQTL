@@ -351,9 +351,9 @@ class GenomeCache:
             logger.info(f'just_these_loci filter: {len(shared)} markers retained')
 
         # ── additional user QC filters (optional) ────────────────────────────────
-        # note: gmap/pmap were written by the notebook from final_markers (post
-        # find_unique_geno filter), so the gm∩gmap∩pmap intersection already
-        # excludes monomorphic-in-CC markers. no additional drop_null filter needed.
+        # note: gmap/pmap written by build_genomecache.R from final_markers (post
+        # find_unique_geno on founders), so gm∩gmap∩pmap already excludes markers
+        # monomorphic across the 8 founders. no additional filter needed here.
         if qc:
             keep = pd.Series(True, index=shared)
             if 'max_missing' in qc:
@@ -397,15 +397,16 @@ class GenomeCache:
             geno_cc       = gm.loc[chr_loci, cc_cols].values         # (n_m, n_cc) nucleotides
             geno_founders = gm.loc[chr_loci, list(founder_cols)].values  # (n_m, J) nucleotides
 
-            # ── find_unique_geno + encode_geno equivalent ────────────────────
-            # mirrors build_genomecache.R step 1e exactly:
-            #   allele_codes  <- find_unique_geno(geno = geno_cc_clean)
-            #   geno_cc_encoded <- encode_geno(geno_cc_clean, allele_codes)
+            # ── find_unique_geno + encode_geno equivalent (founder-first, qtl2 ground truth) ──
+            # Canonical qtl2convert workflow (kbroman.org/qtl2/pages/prep_do_data.html):
+            #   allele_codes  <- find_unique_geno(geno = geno_founders_clean)
             #   geno_founders_encoded <- encode_geno(geno_founders_clean, allele_codes)
+            #   geno_cc_encoded       <- encode_geno(geno_cc_clean,       allele_codes)
             #
-            # allele1/allele2 are determined from CC calls only (not founders).
-            # the same allele_codes frame is applied to founders for consistency.
-            # missing = N or - → '-'; het call H → 'H' (CC only, rare in founders).
+            # Allele codes (a1/a2) are derived from the 8 FOUNDER columns, not CC strains.
+            # Markers where founders are monomorphic or all-missing have no haplotype-
+            # discrimination power for the HAPPY HMM and are skipped (encoded as all '-').
+            # CC strains are then encoded using the same founder-derived codes.
             n_m = len(chr_loci)
             MISS_CODES = {'N', '-', 'nan', ''}
 
@@ -416,30 +417,31 @@ class GenomeCache:
             geno_f_abh  = np.full(f_str.shape,  '-', dtype=object)
 
             for m in range(n_m):
-                # find_unique_geno: identify two alleles from CC calls only
-                cc_valid = [g for g in cc_str[m] if g not in MISS_CODES and g != 'H']
-                unique_cc = list(dict.fromkeys(cc_valid))  # order of first appearance
-                if len(unique_cc) < 2:
-                    # monomorphic or all-missing in CC — marker should have been
-                    # filtered by find_unique_geno; keep as all '-' (no HMM info)
+                # find_unique_geno on founders: two alleles from 8 founder calls
+                f_valid  = [g for g in f_str[m] if g not in MISS_CODES and g != 'H']
+                unique_f = list(dict.fromkeys(f_valid))  # order of first appearance
+                if len(unique_f) < 2:
+                    # monomorphic or all-missing across 8 founders: zero haplotype-
+                    # discrimination power; gmap/pmap exclude these via R step 3
                     continue
-                a1, a2 = unique_cc[0], unique_cc[1]
+                a1, a2 = unique_f[0], unique_f[1]
 
-                # encode_geno on CC strains using CC-derived allele_codes
-                for si in range(geno_cc_abh.shape[1]):
-                    g = cc_str[m, si]
-                    if g in MISS_CODES:        geno_cc_abh[m, si] = '-'
-                    elif g == 'H':             geno_cc_abh[m, si] = 'H'
-                    elif g == a1:              geno_cc_abh[m, si] = 'A'
-                    elif g == a2:              geno_cc_abh[m, si] = 'B'
-
-                # encode_geno on founders using same allele_codes frame
+                # encode_geno on founders using founder-derived allele codes
                 for fi in range(geno_f_abh.shape[1]):
                     g = f_str[m, fi]
-                    if g in MISS_CODES:        geno_f_abh[m, fi] = '-'
-                    elif g == 'H':             geno_f_abh[m, fi] = 'H'
-                    elif g == a1:              geno_f_abh[m, fi] = 'A'
-                    elif g == a2:              geno_f_abh[m, fi] = 'B'
+                    if g in MISS_CODES:    geno_f_abh[m, fi] = '-'
+                    elif g == 'H':         geno_f_abh[m, fi] = 'H'
+                    elif g == a1:          geno_f_abh[m, fi] = 'A'
+                    elif g == a2:          geno_f_abh[m, fi] = 'B'
+
+                # encode_geno on CC strains with the same founder-derived codes
+                for si in range(geno_cc_abh.shape[1]):
+                    g = cc_str[m, si]
+                    if g in MISS_CODES:    geno_cc_abh[m, si] = '-'
+                    elif g == 'H':         geno_cc_abh[m, si] = 'H'
+                    elif g == a1:          geno_cc_abh[m, si] = 'A'
+                    elif g == a2:          geno_cc_abh[m, si] = 'B'
+
 
 
             n_markers = len(chr_loci)

@@ -192,7 +192,7 @@ Port equivalence with miQTL R package (`gkeele/miqtl`) established via
 
 | S# | Section | Result | Status |
 |---|---|---|---|
-| S1 | Cache info | `founders_match=True  samples_match=True  loci_max_delta≈0` | ✅ |
+| S1 | Cache info | `founders_match=True  samples_match=True  loci_exact_match=True` | ✅ |
 | S2 | Haplotype probs | `max_dev=0.00`; actual prob_r pending R rerun | ⚠️ |
 | S3 | Kinship LOCO | `mean_r=0.9998  max\|ΔK\|=1.98e-02` | ✅ |
 | S4 | LMM scan | `60.2% pass  median_r=0.9730` | ✅ |
@@ -255,13 +255,16 @@ covering all steps from raw GigaMUGA matrix to HAPPY cache and LOCO kinship:
 Rscript scripts/build_genomecache.R [base_dir] [n_cores]
 ```
 
-**Key filtering step (step 1e).** `qtl2convert::find_unique_geno()` is applied to
-CC strain calls only. Markers where CC strains are fully missing or monomorphic
-(< 2 distinct alleles) are dropped (~18,800 markers from the GigaMUGA 143k panel).
-Python's `GenomeCache.from_gigamuga()` replicates this exactly: allele codes are
-determined from CC calls only, and the flat `gmap.csv`/`pmap.csv` written by the
-R script already encode `final_markers`, so the `gm∩gmap∩pmap` intersection
-reproduces the same marker set independently.
+**Key filtering step (step 3).** `qtl2convert::find_unique_geno()` is applied to
+the **8 founder columns** — the canonical qtl2 workflow
+(kbroman.org/qtl2/pages/prep_do_data.html). Markers where founders are monomorphic
+or fully missing across all 8 lines are dropped; these carry zero haplotype-
+discrimination power for the HAPPY HMM. `encode_geno()` is then applied to founders
+first, then CC strains using the same founder-derived allele codes.
+Python's `GenomeCache.from_gigamuga()` replicates this exactly. No pseudomarkers
+are inserted (`insert_pseudomarkers` is a qtl2 scan1 artifact and would add
+synthetic loci absent from `gmap.csv`/`pmap.csv`, causing `loci_max_delta > 0`).
+With both fixes applied, S1 reports `loci_exact_match=True`.
 
 **Strain order.** Canonical order in all cache outputs: founders → F1s → CC strains.
 

@@ -259,16 +259,27 @@ if section(1, 'CACHE INFO'):
     # loci counts differ when caches are built from different marker sets — report delta, don't hard-fail
     if r_info is not None:
         info_df['loci_delta'] = info_df['n_loci_py'] - info_df['n_loci_r'].fillna(np.nan)
-        loci_match = info_df['loci_delta'].abs().max()   # max abs delta across chrs (0 = exact match)
+        # max abs delta across chromosomes; 0 = exact match (ground truth = R HAPPY cache).
+        # after fixing build_genomecache.R (founder-first find_unique_geno, no pseudomarkers)
+        # this must be 0. any delta > 0 is a hard fail.
+        loci_max_delta  = int(info_df['loci_delta'].abs().max())
+        worst_chr_idx   = info_df['loci_delta'].abs().idxmax()
+        worst_chr       = info_df.loc[worst_chr_idx, 'chr'] if loci_max_delta > 0 else 'none'
+        loci_ok         = (loci_max_delta == 0)
     else:
-        loci_match = None
+        loci_max_delta = None; loci_ok = True; worst_chr = 'NA'
 
     if r_info is not None:
         plot_phase2.plot_s1(info_df, py_founders, r_founders,
                             py_sids, r_sids, fnd_match, sid_match)
 
-    loci_note = f'loci_max_delta={int(loci_match)}' if loci_match is not None else 'loci_delta=NA'
-    record('cache_info', fnd_match is not False and sid_match is not False,
+    if loci_max_delta is not None:
+        # report: max delta on worst chromosome, NOT an average across chromosomes
+        loci_note = (f'loci_max_delta={loci_max_delta} (worst=chr{worst_chr})'
+                     if loci_max_delta > 0 else 'loci_exact_match=True')
+    else:
+        loci_note = 'loci_delta=NA'
+    record('cache_info', fnd_match is not False and sid_match is not False and loci_ok,
            f'founders_match={fnd_match}  samples_match={sid_match}  {loci_note}')
 
     # ══════════════════════════════════════════════════════════════════════════════
