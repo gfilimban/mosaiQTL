@@ -588,15 +588,8 @@ environment(new_fn) <- asNamespace('miqtl')                 # ← keep miqtl nam
 utils::assignInNamespace('collapse.genomecache', new_fn, ns='miqtl')  # ← safe assign
 message('  collapse patched')
 
-orig_chr_dirs  <- list.dirs(file.path(genomecache_path, 'additive'),
-                            full.names=FALSE, recursive=FALSE)
-coll_chr_dirs  <- if (dir.exists(file.path(collapsed_path, 'additive')))
-                    list.dirs(file.path(collapsed_path, 'additive'),
-                              full.names=FALSE, recursive=FALSE)
-                  else character(0)
 needs_collapse <- !dir.exists(collapsed_path) ||
-  length(list.files(collapsed_path, recursive=TRUE, pattern='\\.RData$')) == 0 ||
-  !all(orig_chr_dirs %in% coll_chr_dirs)
+  length(list.files(collapsed_path, recursive=TRUE, pattern='\\.RData$')) == 0
 if (needs_collapse) {
   if (dir.exists(collapsed_path)) unlink(collapsed_path, recursive=TRUE)
   message('  collapsing (l2.norm, tol=0.02)...')
