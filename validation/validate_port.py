@@ -463,11 +463,11 @@ if section(3, 'KINSHIP LOCO'):
             if _kc not in kinship_py: continue
             _kmat = kinship_py[_kc]
             _sids = list(cache_py.sample_ids)
-            # reorder to match R convention: founders+F1s first, then CC strains
-            # R does: c(non-CC subjects, CC subjects) from h$getSubjects()
-            _non_cc = [s for s in _sids if not s.startswith('CC')]
-            _cc     = [s for s in _sids if s.startswith('CC')]
-            _ordered = _non_cc + _cc
+            # reorder to canonical order: founders → F1s → CC strains
+            _founders = [s for s in _sids if not s.startswith('CC') and 'F1' not in s and s not in [f[0] for f in F1_CROSSES]]
+            _f1s      = [s for s in _sids if s in [f[0] for f in F1_CROSSES]]
+            _cc       = [s for s in _sids if s.startswith('CC')]
+            _ordered  = _founders + _f1s + _cc
             _oi = [_sids.index(s) for s in _ordered]
             _kmat_ord = _kmat[np.ix_(_oi, _oi)]
             _kdf = pd.DataFrame(_kmat_ord, index=_ordered, columns=_ordered)
