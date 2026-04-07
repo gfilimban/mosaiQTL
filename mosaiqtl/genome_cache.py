@@ -347,32 +347,30 @@ class GenomeCache:
             gmap     = gmap.loc[shared]
             pmap_idx = pmap_idx.loc[shared]
 
-        # ── drop_nullmarkers-equivalent QC (mirrors qtl2's drop_nullmarkers()) ────
-        # qtl2 drops a marker when founder_geno is:
-        #   (a) all missing — no founder has a valid call
-        #   (b) monomorphic — all non-missing founders share the same allele
-        # this is the exact filter applied before calc_genoprob() in the CC workflow.
-        # ref: qtl2 R/drop_markers.R drop_nullmarkers()
+        # ── find_unique_geno-equivalent filter (mirrors notebook step 1e) ───────────
+        # the HAPPY cache was built by the founders_f1_genomecache notebook using
+        # qtl2convert::find_unique_geno(geno = geno_cc_clean): drops markers where
+        # CC strains are fully missing OR monomorphic (only one allele observed).
+        # founders are not involved in this filter.
+        # NA row in find_unique_geno output → marker dropped.
         if qc is None or qc.get('drop_null', True):
-            fg = gm_raw.loc[shared, list(founder_cols)].replace({'N': '-', 'nan': '-', '': '-'})
             cg = gm_raw.loc[shared, cc_cols].replace({'N': '-', 'nan': '-', '': '-'})
-            n_founders = len(list(founder_cols))
             keep_null = []
             for m in shared:
-                calls = fg.loc[m].values.astype(str)
-                valid = calls[calls != '-']
-                # (a) all founders missing — drop (qtl2: ntyped==0)
-                if len(valid) == 0:
-                    continue
-                # (b) all founders typed AND monomorphic — drop
-                # qtl2: only checks monomorphism when ntyped==nrow(fg), i.e. no missing founders
-                if len(valid) == n_founders and len(set(valid)) == 1:
-                    continue
-                # (c) all CC genotypes missing — drop (qtl2: n_typed(cross)==0)
                 cc_calls = cg.loc[m].values.astype(str)
-                if len(cc_calls[cc_calls != '-']) == 0:
+                valid_cc  = cc_calls[cc_calls != '-']
+                # (a) all CC missing → find_unique_geno returns NA row
+                if len(valid_cc) == 0:
+                    continue
+                # (b) CC monomorphic → find_unique_geno returns NA row (only 1 unique allele)
+                if len(set(valid_cc)) < 2:
                     continue
                 keep_null.append(m)
+            n_null = len(shared) - len(keep_null)
+            if n_null:
+                logger.info(f'find_unique_geno filter: dropped {n_null} markers '
+                            f'(CC all-missing or monomorphic)')
+            shared = keep_null
             n_null = len(shared) - len(keep_null)
             if n_null:
                 logger.info(f'drop_nullmarkers: dropped {n_null} markers '
