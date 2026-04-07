@@ -343,6 +343,9 @@ class GenomeCache:
             allow = set(just_these_loci)
             shared = [m for m in shared if m in allow]
             logger.info(f'just_these_loci filter: {len(shared)} markers retained')
+            gm       = gm_raw.loc[shared]
+            gmap     = gmap.loc[shared]
+            pmap_idx = pmap_idx.loc[shared]
 
         # ── drop_nullmarkers-equivalent QC (mirrors qtl2's drop_nullmarkers()) ────
         # qtl2 drops a marker when founder_geno is:
@@ -352,13 +355,20 @@ class GenomeCache:
         # ref: qtl2 R/drop_markers.R drop_nullmarkers()
         if qc is None or qc.get('drop_null', True):
             fg = gm_raw.loc[shared, list(founder_cols)].replace({'N': '-', 'nan': '-', '': '-'})
+            # cc geno — drop markers where all CC calls are missing (n_typed == 0)
+            cg = gm_raw.loc[shared, cc_cols].replace({'N': '-', 'nan': '-', '': '-'})
             keep_null = []
             for m in shared:
+                # founder checks
                 calls = fg.loc[m].values.astype(str)
                 valid = calls[calls != '-']
-                if len(valid) == 0:               # (a) all missing
+                if len(valid) == 0:               # (a) founders all missing
                     continue
-                if len(set(valid)) == 1:          # (b) monomorphic across founders
+                if len(set(valid)) == 1:          # (b) founders monomorphic
+                    continue
+                # CC check: drop if all CC genotypes are missing
+                cc_calls = cg.loc[m].values.astype(str)
+                if len(cc_calls[cc_calls != '-']) == 0:  # (c) CC all missing
                     continue
                 keep_null.append(m)
             n_null = len(shared) - len(keep_null)
@@ -379,6 +389,13 @@ class GenomeCache:
             if n_before > len(shared):
                 logger.info(f'user qc: {n_before} -> {len(shared)} markers '
                             f'(dropped {n_before - len(shared)})')
+
+        # re-slice gm/gmap/pmap_idx to the post-QC shared set
+        # (gm/gmap/pmap_idx were built before QC — dropped markers must be removed)
+        gm       = gm_raw.loc[shared]
+        gmap     = gmap.loc[shared]
+        pmap_idx = pmap_idx.loc[shared]
+        logger.info(f'post-QC markers: {len(shared)}')
 
 
         # chr column already str — build sorted chromosome list
