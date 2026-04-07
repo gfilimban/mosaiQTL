@@ -261,10 +261,29 @@ the **8 founder columns** — the canonical qtl2 workflow
 or fully missing across all 8 lines are dropped; these carry zero haplotype-
 discrimination power for the HAPPY HMM. `encode_geno()` is then applied to founders
 first, then CC strains using the same founder-derived allele codes.
-Python's `GenomeCache.from_gigamuga()` replicates this exactly. No pseudomarkers
-are inserted (`insert_pseudomarkers` is a qtl2 scan1 artifact and would add
-synthetic loci absent from `gmap.csv`/`pmap.csv`, causing `loci_max_delta > 0`).
-With both fixes applied, S1 reports `loci_exact_match=True`.
+Python's `GenomeCache.from_gigamuga()` replicates this exactly.
+
+**Pseudomarker policy.** `insert_pseudomarkers` → `calc_genoprob` is the standard
+qtl2 workflow for `scan1()` (qtl2-native scanning at inter-marker positions).
+Neither pipeline uses it here because:
+
+- **R side** (`port_validation.R`) drives `scan.h2lmm`, which reads the HAPPY cache
+  directly and performs its own internal haplotype interpolation via the multiple-
+  imputation model (`use.multi.impute=TRUE`). Pseudomarkers in the HAPPY cache would
+  be redundant and inconsistent with what `scan.h2lmm` actually queries.
+- **Python side** (`scan_chromosome`) operates on the same genotyped-marker positions
+  as R for validation parity. If Python added pseudomarker positions and R did not,
+  S4 LOD comparisons would be position-mismatched and uninterpretable.
+- **Kinship** (`genoprob_to_alleleprob` → `calc_kinship`) requires accurate
+  allele-probability estimates at genotyped positions; pseudomarker interpolations
+  are not needed and would add noise. The qtl2 DO user guide itself uses
+  `calc_genoprob` without pseudomarkers for kinship computation.
+
+The two workflows are **fully independent**: R builds the HAPPY cache and kinship
+once from `build_genomecache.R`; Python rebuilds both independently from the same
+raw GigaMUGA inputs via `from_gigamuga`. S1 validates they produce identical marker
+sets; S2–S11 validate agreement on derived quantities. No shared intermediate
+objects pass between pipelines during validation.
 
 **Strain order.** Canonical order in all cache outputs: founders → F1s → CC strains.
 
@@ -304,6 +323,52 @@ validation/phase3/
 ```
 
 ---
+
+
+---
+
+## Assessment audit log
+
+### Session: find_unique_geno & pseudomarker review (commit `7aeea93`)
+
+**Trigger:** Observed `loci_max_delta=1237` in S1 (max delta on single worst chromosome,
+not a per-chromosome average as previously mis-stated). Two independent bugs identified
+in `build_genomecache.R`.
+
+**Bug 1 — `find_unique_geno` applied to CC strains (wrong).** The function is a
+legitimate `qtl2convert` export (`find_unique_geno`: find unique genotypes per marker
+row, returning NA if ≠ 2 unique alleles). However the prior script applied it to CC
+strain calls to derive allele codes. The canonical qtl2 workflow
+(kbroman.org/qtl2/pages/prep_do_data.html) applies `find_unique_geno` to **founder**
+genotypes to identify the two alleles, then `encode_geno` encodes both founders and
+study samples using those founder-derived codes. Applying it to CC strains: (a) admits
+markers monomorphic across all 8 founders but polymorphic by chance in the 33-strain
+CC panel — these have zero haplotype-discrimination power for the HAPPY HMM; (b)
+conflates study-sample missingness with true monomorphism.
+
+**Bug 2 — `insert_pseudomarkers(step=0.2)` passed to `calc_genoprob`.** This added
+synthetic inter-marker positions to `probs_combined`, which `convert.qtl2.to.HAPPY`
+then wrote into the HAPPY cache. Python's `from_gigamuga` reads only genotyped markers
+from `gmap.csv`/`pmap.csv` → loci_max_delta >> 0 in S1 (confirmed root cause of 1237
+delta on densest chromosome).
+
+**Pseudomarker policy established.** `insert_pseudomarkers` is a `scan1()` interpolation
+device. Neither R (`scan.h2lmm` uses internal MI interpolation) nor Python (scans
+genotyped positions for validation parity) should include pseudomarkers in the cache.
+If Python ever adds pseudomarker-density scanning for production use (not validation),
+that is a scan-time concern internal to `scan_chromosome`, not a cache-building concern.
+The HAPPY cache and `from_gigamuga` always use genotyped markers only.
+
+**Pipeline independence confirmed.** R and Python pipelines are fully parallel:
+- R: `build_genomecache.R` (GigaMUGA → HAPPY cache + kinship) → `port_validation.R`
+  (reads cache, runs `scan.h2lmm`, exports reference CSVs)
+- Python: `from_gigamuga` (same GigaMUGA → HMM probs independently) → `validate_port.py`
+  (compares against R CSVs)
+No intermediate objects are shared. S1 is the entry-point consistency check.
+
+**Files changed:** `scripts/build_genomecache.R`, `mosaiqtl/genome_cache.py`,
+`validation/validate_port.py` (S1 gate hardened), `docs/POC_REPORT.md`.
+111/111 tests pass post-fix.
 
 ## Known limitations and planned extensions
 

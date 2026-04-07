@@ -13,18 +13,31 @@
 The HAPPY genome cache is built by `scripts/build_genomecache.R`. Python's
 `GenomeCache.from_gigamuga()` replicates its filtering pipeline exactly.
 
-**Marker filtering (step 1e):** `find_unique_geno(geno = geno_cc_clean)` — applied
-to CC strains only. Drops markers where CC calls are fully missing or monomorphic
-(< 2 unique alleles). ~18,800 markers dropped from the 143k GigaMUGA panel.
+**Marker filtering (step 3):** `find_unique_geno(geno = geno_founders_clean)` —
+applied to the **8 founder columns**. Drops markers where founders are monomorphic
+or all-missing (< 2 unique alleles across founders). These carry zero haplotype-
+discrimination power for the HAPPY HMM. Canonical qtl2convert workflow:
+kbroman.org/qtl2/pages/prep_do_data.html.
 
-**Allele encoding:** `encode_geno()` uses the CC-derived allele codes for both CC
-and founders. A = allele1, B = allele2, H = het, - = missing.
+**Allele encoding:** `encode_geno()` applied founders-first, then CC strains, using
+the founder-derived allele codes. A = allele1, B = allele2, H = het, - = missing.
 
-**Python equivalence:** allele1/allele2 determined from CC calls only
-(`dict.fromkeys` to preserve first-appearance order). Same codes applied to
-founders. Flat `gmap.csv`/`pmap.csv` written from `final_markers` are used as
-the canonical marker set — the `gm∩gmap∩pmap` intersection reproduces
-`find_unique_geno` output without re-running it.
+**Python equivalence:** allele1/allele2 derived from founder calls
+(`dict.fromkeys` to preserve first-appearance order). Same codes applied to CC
+strains. Flat `gmap.csv`/`pmap.csv` written from `final_markers` (post-founder
+`find_unique_geno`) are the canonical marker set — `gm∩gmap∩pmap` intersection
+in Python reproduces the same set independently.
+
+**Pseudomarkers:** not used in either pipeline. `insert_pseudomarkers` is a
+`scan1()` device; `scan.h2lmm` (R) and `scan_chromosome` (Python) both operate
+on genotyped-marker positions. Adding pseudomarkers to the cache would (a) create
+loci present in R's HAPPY cache but absent from Python's `gmap.csv`, producing
+S1 `loci_max_delta > 0`, and (b) misalign position grids for S4 LOD comparison.
+
+**Pipeline independence:** R and Python rebuild all intermediate objects
+independently from the same raw GigaMUGA inputs. No shared intermediate files
+pass between pipelines during validation. S1 validates structural consistency;
+S2–S11 validate derived-quantity agreement.
 
 ---
 
@@ -151,11 +164,18 @@ founder H (WSBJ) in both implementations.
 
 **Metric:** $\Delta_\text{loci} = \max_c |n_{\text{loci},c}^\text{py} - n_{\text{loci},c}^R|$
 
-**Pass criterion:** `founders_match=True`, `samples_match=True`; $\Delta_\text{loci}$ reported but not hard-failed (caches may differ by marker QC filter).
+**Pass criterion:** `founders_match=True`, `samples_match=True`, `loci_exact_match=True` ($\Delta_\text{loci}=0$, hard fail). With aligned pipelines (founder-first filter, no pseudomarkers) any delta indicates a divergence in QC logic and must be resolved before downstream sections are trusted.
 
-**Current result:** ✅ `founders_match=True  samples_match=True  loci_max_delta≈0`
+**Current result:** ✅ `founders_match=True  samples_match=True  loci_exact_match=True`
 
-**Root cause resolved.** The prior delta of 1237 was traced to Python using founder calls to determine allele codes (allele1/allele2), while the R cache notebook (`build_genomecache.R` step 1e) uses `find_unique_geno()` on CC calls only. Python now replicates this exactly — allele codes derived from CC strains, applied consistently to founders. The flat `gmap.csv`/`pmap.csv` written by the R script encode `final_markers` post-`find_unique_geno`, so the `gm∩gmap∩pmap` intersection independently reproduces the same marker set. Residual delta (if any) reflects unavoidable floating-point or ordering differences.
+**Root cause resolved (commit `7aeea93`).** The prior `loci_max_delta=1237` (max on
+worst chromosome — not a per-chromosome average) had two independent causes:
+(1) `find_unique_geno` was applied to CC strains instead of founders — fixed by
+switching to the canonical qtl2convert workflow (founder-first allele codes);
+(2) `insert_pseudomarkers(step=0.2)` was passed to `calc_genoprob`, injecting
+synthetic loci into the HAPPY cache that `gmap.csv` does not contain — fixed by
+using `cross$gmap` (genotyped markers only). With both fixes, S1 reports
+`loci_exact_match=True` and the hard-fail gate is satisfied.
 
 ---
 
@@ -880,7 +900,10 @@ what a passing result looks like, and how to interpret failure.
 |---|---|---|---|---|
 | `s1_cache_info.png` | Grouped bar + metadata table | Structural check; no continuous values to compare | Bars nearly equal per chr; all table flags True | Systematic loci excess in one implementation indicates different QC filters |
 
-**Inference.** `loci_max_delta≈0` — Python and R now use the same CC-based `find_unique_geno` marker filter. Both gmap/pmap and the Python allele encoding step are now consistent. Structural metadata (founder set, sample set) must be exact; any residual loci delta < 10 is acceptable rounding from chr boundary handling.
+**Inference.** `loci_exact_match=True` — both pipelines use founder-based
+`find_unique_geno` and genotyped-marker-only `calc_genoprob` (no pseudomarkers).
+Delta must be exactly 0; any non-zero value indicates divergent QC logic and
+blocks trust in S2–S11.
 
 ---
 
