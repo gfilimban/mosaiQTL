@@ -266,17 +266,36 @@ def forward_backward(obs_seq, E, T_list, init_probs, log_scale=True):
 # ── initial state distribution ────────────────────────────────────────────────
 
 def uniform_init(n_founders=8):
-    """uniform diplotype initial distribution (equal weight to all states)."""
+    """uniform diplotype initial distribution (equal weight to all states).
+    for non-CC / unknown breeding design.
+    """
     states, _ = build_diplotype_states(n_founders)
     n = len(states)
     return np.full(n, 1.0 / n)
+
+
+def cc_inbred_init(n_founders=8):
+    """initial distribution for fully inbred CC strains.
+
+    CC strains are homozygous throughout after ~20 generations of inbreeding.
+    only the 8 homozygous diplotype states (AA, BB, ..., HH) have non-zero
+    prior probability; the 28 heterozygous states get 0. this is the correct
+    prior for a fully inbred line regardless of funnel order — the crossinfo
+    funnel confirms the 8-way design but does not differentially weight founders
+    on autosomes (all 8 contribute equally in expectation).
+    """
+    states, state_to_idx = build_diplotype_states(n_founders)
+    init = np.zeros(len(states))
+    for f in range(n_founders):
+        init[state_to_idx[(f, f)]] = 1.0 / n_founders  # homozygous states only
+    return init
 
 
 # ── top-level: compute haplotype probs for CC strains ────────────────────────
 
 def calc_genoprob_cc(geno_matrix, founder_genos, gmap_positions,
                      n_founders=8, n_gen=1, error_prob=0.002,
-                     return_additive=True):
+                     return_additive=True, cc_inbred=True):
     """compute founder haplotype probabilities for CC inbred strains.
 
     pure Python replacement for qtl2::calc_genoprob() on CC samples.
@@ -299,6 +318,10 @@ def calc_genoprob_cc(geno_matrix, founder_genos, gmap_positions,
         error_prob    : GigaMUGA genotyping error rate (0.002)
         return_additive: if True return (n_cc, J, n_markers) additive probs
                          if False return (n_cc, n_states, n_markers) diplotype
+        cc_inbred     : if True use cc_inbred_init (homozygous-only prior,
+                        correct for fully inbred CC strains). if False use
+                        uniform_init (1/36 per state, for outbred/unknown).
+                        default True.
 
     returns:
         probs : (n_cc, J or n_states, n_markers) float64 array
@@ -321,7 +344,7 @@ def calc_genoprob_cc(geno_matrix, founder_genos, gmap_positions,
         r        = haldane_recomb(d_morgan)
         T_list.append(transition_matrix(r, n_founders, n_gen))
 
-    init = uniform_init(n_founders)
+    init = cc_inbred_init(n_founders) if cc_inbred else uniform_init(n_founders)
     n_out = n_founders if return_additive else n_states
     probs = np.zeros((n_cc, n_out, n_markers), dtype=np.float64)
 

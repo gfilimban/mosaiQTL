@@ -56,6 +56,8 @@ class GenomeCache:
         self.founders = list(founders)
         self.n_founders = len(founders)
         self._data = data if data is not None else {}
+        self.crossinfo = None   # DataFrame (strains × A-H) from cc_crossinfo.csv
+        self.x_donor   = {}     # strain_id -> founder_col of x-chr donor
         self.chromosomes = sorted(self._data.keys())
 
     def get_locus(self, chrom, locus_idx):
@@ -234,7 +236,8 @@ class GenomeCache:
     def from_gigamuga(gigamuga_path, gmap_dir, pmap_dir,
                       cc_cols, founder_cols, f1_crosses,
                       n_founders=8, n_gen=1, error_prob=0.002,
-                      just_these_loci=None, qc=None):
+                      just_these_loci=None, qc=None,
+                      crossinfo_path=None):
         """build genome cache from raw GigaMUGA genotype data.
         this is the fully Python-native path: reads the GigaMUGA consensus
         matrix CSV, runs the CC diplotype HMM (hmm.py), builds deterministic
@@ -278,6 +281,12 @@ class GenomeCache:
         qc : dict or None
             user-driven QC filters. keys: min_maf (float), max_missing (float).
             example: qc={'min_maf': 0.05, 'max_missing': 0.10}
+        crossinfo_path : str or None
+            path to cc_crossinfo.csv (columns A-H = funnel positions 1-8 per
+            CC strain). if provided, cc_inbred=True is used for all CC strains
+            in the crossinfo (homozygous-only HMM prior). if None, cc_inbred
+            defaults to True for all CC strains anyway (safe default).
+            also stored as cache.crossinfo for downstream use (X-chr analysis).
 
         returns
         -------
@@ -288,6 +297,25 @@ class GenomeCache:
         from mosaiqtl.hmm import calc_genoprob_cc
 
         logger.info('building genome cache from raw GigaMUGA (no R)...')
+
+        # load per-strain crossinfo if provided
+        # columns A-H = funnel position (1-8) per founder per CC strain
+        # used to: (1) confirm cc_inbred=True for each strain (homozygous prior)
+        #          (2) store x-chr donor per strain for downstream analysis
+        _crossinfo = None
+        _x_donor   = {}  # strain_id -> founder_col of x-chr donor (funnel pos 8)
+        if crossinfo_path is not None and os.path.exists(crossinfo_path):
+            _crossinfo = pd.read_csv(crossinfo_path, index_col=0)
+            _f_codes = list(_crossinfo.columns)  # [A,B,C,D,E,F,G,H]
+            for sid, row in _crossinfo.iterrows():
+                # founder with funnel position 8 = last dam = X-chr donor
+                x_donor_code = row[row == 8].index[0]
+                _x_donor[sid] = x_donor_code
+            logger.info(f'crossinfo: loaded {len(_crossinfo)} strains; '
+                        f'{len(_x_donor)} x-chr donors identified')
+        # cc_inbred flag: True for all CC strains (homozygous-only HMM prior);
+        # founders and F1s use uniform_init via the deterministic path (no HMM)
+        _cc_set = set(cc_cols)
 
         # ── read GigaMUGA matrix ───────────────────────────────────────────────
         gm_raw = pd.read_csv(gigamuga_path, low_memory=False)
@@ -455,9 +483,10 @@ class GenomeCache:
                         f'{n_markers} markers)...')
             probs_cc = calc_genoprob_cc(
                 geno_cc_abh, geno_f_abh, gmap_pos,
-                n_founders=n_founders, n_gen=1,   # CC consensus map already encodes recombination history
+                n_founders=n_founders, n_gen=1,   # consensus map encodes recombination history
                 error_prob=error_prob,
-                return_additive=True
+                return_additive=True,
+                cc_inbred=True,   # homozygous-only prior for fully inbred CC strains
             )   # (n_cc, 8, n_markers)
 
             for i, col in enumerate(cc_cols):
@@ -482,7 +511,10 @@ class GenomeCache:
                 'probs':     np.transpose(probs_chr, (2, 0, 1)),
             }
 
-        return GenomeCache(all_48, list(founder_cols), data)
+        cache = GenomeCache(all_48, list(founder_cols), data)
+        cache.crossinfo = _crossinfo   # None if crossinfo_path not provided
+        cache.x_donor   = _x_donor     # {} if crossinfo_path not provided
+        return cache
 
     @staticmethod
     def from_rds(probs_cc_path, probs_founder_path, probs_f1_path,

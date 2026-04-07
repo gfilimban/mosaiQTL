@@ -88,6 +88,9 @@ FOUNDER_COLS = ['AJ','B6J','129S1J','NODJ','NZOJ','CASTJ','PWKJ','WSBJ']
 F1_CROSSES   = [('B6AF1J',0,1),('B6129S1F1J',2,1),('B6NODF1J',3,1),
                 ('B6NZOF1J',4,1),('B6CASTF1J',5,1),('B6PWKF1J',6,1),
                 ('B6WSBF1J',7,1)]
+# per-strain CC breeding funnel (A-H = funnel positions 1-8 per strain)
+CROSSINFO_PATH = os.path.join(os.path.dirname(__file__),
+                               'r_reference', 'cc_crossinfo.csv')
 
 FOUNDER_COLORS = {
     'AJ':'#F4C245','B6J':'#C0BFBF','129S1J':'#DA9CC1','NODJ':'#4F6EAF',
@@ -183,7 +186,8 @@ hi('\n● building Python genome cache...')
 #     contain only final_markers, so gm∩gmap∩pmap gives the correct marker set.
 cache_py = GenomeCache.from_gigamuga(
     gigamuga_path=GM_CSV, gmap_dir=GM_GMAP, pmap_dir=GM_PMAP,
-    cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES)
+    cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES,
+    crossinfo_path=CROSSINFO_PATH if os.path.exists(CROSSINFO_PATH) else None)
 
 chr_order  = sorted(cache_py.chromosomes, key=_chr_sort)
 chr_colors = lambda s: plot_phase2.chr_colors(s, chr_order)
@@ -279,8 +283,17 @@ if section(1, 'CACHE INFO'):
                      if loci_max_delta > 0 else 'loci_exact_match=True')
     else:
         loci_note = 'loci_delta=NA'
+    # crossinfo coverage report
+    if cache_py.crossinfo is not None:
+        ci_covered = [s for s in CC_COLS if s in cache_py.crossinfo.index]
+        ci_note = f'crossinfo={len(ci_covered)}/{len(CC_COLS)}_strains'
+        hi(f'  crossinfo: {len(ci_covered)}/{len(CC_COLS)} CC strains covered  '
+           f'x_donors={len(cache_py.x_donor)}')
+    else:
+        ci_note = 'crossinfo=not_loaded'
+        hi('  crossinfo: not loaded (cc_crossinfo.csv not found)')
     record('cache_info', fnd_match is not False and sid_match is not False and loci_ok,
-           f'founders_match={fnd_match}  samples_match={sid_match}  {loci_note}')
+           f'founders_match={fnd_match}  samples_match={sid_match}  {loci_note}  {ci_note}')
 
     # ══════════════════════════════════════════════════════════════════════════════
     # S2 — HAPLOTYPE PROBS

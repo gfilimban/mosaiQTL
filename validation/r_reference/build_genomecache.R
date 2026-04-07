@@ -213,14 +213,32 @@ if (length(high_miss))
 # only reads markers present in gmap.csv → loci mismatch. Ground truth = gmap.csv.
 message('\n[7] running HMM (calc_genoprob) — ', length(cc_cols),
         ' CC strains, genotyped markers only, cores = ', n_cores)
-# ngen=20: number of CC intercrossing generations before inbreeding.
-# qtl2's do HMM uses this to scale transition probabilities (r_eff formula
-# differs from Python's n_gen). the CC consensus map encodes cumulative
-# recombination, so qtl2 uses ngen to set the equilibrium distribution;
-# Python hmm.py uses n_gen=1 (r_eff = r * 1) to use r directly from the
-# same map — equivalent result from different parameterisations.
-cross$cross_info <- matrix(20L, nrow = nrow(cross$cross_info), ncol = 1,
-                           dimnames = list(rownames(cross$cross_info), 'ngen'))
+# load per-strain funnel crossinfo — exact cross_info matrix expected by qtl2.
+# columns A-H give the funnel position (1-8) for each founder in each CC strain.
+# qtl2's do HMM uses this to set per-strain initial state distributions and
+# transition scaling. using the actual crossinfo is more accurate than a uniform
+# ngen=20 for all strains.
+crossinfo_path <- file.path(dirname(yaml_path), '..', '..', 'validation',
+                            'r_reference', 'cc_crossinfo.csv')
+crossinfo_path <- normalizePath(crossinfo_path, mustWork = FALSE)
+if (file.exists(crossinfo_path)) {
+  ci        <- read.csv(crossinfo_path, row.names = 1, stringsAsFactors = FALSE)
+  cc_in_ci  <- intersect(rownames(cross$cross_info), rownames(ci))
+  if (length(cc_in_ci) > 0) {
+    cross$cross_info[cc_in_ci, ] <- as.matrix(ci[cc_in_ci, , drop = FALSE])
+    message('[crossinfo] loaded per-strain funnel for ', length(cc_in_ci),
+            '/', nrow(cross$cross_info), ' CC strains')
+  } else {
+    message('[crossinfo] WARNING: no strain overlap — falling back to ngen=20')
+    cross$cross_info <- matrix(20L, nrow = nrow(cross$cross_info), ncol = 1,
+                               dimnames = list(rownames(cross$cross_info), 'ngen'))
+  }
+} else {
+  message('[crossinfo] file not found at ', crossinfo_path,
+          ' — falling back to ngen=20')
+  cross$cross_info <- matrix(20L, nrow = nrow(cross$cross_info), ncol = 1,
+                             dimnames = list(rownames(cross$cross_info), 'ngen'))
+}
 probs <- calc_genoprob(cross = cross, map = cross$gmap,
                        error_prob = 0.002, cores = n_cores)
 saveRDS(probs, probs_cc_out)
