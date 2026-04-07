@@ -69,8 +69,14 @@ def _mark_done(key): open(_done_path(key), 'w').close()
 
 # GigaMUGA inputs
 GM_CSV      = os.path.join(miqtl_dir, 'input', 'GM_ccfo_mm39.csv')
-GM_GMAP     = os.path.join(miqtl_dir, 'input', 'GM', 'gmap')
-GM_PMAP     = os.path.join(miqtl_dir, 'input', 'GM', 'pmap')
+GM_GMAP     = os.path.join(miqtl_dir, 'input', 'GM', 'gmap')   # per-chr fallback
+GM_PMAP     = os.path.join(miqtl_dir, 'input', 'GM', 'pmap')   # per-chr fallback
+# flat maps written by build_genomecache.R — used if present (preferred)
+_FLAT_GMAP  = os.path.join(miqtl_dir, 'input', 'gmap.csv')
+_FLAT_PMAP  = os.path.join(miqtl_dir, 'input', 'pmap.csv')
+if os.path.exists(_FLAT_GMAP) and os.path.exists(_FLAT_PMAP):
+    GM_GMAP = os.path.dirname(_FLAT_GMAP)  # from_gigamuga looks for gmap.csv here
+    GM_PMAP = os.path.dirname(_FLAT_PMAP)
 SNP_CSV     = os.path.join(miqtl_dir, 'input', 'snp_genos.csv')
 ALLELE_DIR  = os.path.join(miqtl_dir, 'output', 'allele_dir')   # flat chrN.alleles files (miQTL format)
 
@@ -169,77 +175,21 @@ def record(key, passed, detail):
 
 # ── build Python genome cache ─────────────────────────────────────────────────
 hi('\n● building Python genome cache...')
-# drop_nullmarkers QC mirrors qtl2's drop_nullmarkers() applied before
-# calc_genoprob(): drops markers where founder calls are all-missing or
-# monomorphic (all non-missing founders share the same allele). this
-# independently replicates the ~18k marker drop seen in the HAPPY cache.
+# Python replicates build_genomecache.R step 1e exactly:
+#   - allele1/allele2 determined from CC calls only (find_unique_geno equivalent)
+#   - same allele_codes applied to founders (encode_geno equivalent)
+#   - monomorphic/missing-in-CC markers produce all '-' in encoding and are
+#     excluded from the HMM; gmap/pmap written by build_genomecache.R already
+#     contain only final_markers, so gm∩gmap∩pmap gives the correct marker set.
 cache_py = GenomeCache.from_gigamuga(
     gigamuga_path=GM_CSV, gmap_dir=GM_GMAP, pmap_dir=GM_PMAP,
     cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES)
-# note: gmap/pmap were written from final_markers post find_unique_geno — the
-# gm∩gmap∩pmap intersection already replicates the notebook's CC biallelic filter.
 
 chr_order  = sorted(cache_py.chromosomes, key=_chr_sort)
 chr_colors = lambda s: plot_phase2.chr_colors(s, chr_order)
 chromosomes = ([c.strip() for c in args.chr.split(',')]
                if args.chr else chr_order)
 hi(f'  cache: {len(cache_py.chromosomes)} chr | {len(cache_py.sample_ids)} strains')
-
-# ── diagnostic: inspect founder calls for py_only markers (first 3 chrs) ──────
-_happy_root = os.path.join(miqtl_dir, 'output', 'genomecache', 'additive')
-if os.path.isdir(_happy_root):
-    try:
-        import rpy2.robjects as _ro
-        _gm_diag = pd.read_csv(GM_CSV, low_memory=False)
-        if 'marker' in _gm_diag.columns:
-            _gm_diag = _gm_diag.set_index('marker')
-        _gm_diag = _gm_diag.replace('N', '-')
-        _fcols = list(FOUNDER_COLS)
-        _n_f   = len(_fcols)
-        for _chrom in chr_order[:3]:
-            _mf = os.path.join(_happy_root, f'chr{_chrom}', 'markers.RData')
-            if not os.path.exists(_mf): continue
-            _env = _ro.r['new.env']()
-            _ro.r['load'](_mf, envir=_env)
-            _r_mks = set(_ro.r['get']('markers', envir=_env))
-            _py_lids = set(cache_py._data[_chrom]['locus_ids']) if _chrom in cache_py._data else set()
-            _py_only = sorted(_py_lids - _r_mks)
-            if _py_only:
-                # categorise all py_only markers
-                _cats = {'f_all_miss': 0, 'f_all_typed_mono': 0,
-                         'f_partial_miss_mono': 0, 'cc_all_miss': 0, 'other': 0}
-                hi(f'  [diag] chr{_chrom}: {len(_py_only)} py_only — categories + sample calls:')
-                for _m in _py_only:
-                    if _m not in _gm_diag.index:
-                        _cats['other'] += 1; continue
-                    _fc = _gm_diag.loc[_m, _fcols].values.astype(str)
-                    _fv = _fc[_fc != '-']
-                    _cc = _gm_diag.loc[_m, CC_COLS].values.astype(str)
-                    _ccv = _cc[_cc != '-']
-                    if len(_fv) == 0:
-                        _cats['f_all_miss'] += 1
-                    elif len(_fv) == _n_f and len(set(_fv)) == 1:
-                        _cats['f_all_typed_mono'] += 1
-                    elif len(_fv) < _n_f and len(set(_fv)) == 1:
-                        _cats['f_partial_miss_mono'] += 1
-                    elif len(_ccv) == 0:
-                        _cats['cc_all_miss'] += 1
-                    else:
-                        _cats['other'] += 1
-                hi(f'    categories: {_cats}')
-                for _m in _py_only[:5]:
-                    if _m in _gm_diag.index:
-                        _fc = _gm_diag.loc[_m, _fcols].values.astype(str)
-                        _fv = _fc[_fc != '-']
-                        _cc = _gm_diag.loc[_m, CC_COLS].values.astype(str)
-                        _ccv = _cc[_cc != '-']
-                        hi(f'    {_m}: f_valid={list(_fv)[:8]} f_unique={sorted(set(_fv))} cc_typed={len(_ccv)}/{len(_cc)}')
-            else:
-                hi(f'  [diag] chr{_chrom}: no py_only markers')
-    except Exception as _e:
-        hi(f'  [diag] skipped: {_e}')
-    except Exception as _e:
-        hi(f'  [diag] skipped: {_e}')
 
 # build LOCO kinship
 kinship_py = kin_module.calc_kinship(cache_py, method='loco')

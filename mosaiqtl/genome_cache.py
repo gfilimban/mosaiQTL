@@ -296,19 +296,25 @@ class GenomeCache:
                                        if c in gm_raw.columns])
         gm_raw = gm_raw.replace('N', '-')   # missing call code
 
-        # ── glob and concat per-chromosome map files ───────────────────────────
-        def _load_maps(map_dir, prefix):
+        # ── load genetic + physical maps ──────────────────────────────────────
+        # supports two layouts:
+        #   (a) flat files: gmap_dir/gmap.csv + pmap_dir/pmap.csv
+        #       written by build_genomecache.R from final_markers — preferred
+        #   (b) per-chr files: gmap_dir/GM_gmap{chr}.csv (legacy layout)
+        def _load_maps(map_dir, prefix, flat_name):
+            flat = os.path.join(map_dir, flat_name)
+            if os.path.exists(flat):
+                return pd.read_csv(flat, comment='#')
             files = sorted(glob.glob(os.path.join(map_dir, f'{prefix}*.csv')))
             if not files:
-                raise FileNotFoundError(
-                    f'no {prefix}*.csv in {map_dir}')
-            return pd.concat([pd.read_csv(fp, comment='#')
-                               for fp in files], ignore_index=True)
+                raise FileNotFoundError(f'no {flat_name} or {prefix}*.csv in {map_dir}')
+            return pd.concat([pd.read_csv(fp, comment='#') for fp in files], ignore_index=True)
 
-        gmap = _load_maps(gmap_dir, 'GM_gmap')
-        pmap = _load_maps(pmap_dir, 'GM_pmap')
-        gmap.rename(columns={'marker': 'locus', 'pos': 'pos_cM'}, inplace=True)
-        pmap.rename(columns={'marker': 'locus', 'pos': 'pos_mb'}, inplace=True)
+        gmap = _load_maps(gmap_dir, 'GM_gmap', 'gmap.csv')
+        pmap = _load_maps(pmap_dir, 'GM_pmap', 'pmap.csv')
+        # normalise column names — flat maps use 'marker'/'pos'; per-chr use same
+        gmap.rename(columns={'marker': 'locus', 'pos': 'pos_cM'}, inplace=True, errors='ignore')
+        pmap.rename(columns={'marker': 'locus', 'pos': 'pos_mb'}, inplace=True, errors='ignore')
 
         # cast chr to str immediately — mixed int/str types cause == comparisons
         # to silently fail (e.g. integer 1 != string '1')
@@ -391,54 +397,50 @@ class GenomeCache:
             geno_cc       = gm.loc[chr_loci, cc_cols].values         # (n_m, n_cc) nucleotides
             geno_founders = gm.loc[chr_loci, list(founder_cols)].values  # (n_m, J) nucleotides
 
-            # ── convert nucleotide calls → A/H/B per marker ──────────────────
-            # GigaMUGA stores raw bases (T, C, A, G), H (het), N (missing).
-            # the HMM expects A=hom_allele1, H=het, B=hom_allele2.
-            # for each marker: determine allele1/allele2 from founder calls,
-            # then recode all strains. monomorphic markers → all 'A'.
-            n_m   = len(chr_loci)
-            MISS  = np.array(['-'], dtype=object)
+            # ── find_unique_geno + encode_geno equivalent ────────────────────
+            # mirrors build_genomecache.R step 1e exactly:
+            #   allele_codes  <- find_unique_geno(geno = geno_cc_clean)
+            #   geno_cc_encoded <- encode_geno(geno_cc_clean, allele_codes)
+            #   geno_founders_encoded <- encode_geno(geno_founders_clean, allele_codes)
+            #
+            # allele1/allele2 are determined from CC calls only (not founders).
+            # the same allele_codes frame is applied to founders for consistency.
+            # missing = N or - → '-'; het call H → 'H' (CC only, rare in founders).
+            n_m = len(chr_loci)
+            MISS_CODES = {'N', '-', 'nan', ''}
 
-            # vectorised: founder calls as object array
-            f_str = geno_founders.astype(str)
-            miss_mask_f = np.isin(f_str, ['N', '-', 'nan', ''])
-
-            cc_str = geno_cc.astype(str)
+            cc_str = geno_cc.astype(str)       # (n_m, n_cc)
+            f_str  = geno_founders.astype(str) # (n_m, J)
 
             geno_cc_abh = np.full(cc_str.shape, '-', dtype=object)
             geno_f_abh  = np.full(f_str.shape,  '-', dtype=object)
 
             for m in range(n_m):
-                f_calls = f_str[m][~miss_mask_f[m]]
-                unique  = list(dict.fromkeys(f_calls.tolist()))  # ordered unique
-                if len(unique) == 0:
+                # find_unique_geno: identify two alleles from CC calls only
+                cc_valid = [g for g in cc_str[m] if g not in MISS_CODES and g != 'H']
+                unique_cc = list(dict.fromkeys(cc_valid))  # order of first appearance
+                if len(unique_cc) < 2:
+                    # monomorphic or all-missing in CC — marker should have been
+                    # filtered by find_unique_geno; keep as all '-' (no HMM info)
                     continue
-                a1 = unique[0]
-                a2 = unique[1] if len(unique) > 1 else None
+                a1, a2 = unique_cc[0], unique_cc[1]
 
-                # recode founders
-                for fi in range(geno_f_abh.shape[1]):
-                    g = f_str[m, fi]
-                    if g in ('N', '-', 'nan', ''):
-                        geno_f_abh[m, fi] = '-'
-                    elif g == 'H':
-                        geno_f_abh[m, fi] = 'H'
-                    elif g == a1:
-                        geno_f_abh[m, fi] = 'A'
-                    elif a2 and g == a2:
-                        geno_f_abh[m, fi] = 'B'
-
-                # recode CC strains
+                # encode_geno on CC strains using CC-derived allele_codes
                 for si in range(geno_cc_abh.shape[1]):
                     g = cc_str[m, si]
-                    if g in ('N', '-', 'nan', ''):
-                        geno_cc_abh[m, si] = '-'
-                    elif g == 'H':
-                        geno_cc_abh[m, si] = 'H'
-                    elif g == a1:
-                        geno_cc_abh[m, si] = 'A'
-                    elif a2 and g == a2:
-                        geno_cc_abh[m, si] = 'B'
+                    if g in MISS_CODES:        geno_cc_abh[m, si] = '-'
+                    elif g == 'H':             geno_cc_abh[m, si] = 'H'
+                    elif g == a1:              geno_cc_abh[m, si] = 'A'
+                    elif g == a2:              geno_cc_abh[m, si] = 'B'
+
+                # encode_geno on founders using same allele_codes frame
+                for fi in range(geno_f_abh.shape[1]):
+                    g = f_str[m, fi]
+                    if g in MISS_CODES:        geno_f_abh[m, fi] = '-'
+                    elif g == 'H':             geno_f_abh[m, fi] = 'H'
+                    elif g == a1:              geno_f_abh[m, fi] = 'A'
+                    elif g == a2:              geno_f_abh[m, fi] = 'B'
+
 
             n_markers = len(chr_loci)
             n_48      = len(all_48)
