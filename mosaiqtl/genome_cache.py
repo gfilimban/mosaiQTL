@@ -343,44 +343,14 @@ class GenomeCache:
             allow = set(just_these_loci)
             shared = [m for m in shared if m in allow]
             logger.info(f'just_these_loci filter: {len(shared)} markers retained')
-            gm       = gm_raw.loc[shared]
-            gmap     = gmap.loc[shared]
-            pmap_idx = pmap_idx.loc[shared]
 
-        # ── find_unique_geno-equivalent filter (mirrors notebook step 1e) ───────────
-        # the HAPPY cache was built by the founders_f1_genomecache notebook using
-        # qtl2convert::find_unique_geno(geno = geno_cc_clean): drops markers where
-        # CC strains are fully missing OR monomorphic (only one allele observed).
-        # founders are not involved in this filter.
-        # NA row in find_unique_geno output → marker dropped.
-        if qc is None or qc.get('drop_null', True):
-            cg = gm_raw.loc[shared, cc_cols].replace({'N': '-', 'nan': '-', '': '-'})
-            keep_null = []
-            for m in shared:
-                cc_calls = cg.loc[m].values.astype(str)
-                valid_cc  = cc_calls[cc_calls != '-']
-                # (a) all CC missing → find_unique_geno returns NA row
-                if len(valid_cc) == 0:
-                    continue
-                # (b) CC monomorphic → find_unique_geno returns NA row (only 1 unique allele)
-                if len(set(valid_cc)) < 2:
-                    continue
-                keep_null.append(m)
-            n_null = len(shared) - len(keep_null)
-            if n_null:
-                logger.info(f'find_unique_geno filter: dropped {n_null} markers '
-                            f'(CC all-missing or monomorphic)')
-            shared = keep_null
-            n_null = len(shared) - len(keep_null)
-            if n_null:
-                logger.info(f'drop_nullmarkers: dropped {n_null} markers '
-                            f'(all-missing or monomorphic in founders)')
-            shared = keep_null
-
-        # ── additional user QC filters ────────────────────────────────────────────
+        # ── additional user QC filters (optional) ────────────────────────────────
+        # note: gmap/pmap were written by the notebook from final_markers (post
+        # find_unique_geno filter), so the gm∩gmap∩pmap intersection already
+        # excludes monomorphic-in-CC markers. no additional drop_null filter needed.
         if qc:
             keep = pd.Series(True, index=shared)
-            if 'max_missing' in qc:              # missing rate across all samples
+            if 'max_missing' in qc:
                 all_cols = [c for c in list(founder_cols) + cc_cols if c in gm_raw.columns]
                 miss = (gm_raw.loc[shared, all_cols] == '-').mean(axis=1)
                 keep &= miss <= qc['max_missing']
@@ -390,12 +360,11 @@ class GenomeCache:
                 logger.info(f'user qc: {n_before} -> {len(shared)} markers '
                             f'(dropped {n_before - len(shared)})')
 
-        # re-slice gm/gmap/pmap_idx to the post-QC shared set
-        # (gm/gmap/pmap_idx were built before QC — dropped markers must be removed)
+        # re-slice gm/gmap/pmap_idx to post-filter shared set
         gm       = gm_raw.loc[shared]
         gmap     = gmap.loc[shared]
         pmap_idx = pmap_idx.loc[shared]
-        logger.info(f'post-QC markers: {len(shared)}')
+        logger.info(f'post-filter markers: {len(shared)}')
 
 
         # chr column already str — build sorted chromosome list

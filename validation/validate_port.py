@@ -175,8 +175,9 @@ hi('\n● building Python genome cache...')
 # independently replicates the ~18k marker drop seen in the HAPPY cache.
 cache_py = GenomeCache.from_gigamuga(
     gigamuga_path=GM_CSV, gmap_dir=GM_GMAP, pmap_dir=GM_PMAP,
-    cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES,
-    qc={'drop_null': True})  # mirrors qtl2 drop_nullmarkers()
+    cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES)
+# note: gmap/pmap were written from final_markers post find_unique_geno — the
+# gm∩gmap∩pmap intersection already replicates the notebook's CC biallelic filter.
 
 chr_order  = sorted(cache_py.chromosomes, key=_chr_sort)
 chr_colors = lambda s: plot_phase2.chr_colors(s, chr_order)
