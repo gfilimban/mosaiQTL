@@ -281,8 +281,12 @@ for (chr in chromosomes) {
   n_loci <- length(markers)
   idx    <- round(seq(1, n_loci, length.out=5))
   for (i in idx) {
-    mat <- h$getLocusMatrix(locus=markers[i], model='additive', subjects=NULL)
+    mat <- h$getLocusMatrix(locus=markers[i], model='additive', subjects=sample_ids)
     mat <- mat[!is.na(rownames(mat)), , drop=FALSE]
+    colnames(mat) <- ifelse(colnames(mat) %in% names(founder_map),
+                            founder_map[colnames(mat)], colnames(mat))
+    canon_cols <- c('AJ','B6J','129S1J','NODJ','NZOJ','CASTJ','PWKJ','WSBJ')
+    mat <- mat[, canon_cols[canon_cols %in% colnames(mat)], drop=FALSE]
     df_i <- as.data.frame(mat, stringsAsFactors=FALSE)
     df_i$chr      <- chr
     df_i$locus    <- markers[i]
