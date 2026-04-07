@@ -178,19 +178,23 @@ cache_py = GenomeCache.from_gigamuga(
     cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES,
     qc={'drop_null': True})  # mirrors qtl2 drop_nullmarkers()
 
-# ── diagnostic: compare py loci vs HAPPY marker list to understand residual delta ──
+chr_order  = sorted(cache_py.chromosomes, key=_chr_sort)
+chr_colors = lambda s: plot_phase2.chr_colors(s, chr_order)
+chromosomes = ([c.strip() for c in args.chr.split(',')]
+               if args.chr else chr_order)
+hi(f'  cache: {len(cache_py.chromosomes)} chr | {len(cache_py.sample_ids)} strains')
+
+# ── diagnostic: inspect founder calls for py_only markers (first 3 chrs) ──────
 _happy_root = os.path.join(miqtl_dir, 'output', 'genomecache', 'additive')
 if os.path.isdir(_happy_root):
     try:
         import rpy2.robjects as _ro
-        import pandas as _pd_diag
-        # load GM raw for inspection of py_only markers
-        _gm_diag = _pd_diag.read_csv(GM_CSV, low_memory=False)
+        _gm_diag = pd.read_csv(GM_CSV, low_memory=False)
         if 'marker' in _gm_diag.columns:
             _gm_diag = _gm_diag.set_index('marker')
         _gm_diag = _gm_diag.replace('N', '-')
         _fcols = list(FOUNDER_COLS)
-        for _chrom in (chr_order[:3] if len(chr_order) >= 3 else chr_order):
+        for _chrom in chr_order[:3]:
             _mf = os.path.join(_happy_root, f'chr{_chrom}', 'markers.RData')
             if not os.path.exists(_mf): continue
             _env = _ro.r['new.env']()
@@ -199,7 +203,7 @@ if os.path.isdir(_happy_root):
             _py_lids = set(cache_py._data[_chrom]['locus_ids']) if _chrom in cache_py._data else set()
             _py_only = sorted(_py_lids - _r_mks)
             if _py_only:
-                hi(f'  [diag] chr{_chrom}: {len(_py_only)} py_only markers — inspecting founder calls:')
+                hi(f'  [diag] chr{_chrom}: {len(_py_only)} py_only — sample founder calls:')
                 for _m in _py_only[:5]:
                     if _m in _gm_diag.index:
                         _calls = _gm_diag.loc[_m, _fcols].values.astype(str)
@@ -207,13 +211,10 @@ if os.path.isdir(_happy_root):
                         hi(f'    {_m}: valid={list(_valid)[:8]}  unique={sorted(set(_valid))}')
                     else:
                         hi(f'    {_m}: NOT IN GM CSV')
+            else:
+                hi(f'  [diag] chr{_chrom}: no py_only markers')
     except Exception as _e:
         hi(f'  [diag] skipped: {_e}')
-chr_order  = sorted(cache_py.chromosomes, key=_chr_sort)
-chr_colors = lambda s: plot_phase2.chr_colors(s, chr_order)   # alternating palette per chr
-chromosomes = ([c.strip() for c in args.chr.split(',')]
-               if args.chr else chr_order)
-hi(f'  cache: {len(cache_py.chromosomes)} chr | {len(cache_py.sample_ids)} strains')
 
 # build LOCO kinship
 kinship_py = kin_module.calc_kinship(cache_py, method='loco')
