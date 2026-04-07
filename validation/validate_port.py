@@ -23,7 +23,7 @@
 
 import numpy as np
 import pandas as pd
-import os, sys, argparse, logging, datetime, glob
+import os, sys, argparse, logging, datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # validation/ for plot_phase2
@@ -72,7 +72,6 @@ GM_CSV      = os.path.join(miqtl_dir, 'input', 'GM_ccfo_mm39.csv')
 GM_GMAP     = os.path.join(miqtl_dir, 'input', 'GM', 'gmap')
 GM_PMAP     = os.path.join(miqtl_dir, 'input', 'GM', 'pmap')
 SNP_CSV     = os.path.join(miqtl_dir, 'input', 'snp_genos.csv')
-HAPPY_CACHE = os.path.join(miqtl_dir, 'output', 'genomecache')  # HAPPY cache root for marker allowlist
 ALLELE_DIR  = os.path.join(miqtl_dir, 'output', 'allele_dir')   # flat chrN.alleles files (miQTL format)
 
 CC_COLS      = ['CC001','CC002','CC003','CC004','CC005','CC006','CC007','CC008',
@@ -170,26 +169,17 @@ def record(key, passed, detail):
 
 # ── build Python cache ────────────────────────────────────────────────────────
 hi('\n● building Python genome cache...')
-# read HAPPY cache marker set to restrict Python cache to the same loci
-# this ensures loci counts match R for validation; mosaiQTL production runs use qc= instead
-_happy_marker_files = glob.glob(
-    os.path.join(HAPPY_CACHE, 'additive', 'chr*', 'markers.RData'))
-if _happy_marker_files:
-    import rpy2.robjects as _ro
-    _happy_markers = []
-    for _mf in sorted(_happy_marker_files):
-        _env = _ro.r['new.env']()
-        _ro.r['load'](_mf, envir=_env)
-        _happy_markers.extend(list(_ro.r['get']('markers', envir=_env)))
-    hi(f'  HAPPY allowlist: {len(_happy_markers)} markers across {len(_happy_marker_files)} chrs')
-else:
-    _happy_markers = None
-    hi(f'  HAPPY cache not found at {HAPPY_CACHE} — building without allowlist')
 
+# build cache with QC filters that mirror qtl2's calc_genoprob() marker dropping:
+#   min_maf > 0 drops markers monomorphic across founders (qtl2 default)
+#   max_missing < 1.0 drops markers with all-missing founder calls
+# these replace the previous just_these_loci=_happy_markers approach, which
+# forced Python loci to match R's output rather than independently replicating
+# the same QC logic — a more principled validation strategy
 cache_py = GenomeCache.from_gigamuga(
     gigamuga_path=GM_CSV, gmap_dir=GM_GMAP, pmap_dir=GM_PMAP,
     cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES,
-    just_these_loci=_happy_markers)   # restrict to HAPPY marker set for validation parity
+    qc={'min_maf': 0.0001, 'max_missing': 0.95})  # mirror qtl2 defaults
 chr_order  = sorted(cache_py.chromosomes, key=_chr_sort)
 chr_colors = lambda s: plot_phase2.chr_colors(s, chr_order)   # alternating palette per chr
 chromosomes = ([c.strip() for c in args.chr.split(',')]
