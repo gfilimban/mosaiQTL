@@ -758,6 +758,7 @@ if 'epistasis' in _run and not _is_done('scan_epistasis'):
                                 xticklabels=FOUNDER_COLS,
                                 yticklabels=FOUNDER_COLS,
                                 cbar_kws={'label': 'mean Piezo1 (RINT)'})
+                    ax.set_title(f'Piezo1 × Ccdc171 haplotype combinations\n{locus_a} × {locus_b}', fontsize=9)
                     ax.set_xlabel(f'Ccdc171 haplotype ({locus_b})', fontsize=9)
                     ax.set_ylabel(f'Piezo1 haplotype ({locus_a})', fontsize=9)
                     plt.tight_layout()

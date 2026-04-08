@@ -108,7 +108,10 @@ pmap_path        <- file.path(data_dir, 'input',  'pmap.csv')
 gtf_path         <- file.path(data_dir, 'input',  'gencode.vM32.gtf.gz')
 allele_dir_path  <- file.path(data_dir, 'output', 'allele_dir')
 collapsed_path   <- file.path(data_dir, 'output', 'genomecache_collapsed')
-base_output_dir  <- file.path(pkg_dir, 'validation', 'port_validation', 'r_data')
+base_output_dir  <- file.path(pkg_dir, 'validation', 'phase2', 'r_data')
+probs_cc_path      <- file.path(data_dir, 'output', 'probs_cc.rds')
+probs_founder_path <- file.path(data_dir, 'output', 'probs_founder.rds')
+probs_f1_path      <- file.path(data_dir, 'output', 'probs_f1.rds')
 # in slurm mode each chromosome writes to its own subdir to avoid collisions
 output_dir <- if (slurm_mode && scan_chrs != 'all') {
   file.path(base_output_dir, paste0('chr', scan_chrs))
@@ -120,20 +123,12 @@ message('[paths] output: ', output_dir)
 
 # ── shared inputs ─────────────────────────────────────────────────────────────
 message('[load]')
-if (file.exists(pheno_strain_path)) {
-  pheno_strain <- readRDS(pheno_strain_path)
-  if (!identical(rownames(pheno_strain), pheno_strain$subject.name))
-    rownames(pheno_strain) <- pheno_strain$subject.name
-} else {
-  pheno_df  <- readRDS(pheno_df_path)
-  meta_cols <- c('sample_id','subject.name','sex','batch', paste0('pc',1:10))
-  gcols     <- setdiff(colnames(pheno_df), meta_cols)
-  pheno_strain <- aggregate(pheno_df[, c(gcols, paste0('pc',1:10))],
-    by=list(subject.name=pheno_df$subject.name), FUN=mean, na.rm=TRUE)
-  pheno_strain$batch <- tapply(pheno_df$batch, pheno_df$subject.name,
-    `[`, 1)[pheno_strain$subject.name]
+if (!file.exists(pheno_strain_path))
+  stop('pheno_48.rds not found at ', pheno_strain_path,
+       ' — run the pseudobulk pipeline first')
+pheno_strain <- readRDS(pheno_strain_path)
+if (!identical(rownames(pheno_strain), pheno_strain$subject.name))
   rownames(pheno_strain) <- pheno_strain$subject.name
-}
 ph_sn  <- rownames(pheno_strain)
 ph_ord <- c(ph_sn[!grepl('^CC', ph_sn)],
              ph_sn[ grepl('^CC', ph_sn)])
@@ -248,55 +243,69 @@ message('  saved: cache_info_r.csv  founders_r.csv  sample_ids_r.csv')
 
 if (2 %in% run_sections) {
 message('\n[s2] haplotype probs')
-hap_rows <- list()
+# use qtl2 HMM posteriors (probs_cc.rds + founder/F1 arrays) rather than the
+# HAPPY additive cache. the HAPPY cache stores allele-concordance dosages where
+# all founders sharing the same SNP allele receive equal probability; the qtl2
+# probs carry genome-wide linkage information and — when build_genomecache.R was
+# run with cc_crossinfo.csv — per-strain breeding-funnel priors.
+library(qtl2); library(abind)
+message('  loading qtl2 probs (probs_cc + founder + F1)...')
+probs_cc_raw      <- readRDS(probs_cc_path)
+probs_founder_raw <- readRDS(probs_founder_path)
+probs_f1_raw      <- readRDS(probs_f1_path)
+# merge CC + founders + F1s in diplotype space (same as build_genomecache.R step 10)
+probs_combined <- lapply(names(probs_cc_raw), function(chr) {
+  abind(probs_cc_raw[[chr]],
+        do.call(abind, c(lapply(probs_founder_raw, `[[`, chr), list(along=1))),
+        do.call(abind, c(lapply(probs_f1_raw,      `[[`, chr), list(along=1))),
+        along=1)
+})
+names(probs_combined) <- names(probs_cc_raw)
+attributes(probs_combined) <- attributes(probs_cc_raw)
+names(probs_combined)      <- names(probs_cc_raw)
+# collapse 36 diplotype states → 8 additive founder dosages (sums to ~2 per sample)
+probs_allele <- genoprob_to_alleleprob(probs_combined)
+message('  probs loaded: ', length(probs_allele), ' chr  ',
+        nrow(probs_allele[[1]]), ' samples')
+
+canon_cols   <- c('AJ','B6J','129S1J','NODJ','NZOJ','CASTJ','PWKJ','WSBJ')
+hap_rows     <- list()
+hap_val_rows <- list()
 for (chr in chromosomes) {
-  load(file.path(genomecache_path,'additive',paste0('chr',chr),'markers.RData'))
-  load(file.path(genomecache_path,'additive',paste0('chr',chr),'bp.RData'))
-  n_loci <- length(markers)
-  idx    <- round(seq(1, n_loci, length.out=5))
+  if (!chr %in% names(probs_allele)) next
+  p_chr      <- probs_allele[[chr]]      # (n_samples, 8_founders, n_loci)
+  loci_names <- dimnames(p_chr)[[3]]
+  n_loci     <- length(loci_names)
+  idx        <- round(seq(1, n_loci, length.out=5))
   for (i in idx) {
-    mat <- h$getLocusMatrix(locus=markers[i], model='additive', subjects=NULL)
-    mat <- mat[!is.na(rownames(mat)), , drop=FALSE]   # strip NA rows
-    row_sums <- rowSums(mat)
+    mat    <- p_chr[, , i]               # (n_samples, 8) dosages, rownames = sample ids
+    locus  <- loci_names[i]
+    pos_mb <- pmap_flat$pos_mb[match(locus, pmap_flat$locus)]
+    rs     <- rowSums(mat)
     hap_rows[[length(hap_rows)+1]] <- data.frame(
-      chr=chr, locus=markers[i], pos_mb=bp[i]/1e6,
-      mean_rowsum=mean(row_sums, na.rm=TRUE),
-      min_rowsum=unname(min(row_sums, na.rm=TRUE)),
-      max_rowsum=unname(max(row_sums, na.rm=TRUE)),
+      chr=chr, locus=locus, pos_mb=pos_mb,
+      mean_rowsum=mean(rs, na.rm=TRUE),
+      min_rowsum=unname(min(rs, na.rm=TRUE)),
+      max_rowsum=unname(max(rs, na.rm=TRUE)),
       mean_max_prob=mean(apply(mat, 1, max), na.rm=TRUE),
-      stringsAsFactors=FALSE,
-      row.names=NULL)
+      stringsAsFactors=FALSE, row.names=NULL)
+    # rename founder codes A-H → canonical full names and reorder
+    colnames(mat) <- ifelse(colnames(mat) %in% names(founder_map),
+                            founder_map[colnames(mat)], colnames(mat))
+    mat <- mat[, canon_cols[canon_cols %in% colnames(mat)], drop=FALSE]
+    df_i           <- as.data.frame(mat, stringsAsFactors=FALSE)
+    df_i$chr       <- chr
+    df_i$locus     <- locus
+    df_i$pos_mb    <- pos_mb
+    df_i$sample_id <- rownames(mat)
+    hap_val_rows[[length(hap_val_rows)+1]] <- df_i
   }
 }
 hap_df <- do.call(rbind, hap_rows)
 write.csv(hap_df, file.path(output_dir,'haplotype_r.csv'), row.names=FALSE)
 message('  saved: haplotype_r.csv (', nrow(hap_df), ' loci)')
 
-# export actual probability values (n_samples × 8 founders) at sampled loci
-# so Python can compare real HMM values rather than row-sum tautology
-hap_val_rows <- list()
-for (chr in chromosomes) {
-  load(file.path(genomecache_path,'additive',paste0('chr',chr),'markers.RData'))
-  load(file.path(genomecache_path,'additive',paste0('chr',chr),'bp.RData'))
-  n_loci <- length(markers)
-  idx    <- round(seq(1, n_loci, length.out=5))
-  for (i in idx) {
-    mat <- h$getLocusMatrix(locus=markers[i], model='additive', subjects=sample_ids)
-    mat <- mat[!is.na(rownames(mat)), , drop=FALSE]
-    colnames(mat) <- ifelse(colnames(mat) %in% names(founder_map),
-                            founder_map[colnames(mat)], colnames(mat))
-    canon_cols <- c('AJ','B6J','129S1J','NODJ','NZOJ','CASTJ','PWKJ','WSBJ')
-    mat <- mat[, canon_cols[canon_cols %in% colnames(mat)], drop=FALSE]
-    df_i <- as.data.frame(mat, stringsAsFactors=FALSE)
-    df_i$chr      <- chr
-    df_i$locus    <- markers[i]
-    df_i$pos_mb   <- bp[i] / 1e6
-    df_i$sample_id <- rownames(mat)
-    hap_val_rows[[length(hap_val_rows)+1]] <- df_i
-  }
-}
 hap_vals <- do.call(rbind, hap_val_rows); rownames(hap_vals) <- NULL
-# reorder: identifiers first
 id_cols  <- c('chr','locus','pos_mb','sample_id')
 hap_vals <- hap_vals[, c(id_cols, setdiff(names(hap_vals), id_cols))]
 write.csv(hap_vals, file.path(output_dir,'haplotype_vals_r.csv'), row.names=FALSE)
@@ -388,9 +397,11 @@ if (length(results_list)) {
   write.csv(lod_df, file.path(output_dir,'lod_r.csv'), row.names=FALSE)
   message('  saved: lod_r.csv (', nrow(lod_df), ' rows, ',
           length(unique(lod_df$gene_id)), ' genes)')
-  write.csv(pmap_flat[,c('locus','chr','pos_mb')],
-            file.path(output_dir,'pmap_r.csv'), row.names=FALSE)
-  write.csv(pheno_strain, file.path(output_dir,'pheno_48_used.csv'), row.names=TRUE)
+  if (!slurm_mode || scan_chrs == 'all') {
+    write.csv(pmap_flat[,c('locus','chr','pos_mb')],
+              file.path(base_output_dir,'pmap_r.csv'), row.names=FALSE)
+    write.csv(pheno_strain, file.path(base_output_dir,'pheno_48_used.csv'), row.names=TRUE)
+  }
 }
 if (length(effects_list)) {
   ae_df <- do.call(rbind, effects_list); rownames(ae_df) <- NULL

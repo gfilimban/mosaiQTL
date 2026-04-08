@@ -1,13 +1,20 @@
 """
 mosaiqtl.kinship — kinship matrix computation
 
-realized genomic relationship matrix (van Raden) from founder haplotype
-probabilities.
+van Raden (2008) realized genomic relationship matrix, consistent with
+qtl2::calc_kinship(probs_allele, type='loco').
 
-    K_ij = (1/L) Σ_l h_il · h_jl
+    K_{ij} = Σ_{l,f} (p_{ilf} − p̄_{lf})(p_{jlf} − p̄_{lf})
+             ─────────────────────────────────────────────────
+                     Σ_{l,f} p̄_{lf} (1 − p̄_{lf})
 
-where h_il ∈ ℝ^J is the founder probability vector for sample i at locus l.
-this is allele-sharing kinship, positive semi-definite by construction.
+where p_{ilf} = allele probability ∈ [0,1] for sample i, locus l, founder f.
+p̄_{lf} = mean over samples.  Python cache stores probs already in [0,1]
+(= qtl2 allele dosage / 2), so no additional scaling is needed.
+
+For LOCO the numerator and denominator are accumulated per chromosome and
+the target chromosome is subtracted — exact because p̄ is computed from
+samples (fixed) not from the locus set.
 
 supports: overall, loco, and per-chromosome kinship.
 """
@@ -19,7 +26,9 @@ logger = logging.getLogger('mosaiqtl')
 
 
 def calc_kinship(genome_cache, method='loco'):
-    """compute kinship matrices from haplotype probabilities.
+    """Compute van Raden kinship matrices from haplotype probabilities.
+
+    Consistent with qtl2::calc_kinship(genoprob_to_alleleprob(probs), type=...).
 
     parameters
     ----------
@@ -33,36 +42,45 @@ def calc_kinship(genome_cache, method='loco'):
     -------
     dict  {'overall': K} | {chrom: K}  each K is (n, n)
     """
-    n = len(genome_cache.sample_ids)
-    chr_kin = {}   # {chrom: (K_contribution, n_loci)}
+    chr_num   = {}   # {chrom: K_numerator}   sum_l M_l M_l'
+    chr_denom = {}   # {chrom: scalar}         sum_{l,f} p̄(1-p̄)
 
     for chrom in genome_cache.chromosomes:
         _, _, probs = genome_cache.get_chromosome(chrom)
-        # probs: (L, n, J) — vectorised: K_c = sum_l H_l H_l' = einsum
-        # H[l] is (n,J); H[l] @ H[l].T summed over l = einsum('lni,lmi->nm')
-        k = np.einsum('lni,lmi->nm', probs, probs, optimize=True)
-        chr_kin[chrom] = (k, probs.shape[0])
+        # probs: (L, n, J)  already in [0,1]
+        p_bar = probs.mean(axis=1)          # (L, J)
+        M     = probs - p_bar[:, None, :]   # (L, n, J)  centred
+
+        chr_num[chrom]   = np.einsum('lni,lmi->nm', M, M, optimize=True)
+        chr_denom[chrom] = float((p_bar * (1.0 - p_bar)).sum())
+
+    num_tot   = sum(chr_num.values())
+    denom_tot = sum(chr_denom.values())
 
     if method == 'overall':
-        k_tot = sum(k for k, _ in chr_kin.values())
-        n_tot = sum(n for _, n in chr_kin.values())
-        return {'overall': k_tot / n_tot}
+        return {'overall': _safe_div(num_tot, denom_tot)}
 
     elif method == 'loco':
-        k_tot = sum(k for k, _ in chr_kin.values())
-        n_tot = sum(n for _, n in chr_kin.values())
-        return {c: (k_tot - k) / (n_tot - nl)
-                for c, (k, nl) in chr_kin.items()}
+        return {c: _safe_div(num_tot - chr_num[c], denom_tot - chr_denom[c])
+                for c in chr_num}
 
     elif method == 'chr':
-        return {c: k / nl for c, (k, nl) in chr_kin.items()}
+        return {c: _safe_div(chr_num[c], chr_denom[c]) for c in chr_num}
 
     else:
         raise ValueError(f'unknown kinship method: {method!r}')
 
 
+def _safe_div(num, denom):
+    """Return num / denom; warn and fall back to num if denom ~ 0."""
+    if abs(denom) < 1e-12:
+        logger.warning('kinship denominator near zero — returning raw numerator')
+        return num
+    return num / denom
+
+
 def decomp_kinship(kinship_dict):
-    """eigendecompose kinship matrices for fast LMM fitting.
+    """Eigendecompose kinship matrices for fast LMM fitting.
 
     K = U D U' enables diagonal V^{-1} in the rotated coordinate system,
     avoiding repeated n×n inversions during the h² grid search and scan.

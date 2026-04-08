@@ -143,6 +143,7 @@ def plot_s2_pyonly(H_py0, fnames, disp_s, fs, rep_chr):
     sns.heatmap(H_py0, ax=ax_hm, cmap='YlOrRd', vmin=0, vmax=1,
                 xticklabels=fnames, yticklabels=disp_s, cbar_kws={'shrink': 0.7})
 
+    ax_hm.set_title(f'Python HMM  chr{rep_chr}', fontsize=9)
     ax_hm.set_xticklabels(ax_hm.get_xticklabels(), rotation=45, ha='right', fontsize=8)
     ax_hm.set_yticklabels(ax_hm.get_yticklabels(), rotation=0, fontsize=fs)
     ax_hm.text(0.5, -0.12,
@@ -175,7 +176,7 @@ def plot_s2(hmap_data, chr_order, fnames, disp_s,
             sns.heatmap(mat, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,
                         xticklabels=fnames[:mat.shape[1]], yticklabels=disp_s,
                         cbar_kws={'shrink': 0.7})
-
+            ax.set_title(title, fontsize=9)
             ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right', fontsize=8)
             ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=_fs)
         plt.tight_layout(); save_plot(fig_hm, 's2_haplotype_heatmaps.png')
@@ -276,7 +277,7 @@ def plot_s3(kp, kr, disp, chrom_k, ab):
     ]:
         sns.heatmap(mat, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,
                     xticklabels=disp, yticklabels=disp, cbar_kws={'shrink': 0.7})
-
+        ax.set_title(title, fontsize=9)
         ax.set_xticklabels(ax.get_xticklabels(), rotation=90, fontsize=fs, fontfamily='Carlito')
         ax.set_yticklabels(ax.get_yticklabels(), rotation=0,  fontsize=fs, fontfamily='Carlito')
     plt.tight_layout(); save_plot(fig, 's3_kinship.png')
