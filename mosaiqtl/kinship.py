@@ -1,20 +1,19 @@
 """
 mosaiqtl.kinship — kinship matrix computation
 
-van Raden (2008) realized genomic relationship matrix, consistent with
-qtl2::calc_kinship(probs_allele, type='loco').
+Normalized dot-product kinship, consistent with qtl2::calc_kinship(type='loco').
 
-    K_{ij} = Σ_{l,f} (p_{ilf} − p̄_{lf})(p_{jlf} − p̄_{lf})
-             ─────────────────────────────────────────────────
-                     Σ_{l,f} p̄_{lf} (1 − p̄_{lf})
+    K_{ij} = Σ_{l} p_{il} · p_{jl}  /  n_loci
 
-where p_{ilf} = allele probability ∈ [0,1] for sample i, locus l, founder f.
-p̄_{lf} = mean over samples.  Python cache stores probs already in [0,1]
-(= qtl2 allele dosage / 2), so no additional scaling is needed.
+where p_{il} is the J-dimensional allele-probability vector for sample i at
+locus l (sums to 1).  This formula gives inbred founders K_ii = 1, F1 hybrids
+K_ii = 0.5, and CC mice K_ii ≈ 0.2–0.35 depending on heterozygosity —
+matching qtl2::calc_kinship output exactly.
 
-For LOCO the numerator and denominator are accumulated per chromosome and
-the target chromosome is subtracted — exact because p̄ is computed from
-samples (fixed) not from the locus set.
+For LOCO: numerators and locus counts are accumulated per chromosome; the
+target chromosome contribution is subtracted before dividing.
+
+    K_loco(c)_{ij} = (Σ_{l ∉ c} p_{il} · p_{jl})  /  (n_loci − n_loci_c)
 
 supports: overall, loco, and per-chromosome kinship.
 """
@@ -26,7 +25,7 @@ logger = logging.getLogger('mosaiqtl')
 
 
 def calc_kinship(genome_cache, method='loco'):
-    """Compute van Raden kinship matrices from haplotype probabilities.
+    """Compute kinship matrices from haplotype probabilities.
 
     Consistent with qtl2::calc_kinship(genoprob_to_alleleprob(probs), type=...).
 
@@ -42,41 +41,31 @@ def calc_kinship(genome_cache, method='loco'):
     -------
     dict  {'overall': K} | {chrom: K}  each K is (n, n)
     """
-    chr_num   = {}   # {chrom: K_numerator}   sum_l M_l M_l'
-    chr_denom = {}   # {chrom: scalar}         sum_{l,f} p̄(1-p̄)
+    chr_num   = {}   # {chrom: Σ_l p_l p_l^T}
+    chr_nloci = {}   # {chrom: number of loci}
 
     for chrom in genome_cache.chromosomes:
         _, _, probs = genome_cache.get_chromosome(chrom)
-        # probs: (L, n, J)  already in [0,1]
-        p_bar = probs.mean(axis=1)          # (L, J)
-        M     = probs - p_bar[:, None, :]   # (L, n, J)  centred
-
-        chr_num[chrom]   = np.einsum('lni,lmi->nm', M, M, optimize=True)
-        chr_denom[chrom] = float((p_bar * (1.0 - p_bar)).sum())
+        # probs: (L, n, J)  stored as dosages summing to 2; normalise to [0,1]
+        p = probs * 0.5
+        chr_num[chrom]   = np.einsum('lni,lmi->nm', p, p, optimize=True)
+        chr_nloci[chrom] = probs.shape[0]
 
     num_tot   = sum(chr_num.values())
-    denom_tot = sum(chr_denom.values())
+    nloci_tot = sum(chr_nloci.values())
 
     if method == 'overall':
-        return {'overall': _safe_div(num_tot, denom_tot)}
+        return {'overall': num_tot / nloci_tot}
 
     elif method == 'loco':
-        return {c: _safe_div(num_tot - chr_num[c], denom_tot - chr_denom[c])
+        return {c: (num_tot - chr_num[c]) / (nloci_tot - chr_nloci[c])
                 for c in chr_num}
 
     elif method == 'chr':
-        return {c: _safe_div(chr_num[c], chr_denom[c]) for c in chr_num}
+        return {c: chr_num[c] / chr_nloci[c] for c in chr_num}
 
     else:
         raise ValueError(f'unknown kinship method: {method!r}')
-
-
-def _safe_div(num, denom):
-    """Return num / denom; warn and fall back to num if denom ~ 0."""
-    if abs(denom) < 1e-12:
-        logger.warning('kinship denominator near zero — returning raw numerator')
-        return num
-    return num / denom
 
 
 def decomp_kinship(kinship_dict):
