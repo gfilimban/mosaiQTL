@@ -377,6 +377,9 @@ if section(2, 'HAPLOTYPE PROBS'):
         if val_rows_all:
             vdf = _col(pd.DataFrame(val_rows_all).dropna(),
                        ['chr', 'locus', 'sample_id', 'founder', 'r_prob', 'py_prob'])
+            sid_order = {s: i for i, s in enumerate(_disp_s)}
+            vdf['_ord'] = vdf['sample_id'].map(sid_order).fillna(len(_disp_s))
+            vdf = vdf.sort_values(['chr', 'locus', '_ord']).drop(columns='_ord').reset_index(drop=True)
             save_csv(vdf, 'haplotype_val_comparison.csv')
             # serialize hmap_data arrays for standalone replot
             if hmap_data:

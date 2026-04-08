@@ -308,6 +308,10 @@ message('  saved: haplotype_r.csv (', nrow(hap_df), ' loci)')
 hap_vals <- do.call(rbind, hap_val_rows); rownames(hap_vals) <- NULL
 id_cols  <- c('chr','locus','pos_mb','sample_id')
 hap_vals <- hap_vals[, c(id_cols, setdiff(names(hap_vals), id_cols))]
+hap_vals$sample_id <- factor(hap_vals$sample_id, levels = sample_ids)
+hap_vals <- hap_vals[order(hap_vals$chr, hap_vals$locus, hap_vals$sample_id), ]
+hap_vals$sample_id <- as.character(hap_vals$sample_id)
+rownames(hap_vals) <- NULL
 write.csv(hap_vals, file.path(output_dir,'haplotype_vals_r.csv'), row.names=FALSE)
 message('  saved: haplotype_vals_r.csv (', nrow(hap_vals), ' rows)')
 
