@@ -58,8 +58,6 @@ validation/phase3/py_data/*.done
 # bundle (transferred separately, not committed)
 mosaiqtl.bundle
 
-# claude skills
-docs/miqtl-signatures.md
-docs/mosaiqtl-state.md
-docs/phase3-validation-state.md
-docs/validate-port-state.md
+# agent related
+claude/*.md
+graphify-out
