@@ -355,7 +355,7 @@ if section(2, 'HAPLOTYPE PROBS'):
                     si = _sids_py.index(sid)
                     for fi, fc in enumerate(fc_r):
                         if fi >= h_py.shape[1]: continue
-                        rp = float(rv_l.loc[sid, fc]) / 2.0  # R [0,2] -> [0,1]
+                        rp = float(rv_l.loc[sid, fc])
                         pp = float(h_py[si, fi])
                         all_r_probs.append(rp); all_py_probs.append(pp)
                         val_rows_all.append({'chr':chrom,'locus':lid,'sample_id':sid,
@@ -371,7 +371,7 @@ if section(2, 'HAPLOTYPE PROBS'):
             for di, sid in enumerate(_disp_s):
                 if sid in rv_mid.index:
                     for fi, fc in enumerate(fc_r):
-                        H_r_mid[di, fi] = float(rv_mid.loc[sid, fc]) / 2.0
+                        H_r_mid[di, fi] = float(rv_mid.loc[sid, fc])
             hmap_data[chrom] = (H_py_mid, H_r_mid, rep_lid)
 
         if val_rows_all:

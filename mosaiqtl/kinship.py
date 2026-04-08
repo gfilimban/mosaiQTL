@@ -46,9 +46,8 @@ def calc_kinship(genome_cache, method='loco'):
 
     for chrom in genome_cache.chromosomes:
         _, _, probs = genome_cache.get_chromosome(chrom)
-        # probs: (L, n, J)  stored as dosages summing to 2; normalise to [0,1]
-        p = probs * 0.5
-        chr_num[chrom]   = np.einsum('lni,lmi->nm', p, p, optimize=True)
+        # probs: (L, n, J)  allele probabilities summing to 1 per sample per locus
+        chr_num[chrom]   = np.einsum('lni,lmi->nm', probs, probs, optimize=True)
         chr_nloci[chrom] = probs.shape[0]
 
     num_tot   = sum(chr_num.values())
