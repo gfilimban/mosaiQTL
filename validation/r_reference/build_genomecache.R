@@ -220,22 +220,43 @@ message('\n[7] running HMM (calc_genoprob) — ', length(cc_cols),
 # transition scaling. using the actual crossinfo is more accurate than a uniform
 # ngen=20 for all strains.
 if (file.exists(crossinfo_path)) {
-  ci        <- read.csv(crossinfo_path, row.names = 1, stringsAsFactors = FALSE)
-  cc_in_ci  <- intersect(rownames(cross$cross_info), rownames(ci))
+  ci       <- read.csv(crossinfo_path, row.names = 1, stringsAsFactors = FALSE)
+  # cc_crossinfo.csv format: columns = founders (A-H), values = funnel positions (1-8).
+  # qtl2 calc_genoprob for CC needs: an n_ind x 8 matrix where column j = funnel
+  # position j and each value is a founder index (A=1 ... H=8).
+  # invert: for each strain, map position → founder_index.
+  founder_to_idx <- c(A=1L, B=2L, C=3L, D=4L, E=5L, F=6L, G=7L, H=8L)
+  ci_qtl2 <- t(apply(as.matrix(ci), 1, function(row) {
+    inv <- integer(8)
+    for (f in intersect(names(row), names(founder_to_idx))) {
+      pos <- as.integer(row[[f]])
+      if (!is.na(pos) && pos >= 1L && pos <= 8L) inv[pos] <- founder_to_idx[[f]]
+    }
+    inv
+  }))
+  rownames(ci_qtl2) <- rownames(ci)
+  # cross$cross_info may start as 0-column (read_cross2 without crossinfo in YAML).
+  # replace the entire matrix using all strains present in the cross geno data.
+  all_cc <- rownames(cross$geno[[1]])
+  cc_in_ci <- intersect(all_cc, rownames(ci_qtl2))
   if (length(cc_in_ci) > 0) {
-    cross$cross_info[cc_in_ci, ] <- as.matrix(ci[cc_in_ci, , drop = FALSE])
+    ci_full <- matrix(0L, nrow = length(all_cc), ncol = 8L,
+                      dimnames = list(all_cc, as.character(1:8)))
+    ci_full[cc_in_ci, ] <- ci_qtl2[cc_in_ci, ]
+    cross$cross_info <- ci_full
     message('[crossinfo] loaded per-strain funnel for ', length(cc_in_ci),
-            '/', nrow(cross$cross_info), ' CC strains')
+            '/', length(all_cc), ' CC strains')
   } else {
     message('[crossinfo] WARNING: no strain overlap — falling back to ngen=20')
-    cross$cross_info <- matrix(20L, nrow = nrow(cross$cross_info), ncol = 1,
-                               dimnames = list(rownames(cross$cross_info), 'ngen'))
+    cross$cross_info <- matrix(20L, nrow = length(all_cc), ncol = 1,
+                               dimnames = list(all_cc, 'ngen'))
   }
 } else {
   message('[crossinfo] file not found at ', crossinfo_path,
           ' — falling back to ngen=20')
-  cross$cross_info <- matrix(20L, nrow = nrow(cross$cross_info), ncol = 1,
-                             dimnames = list(rownames(cross$cross_info), 'ngen'))
+  all_cc <- rownames(cross$geno[[1]])
+  cross$cross_info <- matrix(20L, nrow = length(all_cc), ncol = 1,
+                             dimnames = list(all_cc, 'ngen'))
 }
 probs <- calc_genoprob(cross = cross, map = cross$gmap,
                        error_prob = 0.002, cores = n_cores)
