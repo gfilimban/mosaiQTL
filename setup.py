@@ -9,7 +9,7 @@ setup(
     python_requires='>=3.9',
     entry_points={
         'console_scripts': [
-            'mosaiqtl-build-cache=mosaiqtl.genomecache:build',
+            'build-cache=mosaiqtl.genomecache:build',
         ],
     },
     install_requires=[

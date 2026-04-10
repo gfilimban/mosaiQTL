@@ -8,7 +8,7 @@
 
 **Recent changes (rerun S2–S11 required):**
 - `genome_cache.py` renamed → `genomecache.py`; `genome_cache.h5` → `genomecache.h5`
-- `build()` CLI added: `mosaiqtl-build-cache` writes `probs_cc.h5`, `probs_founders.h5`, `probs_f1.h5`, `kinship_loco.h5` to `validation/phase2/py_data/` by default
+- `build()` CLI added: `build-cache` writes `probs_cc.h5`, `probs_founders.h5`, `probs_f1.h5`, `kinship_loco.h5` to `validation/phase2/py_data/` by default
 - `pheno_df(h5ad_path, ...)` added: averages pseudobulked AnnData per strain → (n_strains × n_genes) DataFrame for QTL input; parallels R's `pheno_48_used.csv`
 - S2 fix: haplotype `/2` normalization removed from `validate_port.py` (was double-normalizing [0,1] probs)
 - S3 fix: kinship `* 0.5` removed from `kinship.py` (was halving sum-to-1 probs before dot product)

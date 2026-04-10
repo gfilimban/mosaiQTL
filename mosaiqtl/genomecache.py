@@ -1069,7 +1069,7 @@ def build(args=None):
     Usage
     -----
     python -m mosaiqtl.genomecache [options]
-    mosaiqtl-build-cache [options]       (after pip install -e .)
+    build-cache [options]       (after pip install -e .)
 
     Column lists (--cc-cols, --founder-cols) can be either a comma-separated
     string or a path to a JSON file containing a list of strings.
@@ -1082,7 +1082,7 @@ def build(args=None):
     import json
 
     parser = argparse.ArgumentParser(
-        prog='mosaiqtl-build-cache',
+        prog='build-cache',
         description='Build Python genome cache from raw GigaMUGA data (no R required)',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -1139,7 +1139,7 @@ def build(args=None):
     os.makedirs(args.out_dir, exist_ok=True)
 
     # ── build genome cache (Python-native: no R) ──────────────────────────────
-    logger.info('=== mosaiqtl-build-cache ===')
+    logger.info('=== build-cache ===')
     logger.info(f'  gigamuga : {args.gigamuga}')
     logger.info(f'  gmap_dir : {args.gmap_dir}')
     logger.info(f'  pmap_dir : {args.pmap_dir}')
