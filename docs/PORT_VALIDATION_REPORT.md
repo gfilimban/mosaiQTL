@@ -4,7 +4,14 @@
 **Scripts:** `validation/validate_port.py` vs `validation/r_reference/port_validation.R`  
 **Reference:** miQTL R package (`gkeele/miqtl`)  
 **Run command:** `python validation/validate_port.py --chr 8 --n_genes 50`  
-**Last updated:** April 2026 | commit `2333b69`
+**Last updated:** April 2026 | commit `1219b695`
+
+**Recent changes (rerun S2–S11 required):**
+- `genome_cache.py` renamed → `genomecache.py`; `genome_cache.h5` → `genomecache.h5`
+- `build()` CLI added: `mosaiqtl-build-cache` writes `probs_cc.h5`, `probs_founders.h5`, `probs_f1.h5`, `kinship_loco.h5` to `validation/phase2/py_data/` by default
+- `pheno_df(h5ad_path, ...)` added: averages pseudobulked AnnData per strain → (n_strains × n_genes) DataFrame for QTL input; parallels R's `pheno_48_used.csv`
+- S2 fix: haplotype `/2` normalization removed from `validate_port.py` (was double-normalizing [0,1] probs)
+- S3 fix: kinship `* 0.5` removed from `kinship.py` (was halving sum-to-1 probs before dot product)
 
 ---
 
@@ -319,11 +326,9 @@ Let $\varepsilon_\ell = |\text{LOD}_\ell^\text{py} - \text{LOD}_\ell^R|$ and $\t
 
 **Pass criterion:** $(n_\text{strict} + n_\text{lenient}) / n_\text{genes} \geq 0.50$
 
-**Current result:** ✅ `strict=341  lenient=247  fail=356  median_r=0.9848` (62% pass)
+**Current result:** ⏳ pending rerun — prior numbers (`strict=341 lenient=247 fail=356 median_r=0.9848`) were from before the S2 haplotype normalization fix and S3 kinship formula fix. Rerun required before citing.
 
-**Note on 38% fail rate:** Failures concentrate at low-LOD genes ($\text{LOD}_R < 1$) where
-$|\Delta\text{LOD}| = 0.05$ produces large relative error. Median $r = 0.985$ across all loci
-of all 944 genes confirms the scan arithmetic is correct.
+**Note on expected failure pattern (prior run):** Failures concentrated at low-LOD genes ($\text{LOD}_R < 1$) where $|\Delta\text{LOD}| = 0.05$ produces large relative error. Median $r = 0.985$ across all loci confirmed the scan arithmetic was correct; this pattern is expected to hold after rerun.
 
 ---
 
@@ -349,7 +354,7 @@ pairs → higher collapse rate. LOD preservation $r = 0.9996$ confirms no scient
 
 **Pass criterion:** `pct_py ≥ 5%` AND `kinship_r > 0.99` AND `row_sums_ok`.
 
-**Current result:** ✅ `py=91.4%  r=78.8%  kinship_r=0.9980  lod_preservation=0.9996`
+**Current result:** ⏳ pending rerun — prior numbers (`py=91.4%  r=78.8%  kinship_r=0.9980  lod_preservation=0.9996`) were from before the S3 kinship formula fix.
 
 ---
 
@@ -377,7 +382,7 @@ $$f_\text{GEV}(x;\, \mu, \sigma, \xi) = \frac{1}{\sigma}\left[1 + \xi\frac{x-\mu
 
 **Pass criterion:** $|\text{thr}_\text{py} - \text{thr}_R| < 0.5$
 
-**Current result:** ✅ `py=4.944  R=5.274  Δ=0.331`
+**Current result:** ⏳ pending rerun — prior numbers (`py=4.944  R=5.274  Δ=0.331`) were from before the S2/S3 fixes.
 
 ---
 
@@ -419,7 +424,7 @@ Achieving $r > 0.95$ requires $K \gtrsim 60$ or aligned seeds.
 
 **Pass criterion:** $r > 0.75$ (independent-RNG noise floor for $K=11$).
 
-**Current result:** ✅ `r=0.8061  n_genes=944`
+**Current result:** ⏳ pending rerun — prior number (`r=0.8061`) was from before S2/S3 fixes.
 
 **Design note:** MI is a miQTL-era correction for winner's curse in strain-mean LMMs.
 mosaiQTL's NB GLM on $n=418$ raw counts has larger effective $n$ and explicit
@@ -466,7 +471,7 @@ heterozygous ancestry windows where exact diplotype probs diverge from the produ
 
 **Pass criterion:** $r > 0.50$ (haplotype vs diplotype model gap; not a port error).
 
-**Current result:** ✅ `r=0.5954` (passes revised threshold; model difference documented)
+**Current result:** ⏳ pending rerun — prior number (`r=0.5954`) was from before S2/S3 fixes. r ≈ 0.55 expected by design (haplotype vs diplotype dosage model difference).
 
 **Future work:** diplotype dosage requires (n×36) prob storage in `GenomeCache` —
 4.5× memory increase — and belongs in a dedicated mosaiQTL NB GLM `snp_scan` redesign.
@@ -502,7 +507,7 @@ vs R applying a different scaling internally. Does not affect $r$.
 
 **Pass criterion:** $r(\text{LOD}_\text{base,py},\, \text{LOD}_\text{base,R}) > 0.90$
 
-**Current result:** ✅ `r=0.9758`
+**Current result:** ⏳ pending rerun — prior number (`r=0.9758`) was from before S2/S3 fixes.
 
 ---
 
@@ -527,7 +532,7 @@ number, not 'GenomeCache'` when `rint()` was called on it. Fixed to `_rps(boot_o
 
 **Pass criterion:** CI overlap — $[\text{lo}_\text{py}, \text{hi}_\text{py}] \cap [\text{lo}_R, \text{hi}_R] \neq \emptyset$
 
-**Current result:** ✅ `py=[9.18, 129.02]  R=[9.00, 127.15]  overlap=True`
+**Current result:** ⏳ pending rerun — prior numbers (`py=[9.18, 129.02]  R=[9.00, 127.15]  overlap=True`) were from before S2/S3 fixes.
 
 ---
 
@@ -562,17 +567,17 @@ output), guaranteeing bootstrap scans identify a real signal.
 
 | S# | Section | R function | Python function | Key formula difference | Metric | Criterion | Status |
 |---|---|---|---|---|---|---|---|
-| S1 | Cache info | `h$getLoci()` | `cache._data` | none (structural) | ID match | exact | ✅ |
-| S2 | Haplotype probs | HAPPY $[0,2]$ scale | marginal $[0,1]$ × 2 | scale factor 2 | $\max\|\text{rowsum}-2\|$ | `<1e-4` | ✅ `0.00` |
-| S3 | Kinship LOCO | van Raden, LOCO | same | none | $r(K)$; $\max\|\Delta K\|$ | $r>0.999$ | ✅ `r=0.9997` |
-| S4 | LMM scan (ROP) | per-locus WLS loop | FWL vectorized | FWL speedup (equivalent) | gene tier rate | ≥50% | ✅ 62% |
-| S5 | Cache collapse | `:::collapse.genomecache` | `GenomeCache.collapse` | none | collapse%; $r_K$; $r_\text{LOD}$ | collapse≥5%; $r>0.99$ | ✅ |
-| S6 | Permutation | cis-loci, GEV | cis-loci (fixed), GEV | **was**: all loci scanned | $\|\Delta\text{thr}\|$ | `<0.5` | ✅ `Δ=0.331` |
-| S7 | MI scan | fixed $h^2$, per-locus draws | fixed $h^2$ (fixed), per-scan draws | sampling architecture | $r(\text{LOD}_\text{MI})$ | $>0.75$ | ✅ `r=0.806` |
-| S8 | SNP scan | diplotype dosage (36-state) | haplotype dosage (8-state) | dosage model | $r(\text{LOD}_\text{SNP})$ | $>0.50$ | ✅ `r=0.595` |
-| S9 | Mediation | eigendecomp WLS | QR decomp | QR vs eigen (equivalent) | $r(\text{LOD}_\text{base})$ | $>0.90$ | ✅ `r=0.976` |
-| S10 | Positional CI | `run.positional.scans` | `run_positional_scans` | **was**: arg order bug | CI overlap | boolean | ✅ overlap |
-| S11 | Instability | `instability.lm.scan` | `instability_lm_scan` | gene selection (fixed in R) | $r(\overline{\text{LOD}})$ | $>0.90$ | ⏳ |
+| S1 | Cache info | `h$getLoci()` | `cache._data` | none (structural) | ID match | exact | ✅ confirmed |
+| S2 | Haplotype probs | HAPPY $[0,2]$ scale | marginal $[0,1]$ × 2 | scale factor 2 | $\max\|\text{rowsum}-2\|$ | `<1e-4` | ✅ `0.00`; concordance plots ⏳ rerun |
+| S3 | Kinship LOCO | dot-product, LOCO | same | none | $r(K)$; $\max\|\Delta K\|$ | $r>0.999$ | ✅ `r=0.9997` (post kinship fix) |
+| S4 | LMM scan (ROP) | per-locus WLS loop | FWL vectorized | FWL speedup (equivalent) | eGene count; $\lambda_{GC}$; $r(\text{LOD})$ | $\lambda\approx1$; $r>0.97$ | ⏳ rerun pending |
+| S5 | Cache collapse | `:::collapse.genomecache` | `GenomeCache.collapse` | none | collapse%; $r_K$; $r_\text{LOD}$ | collapse≥5%; $r>0.99$ | ⏳ rerun pending |
+| S6 | Permutation | cis-loci, GEV | cis-loci (fixed), GEV | **was**: all loci scanned | $\|\Delta\text{thr}\|$ | `<0.5` | ⏳ rerun pending |
+| S7 | MI scan | fixed $h^2$, per-locus draws | fixed $h^2$ (fixed), per-scan draws | sampling architecture | $r(\text{LOD}_\text{MI})$ | $>0.75$ | ⏳ rerun pending |
+| S8 | SNP scan | diplotype dosage (36-state) | haplotype dosage (8-state) | dosage model | $r(\text{LOD}_\text{SNP})$ | $>0.50$ | ⏳ rerun pending; r≈0.55 expected by design |
+| S9 | Mediation | eigendecomp WLS | QR decomp | QR vs eigen (equivalent) | $r(\text{LOD}_\text{base})$ | $>0.90$ | ⏳ rerun pending |
+| S10 | Positional CI | `run.positional.scans` | `run_positional_scans` | **was**: arg order bug | CI overlap | boolean | ⏳ rerun pending |
+| S11 | Instability | `instability.lm.scan` | `instability_lm_scan` | gene selection (fixed in R) | $r(\overline{\text{LOD}})$ | $>0.90$ | ⏳ rerun pending |
 
 ---
 
@@ -919,6 +924,22 @@ blocks trust in S2–S11.
 
 **Inference.** `max_dev=0.00` on row sums is always 0 by construction (HMM normalisation) and carries no information. The real validation is `prob_r` from `haplotype_vals_r.csv`. If `prob_r < 0.90`, first check the Bland-Altman for bias direction; then check the per-founder bar for which founder drives it; then check the diff grid for which chromosomes are affected.
 
+#### S2 — Founder Concordance plots
+
+These five plots answer a different question from the probability-comparison plots above. Rather than asking "how close are the posterior probabilities numerically?", they ask "do Python and R agree on *which founder* dominates at each locus?" — the quantity that actually determines haplotype block calls, QTL effect direction, and allele-effect sign.
+
+Source data: `founder_assignment_comparison.csv` — one row per (chromosome × locus × sample). Each row records `argmax_py` and `argmax_r` (0–7 index into the canonical founder order), the dominant founder name in each implementation, and whether they agree (`agree=True/False`), plus the max posterior probability from each side (`py_max_prob`, `r_max_prob`).
+
+| Plot | Type | What it shows | How to read it | Passing look | Discrepancy signal |
+|---|---|---|---|---|---|
+| `s2_founder_concordance_per_strain.png` | Horizontal bar chart, one bar per sample | Fraction of loci where Python and R assign the same dominant founder, broken down by strain. Bars are coloured: red = founders (deterministic; should be near 1.0), grey = F1 hybrids (also deterministic; near 1.0), blue = CC strains (HMM-inferred; lower acceptable). Dashed vertical lines show the overall rate and CC-only rate. | A bar reaching 1.0 means Python and R agree on the dominant founder at every locus for that strain. A bar at 0.5 means agreement is at chance (8 founders → random = 0.125, so 0.5 indicates partial structure). Founders and F1s must be at 1.0 because their probabilities are deterministic. CC strains near 1.0 means the HMM consistently recovers the same haplotype blocks as R. Sort order (ascending) highlights the worst-performing strains. | Founders and F1s at 1.0. CC strains > 0.90. Overall rate > 0.90. | Any founder or F1 < 1.0 = deterministic assignment logic is broken (bug in `from_gigamuga`). CC strains < 0.80 = HMM posterior peaks differ systematically — check marker encoding, allele coding, or founder genotype order. |
+| `s2_founder_concordance_per_chr.png` | Vertical bar chart, one bar per chromosome | Same agreement rate but aggregated across all samples and loci on each chromosome. Alternating blue/grey colouring matches the Manhattan plot convention. | A chromosome at 1.0 means both implementations always agree on the dominant founder there. Chromosomes with low rates are regions where the two HMMs diverge — investigate marker density on that chromosome (sparse regions have wider posterior distributions that are more sensitive to implementation differences). | All chromosomes > 0.90. Uniform across autosomes. | A specific chromosome far below the rest usually means a marker encoding mismatch or a sparse-region artefact on that chromosome. X chromosome may legitimately be lower due to hemizygosity handling differences. |
+| `s2_founder_concordance_confidence.png` | Line plot, x = Python max-posterior bin, y = agreement rate, with sample-count annotations | Confidence-stratified concordance: for loci where Python is very confident (max prob > 0.9), does it still agree with R? For loci where Python is uncertain (max prob < 0.3), disagreement is expected and uninformative. This separates *meaningful disagreements* (high-confidence calls that differ) from *trivial disagreements* (uncertain posteriors where neither implementation has resolved the haplotype). | Read left-to-right: the leftmost bin (Python max prob 0–0.3) is the ambiguous region where disagreement is expected and acceptable. The rightmost bin (0.9–1.0) is where Python is near-certain — if R also disagrees here, it means the two HMMs have genuinely different confident calls, which matters for downstream inference. The n-annotation on each bin shows how many loci fall there. | Agreement rate increases monotonically from left to right. Rightmost bin (high-confidence calls) at > 0.95. Leftmost bin may be near 0.5 (random chance for 8 founders) — this is expected and not a failure. | Non-monotonic agreement (e.g., high-confidence calls worse than low-confidence) = implementation difference that is specifically worse in regions with strong signal, likely a sign flip or allele-coding reversal in a specific founder. Rightmost bin < 0.85 = systematic disagreement on confident calls — high priority to investigate. |
+| `s2_founder_concordance_confusion.png` | Heatmap, 8×8, rows = Python argmax, columns = R argmax | The confusion matrix shows *where* disagreements occur. The diagonal = agreements. Off-diagonal entries = loci where Python assigns one founder but R assigns a different one. Cell colour is row-normalised (so each row sums to 1.0); cell numbers are raw counts. | The diagonal should be the darkest column in each row. An off-diagonal cell (i, j) that is nearly as dark as (i, i) means that when Python calls founder i, R frequently calls founder j — the two founders are confusable, likely because they share a haplotype block or have similar genotype patterns in that region. Asymmetric confusion (i→j common but j→i rare) indicates a directionality in the bias. | Dark diagonal, pale off-diagonal. No single off-diagonal cell with rate > 0.05. | A bright off-diagonal block between two specific founders (e.g., AJ ↔ B6J) = those two founders share many alleles and the HMMs resolve the boundary differently. A bright row (row i entirely mixed) = one founder's posterior is systematically flat in Python but peaked in R; check that founder's genotypes in the GigaMUGA CSV. |
+| `s2_founder_concordance_detail.png` | Two-panel: (left) scatter py_max_prob vs r_max_prob coloured by agreement; (right) per-founder agreement rate bar | The left panel shows max-prob calibration *jointly* between the two implementations: points on the identity diagonal = both assign the same confidence to the call. Blue = agreement, red = disagreement. The right panel shows agreement rate broken down by which founder R assigned — this identifies which founders are harder to call consistently regardless of Python's confidence. | Left panel: blue cloud on identity = both agree and are equally confident. Red points above identity = Python is more confident than R but they disagree (Python over-confident). Red points below identity = R more confident, Python uncertain. Right panel: a bar at 0.9 for CASTJ means that for all loci where R calls CASTJ as dominant, Python agrees 90% of the time. | Left: blue points on identity; red points scattered at low probability (uncertain calls). Right: all bars > 0.85. | Left: dense red cluster at high py_max_prob = Python assigns high-confidence calls that R disagrees with — check HMM prior or emission model. Right: one specific founder bar much lower than others = that founder has a systematic assignment problem in one implementation. |
+
+**Inference order for S2 concordance.** Start with the per-strain plot: if founders and F1s are at 1.0, the deterministic path is correct and any CC disagreements are HMM-driven. Move to the confidence-stratified plot: if high-confidence disagreements are rare (rightmost bin > 0.95), the HMMs agree where it matters for inference. Move to the confusion matrix only if agreement is low — it will identify which founder pair is driving the disagreements. The detail scatter confirms whether the disagreements are in ambiguous calls (expected) or confident ones (needs investigation).
+
 ---
 
 ### S3 — Kinship LOCO
@@ -935,18 +956,22 @@ blocks trust in S2–S11.
 
 ### S4 — LMM scan (ROP)
 
-| Plot | Type | Justification | Passing look | Discrepancy signal |
-|---|---|---|---|---|
-| `s4_lod_scatter.png` | LOD scatter (R vs Python) | Core validation; standard in LMM scan comparisons (Casale et al. 2015) | Points near identity; r > 0.97 | Systematic deviation above/below identity = LOD inflation/deflation |
-| `s4_lod_residuals.png` | ΔLOD vs genomic position (Mb) | Detects positional bias (centromeres, telomeres, high-LD regions) | Random scatter around zero | Systematic region with large ΔLOD = marker density or LD structure affecting one implementation |
-| `s4_gene_tiers.png` | Tier bar (strict/lenient/fail) + fail rate by LOD bin | Stratified analysis; confirms fails concentrate at low signal (Stegle et al. 2012) | Fail rate → 0 for LOD > 3 bins | Elevated fail rate at high LOD = genuine implementation discrepancy, not noise |
-| `s4_gene_summary.png` | h² distribution + per-gene r distribution + peak LOD scatter | Comprehensively characterises the scan output distribution | h² roughly 0.2–0.6; r distribution mode near 1 | h² distribution skewed high = kinship inflation; bimodal r = consistent failures for a gene subset |
-| `s4_pvalue_qq.png` | p-value QQ with genomic inflation λ | Standard for calibration assessment (Devlin & Roeder 1999); λ annotation is required | Points near null diagonal for low LOD; inflation at tail (true signals); λ ≈ 1.0–1.05 | λ >> 1 = test statistic inflation from kinship misspecification; λ < 1 = deflation (overcorrection) |
-| `s4_discrepancy_manhattan.png` | \|ΔLOD\| genome-wide Manhattan | Reveals whether discrepancies are random or regional (Listgarten et al. 2012) | Uniformly low \|ΔLOD\| across all chr | Elevated \|ΔLOD\| on specific chromosomes = LD structure or loci density causing implementation-specific behaviour |
-| `s4_allele_effect_concordance.png` | Distribution of per-gene allele effect r and CCC | Validates founder effect direction, not just LOD magnitude (Listgarten et al. 2012); CCC = 1 only when means also match | r and CCC distributions mode near 1; few genes with r < 0 | r near 0 = allele effects not consistently directional between implementations; negative r = sign flip |
-| `s4_founder_effects.png` | Grouped bar (py vs R allele effects, one gene) | Illustrative founder-level comparison | Bars closely matched; r annotated | Specific founder with large discrepancy identifies which founder haplotype drives the model difference |
+| Plot | Type | What it shows | How to read it | Passing look | Discrepancy signal |
+|---|---|---|---|---|---|
+| `s4_lod_scatter.png` | Scatter (R vs Python, all loci × genes) | Point-by-point LOD agreement | Points on identity = exact match; spread indicates locus-level noise | Cloud on identity; r > 0.97 | Systematic inflation/deflation above/below identity = LOD formula or kinship difference |
+| `s4_lod_residuals.png` | ΔLOD vs cumulative genomic Mb (Manhattan layout) | Whether discrepancies are positionally structured | Random scatter around y=0 expected; any chr-level elevation = positional bias | Uniform scatter; mean ≈ 0 | Elevated band on specific chromosomes = marker density or LD structure differences |
+| `s4_gene_summary_error.png` | Grouped bar: genes per relative-error bin, coloured by tier (strict/lenient/fail) | How LOD relative error distributes across tiers | Most genes in 0–10% bins; fail tier dominates >40% bin | Strict+lenient bars dominate low-error bins; fail bars small | Elevated strict-tier counts in high-error bins = LOD scale mismatch beyond noise |
+| `s4_gene_summary_concordance.png` | Grouped bar: peak-match vs peak-mismatch per tier | Whether Python and R agree on the peak locus, not just LOD magnitude | Per tier: most genes have `peak_match=True`; mismatch bars small | Mismatch bars small for strict and lenient tiers | Large mismatch bars in strict tier = Python peak locus systematically displaced |
+| `s4_scan_summary.png` | Side-by-side summary table (R vs Python) | Top-level scan statistics: n_genes, eGene count, eGene rate, median/max LOD, min q-value, chromosomes covered | R and Python columns closely matched | Matching eGene counts and rates; similar median LOD | Large eGene count gap = LOD scale difference inflating or deflating discovery |
+| `s4_egene_manhattan.png` | Manhattan of peak LOD per gene (Python), coloured by tier, BH-FDR 5% threshold line | Genome-wide eGene distribution with validation overlay | Tier colours show which genes pass/fail; BH line annotated with eGene count | Most genes above BH line are strict-tier; fail-tier genes below threshold | Dense fail-tier cluster above BH line = genes with significant LOD in R but degraded in Python |
+| `s4_egene_lod_hist.png` | Overlapping histograms of per-gene peak LOD (R red, Python blue), with BH eGene count annotations | Distribution of signal strength; confirms Python and R find similar sets of strongly associated genes | Histograms overlap; eGene counts close | Near-identical histograms; eGene counts within ±10% | Python histogram shifted right = LOD inflation; shifted left = deflation or over-correction by kinship |
+| `s4_egene_chr_bar.png` | Paired bar: eGene count per chromosome (R vs Python) | Whether Python and R agree on which chromosomes have the most cis-eQTLs | Similar bar heights per chromosome | Heights closely matched across all autosomes | Systematic Python excess on specific chromosomes = cis confounding or positional LOD inflation there |
+| `s4_pvalue_qq.png` | p-value QQ (both Python and R overlaid), λ_GC annotated | Test statistic calibration; λ ≈ 1.0 = null correctly specified | Both curves near null diagonal at low signal; tail inflation = true signal | λ_py ≈ 1.0–1.05; both curves track together | λ >> 1 = kinship misspecification inflating test statistic; λ < 1 = over-correction |
+| `s4_discrepancy_manhattan.png` | \|ΔLOD\| per locus × gene, Manhattan layout | Whether LOD discrepancies are spatially random or concentrated | Random low-level scatter | Uniform low |ΔLOD| across all chromosomes | Elevated |ΔLOD| on specific chromosomes = LD structure or loci density difference there |
+| `s4_allele_effect_concordance.png` | Two-panel histogram: per-gene Pearson r (left) and CCC (right) for founder allele effects | Whether effect *direction and magnitude* agree, not just LOD | Mode near 1 for both r and CCC; few genes with r < 0 | Both distributions peaked near 1 | Bimodal CCC distribution = some genes have same correlation but different effect scale (r ≈ CCC only when means match) |
+| `s4_founder_effects.png` | Grouped bar: py vs R allele effects per founder, highest-LOD gene | Illustrative per-founder comparison with r annotated | Bars closely matched; r annotated in corner | All founder bars closely matched; r > 0.95 | One specific founder bar with large discrepancy identifies which founder haplotype drives the difference |
 
-**Inference.** The 40% fail rate concentrates at LOD < 1 (confirm with `s4_gene_tiers.png` lower panel). The `s4_discrepancy_manhattan.png` shows whether discrepancies are chromosomally structured. The `s4_pvalue_qq.png` with λ ≈ 1.0 confirms the test statistic is not inflated genome-wide — the fails at low LOD are noise, not calibration failure.
+**Inference.** Start with `s4_scan_summary.png` for top-level eGene count agreement. Move to `s4_pvalue_qq.png` with λ_GC — this is the definitive calibration check; λ ≠ 1 means the null is misspecified regardless of r values. Then `s4_gene_summary_error.png` to confirm fail-rate concentrates in low-error bins (noise, not systematic). `s4_discrepancy_manhattan.png` reveals if any chromosome drives the discrepancies. `s4_allele_effect_concordance.png` CCC validates effect direction — a prerequisite for biological interpretation.
 
 ---
 

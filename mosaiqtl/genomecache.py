@@ -1,5 +1,5 @@
 """
-mosaiqtl.genome_cache — read and manage founder haplotype probabilities
+mosaiqtl.genomecache — read and manage founder haplotype probabilities
 
 supports two formats:
   1. happy genome cache (directory of per-locus .rds files) — read via rpy2
@@ -854,3 +854,321 @@ class GenomeCache:
         logger.info(f'collapse: {total_before} → {total_after} total loci '
                     f'({100*(total_before-total_after)/total_before:.1f}% reduced)')
         return GenomeCache(list(self.sample_ids), list(self.founders), new_data)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# pheno_df — pseudobulk → per-strain phenotype matrix
+# ──────────────────────────────────────────────────────────────────────────────
+
+def pheno_df(h5ad_path, strain_col='strain', layer=None, strains=None,
+             min_cells=5, out_path=None):
+    """Average pseudobulked AnnData per strain to produce a phenotype matrix.
+
+    Reads a pseudobulked `.h5ad` file where each observation is a
+    sample × cell-type pseudobulk (or per-sample bulk), averages across
+    observations belonging to the same strain, and returns a
+    (n_strains × n_genes) DataFrame suitable for QTL mapping.
+
+    This is comparison-only: the returned matrix is aligned to the 48
+    genotyped strains in the genome cache, so it can be directly used
+    as `phenotype_matrix` in `discover()` / `scan_h2lmm()`.
+
+    Parameters
+    ----------
+    h5ad_path : str
+        Path to pseudobulked AnnData (.h5ad). obs must contain `strain_col`.
+    strain_col : str
+        Column in `adata.obs` that identifies the strain (e.g. 'strain').
+    layer : str or None
+        AnnData layer to use. None → use `adata.X`.
+    strains : list of str or None
+        Ordered list of strain IDs to include and align. If None, uses all
+        strains found in `adata.obs[strain_col]`.
+    min_cells : int
+        Minimum number of observations per strain to include (strains with
+        fewer are set to NaN).
+    out_path : str or None
+        If provided, write the matrix to this CSV path.
+
+    Returns
+    -------
+    pd.DataFrame  shape (n_strains, n_genes)
+        Index = strain IDs, columns = gene names from `adata.var_names`.
+    """
+    import pandas as pd
+
+    try:
+        import anndata as ad
+    except ImportError:
+        raise ImportError('anndata required: pip install anndata')
+
+    adata = ad.read_h5ad(h5ad_path)
+    logger.info(f'pheno_df: loaded {adata.n_obs} obs × {adata.n_vars} genes '
+                f'from {h5ad_path}')
+
+    if strain_col not in adata.obs.columns:
+        raise ValueError(f'strain_col {strain_col!r} not found in adata.obs. '
+                         f'Available: {list(adata.obs.columns)[:10]}')
+
+    # extract expression matrix as dense numpy
+    if layer is not None:
+        X = adata.layers[layer]
+    else:
+        X = adata.X
+    if hasattr(X, 'toarray'):
+        X = X.toarray()
+    else:
+        X = np.array(X)
+
+    obs_strains = adata.obs[strain_col].astype(str).values
+    gene_names  = adata.var_names.tolist()
+
+    if strains is None:
+        strains = sorted(set(obs_strains))
+
+    rows = {}
+    for s in strains:
+        mask = obs_strains == s
+        n    = mask.sum()
+        if n < min_cells:
+            logger.warning(f'  strain {s}: only {n} obs < min_cells={min_cells}, NaN')
+            rows[s] = np.full(len(gene_names), np.nan)
+        else:
+            rows[s] = X[mask].mean(axis=0)
+
+    df = pd.DataFrame(rows, index=gene_names).T   # (n_strains, n_genes)
+    df.index.name = 'strain'
+
+    n_valid = int((~df.isnull().all(axis=1)).sum())
+    logger.info(f'pheno_df: {n_valid}/{len(strains)} strains with ≥{min_cells} cells, '
+                f'{len(gene_names)} genes')
+
+    if out_path is not None:
+        df.to_csv(out_path)
+        logger.info(f'pheno_df: saved to {out_path}')
+
+    return df
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# module-level helpers for CLI build
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _save_group_probs(cache, sample_list, filepath):
+    """Save per-group haplotype probabilities to HDF5 in qtl2 convention.
+
+    Output format mirrors R's probs_cc.rds / probs_founder.rds / probs_f1.rds
+    produced by qtl2::calc_genoprob().  This enables direct numerical comparison
+    between Python and R outputs.
+
+    HDF5 layout
+    -----------
+    /founders           str array  8 founder names
+    /sample_ids         str array  sample names in this group
+    /chr{c}/probs       float32    (n_samples, n_founders, n_loci) — qtl2 dim order
+    /chr{c}/locus_ids   str array  marker names
+    /chr{c}/positions   float64    physical positions (Mb)
+
+    Parameters
+    ----------
+    cache       : GenomeCache  full combined cache (all 48 samples)
+    sample_list : list of str  samples to extract (cc_cols, founder_cols, f1 ids)
+    filepath    : str          output .h5 path
+    """
+    import h5py
+
+    sid_to_idx = {sid: i for i, sid in enumerate(cache.sample_ids)}
+    grp_idx  = [sid_to_idx[s] for s in sample_list if s in sid_to_idx]
+    grp_sids = [s for s in sample_list if s in sid_to_idx]
+
+    if not grp_idx:
+        logger.warning(f'_save_group_probs: no samples found in cache for {filepath}')
+        return
+
+    with h5py.File(filepath, 'w') as f:
+        f.create_dataset('founders',   data=np.array(cache.founders,  dtype='S'))
+        f.create_dataset('sample_ids', data=np.array(grp_sids,        dtype='S'))
+
+        for chrom in cache.chromosomes:
+            lids, pos, probs = cache.get_chromosome(chrom)
+            # probs: (n_loci, n_all_samples, n_founders)
+            # → subset group → transpose to qtl2: (n_grp, n_founders, n_loci)
+            grp_probs = probs[:, grp_idx, :]            # (n_loci, n_grp, J)
+            grp_probs = np.transpose(grp_probs, (1, 2, 0)).astype(np.float32)  # (n_grp, J, n_loci)
+
+            grp = f.create_group(f'chr{chrom}')
+            grp.create_dataset('locus_ids', data=np.array(lids, dtype='S'))
+            grp.create_dataset('positions', data=pos)
+            grp.create_dataset('probs', data=grp_probs,
+                               compression='gzip', compression_opts=4)
+
+    n_loci_total = sum(cache.n_loci(c) for c in cache.chromosomes)
+    logger.info(f'saved {len(grp_sids)} samples × {len(cache.chromosomes)} chrs '
+                f'× {n_loci_total} loci → {filepath}')
+
+
+def _save_kinship(kinship_dict, sample_ids, filepath):
+    """Save LOCO kinship matrices to HDF5.
+
+    HDF5 layout
+    -----------
+    /sample_ids   str array   sample names
+    /chr{c}       float64     (n_samples, n_samples) LOCO kinship matrix
+
+    Parameters
+    ----------
+    kinship_dict : dict  {chrom: K}  from kinship.calc_kinship(method='loco')
+    sample_ids   : array-like of str
+    filepath     : str  output .h5 path
+    """
+    import h5py
+
+    with h5py.File(filepath, 'w') as f:
+        f.create_dataset('sample_ids', data=np.array(sample_ids, dtype='S'))
+        for key, K in kinship_dict.items():
+            f.create_dataset(f'chr{key}', data=K.astype(np.float64),
+                             compression='gzip', compression_opts=4)
+
+    logger.info(f'saved LOCO kinship ({len(kinship_dict)} chrs) → {filepath}')
+
+
+def build(args=None):
+    """CLI entry point: build genome cache from raw GigaMUGA data.
+
+    Writes five output files to --out-dir:
+
+        genomecache.h5      full combined cache (all 48 samples, all chrs)
+        probs_cc.h5         CC haplotype probs   ← parallels probs_cc.rds
+        probs_founders.h5   founder probs        ← parallels probs_founder.rds
+        probs_f1.h5         F1 haplotype probs   ← parallels probs_f1.rds
+        kinship_loco.h5     LOCO kinship matrices (48×48 per chr)
+
+    Usage
+    -----
+    python -m mosaiqtl.genomecache [options]
+    mosaiqtl-build-cache [options]       (after pip install -e .)
+
+    Column lists (--cc-cols, --founder-cols) can be either a comma-separated
+    string or a path to a JSON file containing a list of strings.
+
+    F1 crosses (--f1-crosses) must be a JSON file: list of
+    [sample_id, parent1_idx, parent2_idx] where indices are 0-based
+    positions into --founder-cols.
+    """
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(
+        prog='mosaiqtl-build-cache',
+        description='Build Python genome cache from raw GigaMUGA data (no R required)',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument('--gigamuga',      required=True,
+                        help='GigaMUGA consensus matrix CSV (markers × strains)')
+    parser.add_argument('--gmap-dir',      required=True,
+                        help='directory containing gmap.csv (marker, chr, pos_cM)')
+    parser.add_argument('--pmap-dir',      required=True,
+                        help='directory containing pmap.csv (marker, chr, pos_mb)')
+    parser.add_argument('--cc-cols',       required=True,
+                        help='comma-sep CC sample names, or path to JSON list')
+    parser.add_argument('--founder-cols',  required=True,
+                        help='comma-sep founder names in canonical order, or JSON')
+    parser.add_argument('--f1-crosses',    default=None,
+                        help='JSON file: [[sample_id, p1_idx, p2_idx], ...]')
+    parser.add_argument('--crossinfo',     default=None,
+                        help='cc_crossinfo.csv (funnel positions per CC strain)')
+    parser.add_argument('--out-dir',       default='validation/phase2/py_data',
+                        help='output directory')
+    parser.add_argument('--step-cM',       type=float, default=None,
+                        help='pseudomarker spacing in cM (None = no pseudomarkers)')
+    parser.add_argument('--error-prob',    type=float, default=0.002,
+                        help='GigaMUGA genotyping error probability')
+    parser.add_argument('--n-gen',         type=int,   default=1,
+                        help='HMM transition scaling (1 for consensus CC map)')
+    parser.add_argument('--collapse',      action='store_true',
+                        help='collapse redundant loci before saving')
+    parser.add_argument('--verbose',       action='store_true',
+                        help='enable DEBUG logging')
+
+    args = parser.parse_args(args)
+
+    import logging as _logging
+    _logging.basicConfig(
+        level=_logging.DEBUG if args.verbose else _logging.INFO,
+        format='%(asctime)s %(levelname)s %(name)s %(message)s',
+    )
+
+    def _parse_list(val):
+        if val.endswith('.json') and os.path.exists(val):
+            with open(val) as fh:
+                return json.load(fh)
+        return [x.strip() for x in val.split(',')]
+
+    cc_cols      = _parse_list(args.cc_cols)
+    founder_cols = _parse_list(args.founder_cols)
+    f1_crosses   = []
+    if args.f1_crosses:
+        with open(args.f1_crosses) as fh:
+            f1_crosses = json.load(fh)   # [[sample_id, pi1, pi2], ...]
+
+    os.makedirs(args.out_dir, exist_ok=True)
+
+    # ── build genome cache (Python-native: no R) ──────────────────────────────
+    logger.info('=== mosaiqtl-build-cache ===')
+    logger.info(f'  gigamuga : {args.gigamuga}')
+    logger.info(f'  gmap_dir : {args.gmap_dir}')
+    logger.info(f'  pmap_dir : {args.pmap_dir}')
+    logger.info(f'  CC strains ({len(cc_cols)}): {cc_cols[:4]}{"..." if len(cc_cols)>4 else ""}')
+    logger.info(f'  founders  ({len(founder_cols)}): {founder_cols}')
+    logger.info(f'  F1 crosses: {len(f1_crosses)}')
+    logger.info(f'  out_dir  : {args.out_dir}')
+
+    cache = GenomeCache.from_gigamuga(
+        gigamuga_path  = args.gigamuga,
+        gmap_dir       = args.gmap_dir,
+        pmap_dir       = args.pmap_dir,
+        cc_cols        = cc_cols,
+        founder_cols   = founder_cols,
+        f1_crosses     = f1_crosses,
+        error_prob     = args.error_prob,
+        n_gen          = args.n_gen,
+        crossinfo_path = args.crossinfo,
+    )
+
+    if args.collapse:
+        logger.info('collapsing redundant loci...')
+        cache = cache.collapse()
+
+    # ── save full combined cache ───────────────────────────────────────────────
+    full_path = os.path.join(args.out_dir, 'genomecache.h5')
+    cache.to_hdf5(full_path)
+
+    # ── save per-group probs paralleling R's RDS files ────────────────────────
+    _save_group_probs(cache, cc_cols,
+                      os.path.join(args.out_dir, 'probs_cc.h5'))
+    _save_group_probs(cache, founder_cols,
+                      os.path.join(args.out_dir, 'probs_founders.h5'))
+    if f1_crosses:
+        f1_ids = [row[0] for row in f1_crosses]
+        _save_group_probs(cache, f1_ids,
+                          os.path.join(args.out_dir, 'probs_f1.h5'))
+
+    # ── compute and save LOCO kinship ─────────────────────────────────────────
+    from mosaiqtl.kinship import calc_kinship
+    logger.info('computing LOCO kinship...')
+    kinship_loco = calc_kinship(cache, method='loco')
+    _save_kinship(kinship_loco, cache.sample_ids,
+                  os.path.join(args.out_dir, 'kinship_loco.h5'))
+
+    logger.info('=== build complete ===')
+    logger.info(f'  outputs in {args.out_dir}:')
+    for fname in ('genomecache.h5', 'probs_cc.h5', 'probs_founders.h5',
+                  'probs_f1.h5', 'kinship_loco.h5'):
+        fp = os.path.join(args.out_dir, fname)
+        if os.path.exists(fp):
+            size_mb = os.path.getsize(fp) / 1e6
+            logger.info(f'    {fname:<22s} {size_mb:6.1f} MB')
+
+
+if __name__ == '__main__':
+    build()

@@ -4,7 +4,7 @@ import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from mosaiqtl.genome_cache import GenomeCache
+from mosaiqtl.genomecache import GenomeCache
 
 
 def _make_cache(n_samples=20, n_loci=10, n_founders=8, chroms=('1', '2')):

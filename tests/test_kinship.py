@@ -4,7 +4,7 @@ import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from mosaiqtl.genome_cache import GenomeCache
+from mosaiqtl.genomecache import GenomeCache
 from mosaiqtl.kinship import calc_kinship, decomp_kinship
 
 

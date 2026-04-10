@@ -32,7 +32,7 @@ from statsmodels.stats.multitest import multipletests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mosaiqtl.genome_cache import GenomeCache
+from mosaiqtl.genomecache import GenomeCache
 from mosaiqtl import kinship as kin_module
 from mosaiqtl import lmm as lmm_module
 from mosaiqtl.utils import rint as _rint

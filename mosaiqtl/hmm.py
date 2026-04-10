@@ -215,6 +215,13 @@ def forward_backward(obs_seq, E, T_list, init_probs, log_scale=True):
 
     returns:
         gamma : (n_markers, n_states) posterior state probabilities
+        alpha : (n_markers, n_states) scaled forward probabilities
+        beta  : (n_markers, n_states) scaled backward probabilities
+
+    alpha and beta are returned to allow pseudomarker interpolation via
+    interpolate_posteriors() — posteriors at positions with no genotype
+    observation are derived from flanking alpha/beta without re-running
+    the full HMM (see qtl2::insert_pseudomarkers equivalence).
     """
     n_markers, n_states = E.shape[0], E.shape[1]
 
@@ -260,7 +267,97 @@ def forward_backward(obs_seq, E, T_list, init_probs, log_scale=True):
     gamma = alpha * beta
     row_sums = gamma.sum(axis=1, keepdims=True)
     gamma /= np.maximum(row_sums, 1e-300)
-    return gamma
+    return gamma, alpha, beta
+
+
+# ── pseudomarker interpolation ─────────────────────────────────────────────────
+
+def interpolate_posteriors(gamma, alpha, beta, E, obs_seq, gmap_cM, step_cM, n_founders):
+    """interpolate HMM posteriors at pseudomarker positions between real markers.
+
+    mathematically identical to qtl2's full HMM with pseudomarkers inserted
+    as missing-observation (uniform emission) positions, PROVIDED the correct
+    emission term is included in the backward message.
+
+    derivation:
+      alpha_p(j) = Σ_i alpha[m](i) * T1[i,j]
+                 = forward prob at p (no emission; missing obs → uniform = 1)
+      beta_p(j)  = Σ_k T2[j,k] * E[m+1, k, obs_{m+1}] * beta[m+1](k)
+                 = backward message at p, including emission at the NEXT real marker
+
+    note: beta[m+1] from forward_backward() encodes P(obs[m+2..] | state at m+1)
+    and does NOT contain E[m+1]. the emission at m+1 is only in alpha[m+1].
+    the backward message at p therefore must multiply E[m+1, :, obs_{m+1}]
+    back in explicitly.
+
+    this requires E and obs to be passed in — see calc_genoprob_cc(step_cM=...)
+    for the augmented-HMM path that avoids this by running a single HMM over
+    all positions (real + pseudo), which is equivalent but cleaner.
+
+    args:
+        gamma    : (n_markers, n_states)  posteriors at real markers
+        alpha    : (n_markers, n_states)  scaled forward probs from forward_backward
+        beta     : (n_markers, n_states)  scaled backward probs from forward_backward
+        E        : (n_markers, n_states, 3)  emission matrix at real markers
+        obs_seq  : (n_markers,) int  observations at real markers (0/1/2, -1=missing)
+        gmap_cM  : (n_markers,)           genetic positions of real markers in cM
+        step_cM  : float                  pseudomarker spacing in cM (e.g. 1.0)
+        n_founders: int
+
+    returns:
+        gamma_all  : (n_total, n_states)  posteriors at real + pseudo positions
+        all_pos_cM : (n_total,)           genetic positions (sorted)
+        is_real    : (n_total,) bool      True = real GigaMUGA marker
+    """
+    n_markers = len(gmap_cM)
+    n_states  = gamma.shape[1]
+
+    all_gamma  = []
+    all_pos_cM = []
+    is_real    = []
+
+    for m in range(n_markers - 1):
+        # real marker m
+        all_gamma.append(gamma[m])
+        all_pos_cM.append(gmap_cM[m])
+        is_real.append(True)
+
+        # pseudomarkers in interval (gmap_cM[m], gmap_cM[m+1])
+        d = gmap_cM[m + 1] - gmap_cM[m]
+        if d > step_cM:
+            n_pseudo = int(np.floor(d / step_cM))
+            for k in range(1, n_pseudo + 1):
+                p_cM = gmap_cM[m] + k * step_cM
+                if p_cM >= gmap_cM[m + 1]:
+                    break
+                r1 = haldane_recomb((p_cM - gmap_cM[m]) / 100.0)
+                r2 = haldane_recomb((gmap_cM[m + 1] - p_cM) / 100.0)
+                T1 = transition_matrix(r1, n_founders)
+                T2 = transition_matrix(r2, n_founders)
+                alpha_p = alpha[m] @ T1              # (n_states,) forward to p
+                # backward at p: must include emission at m+1 because
+                # beta[m+1] = P(obs[m+2..] | state at m+1) — no E[m+1] in it
+                obs_m1 = obs_seq[m + 1]
+                if obs_m1 >= 0:
+                    scaled_m1 = E[m + 1, :, obs_m1] * beta[m + 1]
+                else:
+                    scaled_m1 = beta[m + 1]
+                beta_p  = T2 @ scaled_m1             # (n_states,)
+                gp      = alpha_p * beta_p
+                s       = gp.sum()
+                gp     /= max(s, 1e-300)
+                all_gamma.append(gp)
+                all_pos_cM.append(p_cM)
+                is_real.append(False)
+
+    # last real marker
+    all_gamma.append(gamma[-1])
+    all_pos_cM.append(gmap_cM[-1])
+    is_real.append(True)
+
+    return (np.array(all_gamma),       # (n_total, n_states)
+            np.array(all_pos_cM),      # (n_total,)
+            np.array(is_real, dtype=bool))
 
 
 # ── initial state distribution ────────────────────────────────────────────────
@@ -352,13 +449,22 @@ def calc_genoprob_cc(geno_matrix, founder_genos, gmap_positions,
         if s % 5 == 0:
             log.debug(f'  strain {s+1}/{n_cc}')
         obs = np.array([obs_map.get(str(g), -1) for g in geno_matrix[:, s]])
-        # (n_markers, n_states) posterior diplotype probs
-        gamma = forward_backward(obs, E, T_list, init)
+        # (n_markers, n_states) posterior diplotype probs + forward/backward state
+        gamma, alpha, beta = forward_backward(obs, E, T_list, init)
+        if step_cM is not None:
+            # interpolate at pseudomarker positions between real markers
+            gamma, _, _ = interpolate_posteriors(gamma, alpha, beta,
+                                                  gmap_positions, step_cM, n_founders)
         if return_additive:
-            # collapse to 8 additive probs: (n_markers, 8)
             add = diplotype_to_allele_probs(gamma, n_founders)
-            probs[s] = add.T      # (8, n_markers)
+            probs[s] = add.T      # (8, n_total)
         else:
-            probs[s] = gamma.T    # (n_states, n_markers)
+            probs[s] = gamma.T    # (n_states, n_total)
 
+    if step_cM is not None:
+        # return augmented positions alongside probs so caller can update locus index
+        _, all_gmap_cM, is_real = interpolate_posteriors(
+            np.zeros_like(gamma), np.zeros_like(gamma), np.zeros_like(gamma),
+            gmap_positions, step_cM, n_founders)
+        return probs, all_gmap_cM, is_real
     return probs

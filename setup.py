@@ -7,6 +7,11 @@ setup(
     license='GPL-3.0-or-later',
     packages=find_packages(),
     python_requires='>=3.9',
+    entry_points={
+        'console_scripts': [
+            'mosaiqtl-build-cache=mosaiqtl.genomecache:build',
+        ],
+    },
     install_requires=[
         'numpy>=1.21',
         'scipy>=1.7',
@@ -23,7 +28,7 @@ setup(
             'anndata>=0.8',
         ],
         'r_bridge': [
-            'rpy2>=3.4',       # required for genome_cache.from_rds() and validation
+            'rpy2>=3.4',       # required for genomecache.from_rds() and validation
         ],
     },
 )

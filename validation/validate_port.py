@@ -31,7 +31,7 @@ import plot_phase2
 from plot_phase2 import (save_csv, save_plot, scatter_qc, ccc,
                           bland_altman, ecdf_plot)
 
-from mosaiqtl.genome_cache import GenomeCache
+from mosaiqtl.genomecache import GenomeCache
 from mosaiqtl import kinship as kin_module
 from mosaiqtl import lmm as lmm_module
 from mosaiqtl.utils import rint as _rint, build_z_matrix
@@ -340,6 +340,7 @@ if section(2, 'HAPLOTYPE PROBS'):
     if r_hap_vals is not None:
         fc_r = [c for c in r_hap_vals.columns
                 if c not in ('chr','locus','pos_mb','sample_id')]
+        conc_rows = []   # founder concordance: one row per (chr, locus, sample_id)
         for chrom in chromosomes:
             if chrom not in cache_py._data: continue
             lids, pos, probs = cache_py.get_chromosome(chrom)
@@ -360,6 +361,22 @@ if section(2, 'HAPLOTYPE PROBS'):
                         all_r_probs.append(rp); all_py_probs.append(pp)
                         val_rows_all.append({'chr':chrom,'locus':lid,'sample_id':sid,
                                              'founder':fc,'r_prob':rp,'py_prob':pp})
+                    # ── founder concordance (argmax over all founders) ────────
+                    n_f    = min(len(fc_r), h_py.shape[1])
+                    r_vec  = np.array([float(rv_l.loc[sid, fc_r[fi]])
+                                       for fi in range(n_f)])
+                    py_vec = h_py[si, :n_f]
+                    if np.all(np.isfinite(r_vec)) and np.all(np.isfinite(py_vec)):
+                        am_py = int(np.argmax(py_vec))
+                        am_r  = int(np.argmax(r_vec))
+                        conc_rows.append({
+                            'chr': chrom, 'locus': lid, 'sample_id': sid,
+                            'argmax_py': am_py,  'argmax_r': am_r,
+                            'founder_py': fc_r[am_py], 'founder_r': fc_r[am_r],
+                            'agree': bool(am_py == am_r),
+                            'py_max_prob': float(py_vec[am_py]),
+                            'r_max_prob':  float(r_vec[am_r]),
+                        })
             # representative locus for heatmaps
             uniq_loci = rv_c['locus'].unique()
             rep_lid   = uniq_loci[len(uniq_loci)//2]
@@ -401,6 +418,137 @@ if section(2, 'HAPLOTYPE PROBS'):
                 val_r   = float(np.corrcoef(rpa[ok], ppa[ok])[0,1])
                 val_mad = float(np.abs(rpa[ok]-ppa[ok]).mean())
             log.info(f'  prob comparison: n={ok.sum()}  r={val_r:.4f}  mad={val_mad:.4f}')
+
+        # ── founder concordance analysis ─────────────────────────────────────
+        if conc_rows:
+            _fc_set = set(FOUNDER_COLS); _f1_set = set(f[0] for f in F1_CROSSES)
+            conc_df = _col(pd.DataFrame(conc_rows),
+                           ['chr','locus','sample_id','founder_py','founder_r',
+                            'agree','argmax_py','argmax_r','py_max_prob','r_max_prob'])
+            save_csv(conc_df, 'founder_assignment_comparison.csv')
+
+            # per-strain agreement rate
+            strain_ag = (conc_df.groupby('sample_id')['agree'].mean()
+                         .reset_index().rename(columns={'agree':'agreement_rate'})
+                         .sort_values('agreement_rate').reset_index(drop=True))
+            save_csv(strain_ag, 'founder_concordance_per_strain.csv')
+
+            # per-chromosome agreement rate
+            chr_ag = (conc_df.groupby('chr')['agree'].mean()
+                      .reset_index().rename(columns={'agree':'agreement_rate'}))
+            chr_ag = chr_ag.iloc[chr_ag['chr'].map(_chr_sort).argsort()].reset_index(drop=True)
+            save_csv(chr_ag, 'founder_concordance_per_chr.csv')
+
+            # confidence-stratified agreement (binned by python's max posterior)
+            _bins   = [0.0, 0.3, 0.5, 0.7, 0.9, 1.01]
+            _labels = ['0-0.3','0.3-0.5','0.5-0.7','0.7-0.9','0.9-1.0']
+            conc_df['py_conf_bin'] = pd.cut(conc_df['py_max_prob'],
+                                             bins=_bins, labels=_labels, right=False)
+            conf_ag = (conc_df.groupby('py_conf_bin', observed=True)['agree']
+                       .agg(agreement_rate='mean', n='count').reset_index())
+            save_csv(conf_ag, 'founder_concordance_confidence.csv')
+
+            # confusion matrix  n_f × n_f  (py argmax = row, r argmax = col)
+            _n_f     = len(fc_r)
+            conf_mat = np.zeros((_n_f, _n_f), dtype=int)
+            for _cr in conc_df.itertuples():
+                conf_mat[_cr.argmax_py, _cr.argmax_r] += 1
+            conf_mat_df = pd.DataFrame(conf_mat, index=fc_r, columns=fc_r)
+            save_csv(conf_mat_df.reset_index().rename(columns={'index':'py_founder'}),
+                     'founder_concordance_confusion.csv')
+
+            _overall   = float(conc_df['agree'].mean())
+            _cc_conc   = float(conc_df[conc_df['sample_id'].isin(set(CC_COLS))]['agree'].mean())
+            _fnd_conc  = float(conc_df[conc_df['sample_id'].isin(_fc_set)]['agree'].mean())
+            log.info(f'  founder concordance: overall={_overall:.4f}  cc={_cc_conc:.4f}'
+                     f'  founders={_fnd_conc:.4f}')
+
+            # ── concordance plot 1: per-strain agreement bar ─────────────────
+            fig, ax = plt.subplots(figsize=(12, max(5, len(strain_ag)*0.18)))
+            _colors_s = ['#D83026' if s in _fc_set else
+                         ('#888' if s in _f1_set else '#4F6EAF')
+                         for s in strain_ag['sample_id']]
+            ax.barh(strain_ag['sample_id'], strain_ag['agreement_rate'],
+                    color=_colors_s, edgecolor='none')
+            ax.axvline(_overall, color='black', lw=1.5, ls='--',
+                       label=f'overall={_overall:.3f}')
+            ax.axvline(_cc_conc,  color='#4F6EAF', lw=1, ls=':',
+                       label=f'CC only={_cc_conc:.3f}')
+            ax.set_xlabel('Founder Assignment Agreement Rate')
+            ax.set_title('S2 Founder Concordance — Per Strain\n'
+                         '(red=founders, grey=F1s, blue=CC)')
+            ax.set_xlim(0, 1.05); ax.legend(fontsize=9)
+            save_plot(fig, 's2_founder_concordance_per_strain.png')
+
+            # ── concordance plot 2: per-chromosome agreement bar ─────────────
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.bar(chr_ag['chr'], chr_ag['agreement_rate'],
+                   color=[CHR_PAL[i % 2] for i in range(len(chr_ag))],
+                   edgecolor='none')
+            ax.axhline(_overall, color='black', lw=1.5, ls='--',
+                       label=f'overall={_overall:.3f}')
+            ax.set_xlabel('Chromosome'); ax.set_ylabel('Agreement Rate')
+            ax.set_title('S2 Founder Concordance — Per Chromosome')
+            ax.set_ylim(0, 1.05); ax.legend(fontsize=9)
+            plt.xticks(rotation=45, ha='right')
+            save_plot(fig, 's2_founder_concordance_per_chr.png')
+
+            # ── concordance plot 3: confidence-stratified agreement ───────────
+            fig, ax = plt.subplots(figsize=(7, 4))
+            _vb = conf_ag[conf_ag['n'] > 0]
+            ax.plot(_vb['py_conf_bin'].astype(str), _vb['agreement_rate'],
+                    'o-', color='#4F6EAF', lw=2, ms=8)
+            for _, _row in _vb.iterrows():
+                ax.annotate(f'n={int(_row.n)}',
+                            (str(_row.py_conf_bin), _row.agreement_rate),
+                            textcoords='offset points', xytext=(0,8),
+                            ha='center', fontsize=8)
+            ax.axhline(_overall, color='black', lw=1.5, ls='--',
+                       label=f'overall={_overall:.3f}')
+            ax.set_xlabel('Python max-founder probability bin')
+            ax.set_ylabel('Founder Agreement Rate')
+            ax.set_title('S2 Founder Concordance — Confidence Stratified\n'
+                         '(high-confidence calls should agree more)')
+            ax.set_ylim(0, 1.05); ax.legend(fontsize=9)
+            save_plot(fig, 's2_founder_concordance_confidence.png')
+
+            # ── concordance plot 4: confusion matrix ──────────────────────────
+            fig, ax = plt.subplots(figsize=(8, 7))
+            _row_sums = conf_mat.sum(axis=1, keepdims=True)
+            _conf_norm = conf_mat / np.maximum(_row_sums, 1)
+            sns.heatmap(_conf_norm, ax=ax, annot=conf_mat, fmt='d',
+                        cmap='Blues', xticklabels=fc_r, yticklabels=fc_r,
+                        cbar_kws={'label':'Row-normalised rate'}, linewidths=0.4)
+            ax.set_xlabel('R argmax founder'); ax.set_ylabel('Python argmax founder')
+            ax.set_title(f'S2 Founder Assignment Confusion Matrix\n'
+                         f'(diagonal = agreement, counts shown, colour = row-norm)')
+            save_plot(fig, 's2_founder_concordance_confusion.png')
+
+            # ── concordance plot 5: per-locus agreement rate vs prob entropy ──
+            # entropy of py prob vector as a measure of HMM certainty
+            _smp = conc_df.sample(min(len(conc_df), 20000), random_state=0)
+            fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+            axes[0].scatter(_smp['py_max_prob'], _smp['r_max_prob'],
+                            c=_smp['agree'].map({True:'#4F6EAF', False:'#D83026'}),
+                            alpha=0.3, s=4, linewidths=0)
+            axes[0].plot([0,1],[0,1],'k--',lw=0.8)
+            axes[0].set_xlabel('Python max founder prob')
+            axes[0].set_ylabel('R max founder prob')
+            axes[0].set_title('Max-prob calibration\n(blue=agree, red=disagree)')
+            # per-founder agreement rate bar
+            _fnd_agree = (conc_df.groupby('founder_r')['agree'].mean()
+                          .reindex(fc_r).fillna(0))
+            axes[1].bar(fc_r, _fnd_agree.values,
+                        color=[FOUNDER_COLORS.get(f,'#aaa') for f in fc_r])
+            axes[1].axhline(_overall, color='black', lw=1.5, ls='--',
+                            label=f'overall={_overall:.3f}')
+            axes[1].set_ylim(0, 1.05); axes[1].set_ylabel('Agreement Rate')
+            axes[1].set_title('Agreement rate by R-assigned founder')
+            axes[1].legend(fontsize=9)
+            plt.tight_layout()
+            save_plot(fig, 's2_founder_concordance_detail.png')
+
+            log.info(f'  saved 5 concordance plots')
 
     # ── plots: heatmaps + prob comparison + bland-altman + calibration ───────
     plot_phase2.plot_s2(hmap_data, chr_order, _fnames, _disp_s,
