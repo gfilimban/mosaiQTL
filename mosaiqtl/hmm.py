@@ -392,7 +392,7 @@ def cc_inbred_init(n_founders=8):
 
 def calc_genoprob_cc(geno_matrix, founder_genos, gmap_positions,
                      n_founders=8, n_gen=1, error_prob=0.002,
-                     return_additive=True, cc_inbred=True):
+                     return_additive=True, cc_inbred=True, step_cM=None):
     """compute founder haplotype probabilities for CC inbred strains.
 
     pure Python replacement for qtl2::calc_genoprob() on CC samples.
@@ -452,9 +452,9 @@ def calc_genoprob_cc(geno_matrix, founder_genos, gmap_positions,
         # (n_markers, n_states) posterior diplotype probs + forward/backward state
         gamma, alpha, beta = forward_backward(obs, E, T_list, init)
         if step_cM is not None:
-            # interpolate at pseudomarker positions between real markers
-            gamma, _, _ = interpolate_posteriors(gamma, alpha, beta,
-                                                  gmap_positions, step_cM, n_founders)
+            # interpolate posteriors at pseudomarker positions between real markers
+            gamma, _, _ = interpolate_posteriors(
+                gamma, alpha, beta, E, obs, gmap_positions, step_cM, n_founders)
         if return_additive:
             add = diplotype_to_allele_probs(gamma, n_founders)
             probs[s] = add.T      # (8, n_total)
@@ -462,9 +462,10 @@ def calc_genoprob_cc(geno_matrix, founder_genos, gmap_positions,
             probs[s] = gamma.T    # (n_states, n_total)
 
     if step_cM is not None:
-        # return augmented positions alongside probs so caller can update locus index
+        # compute augmented positions once (use last strain's obs; positions are
+        # strain-independent — only gmap_positions and step_cM determine them)
         _, all_gmap_cM, is_real = interpolate_posteriors(
-            np.zeros_like(gamma), np.zeros_like(gamma), np.zeros_like(gamma),
-            gmap_positions, step_cM, n_founders)
+            np.zeros_like(gamma), np.zeros_like(alpha), np.zeros_like(beta),
+            E, obs, gmap_positions, step_cM, n_founders)
         return probs, all_gmap_cM, is_real
     return probs

@@ -237,7 +237,7 @@ class GenomeCache:
                       cc_cols, founder_cols, f1_crosses,
                       n_founders=8, n_gen=1, error_prob=0.002,
                       just_these_loci=None, qc=None,
-                      crossinfo_path=None):
+                      crossinfo_path=None, step_cM=None):
         """build genome cache from raw GigaMUGA genotype data.
         this is the fully Python-native path: reads the GigaMUGA consensus
         matrix CSV, runs the CC diplotype HMM (hmm.py), builds deterministic
@@ -476,29 +476,50 @@ class GenomeCache:
 
             n_markers = len(chr_loci)
             n_48      = len(all_48)
-            probs_chr = np.zeros((n_48, n_founders, n_markers), dtype=np.float64)
-
             # CC strains: HMM forward-backward on A/H/B encoded calls
             logger.info(f'  chr{chrom}: running CC HMM ({len(cc_cols)} strains, ' +
                         f'{n_markers} markers)...')
-            probs_cc = calc_genoprob_cc(
+            result = calc_genoprob_cc(
                 geno_cc_abh, geno_f_abh, gmap_pos,
                 n_founders=n_founders, n_gen=1,   # consensus map encodes recombination history
                 error_prob=error_prob,
                 return_additive=True,
                 cc_inbred=True,   # homozygous-only prior for fully inbred CC strains
-            )   # (n_cc, 8, n_markers)
+                step_cM=step_cM,
+            )
+
+            if step_cM is not None:
+                # unpack augmented (real + pseudo) positions
+                probs_cc, aug_gmap_cM, is_real = result
+                n_aug = len(aug_gmap_cM)
+                # interpolate physical positions at pseudomarker cM positions
+                aug_pmap_pos  = np.interp(aug_gmap_cM, gmap_pos, pmap_pos)
+                # real markers keep their IDs; pseudomarkers get generated IDs
+                real_iter = iter(locus_ids)
+                aug_locus_ids = np.array([
+                    next(real_iter) if is_r else f'c{chrom}:{aug_gmap_cM[k]:.4f}cM'
+                    for k, is_r in enumerate(is_real)
+                ])
+                logger.info(f'  chr{chrom}: {n_markers} real + {n_aug - n_markers} '
+                            f'pseudo = {n_aug} total loci')
+            else:
+                probs_cc      = result
+                n_aug         = n_markers
+                aug_pmap_pos  = pmap_pos
+                aug_locus_ids = locus_ids
+
+            probs_chr = np.zeros((n_48, n_founders, n_aug), dtype=np.float64)
 
             for i, col in enumerate(cc_cols):
                 si = all_48.index(col)
                 probs_chr[si] = probs_cc[i]
 
-            # founders: deterministic homozygous (prob = 1 for self)
+            # founders: deterministic homozygous at all positions (real + pseudo)
             for fi, fcol in enumerate(founder_cols):
                 si = all_48.index(fcol)
                 probs_chr[si, fi, :] = 1.0
 
-            # F1s: deterministic heterozygous (0.5 each parent)
+            # F1s: deterministic heterozygous at all positions (real + pseudo)
             for sample_id, pi1, pi2 in f1_crosses:
                 si = all_48.index(sample_id)
                 probs_chr[si, pi1, :] = 0.5
@@ -506,8 +527,8 @@ class GenomeCache:
 
             # store as (n_loci, n_samples, n_founders) — mosaiqtl convention
             data[str(chrom)] = {
-                'locus_ids': locus_ids,
-                'positions': pmap_pos,
+                'locus_ids': aug_locus_ids,
+                'positions': aug_pmap_pos,
                 'probs':     np.transpose(probs_chr, (2, 0, 1)),
             }
 
@@ -1079,8 +1100,9 @@ def build(args=None):
                         help='cc_crossinfo.csv (funnel positions per CC strain)')
     parser.add_argument('--out-dir',       default='validation/phase2/py_data',
                         help='output directory')
-    parser.add_argument('--step-cM',       type=float, default=None,
-                        help='pseudomarker spacing in cM (None = no pseudomarkers)')
+    parser.add_argument('--step-cM',       type=float, default=0.2,
+                        help='pseudomarker spacing in cM to match qtl2 insert_pseudomarkers() '
+                             'default (0.2); pass 0 to disable pseudomarkers')
     parser.add_argument('--error-prob',    type=float, default=0.002,
                         help='GigaMUGA genotyping error probability')
     parser.add_argument('--n-gen',         type=int,   default=1,
@@ -1123,6 +1145,7 @@ def build(args=None):
     logger.info(f'  F1 crosses: {len(f1_crosses)}')
     logger.info(f'  out_dir  : {args.out_dir}')
 
+    step_cM = args.step_cM if args.step_cM and args.step_cM > 0 else None
     cache = GenomeCache.from_gigamuga(
         gigamuga_path  = args.gigamuga,
         gmap_dir       = args.gmap_dir,
@@ -1133,6 +1156,7 @@ def build(args=None):
         error_prob     = args.error_prob,
         n_gen          = args.n_gen,
         crossinfo_path = args.crossinfo,
+        step_cM        = step_cM,
     )
 
     if args.collapse:
