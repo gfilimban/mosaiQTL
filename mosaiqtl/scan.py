@@ -463,7 +463,7 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
     -------
     ScanResult  lod = mean over n_imp imputations
     """
-    from .genome_cache import GenomeCache as _GC
+    from .genomecache import GenomeCache as _GC
     rng = np.random.default_rng(seed)
 
     if kinship_decomp is None:
