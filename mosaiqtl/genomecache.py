@@ -495,9 +495,11 @@ class GenomeCache:
                 # interpolate physical positions at pseudomarker cM positions
                 aug_pmap_pos  = np.interp(aug_gmap_cM, gmap_pos, pmap_pos)
                 # real markers keep their IDs; pseudomarkers get generated IDs
+                # qtl2 pseudomarker naming: c{chr}.loc{pos} with digits = ceil(-log10(step))
+                _digits = max(0, int(np.ceil(-np.log10(step_cM))))
                 real_iter = iter(locus_ids)
                 aug_locus_ids = np.array([
-                    next(real_iter) if is_r else f'c{chrom}:{aug_gmap_cM[k]:.4f}cM'
+                    next(real_iter) if is_r else f'c{chrom}.loc{aug_gmap_cM[k]:.{_digits}f}'
                     for k, is_r in enumerate(is_real)
                 ])
                 logger.info(f'  chr{chrom}: {n_markers} real + {n_aug - n_markers} '
@@ -1101,8 +1103,9 @@ def build(args=None):
     parser.add_argument('--out-dir',       default='validation/phase2/py_data',
                         help='output directory')
     parser.add_argument('--step-cM',       type=float, default=0.2,
-                        help='pseudomarker spacing in cM to match qtl2 insert_pseudomarkers() '
-                             'default (0.2); pass 0 to disable pseudomarkers')
+                        help='pseudomarker spacing in cM matching qtl2 insert_pseudomarkers() '
+                             'default (0.2); pass 0 to disable. pseudomarkers are included '
+                             'in probs_*.h5 but dropped from the HAPPY cache')
     parser.add_argument('--error-prob',    type=float, default=0.002,
                         help='GigaMUGA genotyping error probability')
     parser.add_argument('--n-gen',         type=int,   default=1,

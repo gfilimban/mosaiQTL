@@ -272,92 +272,103 @@ def forward_backward(obs_seq, E, T_list, init_probs, log_scale=True):
 
 # ── pseudomarker interpolation ─────────────────────────────────────────────────
 
-def interpolate_posteriors(gamma, alpha, beta, E, obs_seq, gmap_cM, step_cM, n_founders):
-    """interpolate HMM posteriors at pseudomarker positions between real markers.
+def _augmented_positions(gmap_cM, step_cM, tol=0.01):
+    """chromosome-level pseudomarker grid matching qtl2 insert_pseudomarkers(stepwidth='fixed').
 
-    mathematically identical to qtl2's full HMM with pseudomarkers inserted
-    as missing-observation (uniform emission) positions, PROVIDED the correct
-    emission term is included in the backward message.
-
-    derivation:
-      alpha_p(j) = Σ_i alpha[m](i) * T1[i,j]
-                 = forward prob at p (no emission; missing obs → uniform = 1)
-      beta_p(j)  = Σ_k T2[j,k] * E[m+1, k, obs_{m+1}] * beta[m+1](k)
-                 = backward message at p, including emission at the NEXT real marker
-
-    note: beta[m+1] from forward_backward() encodes P(obs[m+2..] | state at m+1)
-    and does NOT contain E[m+1]. the emission at m+1 is only in alpha[m+1].
-    the backward message at p therefore must multiply E[m+1, :, obs_{m+1}]
-    back in explicitly.
-
-    this requires E and obs to be passed in — see calc_genoprob_cc(step_cM=...)
-    for the augmented-HMM path that avoids this by running a single HMM over
-    all positions (real + pseudo), which is equivalent but cleaner.
+    grid: seq(min(gmap), max(gmap), by=step_cM) anchored at the first real marker —
+    NOT reset at each interval. pseudomarkers within tol cM of any real marker are
+    dropped. matches R: insert_pseudomarkers_grid(tol=0.01) exactly.
 
     args:
-        gamma    : (n_markers, n_states)  posteriors at real markers
-        alpha    : (n_markers, n_states)  scaled forward probs from forward_backward
-        beta     : (n_markers, n_states)  scaled backward probs from forward_backward
-        E        : (n_markers, n_states, 3)  emission matrix at real markers
-        obs_seq  : (n_markers,) int  observations at real markers (0/1/2, -1=missing)
-        gmap_cM  : (n_markers,)           genetic positions of real markers in cM
-        step_cM  : float                  pseudomarker spacing in cM (e.g. 1.0)
-        n_founders: int
+        gmap_cM  : (n_markers,) sorted genetic positions in cM
+        step_cM  : pseudomarker spacing in cM (e.g. 0.2)
+        tol      : drop grid points within this cM distance of a real marker (default 0.01)
 
     returns:
-        gamma_all  : (n_total, n_states)  posteriors at real + pseudo positions
-        all_pos_cM : (n_total,)           genetic positions (sorted)
-        is_real    : (n_total,) bool      True = real GigaMUGA marker
+        all_pos_cM : (n_total,) sorted positions — real + pseudo
+        is_real    : (n_total,) bool — True = real GigaMUGA marker
     """
-    n_markers = len(gmap_cM)
+    gmap_cM = np.asarray(gmap_cM, dtype=float)
+    span    = gmap_cM[-1] - gmap_cM[0]
+    # ceil ensures we always generate enough steps; clip removes any floating-point overshoot
+    n_steps = int(np.ceil(span / step_cM))
+    grid    = gmap_cM[0] + np.arange(n_steps + 1) * step_cM
+    grid    = grid[grid <= gmap_cM[-1] + step_cM * 1e-6]
+
+    # for each grid point: distance to nearest real marker; drop if < tol
+    dist_to_nearest = np.abs(grid[:, None] - gmap_cM[None, :]).min(axis=1)
+    pseudo_pos = grid[dist_to_nearest >= tol]
+
+    all_pos = np.concatenate([gmap_cM, pseudo_pos])
+    is_real = np.concatenate([np.ones(len(gmap_cM),   dtype=bool),
+                               np.zeros(len(pseudo_pos), dtype=bool)])
+    order = np.argsort(all_pos, kind='stable')
+    return all_pos[order], is_real[order]
+
+
+def interpolate_posteriors(gamma, alpha, beta, E, obs_seq, gmap_cM, step_cM, n_founders,
+                           tol=0.01):
+    """interpolate HMM posteriors at pseudomarker positions, qtl2-consistent grid.
+
+    positions are computed by _augmented_positions() which matches qtl2
+    insert_pseudomarkers(stepwidth='fixed', tol=0.01): chromosome-level absolute
+    grid seq(min(gmap), max(gmap), by=step_cM), dropping points within tol cM of
+    any real marker.
+
+    math at each pseudomarker p bracketed by real markers m and m+1:
+      alpha_p(j) = Σ_i alpha[m](i) * T(m→p)[i,j]
+      beta_p(j)  = Σ_k T(p→m+1)[j,k] * E[m+1,k,obs_{m+1}] * beta[m+1](k)
+
+    note: beta[m+1] from forward_backward = P(obs[m+2..] | state at m+1) and does
+    NOT include E[m+1]. beta_p must multiply E[m+1] back in explicitly.
+
+    args:
+        gamma    : (n_markers, n_states)
+        alpha    : (n_markers, n_states)  scaled forward probs
+        beta     : (n_markers, n_states)  scaled backward probs
+        E        : (n_markers, n_states, 3)  emission matrix at real markers
+        obs_seq  : (n_markers,) int  0/1/2 or -1=missing
+        gmap_cM  : (n_markers,) sorted genetic positions in cM
+        step_cM  : float  pseudomarker spacing in cM
+        n_founders: int
+        tol      : float  qtl2 tol parameter (default 0.01)
+
+    returns:
+        gamma_all  : (n_total, n_states)
+        all_pos_cM : (n_total,)
+        is_real    : (n_total,) bool
+    """
+    aug_pos, is_real = _augmented_positions(gmap_cM, step_cM, tol)
     n_states  = gamma.shape[1]
+    n_total   = len(aug_pos)
+    all_gamma = np.empty((n_total, n_states))
 
-    all_gamma  = []
-    all_pos_cM = []
-    is_real    = []
+    # fill posteriors at real-marker positions
+    for j, k in enumerate(np.where(is_real)[0]):
+        all_gamma[k] = gamma[j]
 
-    for m in range(n_markers - 1):
-        # real marker m
-        all_gamma.append(gamma[m])
-        all_pos_cM.append(gmap_cM[m])
-        is_real.append(True)
+    # fill posteriors at pseudomarker positions
+    for k in np.where(~is_real)[0]:
+        pos = aug_pos[k]
+        # last real marker ≤ pos; clamp to valid interval
+        j = int(np.searchsorted(gmap_cM, pos, side='right')) - 1
+        j = min(max(j, 0), len(gmap_cM) - 2)
 
-        # pseudomarkers in interval (gmap_cM[m], gmap_cM[m+1])
-        d = gmap_cM[m + 1] - gmap_cM[m]
-        if d > step_cM:
-            n_pseudo = int(np.floor(d / step_cM))
-            for k in range(1, n_pseudo + 1):
-                p_cM = gmap_cM[m] + k * step_cM
-                if p_cM >= gmap_cM[m + 1]:
-                    break
-                r1 = haldane_recomb((p_cM - gmap_cM[m]) / 100.0)
-                r2 = haldane_recomb((gmap_cM[m + 1] - p_cM) / 100.0)
-                T1 = transition_matrix(r1, n_founders)
-                T2 = transition_matrix(r2, n_founders)
-                alpha_p = alpha[m] @ T1              # (n_states,) forward to p
-                # backward at p: must include emission at m+1 because
-                # beta[m+1] = P(obs[m+2..] | state at m+1) — no E[m+1] in it
-                obs_m1 = obs_seq[m + 1]
-                if obs_m1 >= 0:
-                    scaled_m1 = E[m + 1, :, obs_m1] * beta[m + 1]
-                else:
-                    scaled_m1 = beta[m + 1]
-                beta_p  = T2 @ scaled_m1             # (n_states,)
-                gp      = alpha_p * beta_p
-                s       = gp.sum()
-                gp     /= max(s, 1e-300)
-                all_gamma.append(gp)
-                all_pos_cM.append(p_cM)
-                is_real.append(False)
+        r1      = haldane_recomb((pos - gmap_cM[j])     / 100.0)
+        r2      = haldane_recomb((gmap_cM[j+1] - pos)   / 100.0)
+        T1      = transition_matrix(r1, n_founders)
+        T2      = transition_matrix(r2, n_founders)
+        alpha_p = alpha[j] @ T1
+        # beta[j+1] = P(obs[j+2..] | state at j+1) — no E[j+1]; must re-include it
+        obs_m1    = obs_seq[j + 1]
+        scaled_m1 = E[j+1, :, obs_m1] * beta[j+1] if obs_m1 >= 0 else beta[j+1]
+        beta_p    = T2 @ scaled_m1
+        gp        = alpha_p * beta_p
+        s         = gp.sum()
+        gp       /= max(s, 1e-300)
+        all_gamma[k] = gp
 
-    # last real marker
-    all_gamma.append(gamma[-1])
-    all_pos_cM.append(gmap_cM[-1])
-    is_real.append(True)
-
-    return (np.array(all_gamma),       # (n_total, n_states)
-            np.array(all_pos_cM),      # (n_total,)
-            np.array(is_real, dtype=bool))
+    return all_gamma, aug_pos, is_real
 
 
 # ── initial state distribution ────────────────────────────────────────────────
@@ -443,7 +454,15 @@ def calc_genoprob_cc(geno_matrix, founder_genos, gmap_positions,
 
     init = cc_inbred_init(n_founders) if cc_inbred else uniform_init(n_founders)
     n_out = n_founders if return_additive else n_states
-    probs = np.zeros((n_cc, n_out, n_markers), dtype=np.float64)
+
+    # determine n_out_loci from geometry only — no probability computation needed
+    if step_cM is not None:
+        _aug_cM_cache, _is_real_cache = _augmented_positions(gmap_positions, step_cM)
+        n_out_loci = len(_aug_cM_cache)
+    else:
+        n_out_loci = n_markers
+
+    probs = np.zeros((n_cc, n_out, n_out_loci), dtype=np.float64)
 
     for s in range(n_cc):
         if s % 5 == 0:
@@ -462,10 +481,5 @@ def calc_genoprob_cc(geno_matrix, founder_genos, gmap_positions,
             probs[s] = gamma.T    # (n_states, n_total)
 
     if step_cM is not None:
-        # compute augmented positions once (use last strain's obs; positions are
-        # strain-independent — only gmap_positions and step_cM determine them)
-        _, all_gmap_cM, is_real = interpolate_posteriors(
-            np.zeros_like(gamma), np.zeros_like(alpha), np.zeros_like(beta),
-            E, obs, gmap_positions, step_cM, n_founders)
-        return probs, all_gmap_cM, is_real
+        return probs, _aug_cM_cache, _is_real_cache
     return probs

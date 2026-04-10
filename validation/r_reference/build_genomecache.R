@@ -44,10 +44,17 @@ suppressPackageStartupMessages({
 })
 
 # ── args ───────────────────────────────────────────────────────────────────────
+# Usage: Rscript build_genomecache.R [base_dir] [n_cores] [step_cM]
+#   step_cM : pseudomarker spacing in cM (default 0.2, matching qtl2 insert_pseudomarkers
+#             default). pass 0 to disable. pseudomarkers are included in probs_*.rds and
+#             kinship_loco.rds but filtered out before convert.qtl2.to.HAPPY() so the
+#             HAPPY cache contains only genotyped markers — Python from_gigamuga reads
+#             only gmap.csv markers, so HAPPY loci must match gmap.csv exactly.
 args     <- commandArgs(trailingOnly = TRUE)
 base_dir <- if (length(args) >= 1) args[1] else
   '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
 n_cores  <- if (length(args) >= 2) as.integer(args[2]) else 4L
+step_cM  <- if (length(args) >= 3) as.numeric(args[3]) else 0.2
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 gigamuga_path    <- file.path(base_dir, 'input', 'GM_ccfo_mm39.csv')
@@ -208,12 +215,20 @@ if (length(high_miss))
   message('  WARNING >10% missing: ', paste(high_miss, collapse = ', '))
 
 # ── step 7: HMM — CC genoprobs ─────────────────────────────────────────────────
-# cross$gmap = genotyped markers only. No insert_pseudomarkers: pseudomarkers are
-# for scan1() interpolation and would add synthetic loci to probs_combined, causing
-# convert.qtl2.to.HAPPY() to write those loci into the cache. Python's from_gigamuga
-# only reads markers present in gmap.csv → loci mismatch. Ground truth = gmap.csv.
-message('\n[7] running HMM (calc_genoprob) — ', length(cc_cols),
-        ' CC strains, genotyped markers only, cores = ', n_cores)
+# pseudomarkers (step_cM > 0): insert_pseudomarkers() adds dense positions for scan
+# use — probs_cc.rds, kinship, and Python probs_cc.h5 all include pseudomarkers.
+# HAPPY cache must NOT include them: convert.qtl2.to.HAPPY() writes whatever loci
+# are in probs, and Python from_gigamuga reads only gmap.csv markers → loci mismatch.
+# fix: filter probs back to real markers only before HAPPY write (see step 11).
+if (step_cM > 0) {
+  aug_map <- insert_pseudomarkers(cross$gmap, step = step_cM, stepwidth = 'fixed')
+  message('\n[7] running HMM (calc_genoprob) — ', length(cc_cols),
+          ' CC strains, pseudomarkers step=', step_cM, ' cM, cores = ', n_cores)
+} else {
+  aug_map <- cross$gmap
+  message('\n[7] running HMM (calc_genoprob) — ', length(cc_cols),
+          ' CC strains, genotyped markers only, cores = ', n_cores)
+}
 # load per-strain funnel crossinfo — exact cross_info matrix expected by qtl2.
 # columns A-H give the funnel position (1-8) for each founder in each CC strain.
 # qtl2's do HMM uses this to set per-strain initial state distributions and
@@ -258,10 +273,11 @@ if (file.exists(crossinfo_path)) {
   cross$cross_info <- matrix(20L, nrow = length(all_cc), ncol = 1,
                              dimnames = list(all_cc, 'ngen'))
 }
-probs <- calc_genoprob(cross = cross, map = cross$gmap,
+probs <- calc_genoprob(cross = cross, map = aug_map,
                        error_prob = 0.002, cores = n_cores)
 saveRDS(probs, probs_cc_out)
-message('  saved: ', probs_cc_out)
+message('  saved: ', probs_cc_out,
+        ' (', if (step_cM > 0) 'with pseudomarkers' else 'real markers only', ')')
 
 # ── step 8: deterministic founder prob arrays ──────────────────────────────────
 message('\n[8] building deterministic founder prob arrays...')
@@ -321,8 +337,21 @@ diag_v <- diag(kinship_loco[['1']])
 message('  diagonal — min: ', round(min(diag_v), 3), '  max: ', round(max(diag_v), 3))
 
 # ── step 11: convert to HAPPY cache ───────────────────────────────────────────
+# HAPPY cache must contain only genotyped markers. if pseudomarkers were added,
+# filter probs_combined back to real markers before writing.
 message('\n[11] writing HAPPY genome cache...')
-convert.qtl2.to.HAPPY(qtl2.object = probs_combined, cross.object = cross,
+if (step_cM > 0) {
+  real_marker_names <- lapply(cross$gmap, names)  # per-chr real marker names from original map
+  probs_for_happy <- mapply(function(arr, real_loci) {
+    arr[, , intersect(dimnames(arr)[[3]], real_loci), drop = FALSE]
+  }, probs_combined, real_marker_names, SIMPLIFY = FALSE)
+  names(probs_for_happy) <- names(probs_combined)
+  attributes(probs_for_happy) <- attributes(probs_combined)
+  message('  filtered to ', sum(lengths(real_marker_names)), ' real markers for HAPPY cache')
+} else {
+  probs_for_happy <- probs_combined
+}
+convert.qtl2.to.HAPPY(qtl2.object = probs_for_happy, cross.object = cross,
                        HAPPY.output.path = genomecache_path)
 message('  HAPPY cache written: ', genomecache_path)
 
