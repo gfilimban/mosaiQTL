@@ -1,4 +1,4 @@
-# tests/test_genome_cache.py — unit tests for mosaiqtl.genome_cache.GenomeCache
+# tests/test_genomecache.py — unit tests for genomecache.GenomeCache
 import numpy as np
 import pytest
 import sys, os

@@ -374,7 +374,7 @@ if 'nb' in _run and not _is_done('scan_nb'):
     try:
         results_nb = scan_nb(
             counts_cells       = counts_ct,
-            genome_cache       = cache_py,
+            genomecache       = cache_py,
             strain_ids_cells   = strain_ids_cells,
             gene_ids           = gene_set,
             covariates_cells   = covar_cells,
@@ -585,7 +585,7 @@ if 'vqtl' in _run and not _is_done('scan_vqtl'):
             res_v = scan_vqtl(
                 counts         = counts_g,
                 subject_ids    = strain_ids_cells,
-                genome_cache   = cache_py,
+                genomecache   = cache_py,
                 library_sizes  = lib_sizes_cells,
                 covariates     = cov_shared,
                 kinship_decomp = kd_g,
@@ -724,7 +724,7 @@ if 'epistasis' in _run and not _is_done('scan_epistasis'):
         try:
             epi_res = scan_epistasis(
                 phenotype      = y_epi,
-                genome_cache   = cache_py,
+                genomecache   = cache_py,
                 locus_a        = locus_a,
                 locus_b        = locus_b,
                 covariates     = cov_epi,
@@ -863,7 +863,7 @@ if 'conditional' in _run and not _is_done('scan_conditional'):
                 signals = scan_conditional_with_y(
                     phenotype          = y_cond,
                     scan_result        = sr_base,
-                    genome_cache       = cache_py,
+                    genomecache       = cache_py,
                     covariates         = cov_cond,
                     kinship_decomp     = kinship_decomp,
                     n_signals          = 3,

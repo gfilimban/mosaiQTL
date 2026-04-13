@@ -1,5 +1,5 @@
 """
-mosaiqtl.kinship — kinship matrix computation
+kinship — kinship matrix computation
 
 Normalized dot-product kinship, consistent with qtl2::calc_kinship(type='loco').
 
@@ -24,14 +24,14 @@ import logging
 logger = logging.getLogger('mosaiqtl')
 
 
-def calc_kinship(genome_cache, method='loco'):
+def calc_kinship(genomecache, method='loco'):
     """Compute kinship matrices from haplotype probabilities.
 
     Consistent with qtl2::calc_kinship(genoprob_to_alleleprob(probs), type=...).
 
     parameters
     ----------
-    genome_cache : GenomeCache
+    genomecache : GenomeCache
     method : str
         'overall' — single matrix from all loci
         'loco'    — one matrix per chromosome, excluding that chr
@@ -44,8 +44,8 @@ def calc_kinship(genome_cache, method='loco'):
     chr_num   = {}   # {chrom: Σ_l p_l p_l^T}
     chr_nloci = {}   # {chrom: number of loci}
 
-    for chrom in genome_cache.chromosomes:
-        _, _, probs = genome_cache.get_chromosome(chrom)
+    for chrom in genomecache.chromosomes:
+        _, _, probs = genomecache.get_chromosome(chrom)
         # probs: (L, n, J)  allele probabilities summing to 1 per sample per locus
         chr_num[chrom]   = np.einsum('lni,lmi->nm', probs, probs, optimize=True)
         chr_nloci[chrom] = probs.shape[0]

@@ -1,5 +1,5 @@
 """
-mosaiqtl.vqtl — variance/dispersion qtl mapping
+vqtl — variance/dispersion qtl mapping
 
 maps genetic effects on expression noise (within-subject
 overdispersion) rather than mean expression.
@@ -161,7 +161,7 @@ def estimate_dispersion_per_subject(counts, subject_ids, library_sizes=None,
     return subjects, phi_hat
 
 
-def scan_vqtl(counts, subject_ids, genome_cache,
+def scan_vqtl(counts, subject_ids, genomecache,
               library_sizes=None, covariates=None,
               kinship_decomp=None, phi_method='moments',
               min_cells=20, use_rint=True, gene_id='unknown',
@@ -178,7 +178,7 @@ def scan_vqtl(counts, subject_ids, genome_cache,
         raw umi counts for one gene
     subject_ids : np.ndarray (n_cells,)
         subject identifier per cell
-    genome_cache : GenomeCache
+    genomecache : GenomeCache
         haplotype probability data
     library_sizes : np.ndarray (n_cells,) or None
     covariates : np.ndarray (n_subjects, p) or None
@@ -208,7 +208,7 @@ def scan_vqtl(counts, subject_ids, genome_cache,
     # align subjects with genome cache
     from .utils import align_samples
     idx_phi, idx_gc, shared = align_samples(
-        subjects, genome_cache.sample_ids
+        subjects, genomecache.sample_ids
     )
 
     if len(shared) < 20:
@@ -241,7 +241,7 @@ def scan_vqtl(counts, subject_ids, genome_cache,
     logger.info(f'{gene_id}: scanning dispersion phenotype')
     vqtl_scan = scan_module.scan_h2lmm(
         log_phi,
-        genome_cache,
+        genomecache,
         covariates=cov_aligned,
         kinship_decomp=kinship_decomp,
         use_rint=use_rint,
@@ -259,7 +259,7 @@ def scan_vqtl(counts, subject_ids, genome_cache,
 
         mean_scan = scan_module.scan_h2lmm(
             mean_expr,
-            genome_cache,
+            genomecache,
             covariates=cov_aligned,
             kinship_decomp=kinship_decomp,
             use_rint=use_rint,

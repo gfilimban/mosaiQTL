@@ -1,5 +1,5 @@
 """
-mosaiqtl.snp_scan — haplotype-imputed SNP association scan
+snp_scan — haplotype-imputed SNP association scan
 
 imputes biallelic snp dosages from founder haplotype probabilities,
 then runs the haplotype lmm scan restricted to the imputed dosage.
@@ -16,7 +16,7 @@ from scipy import stats as sp_stats
 logger = logging.getLogger('mosaiqtl')
 
 
-def imputed_snp_scan_h2lmm(phenotype, genome_cache, snp_genos,
+def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
                             covariates=None, kinship_decomp=None,
                             use_rint=True, use_reml=True,
                             phenotype_id='unknown',
@@ -33,11 +33,11 @@ def imputed_snp_scan_h2lmm(phenotype, genome_cache, snp_genos,
     parameters
     ----------
     phenotype : np.ndarray (n,)
-    genome_cache : GenomeCache
+    genomecache : GenomeCache
     snp_genos : pd.DataFrame
         snp × founder genotype matrix, shape (n_snps, n_founders).
         values should be 0/1/2 (dosage) or 0/1 (biallelic allele count).
-        index = snp ids, columns = founder names matching genome_cache.founders.
+        index = snp ids, columns = founder names matching genomecache.founders.
         must include 'chr' and 'pos_mb' columns for locus lookup.
     covariates : np.ndarray (n, p) or None
     kinship_decomp : dict or None
@@ -56,7 +56,7 @@ def imputed_snp_scan_h2lmm(phenotype, genome_cache, snp_genos,
     from .utils import rint as _rint
 
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genome_cache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd)
 
     valid  = ~np.isnan(phenotype)
@@ -71,10 +71,10 @@ def imputed_snp_scan_h2lmm(phenotype, genome_cache, snp_genos,
         x = np.hstack([np.ones((n, 1)), x])
 
     # align founder order between snp_genos columns and cache founders
-    founders_cache = list(genome_cache.founders)
+    founders_cache = list(genomecache.founders)
     snp_founders   = [c for c in founders_cache if c in snp_genos.columns]
     if len(snp_founders) < 2:
-        raise ValueError('snp_genos must have columns matching genome_cache.founders')
+        raise ValueError('snp_genos must have columns matching genomecache.founders')
 
     snps_to_scan = (just_these_snps if just_these_snps is not None
                     else snp_genos.index.tolist())
@@ -85,7 +85,7 @@ def imputed_snp_scan_h2lmm(phenotype, genome_cache, snp_genos,
     _snp_chr_norm = snp_genos['chr'].astype(str).str.replace(r'^chr', '', regex=True)
 
     # only iterate chromosomes with kinship available
-    _chrom_list = [c for c in genome_cache.chromosomes if c in kinship_decomp]
+    _chrom_list = [c for c in genomecache.chromosomes if c in kinship_decomp]
     for chrom in _chrom_list:
         _c = str(chrom).replace('chr', '')               # bare chr id e.g. '8'
         chr_snps = snp_genos[_snp_chr_norm == _c]
@@ -93,7 +93,7 @@ def imputed_snp_scan_h2lmm(phenotype, genome_cache, snp_genos,
         if chr_snps.empty:
             continue
 
-        lids, pos, probs = genome_cache.get_chromosome(chrom)   # probs: (L,n,J)
+        lids, pos, probs = genomecache.get_chromosome(chrom)   # probs: (L,n,J)
         # build {pos_mb → locus index} for quick lookup
         pos_to_idx = {float(p): i for i, p in enumerate(pos)}
         eigvals = kinship_decomp[chrom]['values']
@@ -318,7 +318,7 @@ def read_alleles_flat(allele_dir, founders, chrom=None, pmap_dir=None):
     return df
 
 
-def build_snp_catalogue(scan_results, genome_cache, mgp_vcf,
+def build_snp_catalogue(scan_results, genomecache, mgp_vcf,
                           window_mb=10.0, founders=None):
     """Layer 3a — SNP catalogue from MGP VCF overlay (placeholder).
 
@@ -331,7 +331,7 @@ def build_snp_catalogue(scan_results, genome_cache, mgp_vcf,
     parameters
     ----------
     scan_results : dict {gene_id: ScanResult}
-    genome_cache : GenomeCache
+    genomecache : GenomeCache
     mgp_vcf      : str  path to Sanger MGP r9 VCF (bgzipped + tabix-indexed)
     window_mb    : float  window around QTL peak (Mb)
     founders     : list or None  subset of founders to query (default all)
@@ -348,7 +348,7 @@ def build_snp_catalogue(scan_results, genome_cache, mgp_vcf,
     except ImportError:
         raise ImportError('build_snp_catalogue requires pysam: pip install pysam')
 
-    founders_use = founders or list(genome_cache.founders)
+    founders_use = founders or list(genomecache.founders)
     vcf = pysam.VariantFile(mgp_vcf)
     results = {}
 

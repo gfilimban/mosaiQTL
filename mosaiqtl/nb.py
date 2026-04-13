@@ -1,5 +1,5 @@
 """
-mosaiqtl.nb — negative binomial genome-wide scan (primary model)
+nb — negative binomial genome-wide scan (primary model)
 
 two-stage design:
   stage 1 — null model + dispersion (cell level)
@@ -622,7 +622,7 @@ def _score_stats_chromosome(H_all, r_vec, w_vec):
     return sc
 
 
-def scan_nb_gene(counts_pb, genome_cache, strain_order,
+def scan_nb_gene(counts_pb, genomecache, strain_order,
                   phi, sigma_sample=0.0,
                   covariates=None, lib_sizes=None,
                   kinship_loco=None,
@@ -633,9 +633,9 @@ def scan_nb_gene(counts_pb, genome_cache, strain_order,
     parameters
     ----------
     counts_pb     : np.ndarray (n_strains,)  pseudobulk sum counts
-    genome_cache  : GenomeCache
+    genomecache  : GenomeCache
     strain_order  : array-like (n_strains,)  strain IDs in counts_pb order
-                    must match genome_cache.sample_ids order
+                    must match genomecache.sample_ids order
     phi           : float  NB dispersion (from fit_null_sc, shrunk)
     sigma_sample  : float  subject-level variance from glm_sc_fit (≥0)
                     inflates score denominator when >0
@@ -663,7 +663,7 @@ def scan_nb_gene(counts_pb, genome_cache, strain_order,
     sids = list(strain_order)
 
     # align to cache order via Z-matrix
-    cache_ids = list(genome_cache.sample_ids)
+    cache_ids = list(genomecache.sample_ids)
     if sids == cache_ids:
         z_sub, valid = None, np.ones(len(sids), dtype=bool)
     else:
@@ -698,13 +698,13 @@ def scan_nb_gene(counts_pb, genome_cache, strain_order,
         w_vec_global = mu_null / (denom * w_inf)
         null_ll      = _nb_loglik(y, mu_null, phi)
 
-    nf1 = genome_cache.n_founders - 1
+    nf1 = genomecache.n_founders - 1
 
     all_lids, all_chrs, all_pos = [], [], []
     all_lod, all_pval, all_betas = [], [], []
 
-    for chrom in genome_cache.chromosomes:
-        lids, pos, probs = genome_cache.get_chromosome(chrom)
+    for chrom in genomecache.chromosomes:
+        lids, pos, probs = genomecache.get_chromosome(chrom)
 
         if just_these_loci is not None:
             mask = np.isin(lids, list(just_these_loci))
@@ -779,7 +779,7 @@ def scan_nb_gene(counts_pb, genome_cache, strain_order,
     )
 
 
-def scan_nb(counts_cells, genome_cache, strain_ids_cells,
+def scan_nb(counts_cells, genomecache, strain_ids_cells,
              gene_ids=None, covariates_cells=None,
              covariates_strains=None, lib_sizes=None,
              kinship_loco=None,
@@ -794,7 +794,7 @@ def scan_nb(counts_cells, genome_cache, strain_ids_cells,
     parameters
     ----------
     counts_cells      : np.ndarray (n_genes, n_cells)  raw UMI counts
-    genome_cache      : GenomeCache
+    genomecache      : GenomeCache
     strain_ids_cells  : array-like (n_cells,)  strain per cell
     gene_ids          : list of str or None  row names for counts_cells
     covariates_cells  : np.ndarray (n_cells, p) or None
@@ -854,7 +854,7 @@ def scan_nb(counts_cells, genome_cache, strain_ids_cells,
         gid  = gene_ids_pass[gi]
         cis  = cis_loci_dict.get(gid) if cis_loci_dict else None
         return gid, scan_nb_gene(
-            pb_counts[gi], genome_cache, strains,
+            pb_counts[gi], genomecache, strains,
             phi=disp_pass[gi], sigma_sample=float(sigma_pass[gi]),
             covariates=covariates_strains, lib_sizes=lib_sizes,
             kinship_loco=kinship_loco,

@@ -1,5 +1,5 @@
 """
-mosaiqtl.genomecache — read and manage founder haplotype probabilities
+genomecache — read and manage founder haplotype probabilities
 
 supports two formats:
   1. happy genome cache (directory of per-locus .rds files) — read via rpy2

@@ -1,5 +1,5 @@
 """
-mosaiqtl.utils — shared utility functions
+utils — shared utility functions
 
 rank-inverse normal transformation, sample alignment, Z-matrix construction,
 kinship/haplotype Z-expansion, and design matrix builder.

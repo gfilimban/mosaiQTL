@@ -1,5 +1,5 @@
 """
-mosaiqtl.pipeline — user-facing layer API
+pipeline — user-facing layer API
 
 three-layer analysis framework for cis-eQTL mapping in multiparent populations.
 users select how far to go: discovery only, add characterization, or full
@@ -50,7 +50,7 @@ class DiscoveryResult:
     """output of pipeline.discover() — Layer 1."""
     scan:         dict          # {gene_id: ScanResult}
     model:        str           # 'nb' or 'lmm'
-    genome_cache: object        # GenomeCache reference
+    genomecache: object        # GenomeCache reference
     kinship_decomp: Optional[dict] = None   # populated when model='lmm'
     dispersion:   Optional[dict] = None     # {gene_id: float}, model='nb' only
 
@@ -78,7 +78,7 @@ class ResolutionResult:
 # Layer 1 — QTL Discovery
 # ─────────────────────────────────────────────────────────────────────────────
 
-def discover(phenotype_matrix, gene_ids, genome_cache,
+def discover(phenotype_matrix, gene_ids, genomecache,
              covariates=None, sample_ids=None,
              model='nb',
              lib_sizes=None,
@@ -91,7 +91,7 @@ def discover(phenotype_matrix, gene_ids, genome_cache,
     ----------
     phenotype_matrix : np.ndarray (n, G)  raw counts (nb) or normalized (lmm)
     gene_ids         : list of str  length G
-    genome_cache     : GenomeCache
+    genomecache     : GenomeCache
     covariates       : np.ndarray (n, p) or None  intercept + batch + PCs
     sample_ids       : array-like (n,) or None
     model            : 'nb' (default) or 'lmm'
@@ -111,23 +111,23 @@ def discover(phenotype_matrix, gene_ids, genome_cache,
         # counts_cells: (n_genes, n_cells); sample_ids: per-cell strain ids
         from .nb import scan_nb as _scan_nb
         scan_results = _scan_nb(
-            phenotype_matrix, genome_cache, sample_ids,
+            phenotype_matrix, genomecache, sample_ids,
             gene_ids=gene_ids, covariates_cells=covariates,
             lib_sizes=lib_sizes, cis_loci_dict=cis_loci_dict,
             n_cores=n_cores)
         return DiscoveryResult(scan=scan_results, model='nb',
-                               genome_cache=genome_cache)
+                               genomecache=genomecache)
 
     elif model == 'lmm':
         if kinship_decomp is None:
-            kd_raw = kin_module.calc_kinship(genome_cache, method='loco')
+            kd_raw = kin_module.calc_kinship(genomecache, method='loco')
             kinship_decomp = kin_module.decomp_kinship(kd_raw)
         scan_results = scan_multi_gene(
-            phenotype_matrix, gene_ids, genome_cache,
+            phenotype_matrix, gene_ids, genomecache,
             covariates=covariates, kinship_decomp=kinship_decomp,
             sample_ids=sample_ids, n_cores=n_cores)
         return DiscoveryResult(scan=scan_results, model='lmm',
-                               genome_cache=genome_cache,
+                               genomecache=genomecache,
                                kinship_decomp=kinship_decomp)
     else:
         raise ValueError(f'model must be "nb" or "lmm", got {model!r}')
@@ -159,7 +159,7 @@ def characterize(discovery_result, covariates=None,
     CharacterizationResult
     """
     res = CharacterizationResult(discovery=discovery_result)
-    cache = discovery_result.genome_cache
+    cache = discovery_result.genomecache
 
     if 'allele_effects' in modules:
         # extract betas at peak locus from each ScanResult;
@@ -259,7 +259,7 @@ def resolve(discovery_result, covariates=None,
     ResolutionResult
     """
     res = ResolutionResult()
-    cache = discovery_result.genome_cache
+    cache = discovery_result.genomecache
     unknown = set(modules) - set(_LAYER3_MODULES)
     if unknown:
         raise ValueError(f'unknown modules: {unknown}. valid: {_LAYER3_MODULES}')

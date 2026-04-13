@@ -1,5 +1,5 @@
 """
-mosaiqtl.lmm — linear mixed model engine
+lmm — linear mixed model engine
 
 implements the eigendecomposition-based fast LMM from
 Kang et al. (2008, Genetics) as used in qtl2.
@@ -192,7 +192,7 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
     )
 
 
-def scan_chromosome(y, genome_cache, chrom, x_covariates,
+def scan_chromosome(y, genomecache, chrom, x_covariates,
                     eigvals, eigvecs, h2_null, use_reml=True,
                     z_mat=None):
     """scan all loci on one chromosome — vectorized batch WLS.
@@ -209,7 +209,7 @@ def scan_chromosome(y, genome_cache, chrom, x_covariates,
     parameters
     ----------
     y            : np.ndarray (n,)
-    genome_cache : GenomeCache
+    genomecache : GenomeCache
     chrom        : str
     x_covariates : np.ndarray (n, p)
     eigvals      : np.ndarray (n,)     eigenvalues of n×n kinship
@@ -222,9 +222,9 @@ def scan_chromosome(y, genome_cache, chrom, x_covariates,
     -------
     dict: locus_ids, positions, lod, p_value, betas
     """
-    locus_ids, positions, probs = genome_cache.get_chromosome(chrom)
+    locus_ids, positions, probs = genomecache.get_chromosome(chrom)
     n_loci = len(locus_ids)
-    nf1    = genome_cache.n_founders - 1
+    nf1    = genomecache.n_founders - 1
     n      = len(y)
     p      = x_covariates.shape[1]
     q      = nf1

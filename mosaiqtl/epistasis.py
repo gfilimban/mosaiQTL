@@ -1,5 +1,5 @@
 """
-mosaiqtl.epistasis — pairwise GxG interaction and conditional multi-QTL scans
+epistasis — pairwise GxG interaction and conditional multi-QTL scans
 
 three functions for dissecting multi-locus genetic architecture
 in multiparent populations:
@@ -21,7 +21,7 @@ logger = logging.getLogger('mosaiqtl')
 # scan_epistasis
 # ─────────────────────────────────────────────────────────────────────────────
 
-def scan_epistasis(phenotype, genome_cache, locus_a, locus_b,
+def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
                    covariates=None, kinship_decomp=None,
                    use_rint=True, use_reml=True,
                    phenotype_id='unknown'):
@@ -43,7 +43,7 @@ def scan_epistasis(phenotype, genome_cache, locus_a, locus_b,
     parameters
     ----------
     phenotype    : np.ndarray (n,)
-    genome_cache : GenomeCache
+    genomecache : GenomeCache
     locus_a      : str   first locus id
     locus_b      : str   second locus id
     covariates   : np.ndarray (n, p) or None
@@ -68,13 +68,13 @@ def scan_epistasis(phenotype, genome_cache, locus_a, locus_b,
     from .utils import rint as _rint
 
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genome_cache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd)
 
     # locate locus_a and locus_b in cache
     def _get_locus_probs(locus_id):
-        for chrom in genome_cache.chromosomes:
-            lids, pos, probs = genome_cache.get_chromosome(chrom)
+        for chrom in genomecache.chromosomes:
+            lids, pos, probs = genomecache.get_chromosome(chrom)
             idx = np.where(lids == locus_id)[0]
             if len(idx):
                 return chrom, probs[idx[0]]   # (n, J)
@@ -94,7 +94,7 @@ def scan_epistasis(phenotype, genome_cache, locus_a, locus_b,
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((n, 1)), x])
 
-    nf1 = genome_cache.n_founders - 1
+    nf1 = genomecache.n_founders - 1
     ha  = h_a[valid, :nf1]   # (n, J-1) locus a haplotype design
     hb  = h_b[valid, :nf1]   # (n, J-1) locus b haplotype design
 
@@ -145,7 +145,7 @@ def scan_epistasis(phenotype, genome_cache, locus_a, locus_b,
 # test_haplotype_combinations
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_haplotype_combinations(phenotype, genome_cache, locus_a, locus_b,
+def test_haplotype_combinations(phenotype, genomecache, locus_a, locus_b,
                                  sample_ids=None, min_strains=3):
     """founder-pair mean expression heatmap at two peak loci.
 
@@ -160,7 +160,7 @@ def test_haplotype_combinations(phenotype, genome_cache, locus_a, locus_b,
     parameters
     ----------
     phenotype    : np.ndarray (n,) or dict {strain_id: float}
-    genome_cache : GenomeCache
+    genomecache : GenomeCache
     locus_a      : str
     locus_b      : str
     sample_ids   : array-like (n,) or None  maps phenotype rows to strains
@@ -173,13 +173,13 @@ def test_haplotype_combinations(phenotype, genome_cache, locus_a, locus_b,
         cell (i,j) = mean phenotype for strains with f_a=i AND f_b=j
         NaN when fewer than min_strains strains in that cell
     """
-    founders = list(genome_cache.founders)
+    founders = list(genomecache.founders)
     J        = len(founders)
 
     def _get_hard_calls(locus_id):
         """return hard-call founder assignment per strain."""
-        for chrom in genome_cache.chromosomes:
-            lids, _, probs = genome_cache.get_chromosome(chrom)
+        for chrom in genomecache.chromosomes:
+            lids, _, probs = genomecache.get_chromosome(chrom)
             idx = np.where(lids == locus_id)[0]
             if len(idx):
                 return np.argmax(probs[idx[0]], axis=1)   # (n_strains,)
@@ -189,7 +189,7 @@ def test_haplotype_combinations(phenotype, genome_cache, locus_a, locus_b,
     calls_b = _get_hard_calls(locus_b)
 
     # align phenotype to cache strain order
-    strains = list(genome_cache.sample_ids)
+    strains = list(genomecache.sample_ids)
     if isinstance(phenotype, dict):
         y_arr = np.array([phenotype.get(s, np.nan) for s in strains])
     else:
@@ -216,7 +216,7 @@ def test_haplotype_combinations(phenotype, genome_cache, locus_a, locus_b,
 # scan_conditional
 # ─────────────────────────────────────────────────────────────────────────────
 
-def scan_conditional(scan_result, genome_cache, covariates=None,
+def scan_conditional(scan_result, genomecache, covariates=None,
                      kinship_decomp=None, n_signals=3, lod_drop_threshold=1.5,
                      use_rint=True, use_reml=True):
     """forward-stepwise multi-signal decomposition (Layer 3b).
@@ -237,7 +237,7 @@ def scan_conditional(scan_result, genome_cache, covariates=None,
     parameters
     ----------
     scan_result         : ScanResult  Layer 1 output for one gene
-    genome_cache        : GenomeCache
+    genomecache        : GenomeCache
     covariates          : np.ndarray (n, p) or None
     kinship_decomp      : dict or None
     n_signals           : int  max independent signals (default 3)
@@ -259,7 +259,7 @@ def scan_conditional(scan_result, genome_cache, covariates=None,
         return [scan_result]
 
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genome_cache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd)
 
     signals = [scan_result]
@@ -312,7 +312,7 @@ def scan_conditional(scan_result, genome_cache, covariates=None,
     return signals
 
 
-def scan_conditional_with_y(phenotype, scan_result, genome_cache,
+def scan_conditional_with_y(phenotype, scan_result, genomecache,
                               covariates=None, kinship_decomp=None,
                               n_signals=3, lod_drop_threshold=1.5,
                               use_rint=True, use_reml=True):
@@ -337,7 +337,7 @@ def scan_conditional_with_y(phenotype, scan_result, genome_cache,
     from .scan import scan_h2lmm
 
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genome_cache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd)
 
     valid  = ~np.isnan(phenotype)
@@ -361,11 +361,11 @@ def scan_conditional_with_y(phenotype, scan_result, genome_cache,
         lid   = str(prev.locus_ids[pi])
 
         # get haplotype probs at peak locus
-        lids_c, _, probs_c = genome_cache.get_chromosome(chrom)
+        lids_c, _, probs_c = genomecache.get_chromosome(chrom)
         loc_idx = np.where(lids_c == lid)[0]
         if not len(loc_idx):
             break
-        h_peak = probs_c[loc_idx[0]][valid, :genome_cache.n_founders - 1]
+        h_peak = probs_c[loc_idx[0]][valid, :genomecache.n_founders - 1]
 
         # BLUP of haplotype effect at peak locus using LOCO kinship
         if chrom not in kinship_decomp:
@@ -379,7 +379,7 @@ def scan_conditional_with_y(phenotype, scan_result, genome_cache,
         y_res    = y_res - blup_hat     # condition out peak haplotype BLUP
 
         # rescan residuals
-        sr_next = scan_h2lmm(y_res, genome_cache, x,
+        sr_next = scan_h2lmm(y_res, genomecache, x,
                               kinship_decomp, use_rint=False,
                               phenotype_id=f'{scan_result.phenotype_id}_s{sig_i+1}')
         if sr_next.lod.max() < lod_drop_threshold:

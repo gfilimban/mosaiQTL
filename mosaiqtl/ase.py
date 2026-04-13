@@ -1,5 +1,5 @@
 """
-mosaiqtl.ase — allele-specific expression via kallisto|bustools (Layer 3c)
+ase — allele-specific expression via kallisto|bustools (Layer 3c)
 
 workflow per F1 cross:
   1. build two-founder transcriptome index (dam × sire) via kb ref

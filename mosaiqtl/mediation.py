@@ -1,5 +1,5 @@
 """
-mosaiqtl.mediation — genome-wide mediation scan
+mediation — genome-wide mediation scan
 
 tests whether a haplotype QTL effect on outcome gene y is mediated through
 an intermediate gene m. the qr decomposition of [m | X] is precomputed once;
@@ -72,7 +72,7 @@ def _batch_lod(y_rot, x_rot, probs_chr, w_inv, nf1, n, rss0, valid):
     return lod, pval, betas
 
 
-def mediation_scan_qr(outcome, mediator, genome_cache,
+def mediation_scan_qr(outcome, mediator, genomecache,
                        covariates=None, kinship_decomp=None,
                        use_rint=True, use_reml=True,
                        outcome_id='outcome', mediator_id='mediator'):
@@ -84,7 +84,7 @@ def mediation_scan_qr(outcome, mediator, genome_cache,
     parameters
     ----------
     outcome, mediator : np.ndarray (n,)
-    genome_cache      : GenomeCache
+    genomecache      : GenomeCache
     covariates        : np.ndarray (n, p) or None
     kinship_decomp    : dict or None
     use_rint          : bool  apply RINT to outcome
@@ -101,7 +101,7 @@ def mediation_scan_qr(outcome, mediator, genome_cache,
     from .utils import rint as _rint
 
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genome_cache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd)
 
     valid  = (~np.isnan(outcome)) & (~np.isnan(mediator))
@@ -119,10 +119,10 @@ def mediation_scan_qr(outcome, mediator, genome_cache,
     m_std = (m - m.mean()) / max(m.std(), 1e-10)
     x_med = np.hstack([m_std[:, None], x_base])   # (n, p+1)
 
-    nf1 = genome_cache.n_founders - 1
+    nf1 = genomecache.n_founders - 1
     rows_base, rows_med = [], []
 
-    for chrom in genome_cache.chromosomes:
+    for chrom in genomecache.chromosomes:
         if chrom not in kinship_decomp:
             continue
         ev  = kinship_decomp[chrom]['values']
@@ -146,7 +146,7 @@ def mediation_scan_qr(outcome, mediator, genome_cache,
         rss0_b, _ = _wls_null_rss(y_rot_b, x_rot_b, np.ones(n))  # already weighted
         rss0_m, _ = _wls_null_rss(y_rot_m, x_rot_m, np.ones(n))
 
-        lids, pos, probs = genome_cache.get_chromosome(chrom)  # (L, m, J)
+        lids, pos, probs = genomecache.get_chromosome(chrom)  # (L, m, J)
 
         # pre-rotate haplotype block for this chromosome
         # H_rot[l,k,j] = (U'[valid] H[l,valid,:])_k * w_sqrt_b[k]
@@ -180,7 +180,7 @@ def mediation_scan_qr(outcome, mediator, genome_cache,
     return pd.concat(rows_base, ignore_index=True) if rows_base else pd.DataFrame()
 
 
-def fixef_mediation_scan(outcome, mediator, genome_cache,
+def fixef_mediation_scan(outcome, mediator, genomecache,
                           covariates=None, use_rint=True,
                           outcome_id='outcome', mediator_id='mediator',
                           just_these_loci=None):
@@ -207,7 +207,7 @@ def fixef_mediation_scan(outcome, mediator, genome_cache,
     m_std  = (m - m.mean()) / max(m.std(), 1e-10)
     x_med  = np.hstack([m_std[:, None], x_base])
 
-    nf1 = genome_cache.n_founders - 1
+    nf1 = genomecache.n_founders - 1
 
     def _rss0(x):
         b = np.linalg.lstsq(x, y, rcond=None)[0]
@@ -217,8 +217,8 @@ def fixef_mediation_scan(outcome, mediator, genome_cache,
     p_b = x_base.shape[1];  p_m = x_med.shape[1]
 
     rows = []
-    for chrom in genome_cache.chromosomes:
-        lids, pos, probs = genome_cache.get_chromosome(chrom)  # (L, m, J)
+    for chrom in genomecache.chromosomes:
+        lids, pos, probs = genomecache.get_chromosome(chrom)  # (L, m, J)
         H = probs[:, valid, :nf1]                               # (L, n, J-1)
 
         if just_these_loci is not None:

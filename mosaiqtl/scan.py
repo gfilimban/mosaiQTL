@@ -1,5 +1,5 @@
 """
-mosaiqtl.scan — genome-wide haplotype QTL scan
+scan — genome-wide haplotype QTL scan
 
 orchestrates the scan across chromosomes for a single phenotype,
 combining genome cache, kinship, and the LMM engine.
@@ -67,7 +67,7 @@ class ScanResult:
         return df
 
 
-def _resolve_z(sample_ids, genome_cache, pheno_id=None, geno_id=None):
+def _resolve_z(sample_ids, genomecache, pheno_id=None, geno_id=None):
     """build (Z, valid_mask, n_eff) for a given sample set.
 
     if sample_ids already matches the cache order exactly (n == m, same ids),
@@ -77,7 +77,7 @@ def _resolve_z(sample_ids, genome_cache, pheno_id=None, geno_id=None):
     parameters
     ----------
     sample_ids   : array-like  phenotype-level ids (n)
-    genome_cache : GenomeCache
+    genomecache : GenomeCache
     pheno_id     : str or None  column name in sample_ids (if DataFrame)
     geno_id      : str or None  column name for geno lookup (if DataFrame)
 
@@ -86,7 +86,7 @@ def _resolve_z(sample_ids, genome_cache, pheno_id=None, geno_id=None):
     z_mat       : np.ndarray (n, m) or None
     valid_mask  : np.ndarray (n,) bool
     """
-    cache_ids = list(genome_cache.sample_ids)
+    cache_ids = list(genomecache.sample_ids)
     sid_list  = list(sample_ids)
     if sid_list == cache_ids:
         return None, np.ones(len(sid_list), dtype=bool)
@@ -94,7 +94,7 @@ def _resolve_z(sample_ids, genome_cache, pheno_id=None, geno_id=None):
     return z_mat, valid
 
 
-def scan_h2lmm(phenotype, genome_cache, covariates=None,
+def scan_h2lmm(phenotype, genomecache, covariates=None,
                kinship_decomp=None, sample_ids=None,
                use_rint=True, use_reml=True, phenotype_id='unknown',
                fixed_h2_dict=None):
@@ -102,18 +102,18 @@ def scan_h2lmm(phenotype, genome_cache, covariates=None,
 
     supports both 1:1 (n == m) and replicated (n > m) designs via
     the Z-matrix expansion. when sample_ids is provided and differs
-    from genome_cache.sample_ids, Z is built automatically.
+    from genomecache.sample_ids, Z is built automatically.
 
     
     parameters
     ----------
     phenotype       : np.ndarray (n,)    phenotype values; NaN excluded
-    genome_cache    : GenomeCache
+    genomecache    : GenomeCache
     covariates      : np.ndarray (n, p) or None
     kinship_decomp  : dict or None  {chrom: {'values':, 'vectors':}}
     sample_ids      : array-like (n,) or None
         phenotype-level sample identifiers. if None, assumed to match
-        genome_cache.sample_ids in order (1:1 case).
+        genomecache.sample_ids in order (1:1 case).
     use_rint        : bool  apply rank-inverse normal transformation
     use_reml        : bool  REML for h² estimation (ML for LOD)
     phenotype_id    : str
@@ -126,8 +126,8 @@ def scan_h2lmm(phenotype, genome_cache, covariates=None,
 
     # resolve Z mapping
     sid = (list(sample_ids) if sample_ids is not None
-           else list(genome_cache.sample_ids))
-    z_mat, valid_sid = _resolve_z(sid, genome_cache)
+           else list(genomecache.sample_ids))
+    z_mat, valid_sid = _resolve_z(sid, genomecache)
 
     # combine sample validity with phenotype NaN mask
     valid_pheno = ~np.isnan(phenotype)
@@ -154,7 +154,7 @@ def scan_h2lmm(phenotype, genome_cache, covariates=None,
 
     # kinship
     if kinship_decomp is None:
-        kd_raw  = kin_module.calc_kinship(genome_cache, method='loco')
+        kd_raw  = kin_module.calc_kinship(genomecache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd_raw)
 
     all_lids, all_chrs, all_pos = [], [], []
@@ -163,7 +163,7 @@ def scan_h2lmm(phenotype, genome_cache, covariates=None,
 
     # restrict to chromosomes with kinship available; avoids noisy skip messages
     # when kinship_decomp is built for a single chromosome (e.g. --chr 8)
-    _chrom_list = [c for c in genome_cache.chromosomes if c in kinship_decomp]
+    _chrom_list = [c for c in genomecache.chromosomes if c in kinship_decomp]
     for chrom in _chrom_list:
 
         _ev  = kinship_decomp[chrom]['values']
@@ -188,7 +188,7 @@ def scan_h2lmm(phenotype, genome_cache, covariates=None,
         h2_null_dict[chrom] = h2
 
         chr_res = lmm_module.scan_chromosome(
-            y, genome_cache, chrom, x, evals, evecs, h2, use_reml, z_sub)
+            y, genomecache, chrom, x, evals, evecs, h2, use_reml, z_sub)
 
         n_loci = len(chr_res['locus_ids'])
         all_lids.append(chr_res['locus_ids'])
@@ -210,7 +210,7 @@ def scan_h2lmm(phenotype, genome_cache, covariates=None,
     )
 
 
-def scan_multi_gene(phenotype_matrix, gene_ids, genome_cache,
+def scan_multi_gene(phenotype_matrix, gene_ids, genomecache,
                     covariates=None, kinship_decomp=None,
                     sample_ids=None, use_rint=True, n_cores=1):
     """scan multiple genes sharing the same genome cache and kinship.
@@ -219,7 +219,7 @@ def scan_multi_gene(phenotype_matrix, gene_ids, genome_cache,
     ----------
     phenotype_matrix : np.ndarray (n, G)  columns = genes
     gene_ids         : list of str
-    genome_cache     : GenomeCache
+    genomecache     : GenomeCache
     covariates       : np.ndarray (n, p) or None
     kinship_decomp   : dict or None
     sample_ids       : array-like (n,) or None
@@ -231,7 +231,7 @@ def scan_multi_gene(phenotype_matrix, gene_ids, genome_cache,
     dict {gene_id: ScanResult}
     """
     if kinship_decomp is None:
-        kd_raw = kin_module.calc_kinship(genome_cache, method='loco')
+        kd_raw = kin_module.calc_kinship(genomecache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd_raw)
 
     results = {}
@@ -239,14 +239,14 @@ def scan_multi_gene(phenotype_matrix, gene_ids, genome_cache,
         for gi, gid in enumerate(gene_ids):
             logger.info(f'scanning {gi+1}/{len(gene_ids)}: {gid}')
             results[gid] = scan_h2lmm(
-                phenotype_matrix[:, gi], genome_cache, covariates,
+                phenotype_matrix[:, gi], genomecache, covariates,
                 kinship_decomp, sample_ids, use_rint, phenotype_id=gid)
     else:
         from multiprocessing import Pool
         def _one(args):
             gi, gid = args
             return gid, scan_h2lmm(
-                phenotype_matrix[:, gi], genome_cache, covariates,
+                phenotype_matrix[:, gi], genomecache, covariates,
                 kinship_decomp, sample_ids, use_rint, phenotype_id=gid)
         with Pool(n_cores) as pool:
             for gid, res in pool.imap_unordered(_one, enumerate(gene_ids)):
@@ -277,7 +277,7 @@ def lod_drop_ci(scan_result, chrom, drop=1.5):
     return float(pos[above[0]]), float(pos[above[-1]]), float(pos[pi])
 
 
-def fixef_eqtl_scan(phenotype, genome_cache, covariates=None,
+def fixef_eqtl_scan(phenotype, genomecache, covariates=None,
                     sample_ids=None, use_rint=True,
                     phenotype_id='unknown', just_these_loci=None):
     """fixed-effect eQTL scan — OLS, no kinship.
@@ -286,7 +286,7 @@ def fixef_eqtl_scan(phenotype, genome_cache, covariates=None,
     parameters
     ----------
     phenotype       : np.ndarray (n,)
-    genome_cache    : GenomeCache
+    genomecache    : GenomeCache
     covariates      : np.ndarray (n, p) or None
     sample_ids      : array-like (n,) or None
     use_rint        : bool
@@ -300,8 +300,8 @@ def fixef_eqtl_scan(phenotype, genome_cache, covariates=None,
     from scipy import stats as _stats
 
     sid   = (list(sample_ids) if sample_ids is not None
-             else list(genome_cache.sample_ids))
-    z_mat, valid_sid = _resolve_z(sid, genome_cache)
+             else list(genomecache.sample_ids))
+    z_mat, valid_sid = _resolve_z(sid, genomecache)
     valid = (~np.isnan(phenotype)) & valid_sid
     y     = phenotype[valid].copy()
     if use_rint:
@@ -320,9 +320,9 @@ def fixef_eqtl_scan(phenotype, genome_cache, covariates=None,
     all_lids, all_chrs, all_pos = [], [], []
     all_lod, all_pval, all_betas = [], [], []
 
-    for chrom in genome_cache.chromosomes:
-        lids, pos, probs = genome_cache.get_chromosome(chrom)
-        nf1 = genome_cache.n_founders - 1
+    for chrom in genomecache.chromosomes:
+        lids, pos, probs = genomecache.get_chromosome(chrom)
+        nf1 = genomecache.n_founders - 1
         for i_l, lid in enumerate(lids):
             if just_these_loci and lid not in just_these_loci:
                 continue
@@ -350,7 +350,7 @@ def fixef_eqtl_scan(phenotype, genome_cache, covariates=None,
             all_lod.append(lod); all_pval.append(pv); all_betas.append(beta[:nf1])
             all_lids.append(lid); all_chrs.append(chrom); all_pos.append(pos[i_l])
 
-    nf1_out = genome_cache.n_founders - 1
+    nf1_out = genomecache.n_founders - 1
     return ScanResult(
         locus_ids   = np.array(all_lids),
         chromosomes = np.array(all_chrs),
@@ -364,7 +364,7 @@ def fixef_eqtl_scan(phenotype, genome_cache, covariates=None,
     )
 
 
-def instability_lm_scan(phenotype, genome_cache, covariates=None,
+def instability_lm_scan(phenotype, genomecache, covariates=None,
                         sample_ids=None, use_rint=True,
                         n_samples=100, subsample_prop=0.63,
                         seed=1, phenotype_id='unknown',
@@ -380,7 +380,7 @@ def instability_lm_scan(phenotype, genome_cache, covariates=None,
     parameters
     ----------
     phenotype       : np.ndarray (n,)
-    genome_cache    : GenomeCache
+    genomecache    : GenomeCache
     covariates      : np.ndarray (n, p) or None
     sample_ids      : array-like (n,) or None
     use_rint        : bool
@@ -417,7 +417,7 @@ def instability_lm_scan(phenotype, genome_cache, covariates=None,
                 lids, pos, probs = self._c.get_chromosome(chrom)
                 return lids, pos, probs[:, self._idx, :]
 
-        sub = _SubCache(genome_cache, idx)
+        sub = _SubCache(genomecache, idx)
         res = fixef_eqtl_scan(y_b, sub, cov_b, sid_b, use_rint,
                                phenotype_id, just_these_loci)
         if lod_sum is None:
@@ -438,7 +438,7 @@ def instability_lm_scan(phenotype, genome_cache, covariates=None,
     )
 
 
-def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
+def scan_h2lmm_mi(phenotype, genomecache, covariates=None,
                   kinship_decomp=None, sample_ids=None,
                   n_imp=11, seed=1, use_rint=True,
                   use_reml=True, phenotype_id='unknown'):
@@ -449,7 +449,7 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
     parameters
     ----------
     phenotype      : np.ndarray (n,)
-    genome_cache   : GenomeCache
+    genomecache   : GenomeCache
     covariates     : np.ndarray (n, p) or None
     kinship_decomp : dict or None
     sample_ids     : array-like (n,) or None
@@ -467,11 +467,11 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
     rng = np.random.default_rng(seed)
 
     if kinship_decomp is None:
-        kd_raw = kin_module.calc_kinship(genome_cache, method='loco')
+        kd_raw = kin_module.calc_kinship(genomecache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd_raw)
 
     # only impute chromosomes that will actually be scanned
-    _chrom_list = [c for c in genome_cache.chromosomes if c in kinship_decomp]
+    _chrom_list = [c for c in genomecache.chromosomes if c in kinship_decomp]
 
     # pre-estimate h2 once from the REAL cache — held fixed across all imputations
     valid_mi = ~np.isnan(phenotype)
@@ -498,7 +498,7 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
     for imp in range(n_imp):
         imp_data = {}
         for chrom in _chrom_list:
-            lids, pos, probs = genome_cache.get_chromosome(chrom)
+            lids, pos, probs = genomecache.get_chromosome(chrom)
             n_loci, n_s, n_f = probs.shape
             cum   = probs.cumsum(axis=2)
             u     = rng.random((n_loci, n_s, 1))
@@ -510,8 +510,8 @@ def scan_h2lmm_mi(phenotype, genome_cache, covariates=None,
             imp_p[l_idx, s_idx, idx] = 1.0
             imp_data[chrom] = {'locus_ids': lids, 'positions': pos,
                                 'probs': imp_p}
-        imp_cache = _GC(list(genome_cache.sample_ids),
-                        list(genome_cache.founders), imp_data)
+        imp_cache = _GC(list(genomecache.sample_ids),
+                        list(genomecache.founders), imp_data)
         res = scan_h2lmm(phenotype, imp_cache, covariates,
                          kinship_decomp, sample_ids, use_rint,
                          use_reml, phenotype_id,

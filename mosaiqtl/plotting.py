@@ -1,5 +1,5 @@
 """
-mosaiqtl.plotting — qc and results visualization
+plotting — qc and results visualization
 
 all plots use seaborn over matplotlib where possible.
 font: carlito. axes start from zero.
@@ -188,7 +188,7 @@ def plot_kinship_heatmap(k_matrix, sample_ids=None, save_path=None):
     return fig, ax
 
 
-def plot_founder_effects(scan_result, genome_cache, peak_chrom=None,
+def plot_founder_effects(scan_result, genomecache, peak_chrom=None,
                          peak_idx=None, founder_names=None,
                          save_path=None):
     """founder allele effects at the peak locus.
@@ -196,7 +196,7 @@ def plot_founder_effects(scan_result, genome_cache, peak_chrom=None,
     parameters
     ----------
     scan_result : ScanResult
-    genome_cache : GenomeCache
+    genomecache : GenomeCache
     peak_chrom : str or None
         if none, uses the genome-wide peak
     peak_idx : int or None
@@ -218,10 +218,10 @@ def plot_founder_effects(scan_result, genome_cache, peak_chrom=None,
     j_minus_1 = len(betas)
 
     if founder_names is None:
-        founder_names = genome_cache.founders[:j_minus_1]
+        founder_names = genomecache.founders[:j_minus_1]
 
     # add the dropped founder (effect = 0, reference)
-    all_names = list(founder_names) + [genome_cache.founders[-1]]
+    all_names = list(founder_names) + [genomecache.founders[-1]]
     all_effects = np.append(betas, 0.0)
 
     # color by founder palette
@@ -448,14 +448,14 @@ def plot_lod_difference(py_scan_result, r_results_csv, save_path=None):
     return fig, ax
 
 
-def plot_founder_effects_comparison(py_scan_result, genome_cache,
+def plot_founder_effects_comparison(py_scan_result, genomecache,
                                      r_effects_csv, save_path=None):
     """side-by-side founder effects at peak: python vs r.
 
     parameters
     ----------
     py_scan_result : ScanResult
-    genome_cache : GenomeCache
+    genomecache : GenomeCache
     r_effects_csv : str
         path to r allele_effects.csv
     save_path : str or None
@@ -471,8 +471,8 @@ def plot_founder_effects_comparison(py_scan_result, genome_cache,
     py_betas = py_scan_result.betas[peak_idx]
 
     j_minus_1 = len(py_betas)
-    founder_names = genome_cache.founders[:j_minus_1]
-    ref_founder = genome_cache.founders[-1]
+    founder_names = genomecache.founders[:j_minus_1]
+    ref_founder = genomecache.founders[-1]
 
     py_all = np.append(py_betas, 0.0)
     all_names = list(founder_names) + [ref_founder]
@@ -517,7 +517,7 @@ def plot_founder_effects_comparison(py_scan_result, genome_cache,
     return fig, ax
 
 
-def plot_validation_panel(scan_result, k_matrix, genome_cache,
+def plot_validation_panel(scan_result, k_matrix, genomecache,
                           true_params=None, phi_estimated=None,
                           phi_true=None, save_dir='validation/qc_plots'):
     """generate full qc panel for validation.
@@ -534,7 +534,7 @@ def plot_validation_panel(scan_result, k_matrix, genome_cache,
     ----------
     scan_result : ScanResult
     k_matrix : np.ndarray
-    genome_cache : GenomeCache
+    genomecache : GenomeCache
     true_params : dict or None
     phi_estimated : np.ndarray or None
     phi_true : np.ndarray or None
@@ -563,11 +563,11 @@ def plot_validation_panel(scan_result, k_matrix, genome_cache,
         save_path=os.path.join(save_dir, 'lod_profile.png')
     )
     plot_kinship_heatmap(
-        k_matrix, sample_ids=list(genome_cache.sample_ids),
+        k_matrix, sample_ids=list(genomecache.sample_ids),
         save_path=os.path.join(save_dir, 'kinship_heatmap.png')
     )
     plot_founder_effects(
-        scan_result, genome_cache,
+        scan_result, genomecache,
         save_path=os.path.join(save_dir, 'founder_effects.png')
     )
     plot_pvalue_qq(
@@ -598,7 +598,7 @@ def plot_validation_panel(scan_result, k_matrix, genome_cache,
         )
         if os.path.exists(r_effects_csv):
             plot_founder_effects_comparison(
-                scan_result, genome_cache, r_effects_csv,
+                scan_result, genomecache, r_effects_csv,
                 save_path=os.path.join(save_dir, 'cross_founder_effects.png')
             )
     else:

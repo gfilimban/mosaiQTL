@@ -1,5 +1,5 @@
 """
-mosaiqtl.permutation — permutation thresholds and parametric bootstrap CI
+permutation — permutation thresholds and parametric bootstrap CI
 
 implements significance thresholds for genome-wide scans via permutation
 and positional confidence intervals via parametric bootstrap.
@@ -66,7 +66,7 @@ def generate_null_outcomes(y, n_samples=1000, method='permutation', seed=1):
 # threshold scans
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_threshold_scans(null_outcomes, genome_cache,
+def run_threshold_scans(null_outcomes, genomecache,
                         phenotype=None,
                         covariates=None, kinship_decomp=None,
                         chrom=None,
@@ -78,13 +78,13 @@ def run_threshold_scans(null_outcomes, genome_cache,
     parameters
     ----------
     null_outcomes  : np.ndarray (n, n_perms)  from generate_null_outcomes()
-    genome_cache   : GenomeCache
+    genomecache   : GenomeCache
     phenotype      : np.ndarray (n,) or None
         original phenotype; required when fix_h2=True to pre-estimate h².
         ignored when fix_h2=False (h² re-estimated per permutation).
     covariates     : np.ndarray (n, p) or None
     kinship_decomp : dict or None  {chrom: {'values':, 'vectors':}}
-        if None, computed from genome_cache (loco).
+        if None, computed from genomecache (loco).
     chrom          : str or None
         if given, restrict scans to this chromosome only (validation mode).
         if None, scan all chromosomes (full-genome threshold).
@@ -105,12 +105,12 @@ def run_threshold_scans(null_outcomes, genome_cache,
 
     # build kinship decomp if not supplied
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genome_cache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd)
 
     # chromosomes to scan
     chrs = ([chrom] if chrom is not None
-            else [c for c in genome_cache.chromosomes if c in kinship_decomp])
+            else [c for c in genomecache.chromosomes if c in kinship_decomp])
 
     # covariates default to intercept
     n = null_outcomes.shape[0]
@@ -159,7 +159,7 @@ def run_threshold_scans(null_outcomes, genome_cache,
 
             # scan_chromosome handles y/x rotation internally
             res  = lmm_module.scan_chromosome(
-                y_p, genome_cache, c, x, ev, evc, h2, use_reml=use_reml)
+                y_p, genomecache, c, x, ev, evc, h2, use_reml=use_reml)
             best = max(best, float(res['lod'].max()))
 
         max_lods[p_idx] = best
@@ -210,7 +210,7 @@ def get_gev_thresholds(max_lods, percentile=0.95):
 # positional CI via parametric bootstrap
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_positional_scans(bootstrap_outcomes, genome_cache,
+def run_positional_scans(bootstrap_outcomes, genomecache,
                          phenotype,
                          covariates=None, kinship_decomp=None,
                          peak_chrom=None,
@@ -224,7 +224,7 @@ def run_positional_scans(bootstrap_outcomes, genome_cache,
     parameters
     ----------
     bootstrap_outcomes : np.ndarray (n, n_boot)  from generate_null_outcomes(method='bootstrap')
-    genome_cache       : GenomeCache
+    genomecache       : GenomeCache
     phenotype          : np.ndarray (n,)  original phenotype (for fix_h2 pre-estimation)
     covariates         : np.ndarray (n, p) or None
     kinship_decomp     : dict or None  {chrom: {'values':, 'vectors':}}
@@ -245,11 +245,11 @@ def run_positional_scans(bootstrap_outcomes, genome_cache,
     from .utils import rint as _rint
 
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genome_cache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd)
 
     chrs = ([peak_chrom] if peak_chrom is not None
-            else [c for c in genome_cache.chromosomes if c in kinship_decomp])
+            else [c for c in genomecache.chromosomes if c in kinship_decomp])
 
     n = bootstrap_outcomes.shape[0]
     x = (covariates if covariates is not None
@@ -296,7 +296,7 @@ def run_positional_scans(bootstrap_outcomes, genome_cache,
                     method='reml' if use_reml else 'ml')
 
             res    = lmm_module.scan_chromosome(
-                y_b, genome_cache, c, x, ev, evc, h2, use_reml=use_reml)
+                y_b, genomecache, c, x, ev, evc, h2, use_reml=use_reml)
             peak_i = int(np.argmax(res['lod']))
             if res['lod'][peak_i] > best_lod:
                 best_lod = res['lod'][peak_i]
