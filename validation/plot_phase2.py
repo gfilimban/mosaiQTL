@@ -368,7 +368,7 @@ def plot_s4(comp_df, stat_df, chr_colors_fn, py_betas, r_ae, n_s, n_l, n_f, J,
     # ── gene summary plot 2: peak locus concordance by tier ───────────────────
     # right panel of reference figure — peak_match vs mismatch stacked per tier
     fig_gs2, ax_gs2 = plt.subplots(figsize=(6, 5))
-    tiers_ord = ['fail', 'lenient', 'strict']; x_pos2 = np.arange(len(tiers_ord)); w2 = 0.35
+    tiers_ord = ['strict', 'lenient', 'fail']; x_pos2 = np.arange(len(tiers_ord)); w2 = 0.35
     for i, (tier, color) in enumerate(tc.items()):
         sub = stat_df[stat_df['tier'] == tier]
         n_match   = int(sub['peak_match'].sum())
@@ -464,15 +464,16 @@ def plot_s4(comp_df, stat_df, chr_colors_fn, py_betas, r_ae, n_s, n_l, n_f, J,
                      .sort_values('peak_lod_r', ascending=False)['gene_id']
                      if g in py_betas), None)
         if best:
-            chrom_b, peak_loc, f_names, py_eff = py_betas[best]
-            r_sub = r_ae[(r_ae['gene_id'] == best) & (r_ae['locus'] == peak_loc)]
+            chrom_b, py_loc, r_loc, f_names, py_eff, eff_r_peak = py_betas[best]
+            # use R's peak locus for R effects — r_ae only stores effects there
+            r_sub = r_ae[(r_ae['gene_id'] == best) & (r_ae['locus'] == r_loc)]
+            # show Python effects at Python's peak (strongest signal for the plot)
             fig, ax = plt.subplots(figsize=(9, 4)); x = np.arange(len(f_names)); w = 0.35
             cf = [FOUNDER_COLORS.get(f, '#888') for f in f_names]
             ax.bar(x - w/2, py_eff, w, color=cf, edgecolor='white', lw=0.5,
-                   label='mosaiQTL (Python)')
+                   label=f'mosaiQTL (Python) @ {py_loc}')
             if not r_sub.empty:
                 # r_ae founder col may use single-letter HAPPY codes (A–H) or full names
-                _code_map = {chr(65+i): fn for i, fn in enumerate(FOUNDER_COLORS.keys())}
                 _r_founders = r_sub['founder'].values
                 def _lookup(fn):
                     if fn in _r_founders: return float(r_sub.loc[r_sub['founder']==fn,'effect'].iloc[0])
@@ -481,12 +482,14 @@ def plot_s4(comp_df, stat_df, chr_colors_fn, py_betas, r_ae, n_s, n_l, n_f, J,
                     return 0.0
                 r_eff = [_lookup(fn) for fn in f_names]
                 ax.bar(x + w/2, r_eff, w, color=cf, hatch='///', edgecolor='#333',
-                       lw=0.6, alpha=0.7, label='miQTL (R)')
-                _r2 = (float(np.corrcoef(py_eff, r_eff)[0, 1])
-                       if np.std(py_eff) > 0 and np.std(r_eff) > 0 else np.nan)
+                       lw=0.6, alpha=0.7, label=f'miQTL (R) @ {r_loc}')
+                _cmp_py = eff_r_peak if eff_r_peak is not None else py_eff
+                _r2 = (float(np.corrcoef(_cmp_py, r_eff)[0, 1])
+                       if np.std(_cmp_py) > 0 and np.std(r_eff) > 0 else np.nan)
                 ax.text(0.02, 0.97, f'r={_r2:.4f}' if np.isfinite(_r2) else 'r=n/a',
                         transform=ax.transAxes, fontsize=10, va='top')
             ax.axhline(0, color='#444', lw=0.5)
+            ax.set_title(f'{best}  —  allele effects at peak  (chr{chrom_b})', fontsize=11)
             ax.set(xticks=x, ylabel='effect size')
             ax.set_xticklabels(f_names, rotation=45, ha='right', fontsize=10)
             ax.legend(fontsize=9); sns.despine(ax=ax); plt.tight_layout()

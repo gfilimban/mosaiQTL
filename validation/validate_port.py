@@ -199,27 +199,40 @@ hi(f'  cache: {len(cache_py.chromosomes)} chr | {len(cache_py.sample_ids)} strai
 kinship_py = kin_module.calc_kinship(cache_py, method='loco')
 hi(f'  kinship: {len(kinship_py)} LOCO matrices')
 
-# load phenotype + covariates
-_pheno_csv = os.path.join(R_DATA, 'pheno_48_used.csv')
+# load phenotype + covariates from h5ad (CPM → log1p → mean per strain)
+ADATA_PATH = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/input/adata/gastroc_all_pb_bulk.h5ad'
 pheno_strain = None; covar_base = None
-if os.path.exists(_pheno_csv):
-    _raw = pd.read_csv(_pheno_csv, index_col=0)
-    if 'subject.name' not in _raw.columns:
-        _raw = _raw.reset_index().rename(columns={'index':'subject.name'})
-    _raw = _raw.drop_duplicates('subject.name').reset_index(drop=True)
+if os.path.exists(ADATA_PATH):
+    import anndata as ad, scipy.sparse as sp_sparse
+    _adata = ad.read_h5ad(ADATA_PATH)
+    # counts matrix (samples × genes) — densify if sparse
+    _X = _adata.X.toarray() if sp_sparse.issparse(_adata.X) else np.array(_adata.X)
+    # CPM per sample then log1p
+    _lib = _adata.obs['psbulk_counts'].values.astype(float)
+    _cpm = _X / _lib[:, None] * 1e6
+    _log_cpm = np.log1p(_cpm)
+    # mean per strain (genotype)
+    _geno = _adata.obs['genotype'].values
+    _genes = list(_adata.var_names)
+    _df_all = pd.DataFrame(_log_cpm, index=_geno, columns=_genes)
+    _pheno_48 = _df_all.groupby(_df_all.index).mean()   # (n_strains × n_genes)
+    _pheno_48.index.name = 'subject.name'
+    # align to cache strain order
     _cs  = list(cache_py.sample_ids)
-    _ps  = _raw.set_index('subject.name').reindex(_cs)
-    _cp  = [np.ones((len(_ps),1))]
-    if 'batch' in _ps.columns and _ps['batch'].notna().any():
-        _cp.append(pd.get_dummies(_ps['batch'],prefix='batch',
-                                   drop_first=True).astype(float).values)
-    _pcs = [c for c in [f'pc{i}' for i in range(1,11)] if c in _ps.columns]
-    if _pcs: _cp.append(_ps[_pcs].fillna(0).astype(float).values)
+    _ps  = _pheno_48.reindex(_cs)
+    # covariates: intercept + sex PCs (female=0, male=1, mean per strain)
+    _cp  = [np.ones((len(_ps), 1))]
+    _sex_df = (pd.DataFrame({'genotype': _geno,
+                              'sex': (_adata.obs['sex'].values == 'Male').astype(float)})
+                 .groupby('genotype')['sex'].mean()
+                 .reindex(_cs))
+    if _sex_df.notna().any():
+        _cp.append(_sex_df.fillna(0.5).values[:, None])
+    covar_base  = np.hstack(_cp)
     pheno_strain = _ps.reset_index()
-    covar_base   = np.hstack(_cp)
-    hi(f'  pheno: {len(pheno_strain)} strains  covar: {covar_base.shape[1]} cols')
+    hi(f'  pheno: {len(pheno_strain)} strains × {len(_genes)} genes  covar: {covar_base.shape[1]} cols')
 else:
-    hi(f'  WARN: pheno_48_used.csv not found — run port_validation.R s4 first')
+    hi(f'  WARN: h5ad not found at {ADATA_PATH}')
 
 def _get_y(gene):
     if pheno_strain is None or gene not in pheno_strain.columns: return None
@@ -708,6 +721,7 @@ if section(4, 'LMM SCAN (ROP)'):
                 pk_r   = float(mg['lod_r'].max())
                 pk_py  = float(mg['lod_py'].max())
                 py_peak= mg.loc[mg['lod_py'].idxmax(),'locus']
+                r_peak = mg.loc[mg['lod_r'].idxmax(),'locus']
                 r_at_peak = (float(mg.loc[mg['locus']==py_peak,'lod_r'].iloc[0])
                              if (mg['locus']==py_peak).any() else 0.0)
                 pm     = r_at_peak >= 0.99*pk_r
@@ -720,9 +734,16 @@ if section(4, 'LMM SCAN (ROP)'):
                                     'r':rc,'rel_error':rel,'peak_match':pm,
                                     'peak_lod_r':pk_r,'peak_lod_py':pk_py,'h2_null':h2})
                 ll = rg['locus'].tolist()
-                if py_peak in ll and betas_py[ll.index(py_peak)] is not None:
-                    py_betas[gene] = (chrom,py_peak,cache_py.founders[:-1],
-                                      betas_py[ll.index(py_peak)])
+                _eff_py_peak = (betas_py[ll.index(py_peak)]
+                                if py_peak in ll and betas_py[ll.index(py_peak)] is not None
+                                else None)
+                _eff_r_peak  = (betas_py[ll.index(r_peak)]
+                                if r_peak in ll and betas_py[ll.index(r_peak)] is not None
+                                else None)
+                if _eff_py_peak is not None:
+                    # tuple: (chrom, py_peak, r_peak, founders, eff_at_py_peak, eff_at_r_peak)
+                    py_betas[gene] = (chrom, py_peak, r_peak, cache_py.founders[:-1],
+                                      _eff_py_peak, _eff_r_peak)
 
         if comparisons:
             comp_df = pd.concat(comparisons, ignore_index=True)
@@ -744,16 +765,17 @@ if section(4, 'LMM SCAN (ROP)'):
             # allele effect concordance data (computed here; passed to plot_s4)
             _ae_rs = []
             if r_ae is not None:
-                for _g, (_chb, _peak_loc, _fns, _py_eff) in py_betas.items():
-                    _r_sub = r_ae[(r_ae['gene_id']==_g)&(r_ae['locus']==_peak_loc)]
-                    if _r_sub.empty: continue
+                for _g, (_chb, _py_loc, _r_loc, _fns, _eff_py, _eff_r_peak) in py_betas.items():
+                    # compare effects at R's peak locus — r_ae only stores effects there
+                    _r_sub = r_ae[(r_ae['gene_id']==_g)&(r_ae['locus']==_r_loc)]
+                    if _r_sub.empty or _eff_r_peak is None: continue
                     _code_map = {chr(65+i): f for i, f in enumerate(FOUNDER_COLS)}
                     _r_eff = [float(_r_sub.loc[_r_sub['founder']==_code_map.get(chr(65+i),''), 'effect'].iloc[0])
                               if _code_map.get(chr(65+i),'') in _r_sub['founder'].values else 0.0
                               for i in range(len(_fns))]
-                    if np.std(_py_eff)>0 and np.std(_r_eff)>0:
-                        _ae_rs.append({'gene_id':_g, 'r_allele':float(np.corrcoef(_py_eff,_r_eff)[0,1]),
-                                       'ccc_allele':ccc(_py_eff, _r_eff)})
+                    if np.std(_eff_r_peak)>0 and np.std(_r_eff)>0:
+                        _ae_rs.append({'gene_id':_g, 'r_allele':float(np.corrcoef(_eff_r_peak,_r_eff)[0,1]),
+                                       'ccc_allele':ccc(_eff_r_peak, _r_eff)})
             _ae_df = pd.DataFrame(_ae_rs) if _ae_rs else None
             if _ae_df is not None:
                 save_csv(_col(_ae_df, ['gene_id', 'r_allele', 'ccc_allele']),
@@ -762,14 +784,16 @@ if section(4, 'LMM SCAN (ROP)'):
             # serialize peak founder effects for standalone replot
             if py_betas:
                 _pfe_rows = []
-                for _g, (_chb, _ploc, _fns, _peff) in py_betas.items():
-                    for _fn, _pe in zip(_fns, _peff):
-                        _pfe_rows.append({'gene_id': _g, 'chr': _chb,
-                                          'locus': _ploc, 'founder': _fn,
-                                          'effect_py': float(_pe)})
-                save_csv(_col(pd.DataFrame(_pfe_rows),
-                              ['gene_id', 'chr', 'locus', 'founder', 'effect_py']),
-                         'peak_founder_effects_py.csv')
+                for _g, (_chb, _py_loc, _r_loc, _fns, _eff_py, _eff_rp) in py_betas.items():
+                    for _fi, _fn in enumerate(_fns):
+                        _row = {'gene_id': _g, 'chr': _chb,
+                                'py_peak_locus': _py_loc, 'r_peak_locus': _r_loc,
+                                'founder': _fn,
+                                'effect_at_py_peak': float(_eff_py[_fi])}
+                        if _eff_rp is not None:
+                            _row['effect_at_r_peak'] = float(_eff_rp[_fi])
+                        _pfe_rows.append(_row)
+                save_csv(pd.DataFrame(_pfe_rows), 'peak_founder_effects_py.csv')
 
             plot_phase2.plot_s4(comp_df, stat_df, chr_colors,
                                 py_betas, r_ae, n_s, n_l, n_f,

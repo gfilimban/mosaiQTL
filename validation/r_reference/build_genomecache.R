@@ -17,10 +17,15 @@
 #       the allele-code source ("find_unique_geno() to determine the SNP alleles [from
 #       founders]", kbroman.org/qtl2/pages/prep_do_data.html).
 #
-#   Pseudomarkers (insert_pseudomarkers) are NOT used. They are an interpolation device
-#   for qtl2-native scan1() only. Including them would make HAPPY cache loci disagree
-#   with the gmap/pmap CSVs that Python's from_gigamuga reads, producing loci_max_delta
-#   >> 0 in S1 validation.
+#   CC cross_info: qtl2's DO HMM uses only cross_info[0] as n_gen. For CC mice we
+#   set n_gen=1 because the CC consensus genetic map already encodes the cumulative
+#   recombination from the full breeding programme. The per-strain funnel data
+#   (cc_crossinfo.csv) is not used here — it is reserved for a future mosaiQTL
+#   Python extension (cc_funnel_init) that uses funnel-aware per-strain HMM init.
+#
+#   Pseudomarkers (insert_pseudomarkers) are NOT used in HAPPY cache. They are added
+#   to probs_cc.rds/kinship for scan use, then filtered before convert.qtl2.to.HAPPY()
+#   so HAPPY loci match gmap.csv exactly (Python from_gigamuga reads only gmap markers).
 #
 # Steps:
 #   1. Load GigaMUGA consensus matrix + genetic/physical maps
@@ -58,7 +63,6 @@ step_cM  <- if (length(args) >= 3) as.numeric(args[3]) else 0.2
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 gigamuga_path    <- file.path(base_dir, 'input', 'GM_ccfo_mm39.csv')
-crossinfo_path   <- file.path(base_dir, 'input', 'cc_crossinfo.csv')
 gmap_dir         <- file.path(base_dir, 'input', 'GM', 'gmap')
 pmap_dir         <- file.path(base_dir, 'input', 'GM', 'pmap')
 geno_dir         <- file.path(base_dir, 'input', 'geno')
@@ -229,50 +233,17 @@ if (step_cM > 0) {
   message('\n[7] running HMM (calc_genoprob) — ', length(cc_cols),
           ' CC strains, genotyped markers only, cores = ', n_cores)
 }
-# load per-strain funnel crossinfo — exact cross_info matrix expected by qtl2.
-# columns A-H give the funnel position (1-8) for each founder in each CC strain.
-# qtl2's do HMM uses this to set per-strain initial state distributions and
-# transition scaling. using the actual crossinfo is more accurate than a uniform
-# ngen=20 for all strains.
-if (file.exists(crossinfo_path)) {
-  ci       <- read.csv(crossinfo_path, row.names = 1, stringsAsFactors = FALSE)
-  # cc_crossinfo.csv format: columns = founders (A-H), values = funnel positions (1-8).
-  # qtl2 calc_genoprob for CC needs: an n_ind x 8 matrix where column j = funnel
-  # position j and each value is a founder index (A=1 ... H=8).
-  # invert: for each strain, map position → founder_index.
-  founder_to_idx <- c(A=1L, B=2L, C=3L, D=4L, E=5L, F=6L, G=7L, H=8L)
-  ci_qtl2 <- t(apply(as.matrix(ci), 1, function(row) {
-    inv <- integer(8)
-    for (f in intersect(names(row), names(founder_to_idx))) {
-      pos <- as.integer(row[[f]])
-      if (!is.na(pos) && pos >= 1L && pos <= 8L) inv[pos] <- founder_to_idx[[f]]
-    }
-    inv
-  }))
-  rownames(ci_qtl2) <- rownames(ci)
-  # cross$cross_info may start as 0-column (read_cross2 without crossinfo in YAML).
-  # replace the entire matrix using all strains present in the cross geno data.
-  all_cc <- rownames(cross$geno[[1]])
-  cc_in_ci <- intersect(all_cc, rownames(ci_qtl2))
-  if (length(cc_in_ci) > 0) {
-    ci_full <- matrix(0L, nrow = length(all_cc), ncol = 8L,
-                      dimnames = list(all_cc, as.character(1:8)))
-    ci_full[cc_in_ci, ] <- ci_qtl2[cc_in_ci, ]
-    cross$cross_info <- ci_full
-    message('[crossinfo] loaded per-strain funnel for ', length(cc_in_ci),
-            '/', length(all_cc), ' CC strains')
-  } else {
-    message('[crossinfo] WARNING: no strain overlap — falling back to ngen=20')
-    cross$cross_info <- matrix(20L, nrow = length(all_cc), ncol = 1,
-                               dimnames = list(all_cc, 'ngen'))
-  }
-} else {
-  message('[crossinfo] file not found at ', crossinfo_path,
-          ' — falling back to ngen=20')
-  all_cc <- rownames(cross$geno[[1]])
-  cross$cross_info <- matrix(20L, nrow = length(all_cc), ncol = 1,
-                             dimnames = list(all_cc, 'ngen'))
-}
+# CC cross_info for qtl2 DO HMM: DO::step uses cross_info[0] as n_gen (number of
+# outbreeding generations). For CC mice we use n_gen=1 because the CC consensus
+# genetic map already encodes the cumulative recombination from the full breeding
+# programme (~26 generations). Passing n_gen>1 would double-count those generations
+# in the transition probabilities. The funnel (cc_crossinfo.csv) is NOT passed to
+# calc_genoprob — the qtl2 DO C++ HMM has no funnel-aware logic; cross_info[0] is
+# the only element used, and it must be n_gen, not a founder index.
+all_cc <- rownames(cross$geno[[1]])
+cross$cross_info <- matrix(1L, nrow = length(all_cc), ncol = 1L,
+                           dimnames = list(all_cc, 'ngen'))
+message('[crossinfo] set ngen=1 for all ', length(all_cc), ' CC strains (consensus map encodes recombination history)')
 probs <- calc_genoprob(cross = cross, map = aug_map,
                        error_prob = 0.002, cores = n_cores)
 saveRDS(probs, probs_cc_out)
