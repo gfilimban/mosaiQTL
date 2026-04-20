@@ -17,10 +17,12 @@ provenance: wrap results with ProvenanceRecord at serialization time (DESIGN-06)
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, field
+from typing import Literal, Optional
 
 import numpy as np
+
+DataGranularity = Literal['single-cell', 'pseudobulk', 'bulk']
 
 
 @dataclass(slots=True)
@@ -94,7 +96,10 @@ class VQTLResult:
     phi_method : str
         dispersion estimation method: 'moments' or 'mle'
     gene_id : str
-    cell_type : str
+    cell_type : str or None
+        cell type label for single-cell/pseudobulk; None for bulk
+    data_granularity : DataGranularity
+        'single-cell', 'pseudobulk', or 'bulk' — matches --granular CLI flag
     model : str
         scan model used: 'nb-glmm' or 'lmm'
     n_samples : int
@@ -106,7 +111,8 @@ class VQTLResult:
     phi_estimates:    np.ndarray
     phi_method:       str
     gene_id:          str
-    cell_type:        str
+    cell_type:        Optional[str]
+    data_granularity: DataGranularity
     model:            str
     n_samples:        int
 
@@ -146,13 +152,16 @@ class ProvenanceRecord:
 
 @dataclass(slots=True)
 class QTLResult:
-    """eGene-level summary for one gene × cell-type combination.
+    """eGene-level summary for one gene × grouping combination.
 
     attributes
     ----------
     gene_id : str
     gene_name : str
-    cell_type : str
+    cell_type : str or None
+        cell type label for single-cell/pseudobulk; None for bulk
+    data_granularity : DataGranularity
+        'single-cell', 'pseudobulk', or 'bulk' — matches --granular CLI flag
     gene_chr : str
         chromosome of gene TSS — always str, never int
     gene_tss_mb : float
@@ -197,7 +206,8 @@ class QTLResult:
 
     gene_id:            str
     gene_name:          str
-    cell_type:          str
+    cell_type:          Optional[str]
+    data_granularity:   DataGranularity
     gene_chr:           str
     gene_tss_mb:        float
     peak_locus:         str

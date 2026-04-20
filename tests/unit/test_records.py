@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
 from mosaiqtl.models.records import (
     FounderEffect, ProvenanceRecord, QTLResult, ScanResult, VQTLResult,
+    DataGranularity,
 )
 
 
@@ -40,6 +41,7 @@ def _provenance():
 def _qtl_result(**kwargs):
     defaults = dict(
         gene_id='ENSMUSG001', gene_name='Piezo1', cell_type='type2x',
+        data_granularity='pseudobulk',
         gene_chr='8', gene_tss_mb=100.0,
         peak_locus='UNC2373664', peak_chr='8', peak_pos_mb=101.5,
         lod=21.3, lod_threshold=7.5, p_value=1e-6, q_value=0.01,
@@ -83,14 +85,15 @@ class TestFounderEffect:
 
 
 class TestVQTLResult:
-    def _make(self):
+    def _make(self, cell_type='type2x', granularity='pseudobulk'):
         return VQTLResult(
             scan_result=_scan_result(),
             mean_scan_result=_scan_result(),
             phi_estimates=np.ones(10),
             phi_method='moments',
             gene_id='ENSMUSG001',
-            cell_type='type2x',
+            cell_type=cell_type,
+            data_granularity=granularity,
             model='nb-glmm',
             n_samples=418,
         )
@@ -114,6 +117,16 @@ class TestVQTLResult:
         vr = self._make()
         assert vr.model == 'nb-glmm'
         assert vr.n_samples == 418
+
+    def test_bulk_cell_type_none(self):
+        vr = self._make(cell_type=None, granularity='bulk')
+        assert vr.cell_type is None
+        assert vr.data_granularity == 'bulk'
+
+    def test_pseudobulk_has_cell_type(self):
+        vr = self._make()
+        assert vr.cell_type == 'type2x'
+        assert vr.data_granularity == 'pseudobulk'
 
     def test_slots_no_dict(self):
         assert not hasattr(self._make(), '__dict__')
@@ -153,6 +166,22 @@ class TestQTLResult:
 
     def test_n_loci_tested_present(self):
         assert _qtl_result(n_loci_tested=5000).n_loci_tested == 5000
+
+    def test_n_perms_present(self):
+        assert _qtl_result(n_perms=5000).n_perms == 5000
+
+    def test_model_field(self):
+        assert _qtl_result(model='lmm').model == 'lmm'
+
+    def test_bulk_cell_type_none(self):
+        r = _qtl_result(cell_type=None, data_granularity='bulk')
+        assert r.cell_type is None
+        assert r.data_granularity == 'bulk'
+
+    def test_pseudobulk_has_cell_type(self):
+        r = _qtl_result()
+        assert r.cell_type == 'type2x'
+        assert r.data_granularity == 'pseudobulk'
 
     def test_provenance_attached(self):
         r = _qtl_result()
