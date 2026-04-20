@@ -17,7 +17,11 @@ build/
 .ipynb_checkpoints/
 
 # os
-.DS_Store Thumbs.db
+**/.DS_Store
+Thumbs.db
+
+# local claude skills — private, never committed
+.claude/skills/
 
 # validation outputs — regenerated at runtime; .gitkeep preserves dirs
 validation/phase2/r_data/*
