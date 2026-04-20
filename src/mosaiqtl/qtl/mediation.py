@@ -98,7 +98,7 @@ def mediation_scan_qr(outcome, mediator, genomecache,
     """
     from . import kinship as kin_module
     from . import lmm as lmm_module
-    from .utils import rint as _rint
+    from ..utils import rint as _rint
 
     if kinship_decomp is None:
         kd = kin_module.calc_kinship(genomecache, method='loco')
@@ -191,7 +191,7 @@ def fixef_mediation_scan(outcome, mediator, genomecache,
 
     returns pd.DataFrame with same columns as mediation_scan_qr().
     """
-    from .utils import rint as _rint
+    from ..utils import rint as _rint
 
     valid  = (~np.isnan(outcome)) & (~np.isnan(mediator))
     y      = outcome[valid].copy()

@@ -1,10 +1,10 @@
-# tests/test_lmm.py — unit tests for mosaiqtl.lmm
+# tests/test_lmm.py — unit tests for mosaiqtl.qtl.lmm
 import numpy as np
 import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from mosaiqtl.lmm import fit_lmm_at_locus, estimate_h2_null
+from mosaiqtl.qtl.lmm import fit_lmm_at_locus, estimate_h2_null
 
 class TestLODFormula:
     '''LOD = (n/2) * log10(RSS0/RSS1). ML denominator n, not n-p.'''

@@ -27,7 +27,7 @@ import pandas as pd
 import logging
 from . import nb as nb_module
 from . import scan as scan_module
-from .utils import rint
+from ..utils import rint
 
 logger = logging.getLogger('mosaiqtl')
 
@@ -206,7 +206,7 @@ def scan_vqtl(counts, subject_ids, genomecache,
     )
 
     # align subjects with genome cache
-    from .utils import align_samples
+    from ..utils import align_samples
     idx_phi, idx_gc, shared = align_samples(
         subjects, genomecache.sample_ids
     )

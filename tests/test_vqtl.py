@@ -4,8 +4,8 @@ import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from mosaiqtl.scan import ScanResult
-from mosaiqtl.vqtl import VQTLResult, compare_mean_vs_dispersion
+from mosaiqtl.qtl.scan import ScanResult
+from mosaiqtl.qtl.vqtl import VQTLResult, compare_mean_vs_dispersion
 
 
 def _make_scan(peak_lod, peak_chr='1', peak_pos=50.0, n=20):

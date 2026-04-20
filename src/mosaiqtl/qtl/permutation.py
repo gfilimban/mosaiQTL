@@ -101,7 +101,7 @@ def run_threshold_scans(null_outcomes, genomecache,
     """
     from . import kinship as kin_module
     from . import lmm as lmm_module
-    from .utils import rint as _rint
+    from ..utils import rint as _rint
 
     # build kinship decomp if not supplied
     if kinship_decomp is None:
@@ -242,7 +242,7 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
     """
     from . import kinship as kin_module
     from . import lmm as lmm_module
-    from .utils import rint as _rint
+    from ..utils import rint as _rint
 
     if kinship_decomp is None:
         kd = kin_module.calc_kinship(genomecache, method='loco')

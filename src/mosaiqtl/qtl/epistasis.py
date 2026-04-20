@@ -65,7 +65,7 @@ def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
     """
     from . import kinship as kin_module
     from . import lmm as lmm_module
-    from .utils import rint as _rint
+    from ..utils import rint as _rint
 
     if kinship_decomp is None:
         kd = kin_module.calc_kinship(genomecache, method='loco')
@@ -252,7 +252,7 @@ def scan_conditional(scan_result, genomecache, covariates=None,
     """
     from . import kinship as kin_module
     from . import lmm as lmm_module
-    from .utils import rint as _rint
+    from ..utils import rint as _rint
     from .scan import ScanResult, scan_h2lmm
 
     if not len(scan_result.lod):
@@ -333,7 +333,7 @@ def scan_conditional_with_y(phenotype, scan_result, genomecache,
     """
     from . import kinship as kin_module
     from . import lmm as lmm_module
-    from .utils import rint as _rint
+    from ..utils import rint as _rint
     from .scan import scan_h2lmm
 
     if kinship_decomp is None:

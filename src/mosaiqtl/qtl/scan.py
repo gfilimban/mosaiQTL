@@ -20,9 +20,9 @@ import numpy as np
 import pandas as pd
 import logging
 
-from . import kinship as kin_module
+from ..genotype import kinship as kin_module
 from . import lmm as lmm_module
-from .utils import rint, build_z_matrix, expand_kinship, expand_probs
+from ..utils import rint, build_z_matrix, expand_kinship, expand_probs
 
 logger = logging.getLogger('mosaiqtl')
 
@@ -477,7 +477,7 @@ def scan_h2lmm_mi(phenotype, genomecache, covariates=None,
     valid_mi = ~np.isnan(phenotype)
     y_base   = phenotype[valid_mi].copy()
     if use_rint:
-        from .utils import rint as _rint_mi
+        from ..utils import rint as _rint_mi
         y_base = _rint_mi(y_base)
     x_base = (covariates[valid_mi].copy() if covariates is not None
               else np.ones((valid_mi.sum(), 1), dtype=float))

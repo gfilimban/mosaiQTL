@@ -4,7 +4,7 @@ import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from mosaiqtl.nb import (_pql_tau_reml_wb as _pql_tau_reml,
+from mosaiqtl.qtl.nb import (_pql_tau_reml_wb as _pql_tau_reml,
                           fit_null_nb_glmm_loco, _score_stats_loco,
                           _wb, fit_null_sc_native)
 
@@ -78,7 +78,7 @@ class TestFitNullNbGlmmLoco:
         assert np.allclose(fit_x['r_adj'], 0, atol=1e-4)
 
     def test_p_uses_kinship_structure(self):
-        from mosaiqtl.nb import _build_M
+        from mosaiqtl.qtl.nb import _build_M
         rng = np.random.default_rng(7); n=20; m=5
         K  = np.eye(m)*0.5 + rng.random((m,m))*0.2
         K  = (K+K.T)/2; np.fill_diagonal(K, np.diag(K)+0.5); K/=np.trace(K)/m
@@ -137,7 +137,7 @@ class TestWoodbuyExactness:
         return K, Z, W, tau
 
     def test_vinv_vec(self):
-        from mosaiqtl.nb import _wb, _build_M
+        from mosaiqtl.qtl.nb import _wb, _build_M
         K, Z, W, tau = self._setup()
         M     = _build_M(K, tau, W, Z)
         M_inv = np.linalg.inv(M)
@@ -153,7 +153,7 @@ class TestWoodbuyExactness:
         """r_adj = P z; using X as z should give ≈ 0 (P X = 0)."""
         K, Z, W, tau = self._setup()
         n, m = Z.shape
-        from mosaiqtl.nb import fit_null_nb_glmm_loco
+        from mosaiqtl.qtl.nb import fit_null_nb_glmm_loco
         S  = np.random.default_rng(3).negative_binomial(5, 0.5, n).astype(float) + 1
         x  = np.column_stack([np.ones(n), np.random.default_rng(4).standard_normal(n)])
         # phenotype = linear combination of covariates → P annihilates it
@@ -164,7 +164,7 @@ class TestWoodbuyExactness:
 
     def test_lod_scores_match_explicit(self):
         """LOD from Woodbury score test matches explicit P at small n."""
-        from mosaiqtl.nb import fit_null_nb_glmm_loco, _score_stats_loco
+        from mosaiqtl.qtl.nb import fit_null_nb_glmm_loco, _score_stats_loco
         K, Z, W, tau = self._setup(n=12, m=4)
         n, m = Z.shape; nf1 = 7; L = 20
         rng  = np.random.default_rng(5)

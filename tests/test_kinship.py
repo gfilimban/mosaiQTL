@@ -1,11 +1,11 @@
-# tests/test_kinship.py — unit tests for mosaiqtl.kinship
+# tests/test_kinship.py — unit tests for mosaiqtl.genotype.kinship
 import numpy as np
 import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from mosaiqtl.genomecache import GenomeCache
-from mosaiqtl.kinship import calc_kinship, decomp_kinship
+from mosaiqtl.genotype.genomecache import GenomeCache
+from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 
 
 def _make_cache(n_samples=20, n_loci=10, n_founders=8, chroms=('1', '2', '3')):

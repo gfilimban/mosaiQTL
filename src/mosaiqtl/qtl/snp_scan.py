@@ -53,7 +53,7 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
     from . import scan as scan_module
     from . import kinship as kin_module
     from . import lmm as lmm_module
-    from .utils import rint as _rint
+    from ..utils import rint as _rint
 
     if kinship_decomp is None:
         kd = kin_module.calc_kinship(genomecache, method='loco')

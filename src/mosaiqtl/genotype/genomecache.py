@@ -294,7 +294,7 @@ class GenomeCache:
         """
         import glob
         import pandas as pd
-        from mosaiqtl.hmm import calc_genoprob_cc
+        from .hmm import calc_genoprob_cc
 
         logger.info('building genome cache from raw GigaMUGA (no R)...')
 
@@ -1181,7 +1181,7 @@ def build(args=None):
                           os.path.join(args.out_dir, 'probs_f1.h5'))
 
     # ── compute and save LOCO kinship ─────────────────────────────────────────
-    from mosaiqtl.kinship import calc_kinship
+    from .kinship import calc_kinship
     logger.info('computing LOCO kinship...')
     kinship_loco = calc_kinship(cache, method='loco')
     _save_kinship(kinship_loco, cache.sample_ids,

@@ -34,9 +34,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .scan import scan_h2lmm, scan_multi_gene, ScanResult
-from .nb   import scan_nb
-from . import kinship as kin_module
+from .qtl.scan import scan_h2lmm, scan_multi_gene, ScanResult
+from .qtl.nb   import scan_nb
+from .genotype import kinship as kin_module
 
 logger = logging.getLogger('mosaiqtl')
 

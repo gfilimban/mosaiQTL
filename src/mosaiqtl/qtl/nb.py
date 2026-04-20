@@ -656,7 +656,7 @@ def scan_nb_gene(counts_pb, genomecache, strain_order,
     """
     import edgepython as ep
     from .scan import ScanResult
-    from .utils import build_z_matrix
+    from ..utils import build_z_matrix
 
     phi  = max(float(phi), 1e-6)
     y    = np.asarray(counts_pb, dtype=np.float64)

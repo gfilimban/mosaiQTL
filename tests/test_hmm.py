@@ -1,10 +1,10 @@
-# tests/test_hmm.py — unit tests for mosaiqtl.hmm (pure-math functions only)
+# tests/test_hmm.py — unit tests for mosaiqtl.genotype.hmm (pure-math functions only)
 import numpy as np
 import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from mosaiqtl.hmm import (build_diplotype_states, diplotype_to_allele_probs,
+from mosaiqtl.genotype.hmm import (build_diplotype_states, diplotype_to_allele_probs,
                             haldane_recomb, transition_matrix, uniform_init)
 
 
