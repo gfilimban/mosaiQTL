@@ -7,11 +7,14 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
-from mosaiqtl.models.records import FounderEffect, QTLResult, ScanResult, VQTLResult
+from mosaiqtl.models.records import (
+    FounderEffect, ProvenanceRecord, QTLResult, ScanResult, VQTLResult,
+)
 
 
-def _scan_result(chr='1'):
+def _scan_result(chr='1', gene_id='ENSMUSG001'):
     return ScanResult(
+        gene_id=gene_id,
         lod=np.zeros(5),
         loci=['L0', 'L1', 'L2', 'L3', 'L4'],
         pos_mb=np.linspace(1.0, 5.0, 5),
@@ -20,7 +23,18 @@ def _scan_result(chr='1'):
 
 
 def _founder_effect(founder='AJ'):
-    return FounderEffect(founder=founder, estimate=0.5, se=0.1, ci_lo=0.3, ci_hi=0.7)
+    return FounderEffect(
+        founder=founder, estimate=0.5, se=0.1,
+        z_score=5.0, p_value=1e-6, ci_lo=0.3, ci_hi=0.7,
+    )
+
+
+def _provenance():
+    return ProvenanceRecord(
+        git_hash='abc1234', seed=42, model='nb-glmm',
+        scan_window='cis', cis_window_mb=1.0, n_perms=1000,
+        timestamp='2026-04-19T22:00:00',
+    )
 
 
 def _qtl_result(**kwargs):
@@ -29,78 +43,96 @@ def _qtl_result(**kwargs):
         gene_chr='8', gene_tss_mb=100.0,
         peak_locus='UNC2373664', peak_chr='8', peak_pos_mb=101.5,
         lod=21.3, lod_threshold=7.5, p_value=1e-6, q_value=0.01,
-        n_perms=1000, locus_type='cis', distance_to_tss_mb=1.5,
-        cis_window_mb=1.0, founder_effects={'AJ': _founder_effect()},
+        n_loci_tested=3200, n_perms=1000,
+        locus_type='cis', distance_to_tss_mb=1.5, cis_window_mb=1.0,
+        founder_effects={'AJ': _founder_effect()},
         variance_explained=0.42, model='nb-glmm', n_samples=418,
+        provenance=_provenance(),
     )
     defaults.update(kwargs)
     return QTLResult(**defaults)
 
 
 class TestScanResult:
+    def test_gene_id_present(self):
+        r = _scan_result(gene_id='ENSMUSG001')
+        assert r.gene_id == 'ENSMUSG001'
+
     def test_chr_is_str(self):
-        r = _scan_result(chr='1')
-        assert isinstance(r.chr, str)
+        assert isinstance(_scan_result(chr='1').chr, str)
 
     def test_slots_no_dict(self):
-        r = _scan_result()
-        assert not hasattr(r, '__dict__')
+        assert not hasattr(_scan_result(), '__dict__')
 
     def test_lod_shape(self):
-        r = _scan_result()
-        assert r.lod.shape == (5,)
+        assert _scan_result().lod.shape == (5,)
 
 
 class TestFounderEffect:
-    def test_slots_no_dict(self):
+    def test_z_score_and_pvalue_present(self):
         fe = _founder_effect()
-        assert not hasattr(fe, '__dict__')
+        assert fe.z_score == pytest.approx(5.0)
+        assert fe.p_value == pytest.approx(1e-6)
 
     def test_ci_ordered(self):
         fe = _founder_effect()
         assert fe.ci_lo < fe.ci_hi
 
+    def test_slots_no_dict(self):
+        assert not hasattr(_founder_effect(), '__dict__')
+
 
 class TestVQTLResult:
-    def test_field_names_accessible(self):
-        vr = VQTLResult(
+    def _make(self):
+        return VQTLResult(
             scan_result=_scan_result(),
             mean_scan_result=_scan_result(),
             phi_estimates=np.ones(10),
             phi_method='moments',
             gene_id='ENSMUSG001',
+            cell_type='type2x',
+            model='nb-glmm',
+            n_samples=418,
         )
+
+    def test_field_names_accessible(self):
+        vr = self._make()
         assert vr.scan_result is not None
         assert vr.mean_scan_result is not None
 
     def test_wrong_field_raises(self):
-        vr = VQTLResult(
-            scan_result=_scan_result(),
-            mean_scan_result=_scan_result(),
-            phi_estimates=np.ones(10),
-            phi_method='moments',
-            gene_id='ENSMUSG001',
-        )
+        vr = self._make()
         with pytest.raises(AttributeError):
             _ = vr.vqtl_scan
         with pytest.raises(AttributeError):
             _ = vr.mean_scan
 
+    def test_cell_type_present(self):
+        assert self._make().cell_type == 'type2x'
+
+    def test_provenance_fields_present(self):
+        vr = self._make()
+        assert vr.model == 'nb-glmm'
+        assert vr.n_samples == 418
+
     def test_slots_no_dict(self):
-        vr = VQTLResult(
-            scan_result=_scan_result(),
-            mean_scan_result=_scan_result(),
-            phi_estimates=np.ones(10),
-            phi_method='moments',
-            gene_id='ENSMUSG001',
-        )
-        assert not hasattr(vr, '__dict__')
+        assert not hasattr(self._make(), '__dict__')
+
+
+class TestProvenanceRecord:
+    def test_slots_no_dict(self):
+        assert not hasattr(_provenance(), '__dict__')
+
+    def test_fields(self):
+        p = _provenance()
+        assert p.git_hash == 'abc1234'
+        assert p.seed == 42
+        assert p.scan_window == 'cis'
 
 
 class TestQTLResult:
     def test_peak_locus_present(self):
-        r = _qtl_result()
-        assert r.peak_locus == 'UNC2373664'
+        assert _qtl_result().peak_locus == 'UNC2373664'
 
     def test_gene_chr_and_peak_chr_separate(self):
         r = _qtl_result(gene_chr='8', peak_chr='4', locus_type='trans',
@@ -117,17 +149,15 @@ class TestQTLResult:
 
     def test_locus_type_values(self):
         for lt in ('cis', 'local', 'trans'):
-            r = _qtl_result(locus_type=lt)
-            assert r.locus_type == lt
+            assert _qtl_result(locus_type=lt).locus_type == lt
+
+    def test_n_loci_tested_present(self):
+        assert _qtl_result(n_loci_tested=5000).n_loci_tested == 5000
+
+    def test_provenance_attached(self):
+        r = _qtl_result()
+        assert isinstance(r.provenance, ProvenanceRecord)
+        assert r.provenance.git_hash == 'abc1234'
 
     def test_slots_no_dict(self):
-        r = _qtl_result()
-        assert not hasattr(r, '__dict__')
-
-    def test_n_perms_present(self):
-        r = _qtl_result(n_perms=5000)
-        assert r.n_perms == 5000
-
-    def test_model_field(self):
-        r = _qtl_result(model='lmm')
-        assert r.model == 'lmm'
+        assert not hasattr(_qtl_result(), '__dict__')

@@ -5,12 +5,14 @@ all dataclasses use __slots__ for memory efficiency.
 field naming rules:
   VQTLResult.scan_result      — dispersion scan  (NOT .vqtl_scan)
   VQTLResult.mean_scan_result — mean eQTL        (NOT .mean_scan)
-  ScanResult.chr / QTLResult.chr — always str, never int
+  ScanResult.chr / QTLResult.gene_chr / QTLResult.peak_chr — always str, never int
 
 locus classification:
   'cis'   — peak within cis_window_mb of gene TSS (same chr)
   'local' — same chromosome, outside cis window
   'trans' — different chromosome from gene
+
+provenance: wrap results with ProvenanceRecord at serialization time (DESIGN-06).
 """
 
 from __future__ import annotations
@@ -23,10 +25,12 @@ import numpy as np
 
 @dataclass(slots=True)
 class ScanResult:
-    """per-gene genome-wide scan output.
+    """single-chromosome scan output for one gene.
 
     attributes
     ----------
+    gene_id : str
+        gene identifier — required for standalone serialization
     lod : np.ndarray
         LOD scores, shape (n_loci,)
     loci : list[str]
@@ -37,10 +41,11 @@ class ScanResult:
         chromosome identifier — always str, never int
     """
 
-    lod:    np.ndarray
-    loci:   list[str]
-    pos_mb: np.ndarray
-    chr:    str
+    gene_id: str
+    lod:     np.ndarray
+    loci:    list[str]
+    pos_mb:  np.ndarray
+    chr:     str
 
 
 @dataclass(slots=True)
@@ -55,6 +60,10 @@ class FounderEffect:
         effect size (log-scale for NB, linear for LMM)
     se : float
         standard error of estimate
+    z_score : float
+        Wald z-statistic (estimate / se)
+    p_value : float
+        two-sided Wald p-value for this founder's effect
     ci_lo : float
         lower bound of 95% confidence interval
     ci_hi : float
@@ -64,6 +73,8 @@ class FounderEffect:
     founder:  str
     estimate: float
     se:       float
+    z_score:  float
+    p_value:  float
     ci_lo:    float
     ci_hi:    float
 
@@ -83,7 +94,11 @@ class VQTLResult:
     phi_method : str
         dispersion estimation method: 'moments' or 'mle'
     gene_id : str
-        gene identifier
+    cell_type : str
+    model : str
+        scan model used: 'nb-glmm' or 'lmm'
+    n_samples : int
+        number of samples used in the scan
     """
 
     scan_result:      ScanResult
@@ -91,6 +106,42 @@ class VQTLResult:
     phi_estimates:    np.ndarray
     phi_method:       str
     gene_id:          str
+    cell_type:        str
+    model:            str
+    n_samples:        int
+
+
+@dataclass(slots=True)
+class ProvenanceRecord:
+    """scan provenance for DESIGN-06 reproducibility requirement.
+
+    attach to any serialized result to enable exact reproduction.
+
+    attributes
+    ----------
+    git_hash : str
+        repository commit hash at scan time
+    seed : int
+        random seed used for permutations
+    model : str
+        scan model: 'nb-glmm' or 'lmm'
+    scan_window : str
+        window scanned: 'cis', 'chr', or 'genome'
+    cis_window_mb : float
+        cis window half-width in Mb
+    n_perms : int
+        number of permutations run
+    timestamp : str
+        ISO-8601 timestamp of scan completion
+    """
+
+    git_hash:      str
+    seed:          int
+    model:         str
+    scan_window:   str
+    cis_window_mb: float
+    n_perms:       int
+    timestamp:     str
 
 
 @dataclass(slots=True)
@@ -103,7 +154,7 @@ class QTLResult:
     gene_name : str
     cell_type : str
     gene_chr : str
-        chromosome where the gene TSS is located — always str, never int
+        chromosome of gene TSS — always str, never int
     gene_tss_mb : float
         gene TSS position in Mb
     peak_locus : str
@@ -119,6 +170,8 @@ class QTLResult:
     p_value : float
     q_value : float
         BH-FDR corrected q-value
+    n_loci_tested : int
+        number of loci scanned; context for multiple testing correction
     n_perms : int
         number of permutations used to derive lod_threshold
     locus_type : Literal['cis', 'local', 'trans']
@@ -138,6 +191,8 @@ class QTLResult:
         scan model used: 'nb-glmm' or 'lmm'
     n_samples : int
         number of samples used in the scan
+    provenance : ProvenanceRecord
+        git hash, seed, and scan parameters for reproducibility
     """
 
     gene_id:            str
@@ -152,6 +207,7 @@ class QTLResult:
     lod_threshold:      float
     p_value:            float
     q_value:            float
+    n_loci_tested:      int
     n_perms:            int
     locus_type:         Literal['cis', 'local', 'trans']
     distance_to_tss_mb: float
@@ -160,3 +216,4 @@ class QTLResult:
     variance_explained: float
     model:              str
     n_samples:          int
+    provenance:         ProvenanceRecord
