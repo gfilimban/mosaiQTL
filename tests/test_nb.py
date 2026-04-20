@@ -1,12 +1,11 @@
 # tests/test_nb.py — unit tests for NB-GLMM PQL LOCO kinship
 import numpy as np
-import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from mosaiqtl.qtl.nb import (_pql_tau_reml_wb as _pql_tau_reml,
-                          fit_null_nb_glmm_loco, _score_stats_loco,
-                          _wb, fit_null_sc_native)
+                             fit_null_nb_glmm_loco, _score_stats_loco,
+                             fit_null_sc_native)
 
 
 def _make_data(n=24, J=8, seed=0):
@@ -38,15 +37,17 @@ class TestPqlTauReml:
     def test_tau_increases_with_kinship_signal(self):
         rng  = np.random.default_rng(1)
         n = 20; m = 5
-        K = np.eye(m) * 0.6 + rng.random((m,m)) * 0.1
-        K = (K+K.T)/2; np.fill_diagonal(K, np.diag(K)+0.3)
-        K /= np.trace(K)/m
-        Z_t = np.zeros((n,m))
-        for i in range(n): Z_t[i,i%m]=1.0
-        x = np.ones((n,1)); W = np.ones(n)
+        K = np.eye(m) * 0.6 + rng.random((m, m)) * 0.1
+        K = (K + K.T) / 2
+        np.fill_diagonal(K, np.diag(K) + 0.3)
+        K /= np.trace(K) / m
+        Z_t = np.zeros((n, m))
+        for i in range(n): Z_t[i, i % m] = 1.0
+        x = np.ones((n, 1))
+        W = np.ones(n)
         K_n = Z_t @ K @ Z_t.T
-        z = rng.multivariate_normal(np.zeros(n), K_n + np.eye(n)*0.5)
-        taus = [_pql_tau_reml(z*s, x, K, Z_t, W) for s in [0.01,1.0,10.0]]
+        z = rng.multivariate_normal(np.zeros(n), K_n + np.eye(n) * 0.5)
+        taus = [_pql_tau_reml(z * s, x, K, Z_t, W) for s in [0.01, 1.0, 10.0]]
         assert taus[1] >= taus[0] or taus[2] >= taus[1], f'taus={taus}'
 
 
@@ -70,21 +71,22 @@ class TestFitNullNbGlmmLoco:
         # P is a V-metric oblique projection: P X = 0 (annihilates covariate space)
         # P^2 = P holds only when V = I; with structured V it is oblique
         K, Z, S, x, off = _make_data()
-        fit = fit_null_nb_glmm_loco(S, x, off, K, Z, phi=0.3)
-        # P is now implicit — verify via Woodbury: P z = V^{-1}z - V^{-1}X(X^TV^{-1}X)^{-1}X^TV^{-1}z
-        # r_adj = P z_null, so P X ≈ 0 means fitting X as 'phenotype' gives r_adj ≈ 0
-        n = len(S)
-        fit_x = fit_null_nb_glmm_loco(x[:,0], x, np.zeros(n), K, Z, phi=0.3)
+        # P implicit via Woodbury: P z = V^{-1}z - V^{-1}X(X^TV^{-1}X)^{-1}X^TV^{-1}z
+        # r_adj = P z_null; P X ≈ 0 means fitting X as phenotype gives r_adj ≈ 0
+        fit_x = fit_null_nb_glmm_loco(x[:, 0], x, np.zeros(len(S)), K, Z, phi=0.3)
         assert np.allclose(fit_x['r_adj'], 0, atol=1e-4)
 
     def test_p_uses_kinship_structure(self):
         from mosaiqtl.qtl.nb import _build_M
-        rng = np.random.default_rng(7); n=20; m=5
-        K  = np.eye(m)*0.5 + rng.random((m,m))*0.2
-        K  = (K+K.T)/2; np.fill_diagonal(K, np.diag(K)+0.5); K/=np.trace(K)/m
-        Z_t= np.zeros((n,m))
-        for i in range(n): Z_t[i,i%m]=1.0
-        W  = np.ones(n)*2.0
+        rng = np.random.default_rng(7)
+        n, m = 20, 5
+        K = np.eye(m) * 0.5 + rng.random((m, m)) * 0.2
+        K = (K + K.T) / 2
+        np.fill_diagonal(K, np.diag(K) + 0.5)
+        K /= np.trace(K) / m
+        Z_t = np.zeros((n, m))
+        for i in range(n): Z_t[i, i % m] = 1.0
+        W = np.ones(n) * 2.0
         Mi_s = np.linalg.inv(_build_M(K, 1e-6, W, Z_t))
         Mi_l = np.linalg.inv(_build_M(K, 5.0,  W, Z_t))
         assert not np.allclose(Mi_s, Mi_l, atol=1e-4)
@@ -113,14 +115,15 @@ class TestScoreStatsLoco:
 
     def test_signal_detected(self):
         K, Z, S, x, off = _make_data(n=24, seed=5)
-        n=len(S); nf1=7
+        n, nf1 = len(S), 7
         fit = fit_null_nb_glmm_loco(S, x, off, K, Z, phi=0.2)
         r  = fit['r_adj']
-        H1 = np.zeros((1,n,nf1)); H1[0,:,0] = r/(np.abs(r).max()+1e-8)
-        H0 = np.random.default_rng(5).standard_normal((1,n,nf1))*0.01
-        kw = dict(W=fit['W'],Z=fit['Z'],M_inv=fit['M_inv'],
-                  VinvX=fit['VinvX'],XtVinvX_inv=fit['XtVinvX_inv'])
-        assert _score_stats_loco(H1,r,**kw)[0] > _score_stats_loco(H0,r,**kw)[0]
+        H1 = np.zeros((1, n, nf1))
+        H1[0, :, 0] = r / (np.abs(r).max() + 1e-8)
+        H0 = np.random.default_rng(5).standard_normal((1, n, nf1)) * 0.01
+        kw = dict(W=fit['W'], Z=fit['Z'], M_inv=fit['M_inv'],
+                  VinvX=fit['VinvX'], XtVinvX_inv=fit['XtVinvX_inv'])
+        assert _score_stats_loco(H1, r, **kw)[0] > _score_stats_loco(H0, r, **kw)[0]
 
 
 class TestWoodbuyExactness:
@@ -154,7 +157,6 @@ class TestWoodbuyExactness:
         K, Z, W, tau = self._setup()
         n, m = Z.shape
         from mosaiqtl.qtl.nb import fit_null_nb_glmm_loco
-        S  = np.random.default_rng(3).negative_binomial(5, 0.5, n).astype(float) + 1
         x  = np.column_stack([np.ones(n), np.random.default_rng(4).standard_normal(n)])
         # phenotype = linear combination of covariates → P annihilates it
         pheno_in_col_x = x @ np.array([2.0, -1.0])  # in column space of X
@@ -183,9 +185,9 @@ class TestWoodbuyExactness:
         P    = Vi - ViX @ np.linalg.solve(x.T @ ViX, ViX.T)
         r_ex = P @ ((np.log(fit['mu']) - off) + (S - fit['mu'])/fit['mu'])
         PH   = np.einsum('mn,lnj->lmj', P, H, optimize=True)
-        I_ex = np.einsum('lnj,lnk->ljk', H, PH, optimize=True) + np.eye(nf1)[None]*1e-10
-        sc_ex= np.array([max(float(r_ex @ H[l] @ np.linalg.solve(I_ex[l], H[l].T @ r_ex)), 0)
-                         for l in range(L)])
+        I_ex = np.einsum('lnj,lnk->ljk', H, PH, optimize=True) + np.eye(nf1)[None] * 1e-10
+        sc_ex = np.array([max(float(r_ex @ H[li] @ np.linalg.solve(I_ex[li], H[li].T @ r_ex)), 0)
+                          for li in range(L)])
         assert np.allclose(sc_wb, sc_ex, atol=1e-6), f'max diff: {np.abs(sc_wb-sc_ex).max()}'
 
 

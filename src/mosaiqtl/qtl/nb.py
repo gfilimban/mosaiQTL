@@ -51,11 +51,11 @@ from scipy.linalg import cho_factor as _cho_fac, cho_solve as _cho_sv
 logger = logging.getLogger('mosaiqtl')
 
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # native NEBULA-LN implementation (no edgepython needed)
 # design follows He et al. 2021 (NEBULA-LN); Pachter 2026 edgePython (reference).
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _tmm_offsets(counts_mat, lib_sizes=None):
     """Log library size offsets (simple: log total counts per sample).
@@ -74,7 +74,6 @@ def _irls_nb_pseudobulk(S, x, phi_size, offsets, max_iter=25, tol=1e-7):
     phi_size  : NB size parameter r (= 1/sigma2 for subject-level NB)
     returns mu (n,), beta (p,)
     """
-    n = len(S)
     eta = offsets.copy()                       # init: mu = exp(offset)
     mu  = np.exp(eta)
     for _ in range(max_iter):
@@ -137,7 +136,6 @@ def _wleb_shrink(phi_hat, mean_expr, df_prior=10.0):
         return phi_hat.copy()
     # trended prior: lowess on log(phi) ~ log(mean)
     log_m = np.log(mean_expr[ok] + 1e-8)
-    log_p = np.log(phi_hat[ok] + 1e-8)
     # simple: smooth via binned mean (robust to outliers)
     n_bins = min(10, ok.sum() // 5)
     bins   = np.percentile(log_m, np.linspace(0, 100, n_bins+1))
@@ -149,7 +147,8 @@ def _wleb_shrink(phi_hat, mean_expr, df_prior=10.0):
             subset  = bin_idx[(log_m[bin_idx] >= bins[b]) & (log_m[bin_idx] <= bins[b+1])]
             prior_b = float(np.median(phi_hat[subset]))
             # assign prior to all genes in this expression range
-            full_mask = (np.log(mean_expr + 1e-8) >= bins[b]) & (np.log(mean_expr + 1e-8) <= bins[b+1])
+            log_expr  = np.log(mean_expr + 1e-8)
+            full_mask = (log_expr >= bins[b]) & (log_expr <= bins[b+1])
             prior[full_mask] = prior_b
     # posterior: (df_prior * prior + df_gene * phi) / (df_prior + df_gene)
     # df_gene = 1 (single per-gene estimate), df_prior as specified
@@ -261,6 +260,7 @@ def fit_null_sc_native(counts_cells, sample_ids, covariates_cells=None,
 # stage 1 helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def fit_null_sc(counts_cells, strain_ids, covariates_cells=None,
                 norm_method='TMM', shrink=True, verbose=False,
                 use_native=True):
@@ -366,6 +366,7 @@ def pseudobulk_sum(counts_cells, strain_ids, gene_mask=None):
 # stage 2 — genome-wide score test
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _nb_loglik(y, mu, phi):
     """NB log-likelihood summed over samples."""
     r  = 1.0 / max(phi, 1e-12)
@@ -375,12 +376,11 @@ def _nb_loglik(y, mu, phi):
                   + y * np.log(mu / (r + mu))).sum())
 
 
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # woodbury helpers — Woodbury identity for V = diag(1/W) + tau * Z K_m Z^T
 # never form K_n = Z K_m Z^T explicitly; all operations stay at (m×m) cost.
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _wb(v, W, Z, M_inv):
     """V^{-1} v via Woodbury.  V = diag(1/W) + tau*Z K Z^T.
@@ -389,10 +389,12 @@ def _wb(v, W, Z, M_inv):
     Dv = W * v                                    # D^{-1}v = W*v
     return Dv - W * (Z @ (M_inv @ (Z.T @ Dv)))   # (n,)
 
+
 def _wb_mat(A, W, Z, M_inv):
     """V^{-1} A via Woodbury.  A: (n, k)."""
     DA = W[:, None] * A
     return DA - W[:, None] * (Z @ (M_inv @ (Z.T @ DA)))   # (n, k)
+
 
 def _wb_batch(H_all, W, Z, M_inv):
     """V^{-1} H_all via Woodbury.  H_all: (L, n, J-1) — all loci at once.
@@ -402,9 +404,11 @@ def _wb_batch(H_all, W, Z, M_inv):
     MiZtDH = np.einsum('mk,lkj->lmj', M_inv, ZtDH, optimize=True)     # (L, m, J-1)
     return DH - W[None, :, None] * np.einsum('nm,lmj->lnj', Z, MiZtDH, optimize=True)
 
+
 def _build_M(K_m, tau, W, Z):
     """Build M = K^{-1}/tau + Z^T diag(W) Z  (m×m) for Woodbury."""
     return np.linalg.inv(K_m) / tau + Z.T @ (W[:, None] * Z)
+
 
 def _pql_tau_reml_wb(z, x, K_m, Z, W, tau_init=0.1):
     """REML for tau via Woodbury identity (replaces _pql_tau_reml).
@@ -505,7 +509,6 @@ def fit_null_nb_glmm_loco(S, x, offsets, K_m, Z, phi, max_iter=5, tol=1e-4):
     returns dict with keys: mu, tau, W, M_inv, Z, VinvX, XtVinvX_inv, r_adj
     (P is never stored — applied implicitly via _wb / _wb_batch)
     """
-    n   = len(S)
     phi = max(float(phi), 1e-6)
     mu  = np.maximum(S.astype(np.float64), 0.5)
     tau = 0.1
@@ -587,14 +590,15 @@ def _score_stats_loco(H_all, r_adj, W, Z, M_inv, VinvX, XtVinvX_inv):
     HtVinvX = np.einsum('lnj,np->ljp', H_all, VinvX, optimize=True)   # (L, J-1, p)
     corr    = np.einsum('ljp,pk,lqk->ljq', HtVinvX, XtVinvX_inv, HtVinvX, optimize=True)
 
-    I  = HtVinvH - corr + np.eye(nf1)[None] * 1e-10   # (L, J-1, J-1)
+    info_mat = HtVinvH - corr + np.eye(nf1)[None] * 1e-10   # (L, J-1, J-1)
     sc = np.zeros(L)
-    for l in range(L):
+    for li in range(L):
         try:
-            sc[l] = max(float(U[l] @ np.linalg.solve(I[l], U[l])), 0.0)
+            sc[li] = max(float(U[li] @ np.linalg.solve(info_mat[li], U[li])), 0.0)
         except np.linalg.LinAlgError:
-            sc[l] = 0.0
+            sc[li] = 0.0
     return sc
+
 
 def _score_stats_chromosome(H_all, r_vec, w_vec):
     """vectorised NB score statistics for all loci on one chromosome.
@@ -614,11 +618,11 @@ def _score_stats_chromosome(H_all, r_vec, w_vec):
     info = np.einsum('lnj,lnk->ljk', hw, H_all,      optimize=True)  # (L,J-1,J-1)
     info += np.eye(H_all.shape[2])[None] * 1e-10
     sc   = np.zeros(H_all.shape[0])
-    for l in range(len(sc)):
+    for li in range(len(sc)):
         try:
-            sc[l] = max(float(u[l] @ np.linalg.solve(info[l], u[l])), 0.0)
+            sc[li] = max(float(u[li] @ np.linalg.solve(info[li], u[li])), 0.0)
         except np.linalg.LinAlgError:
-            sc[l] = 0.0
+            sc[li] = 0.0
     return sc
 
 
@@ -732,7 +736,7 @@ def scan_nb_gene(counts_pb, genomecache, strain_order,
             r_adj_chr = r_vec_global
 
         if not use_lrt:
-            if P_chr is not None:
+            if use_kinship and str(chrom) in {str(k) for k in kinship_loco}:
                 sc = _score_stats_loco(H, glmm_fit['r_adj'],
                                         glmm_fit['W'], glmm_fit['Z'],
                                         glmm_fit['M_inv'], glmm_fit['VinvX'],
@@ -881,6 +885,7 @@ def scan_nb(counts_cells, genomecache, strain_ids_cells,
 # internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _fit_nb_ep(dgelist, design, phi, ep):
     """safe glm_fit wrapper returning (mu_hat, coefs, fit)."""
     try:
@@ -901,6 +906,7 @@ def _fit_nb_ep(dgelist, design, phi, ep):
 # ─────────────────────────────────────────────────────────────────────────────
 # legacy exports (kept for vqtl.py compatibility)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def estimate_gene_dispersion(counts, design, lib_sizes=None):
     """estimate per-gene overdispersion via edgepython EB pipeline.

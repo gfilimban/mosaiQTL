@@ -156,7 +156,6 @@ def plot_kinship_heatmap(k_matrix, sample_ids=None, save_path=None):
 
     # annotate structure blocks if sample_ids available
     if sample_ids is not None:
-        n = len(sample_ids)
         # count founders, f1s, cc strains
         n_founders = sum(1 for s in sample_ids if s in FOUNDER_COLORS)
         n_f1 = sum(1 for s in sample_ids if s in F1_COLORS)
@@ -217,8 +216,8 @@ def plot_founder_effects(scan_result, genomecache, peak_chrom=None,
     colors = [FOUNDER_COLORS.get(name, COLOR_CC_FALLBACK) for name in all_names]
 
     fig, ax = plt.subplots(figsize=(8, 4))
-    bars = ax.bar(range(len(all_names)), all_effects, color=colors,
-                  edgecolor='white', linewidth=0.5)
+    ax.bar(range(len(all_names)), all_effects, color=colors,
+           edgecolor='white', linewidth=0.5)
 
     ax.axhline(y=0, color=COLOR_NEUTRAL_DARK, linewidth=0.5)
     ax.set_xticks(range(len(all_names)))
@@ -258,7 +257,6 @@ def plot_pvalue_qq(scan_result, save_path=None):
             color=_COLOR_R, linewidth=1, label='$y = x$ (null)')
 
     # genomic inflation factor
-    median_chi2 = np.median(observed) / 0.456  # chi2 df=1 median
     lambda_gc = np.median(pvals) / 0.5
     ax.text(0.05, 0.95, f'$\\lambda_{{GC}}$ = {1/lambda_gc:.2f}',
             transform=ax.transAxes, fontsize=10, va='top')

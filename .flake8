@@ -1,0 +1,24 @@
+[flake8]
+max-line-length = 100
+# E221: column-aligned assignments (intentional style)
+# E127: continuation line over-indented (intentional alignment)
+# E128: continuation line under-indented
+# E131: continuation line unaligned for block comment
+# E251: spaces around keyword equals in function args (alignment)
+# E231: missing whitespace after ':' in dicts (alignment)
+# E701: multiple statements on one line (colon) — compact style
+# E702: multiple statements on one line (semicolon) — compact style
+# E402: module-level import not at top — lazy imports for optional deps
+extend-ignore =
+    E221,
+    E127,
+    E128,
+    E131,
+    E251,
+    E231,
+    E701,
+    E702,
+    E402
+per-file-ignores =
+    tests/benchmarks/*.py: E401
+    tests/*.py: E401

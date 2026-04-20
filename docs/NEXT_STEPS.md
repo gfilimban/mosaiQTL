@@ -211,8 +211,6 @@ def build_covariate_matrix(
 ```
 Rules:
 - Categorical columns in user_covariates → one-hot encoded automatically
-- NaN in any covariate column → raise `MissingCovariateError` with informative message
-  listing which samples and which column contain NaN
 - log10(n_cells): computed from `n_cells` column in sample_metadata
 - n_expression_pcs computed from pseudobulk_counts via PCA if provided; if None and
   n_expression_pcs > 0, raise ValueError with clear message

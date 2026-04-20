@@ -108,11 +108,11 @@ def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
     ev  = kinship_decomp[chrom_k]['values']
     evc = kinship_decomp[chrom_k]['vectors'][valid]
 
-    y_rot  = evc.T @ y
-    x_rot  = evc.T @ x
-    ha_rot = evc.T @ ha
-    hb_rot = evc.T @ hb
-    hab_rot= evc.T @ hab
+    y_rot   = evc.T @ y
+    x_rot   = evc.T @ x
+    ha_rot  = evc.T @ ha
+    hb_rot  = evc.T @ hb
+    hab_rot = evc.T @ hab
 
     h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, ev,
                                          method='reml' if use_reml else 'ml')
@@ -251,9 +251,7 @@ def scan_conditional(scan_result, genomecache, covariates=None,
         scan_result[0] is always the original (primary) result
     """
     from . import kinship as kin_module
-    from . import lmm as lmm_module
-    from ..utils import rint as _rint
-    from .scan import ScanResult, scan_h2lmm
+    from .scan import ScanResult
 
     if not len(scan_result.lod):
         return [scan_result]
@@ -395,7 +393,6 @@ def scan_conditional_with_y(phenotype, scan_result, genomecache,
 
 def _wls_lod(y_rot, x_rot, z_rot, eigvals, h2, n):
     """weighted least squares LOD and betas for an arbitrary design matrix z."""
-    from . import lmm as lmm_module
     delta = h2 / max(1 - h2, 1e-10)
     w_inv = 1.0 / (delta * eigvals + 1.0)
     xw    = x_rot * w_inv[:, None]

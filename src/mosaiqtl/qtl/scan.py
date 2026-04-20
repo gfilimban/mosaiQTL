@@ -4,7 +4,8 @@ scan — genome-wide haplotype QTL scan
 orchestrates the scan across chromosomes for a single phenotype,
 combining genome cache, kinship, and the LMM engine.
 
-global design — pheno_id / geno_id split (    pheno_id : identifiers for each row of phenotype data (n)
+global design — pheno_id / geno_id split:
+    pheno_id : identifiers for each row of phenotype data (n)
     geno_id  : identifiers for rows of the genome cache (m ≤ n)
 
 when n > m (replicated CC strains), a Z matrix (n×m) maps each
@@ -22,7 +23,7 @@ import logging
 
 from ..genotype import kinship as kin_module
 from . import lmm as lmm_module
-from ..utils import rint, build_z_matrix, expand_kinship, expand_probs
+from ..utils import rint, build_z_matrix, expand_kinship
 
 logger = logging.getLogger('mosaiqtl')
 
@@ -104,7 +105,7 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
     the Z-matrix expansion. when sample_ids is provided and differs
     from genomecache.sample_ids, Z is built automatically.
 
-    
+
     parameters
     ----------
     phenotype       : np.ndarray (n,)    phenotype values; NaN excluded
@@ -243,6 +244,7 @@ def scan_multi_gene(phenotype_matrix, gene_ids, genomecache,
                 kinship_decomp, sample_ids, use_rint, phenotype_id=gid)
     else:
         from multiprocessing import Pool
+
         def _one(args):
             gi, gid = args
             return gid, scan_h2lmm(
@@ -282,7 +284,7 @@ def fixef_eqtl_scan(phenotype, genomecache, covariates=None,
                     phenotype_id='unknown', just_these_loci=None):
     """fixed-effect eQTL scan — OLS, no kinship.
 
-    
+
     parameters
     ----------
     phenotype       : np.ndarray (n,)
@@ -413,6 +415,7 @@ def instability_lm_scan(phenotype, genomecache, covariates=None,
                 self.chromosomes = cache.chromosomes
                 self.n_founders  = cache.n_founders
                 self.sample_ids  = [cache.sample_ids[i] for i in idx]
+
             def get_chromosome(self, chrom):
                 lids, pos, probs = self._c.get_chromosome(chrom)
                 return lids, pos, probs[:, self._idx, :]
@@ -445,7 +448,7 @@ def scan_h2lmm_mi(phenotype, genomecache, covariates=None,
     """multiple-imputation haplotype scan.
 
     samples n_imp diplotype states per locus and averages LOD scores.
-    
+
     parameters
     ----------
     phenotype      : np.ndarray (n,)

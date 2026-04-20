@@ -1,7 +1,6 @@
 # tests/test_utils_extra.py — tests for expand_kinship, expand_probs, make_design_matrix
 import numpy as np
 import pandas as pd
-import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 

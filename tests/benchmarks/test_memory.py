@@ -130,9 +130,10 @@ class TestCacheMemory:
 
     def test_cache_peak_within_limit(self):
         tracemalloc.start()
-        cache = _make_cache()
+        _cache = _make_cache()  # kept alive during measurement
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
+        del _cache
 
         peak_mb = peak / 1024 ** 2
         assert peak_mb < _CACHE_RAM_LIMIT_MB, (
@@ -155,9 +156,10 @@ class TestKinshipMemory:
 
     def test_kinship_peak_within_limit(self, cache):
         tracemalloc.start()
-        kd_local = calc_kinship(cache, method='loco')
+        _kd_local = calc_kinship(cache, method='loco')  # kept alive during measurement
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
+        del _kd_local
 
         peak_mb = peak / 1024 ** 2
         assert peak_mb < _KINSHIP_RAM_LIMIT_MB, (

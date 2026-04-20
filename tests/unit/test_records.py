@@ -9,7 +9,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
 from mosaiqtl.models.records import (
     FounderEffect, ProvenanceRecord, QTLResult, ScanResult, VQTLResult,
-    DataGranularity,
 )
 
 

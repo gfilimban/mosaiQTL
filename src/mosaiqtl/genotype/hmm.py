@@ -20,13 +20,13 @@
 #   DOQTL: Gatti et al. 2014 — https://doi.org/10.1534/g3.114.013748
 
 import numpy as np
-import pandas as pd
 import logging
 from itertools import combinations_with_replacement
 
 log = logging.getLogger(__name__)
 
 # ── diplotype state index ─────────────────────────────────────────────────────
+
 
 def build_diplotype_states(n_founders=8):
     """build ordered list of unordered diplotype state pairs.

@@ -1,6 +1,5 @@
 # tests/test_utils.py — unit tests for mosaiqtl.utils
 import numpy as np
-import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 

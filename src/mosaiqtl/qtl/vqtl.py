@@ -23,11 +23,9 @@ biological interpretation:
 """
 
 import numpy as np
-import pandas as pd
 import logging
 from . import nb as nb_module
 from . import scan as scan_module
-from ..utils import rint
 
 logger = logging.getLogger('mosaiqtl')
 

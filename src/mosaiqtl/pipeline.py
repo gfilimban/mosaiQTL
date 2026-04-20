@@ -34,8 +34,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .qtl.scan import scan_h2lmm, scan_multi_gene, ScanResult
-from .qtl.nb   import scan_nb
+from .qtl.scan import scan_h2lmm, scan_multi_gene
 from .genotype import kinship as kin_module
 
 logger = logging.getLogger('mosaiqtl')
@@ -159,7 +158,6 @@ def characterize(discovery_result, covariates=None,
     CharacterizationResult
     """
     res = CharacterizationResult(discovery=discovery_result)
-    cache = discovery_result.genomecache
 
     if 'allele_effects' in modules:
         # extract betas at peak locus from each ScanResult;
@@ -180,10 +178,8 @@ def characterize(discovery_result, covariates=None,
         res.vqtl = {}
 
     if 'mediation' in modules:
-        from .mediation import mediation_scan_qr
-        kw = mediation_kwargs or {}
         # mediation requires explicit outcome + mediator pair — skip auto-loop
-        # users should call mediation_scan_qr directly with specific gene pairs
+        # users should call mediation_scan_qr() directly per gene pair
         logger.info('mediation: call mediation_scan_qr() directly per gene pair')
         res.mediation = {}
 
@@ -195,6 +191,7 @@ def characterize(discovery_result, covariates=None,
 # ─────────────────────────────────────────────────────────────────────────────
 
 _LAYER3_MODULES = ('snp_catalogue', 'conditional_scan', 'ase', 'sqtl')
+
 
 def resolve(discovery_result, covariates=None,
             modules=('snp_catalogue', 'conditional_scan'),

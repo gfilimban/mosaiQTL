@@ -9,6 +9,7 @@ from mosaiqtl.models.records import LMMResult
 from mosaiqtl.genotype.genomecache import GenomeCache
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 
+
 class TestLODFormula:
     '''LOD = (n/2) * log10(RSS0/RSS1). ML denominator n, not n-p.'''
     def _setup(self, n=40, J=8, seed=0):
@@ -44,7 +45,7 @@ class TestLODFormula:
     def test_lod_formula_ml_denominator(self):
         '''verify LOD uses n (ML) not n-p (REML).'''
         ev, evc, x, h, rng = self._setup()
-        n = len(ev); p = x.shape[1]
+        n = len(ev)
         y = rng.standard_normal(n)
         h2, _ = estimate_h2_null(evc.T @ y, evc.T @ x, ev)
         res = fit_lmm_at_locus(evc.T @ y, evc.T @ h, evc.T @ x, ev, h2)

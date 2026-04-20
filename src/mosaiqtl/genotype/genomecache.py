@@ -306,7 +306,6 @@ class GenomeCache:
         _x_donor   = {}  # strain_id -> founder_col of x-chr donor (funnel pos 8)
         if crossinfo_path is not None and os.path.exists(crossinfo_path):
             _crossinfo = pd.read_csv(crossinfo_path, index_col=0)
-            _f_codes = list(_crossinfo.columns)  # [A,B,C,D,E,F,G,H]
             for sid, row in _crossinfo.iterrows():
                 # founder with funnel position 8 = last dam = X-chr donor
                 x_donor_code = row[row == 8].index[0]
@@ -315,7 +314,6 @@ class GenomeCache:
                         f'{len(_x_donor)} x-chr donors identified')
         # cc_inbred flag: True for all CC strains (homozygous-only HMM prior);
         # founders and F1s use uniform_init via the deterministic path (no HMM)
-        _cc_set = set(cc_cols)
 
         # ── read GigaMUGA matrix ───────────────────────────────────────────────
         gm_raw = pd.read_csv(gigamuga_path, low_memory=False)
@@ -362,6 +360,7 @@ class GenomeCache:
         gmap_idx    = gmap.set_index('locus')            # index by locus name
         gmap_shared = gmap_idx.loc[list(shared_set)].copy()
         # sort key: integer chrs by value, X=20, others=99
+
         def _chr_key(c):
             s = str(c)
             return int(s) if s.isdigit() else (20 if s == 'X' else 99)
@@ -402,7 +401,6 @@ class GenomeCache:
         pmap_idx = pmap_idx.loc[shared]
         logger.info(f'post-filter markers: {len(shared)}')
 
-
         # chr column already str — build sorted chromosome list
         chrs = sorted(
             [c for c in gmap['chr'].unique() if c not in ('Y', 'M', 'MT', 'nan')],
@@ -440,8 +438,8 @@ class GenomeCache:
             n_m = len(chr_loci)
             MISS_CODES = {'N', '-', 'nan', ''}
 
-            cc_str = geno_cc.astype(str)       # (n_m, n_cc)
-            f_str  = geno_founders.astype(str) # (n_m, J)
+            cc_str = geno_cc.astype(str)        # (n_m, n_cc)
+            f_str  = geno_founders.astype(str)  # (n_m, J)
 
             geno_cc_abh = np.full(cc_str.shape, '-', dtype=object)
             geno_f_abh  = np.full(f_str.shape,  '-', dtype=object)
@@ -472,10 +470,8 @@ class GenomeCache:
                     elif g == a1:          geno_cc_abh[m, si] = 'A'
                     elif g == a2:          geno_cc_abh[m, si] = 'B'
 
-
-
-            n_markers = len(chr_loci)
-            n_48      = len(all_48)
+            n_markers  = len(chr_loci)
+            n_strains  = len(all_48)
             # CC strains: HMM forward-backward on A/H/B encoded calls
             logger.info(f'  chr{chrom}: running CC HMM ({len(cc_cols)} strains, ' +
                         f'{n_markers} markers)...')
@@ -510,7 +506,7 @@ class GenomeCache:
                 aug_pmap_pos  = pmap_pos
                 aug_locus_ids = locus_ids
 
-            probs_chr = np.zeros((n_48, n_founders, n_aug), dtype=np.float64)
+            probs_chr = np.zeros((n_strains, n_founders, n_aug), dtype=np.float64)
 
             for i, col in enumerate(cc_cols):
                 si = all_48.index(col)
@@ -656,12 +652,12 @@ class GenomeCache:
             else:
                 # subset to pmap loci that appear in the prob array
                 locus_set = set(r_loci)
-                mask = np.array([l in locus_set for l in locus_ids])
+                mask = np.array([lid in locus_set for lid in locus_ids])
                 locus_ids = locus_ids[mask]
                 positions = positions[mask]
-                loci_idx  = {l: i for i, l in enumerate(r_loci)}
-                idx       = np.array([loci_idx[l] for l in locus_ids
-                                      if l in loci_idx])
+                loci_idx  = {lid: i for i, lid in enumerate(r_loci)}
+                idx       = np.array([loci_idx[lid] for lid in locus_ids
+                                      if lid in loci_idx])
                 arr = arr[idx]
 
             data[chrom] = {
@@ -800,7 +796,7 @@ class GenomeCache:
 
         merges consecutive loci whose haplotype probability matrices are
         nearly identical, reducing cache size without information loss.
-        
+
         algorithm:
           for each chromosome, scan adjacent locus pairs. if their
           euclidean distance (criterion='euclidean') or most-likely-allele
@@ -810,8 +806,9 @@ class GenomeCache:
 
         parameters
         ----------
-        criterion : str  'l2.norm' (default,         tol : float  merge threshold (euclidean: l2 norm; allele: fraction
-                     of strains with different most-likely allele)
+        criterion : str  'l2.norm' (default) or 'allele'.
+        tol : float  merge threshold (euclidean l2 norm, or fraction of
+                     strains with different most-likely allele).
 
         returns
         -------
@@ -1143,7 +1140,7 @@ def build(args=None):
     logger.info(f'  gigamuga : {args.gigamuga}')
     logger.info(f'  gmap_dir : {args.gmap_dir}')
     logger.info(f'  pmap_dir : {args.pmap_dir}')
-    logger.info(f'  CC strains ({len(cc_cols)}): {cc_cols[:4]}{"..." if len(cc_cols)>4 else ""}')
+    logger.info(f'  CC strains ({len(cc_cols)}): {cc_cols[:4]}{"..." if len(cc_cols) > 4 else ""}')
     logger.info(f'  founders  ({len(founder_cols)}): {founder_cols}')
     logger.info(f'  F1 crosses: {len(f1_crosses)}')
     logger.info(f'  out_dir  : {args.out_dir}')

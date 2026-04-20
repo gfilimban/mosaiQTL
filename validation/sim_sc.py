@@ -74,8 +74,8 @@ def sparc_to_nb_counts(
         subject_ids = f['subject_ids'][:].astype(str)    # (n_strains, n_sim)
         true_loci   = f['true_locus'][:].astype(str)     # (n_sim,)
 
-    y      = sim_y[:, sim_index]                 # (n_strains,)
-    strains = subject_ids[:, sim_index]
+    y          = sim_y[sim_index, :]              # (n_strains,)
+    strains    = subject_ids[sim_index, :]
     true_locus = true_loci[sim_index]
 
     n_strains = len(strains)
@@ -125,10 +125,11 @@ def _save_fixtures(output_dir: str, seed: int = 42,
         with h5py.File(out_h5, 'w') as f:
             f.create_dataset('counts',     data=counts)
             f.create_dataset('strain_ids', data=strain_ids.astype('S'))
-            f.attrs['true_locus'] = np.bytes_(true_locus)
-            f.attrs['sim_index']  = i
-            f.attrs['phi']        = phi
-            f.attrs['seed']       = seed + i
+            f.attrs['true_locus']   = np.bytes_(true_locus)
+            f.attrs['sim_index']    = i
+            f.attrs['phi']          = phi
+            f.attrs['seed']         = seed + i
+            f.attrs['n_cells_mean'] = n_cells_mean
 
         logger.info('sim %02d → %s  (true_locus=%s)', i, out_h5, true_locus)
 

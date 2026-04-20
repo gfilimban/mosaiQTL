@@ -36,7 +36,7 @@ def generate_null_outcomes(y, n_samples=1000, method='permutation', seed=1):
     for permutation: shuffles phenotype labels (breaks geno-pheno link).
     for bootstrap: resamples with replacement from centred phenotype.
 
-    
+
     parameters
     ----------
     y         : np.ndarray (n,)  original phenotype (NaN-free)
@@ -74,7 +74,7 @@ def run_threshold_scans(null_outcomes, genomecache,
                         use_rint=True, use_reml=True):
     """scan null phenotype columns to build the peak-LOD null distribution.
 
-    
+
     parameters
     ----------
     null_outcomes  : np.ndarray (n, n_perms)  from generate_null_outcomes()
@@ -178,7 +178,7 @@ def get_gev_thresholds(max_lods, percentile=0.95):
     fitting GEV is more stable than empirical quantiles when n_perms
     is small (100-500).
 
-    
+
     parameters
     ----------
     max_lods   : np.ndarray (n_perms,)  per-permutation max LOD scores
@@ -220,7 +220,7 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
     """run single-chromosome scans on parametric bootstrap samples to compute
     a positional confidence interval for a QTL.
 
-    
+
     parameters
     ----------
     bootstrap_outcomes : np.ndarray (n, n_boot)  from generate_null_outcomes(method='bootstrap')

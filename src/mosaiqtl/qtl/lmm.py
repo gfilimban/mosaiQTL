@@ -41,7 +41,7 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):
     y_rot   : np.ndarray (n,)    U'y — rotated phenotype
     x_rot   : np.ndarray (n, p)  U'X — rotated covariates
     eigvals : np.ndarray (n,)    eigenvalues of kinship matrix
-    method  : str  'reml' (default, 
+    method  : str  'reml' (default,
     returns
     -------
     h2      : float   optimal h² ∈ (0, 1)
@@ -100,7 +100,7 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
     """fit LMM at a single locus and compute test statistic.
 
     uses null h² (from estimate_h2_null) as the fixed variance
-    component during the genome scan — 
+    component during the genome scan —
 
     LOD = (n/2) log10(RSS_0 / RSS_1)   [ML formula, n not n-p]
 

@@ -11,7 +11,6 @@ import os
 import numpy as np
 import pandas as pd
 import logging
-from scipy import stats as sp_stats
 
 logger = logging.getLogger('mosaiqtl')
 
@@ -29,7 +28,7 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
     founder haplotype probs used as weights over known founder genotypes —
     haplotype probs are used as weights over the known founder genotypes.
 
-    
+
     parameters
     ----------
     phenotype : np.ndarray (n,)
@@ -50,7 +49,6 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
     -------
     pd.DataFrame  columns: snp, chr, pos_mb, lod, p_value, beta_dosage
     """
-    from . import scan as scan_module
     from . import kinship as kin_module
     from . import lmm as lmm_module
     from ..utils import rint as _rint
@@ -94,8 +92,6 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
             continue
 
         lids, pos, probs = genomecache.get_chromosome(chrom)   # probs: (L,n,J)
-        # build {pos_mb → locus index} for quick lookup
-        pos_to_idx = {float(p): i for i, p in enumerate(pos)}
         eigvals = kinship_decomp[chrom]['values']
         eigvecs = kinship_decomp[chrom]['vectors']
         ev_v    = eigvecs[valid]
@@ -144,7 +140,6 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
     return pd.DataFrame(results)
 
 
-
 def read_allele_dir(allele_dir, founders, chrom=None):
     """read flat allele_dir into a snp_genos DataFrame.
 
@@ -166,7 +161,8 @@ def read_allele_dir(allele_dir, founders, chrom=None):
     -------
     pd.DataFrame  index=snp_id, columns=founders + ['chr','pos_mb']
     """
-    import glob, os
+    import glob
+    import os
     try:
         import rpy2.robjects as ro
     except ImportError:
@@ -202,7 +198,7 @@ def build_allele_dir(snp_genos, allele_dir, pmap=None):
     """build a flat allele_dir from a snp_genos DataFrame.
 
     writes one .RData file per SNP using rpy2.
-    
+
 
     parameters
     ----------
@@ -278,7 +274,7 @@ def read_alleles_flat(allele_dir, founders, chrom=None, pmap_dir=None):
         if chrom is not None and c != str(chrom):
             continue
         with open(fpath) as fh:
-            lines = [l.rstrip('\n') for l in fh]
+            lines = [ln.rstrip('\n') for ln in fh]
         for i in range(0, len(lines) - 2, 4):    # 4 lines per SNP block
             snp_id    = lines[i].strip()
             alt_parts = lines[i + 2].split('\t')  # line 3: alt allele row

@@ -120,7 +120,7 @@ def mediation_scan_qr(outcome, mediator, genomecache,
     x_med = np.hstack([m_std[:, None], x_base])   # (n, p+1)
 
     nf1 = genomecache.n_founders - 1
-    rows_base, rows_med = [], []
+    rows_base = []
 
     for chrom in genomecache.chromosomes:
         if chrom not in kinship_decomp:
@@ -130,7 +130,7 @@ def mediation_scan_qr(outcome, mediator, genomecache,
         ev_v = evc[valid]                            # (n, n)
 
         # rotate + weight — sqrt(w_inv) applied for WLS formulation
-        delta   = None   # computed per-model below
+
         def _rot_wt(x_cov, h2):
             delta = h2 / max(1 - h2, 1e-10)
             w_inv = 1.0 / (delta * ev + 1.0)
