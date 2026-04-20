@@ -20,8 +20,9 @@ build/
 **/.DS_Store
 Thumbs.db
 
-# local claude skills — private, never committed
-.claude/skills/
+# local claude config — private, never committed
+.claude/
+.claudeignore
 
 # validation outputs — regenerated at runtime; .gitkeep preserves dirs
 validation/phase2/r_data/*
