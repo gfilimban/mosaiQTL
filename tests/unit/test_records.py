@@ -32,24 +32,24 @@ def _founder_effect(founder='AJ'):
 
 def _provenance():
     return ProvenanceRecord(
-        git_hash='abc1234', seed=42, model='nb-glmm',
-        scan_window='cis', cis_window_mb=1.0, n_perms=1000,
-        timestamp='2026-04-19T22:00:00',
+        git_hash='abc1234', seed=42, timestamp='2026-04-19T22:00:00',
+        scan_window='cis', phenotype_input='raw', offset='none',
+        covariates='sex,batch', n_perms=1000, cis_window_mb=1.0,
     )
 
 
 def _qtl_result(**kwargs):
     defaults = dict(
         gene_id='ENSMUSG001', gene_name='Piezo1', cell_type='type2x',
-        data_granularity='pseudobulk',
+        data_granularity='pseudobulk', population='cc',
+        model='nb-glmm', test_statistic='score', haplotype='additive',
         gene_chr='8', gene_tss_mb=100.0,
         peak_locus='UNC2373664', peak_chr='8', peak_pos_mb=101.5,
         lod=21.3, lod_threshold=7.5, p_value=1e-6, q_value=0.01,
-        n_loci_tested=3200, n_perms=1000,
+        n_loci_tested=3200, n_perms=1000, n_samples=418,
         locus_type='cis', distance_to_tss_mb=1.5, cis_window_mb=1.0,
         founder_effects={'AJ': _founder_effect()},
-        variance_explained=0.42, model='nb-glmm', n_samples=418,
-        provenance=_provenance(),
+        variance_explained=0.42, provenance=_provenance(),
     )
     defaults.update(kwargs)
     return QTLResult(**defaults)
@@ -142,6 +142,12 @@ class TestProvenanceRecord:
         assert p.seed == 42
         assert p.scan_window == 'cis'
 
+    def test_tier2_axes_present(self):
+        p = _provenance()
+        assert p.phenotype_input == 'raw'
+        assert p.offset == 'none'
+        assert p.covariates == 'sex,batch'
+
 
 class TestQTLResult:
     def test_peak_locus_present(self):
@@ -172,6 +178,17 @@ class TestQTLResult:
 
     def test_model_field(self):
         assert _qtl_result(model='lmm').model == 'lmm'
+
+    def test_tier1_axes_present(self):
+        r = _qtl_result()
+        assert r.population == 'cc'
+        assert r.test_statistic == 'score'
+        assert r.haplotype == 'additive'
+
+    def test_population_is_str(self):
+        r = _qtl_result(population='magic')
+        assert isinstance(r.population, str)
+        assert r.population == 'magic'
 
     def test_bulk_cell_type_none(self):
         r = _qtl_result(cell_type=None, data_granularity='bulk')

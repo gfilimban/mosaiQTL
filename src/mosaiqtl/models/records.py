@@ -12,17 +12,31 @@ locus classification:
   'local' — same chromosome, outside cis window
   'trans' — different chromosome from gene
 
-provenance: wrap results with ProvenanceRecord at serialization time (DESIGN-06).
+axis coverage:
+  Tier 1 (affects result interpretation) → QTLResult fields
+  Tier 2 (scan parameters for reproduction) → ProvenanceRecord only
+
+  DataGranularity: 'single-cell' covers both scRNA-seq and snRNA-seq —
+    the capture technology does not affect QTL result interpretation.
+    CLI --granular accepts 'single-nuclei' as alias for 'single-cell'.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, Optional
 
 import numpy as np
 
 DataGranularity = Literal['single-cell', 'pseudobulk', 'bulk']
+HaplotypeModel  = Literal['additive', 'full', 'mi']
+TestStatistic   = Literal['score', 'lrt', 'f_test']
+ScanModel       = Literal['nb-glmm', 'lmm']
+# Population is str (not Literal) — open to any multiparent population or organism.
+# current values: 'cc', 'do', 'mpp', 'f2', 'structured'
+#   'mpp'        — any generic MPP; MAGIC (19 founders) is the reference example
+#   'structured' — arbitrary structured population; human GWAS cohorts are the
+#                  reference example (no haplotype probs; kinship from SNP GRM)
 
 
 @dataclass(slots=True)
@@ -99,11 +113,9 @@ class VQTLResult:
     cell_type : str or None
         cell type label for single-cell/pseudobulk; None for bulk
     data_granularity : DataGranularity
-        'single-cell', 'pseudobulk', or 'bulk' — matches --granular CLI flag
-    model : str
-        scan model used: 'nb-glmm' or 'lmm'
+        aggregation level — 'single-cell' covers sc and sn RNA-seq
+    model : ScanModel
     n_samples : int
-        number of samples used in the scan
     """
 
     scan_result:      ScanResult
@@ -113,15 +125,16 @@ class VQTLResult:
     gene_id:          str
     cell_type:        Optional[str]
     data_granularity: DataGranularity
-    model:            str
+    model:            ScanModel
     n_samples:        int
 
 
 @dataclass(slots=True)
 class ProvenanceRecord:
-    """scan provenance for DESIGN-06 reproducibility requirement.
+    """full scan configuration for DESIGN-06 reproducibility.
 
-    attach to any serialized result to enable exact reproduction.
+    contains all Tier 2 axes (scan parameters) needed to exactly
+    reproduce a result. attach to serialized output via QTLResult.provenance.
 
     attributes
     ----------
@@ -129,30 +142,39 @@ class ProvenanceRecord:
         repository commit hash at scan time
     seed : int
         random seed used for permutations
-    model : str
-        scan model: 'nb-glmm' or 'lmm'
-    scan_window : str
-        window scanned: 'cis', 'chr', or 'genome'
-    cis_window_mb : float
-        cis window half-width in Mb
-    n_perms : int
-        number of permutations run
     timestamp : str
         ISO-8601 timestamp of scan completion
+    scan_window : str
+        window scanned: 'cis', 'chr', 'genome', or 'loci=<set>'
+    phenotype_input : str
+        phenotype representation: 'raw', 'normalized', or 'averaged'
+    offset : str
+        library size offset: 'from_libsize', 'from_file', or 'none'
+    covariates : str
+        covariate specification passed to --covar
+    n_perms : int
+        number of permutations run
+    cis_window_mb : float
+        cis window half-width in Mb
     """
 
-    git_hash:      str
-    seed:          int
-    model:         str
-    scan_window:   str
-    cis_window_mb: float
-    n_perms:       int
-    timestamp:     str
+    git_hash:        str
+    seed:            int
+    timestamp:       str
+    scan_window:     str
+    phenotype_input: str
+    offset:          str
+    covariates:      str
+    n_perms:         int
+    cis_window_mb:   float
 
 
 @dataclass(slots=True)
 class QTLResult:
     """eGene-level summary for one gene × grouping combination.
+
+    tier-1 scan axes (affect result interpretation) are stored here.
+    tier-2 axes (reproduction parameters) are in provenance.
 
     attributes
     ----------
@@ -161,7 +183,17 @@ class QTLResult:
     cell_type : str or None
         cell type label for single-cell/pseudobulk; None for bulk
     data_granularity : DataGranularity
-        'single-cell', 'pseudobulk', or 'bulk' — matches --granular CLI flag
+        aggregation level — 'single-cell' covers sc and sn RNA-seq
+    population : str
+        design population; validated against SUPPORTED_POPULATIONS in ScanConfig.
+        examples: 'cc', 'do', 'mpp' (e.g. MAGIC), 'f2', 'structured' (e.g. human cohort)
+    model : ScanModel
+        statistical model: 'nb-glmm' or 'lmm'
+    test_statistic : TestStatistic
+        test used: 'score', 'lrt', or 'f_test' — affects p_value derivation
+    haplotype : HaplotypeModel
+        haplotype encoding: 'additive', 'full', or 'mi'
+        determines meaning of founder_effects
     gene_chr : str
         chromosome of gene TSS — always str, never int
     gene_tss_mb : float
@@ -183,6 +215,8 @@ class QTLResult:
         number of loci scanned; context for multiple testing correction
     n_perms : int
         number of permutations used to derive lod_threshold
+    n_samples : int
+        number of samples used in the scan
     locus_type : Literal['cis', 'local', 'trans']
         'cis'   = same chr, within cis_window_mb of TSS
         'local' = same chr, outside cis window
@@ -196,18 +230,18 @@ class QTLResult:
         per-founder effects at peak locus, keyed by founder name
     variance_explained : float
         proportion of phenotypic variance explained at peak locus
-    model : str
-        scan model used: 'nb-glmm' or 'lmm'
-    n_samples : int
-        number of samples used in the scan
     provenance : ProvenanceRecord
-        git hash, seed, and scan parameters for reproducibility
+        full scan configuration for exact reproduction (DESIGN-06)
     """
 
     gene_id:            str
     gene_name:          str
     cell_type:          Optional[str]
     data_granularity:   DataGranularity
+    population:         str
+    model:              ScanModel
+    test_statistic:     TestStatistic
+    haplotype:          HaplotypeModel
     gene_chr:           str
     gene_tss_mb:        float
     peak_locus:         str
@@ -219,11 +253,10 @@ class QTLResult:
     q_value:            float
     n_loci_tested:      int
     n_perms:            int
+    n_samples:          int
     locus_type:         Literal['cis', 'local', 'trans']
     distance_to_tss_mb: float
     cis_window_mb:      float
     founder_effects:    dict[str, FounderEffect]
     variance_explained: float
-    model:              str
-    n_samples:          int
     provenance:         ProvenanceRecord
