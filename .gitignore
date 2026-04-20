@@ -58,6 +58,11 @@ validation/phase3/py_data/*.done
 # bundle (transferred separately, not committed)
 mosaiqtl.bundle
 
+# sparc validation data — large binary files, regenerated from R script
+validation/sparcc_cache/
+validation/sparcc_data/
+tests/fixtures/data/
+
 # agent related
 claude/*.md
 graphify-out
