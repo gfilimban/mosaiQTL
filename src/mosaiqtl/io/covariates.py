@@ -17,6 +17,9 @@ from scipy.sparse.linalg import svds
 
 logger = logging.getLogger('mosaiqtl')
 
+# populations where LOCO kinship absorbs all structure — geno_pcs add nothing
+_LOCO_POPULATIONS: frozenset[str] = frozenset({'cc'})
+
 
 class MissingCovariateError(ValueError):
     """raised when a requested covariate column contains NaN values.
@@ -29,11 +32,10 @@ class MissingCovariateError(ValueError):
 
 def build_covariate_matrix(
     sample_metadata: pd.DataFrame,
-    fixed_covariates: list[str] = [],
-    include_n_cells: bool = False,
+    covariates: list[str] = [],
     n_expression_pcs: int = 0,
     n_genotype_pcs: int = 0,
-    user_covariates: Optional[list[str]] = None,
+    population: Optional[str] = None,
     pseudobulk_counts: Optional[pd.DataFrame] = None,
     kinship_matrix: Optional[np.ndarray] = None,
     kinship_sample_ids: Optional[list[str]] = None,
@@ -45,24 +47,23 @@ def build_covariate_matrix(
     sample_metadata : pd.DataFrame
         must contain sample_id column (used as index).
         all other columns are optional — include only what your design requires.
-    fixed_covariates : list[str]
+    covariates : list[str]
         columns from sample_metadata to include as fixed effects.
         categorical columns are one-hot encoded; numeric passed through.
         default empty — caller decides what to include.
-    include_n_cells : bool
-        if True, add log10(n_cells) covariate; requires n_cells column.
     n_expression_pcs : int
         number of expression PCs (PEER-equivalent confounders).
+        captures library size, batch, and other latent confounders jointly.
         0 to disable. requires pseudobulk_counts when > 0.
     n_genotype_pcs : int
-        number of genotype PCs to include as population structure covariates.
-        0 to disable. computed from top eigenvectors of kinship_matrix.
-        recommended for DO, MPP, and structured populations; typically
-        redundant for CC (LOCO kinship already accounts for structure).
-        requires kinship_matrix and kinship_sample_ids when > 0.
-    user_covariates : list[str] or None
-        additional columns from sample_metadata beyond fixed_covariates.
-        same encoding rules apply.
+        number of genotype PCs for population structure correction.
+        0 to disable. requires kinship_matrix and kinship_sample_ids when > 0.
+        informative for DO, MPP, F2, and structured populations only —
+        not permitted for CC: LOCO kinship already captures all structure.
+        requires population to be set when > 0.
+    population : str or None
+        population design identifier ('cc', 'do', 'mpp', 'f2', 'structured').
+        required when n_genotype_pcs > 0 to enforce informativeness.
     pseudobulk_counts : pd.DataFrame or None
         samples × genes pseudobulk count matrix; required when
         n_expression_pcs > 0. index must match sample_metadata.sample_id.
@@ -89,11 +90,10 @@ def build_covariate_matrix(
         if a requested column is not found in sample_metadata.
         if n_expression_pcs > 0 and pseudobulk_counts is None.
         if n_genotype_pcs > 0 and kinship_matrix or kinship_sample_ids is None.
+        if n_genotype_pcs > 0 and population is a LOCO population (e.g. 'cc').
     """
     if 'sample_id' not in sample_metadata.columns:
-        raise ValueError(
-            "'sample_id' column is required in sample_metadata"
-        )
+        raise ValueError("'sample_id' column is required in sample_metadata")
 
     if n_expression_pcs > 0 and pseudobulk_counts is None:
         raise ValueError(
@@ -101,38 +101,30 @@ def build_covariate_matrix(
             f'pass pseudobulk_counts or set n_expression_pcs=0'
         )
 
-    if n_genotype_pcs > 0 and (kinship_matrix is None or kinship_sample_ids is None):
-        raise ValueError(
-            f'n_genotype_pcs={n_genotype_pcs} requires kinship_matrix and '
-            f'kinship_sample_ids; pass both or set n_genotype_pcs=0'
-        )
+    if n_genotype_pcs > 0:
+        if kinship_matrix is None or kinship_sample_ids is None:
+            raise ValueError(
+                f'n_genotype_pcs={n_genotype_pcs} requires kinship_matrix and '
+                f'kinship_sample_ids; pass both or set n_genotype_pcs=0'
+            )
+        if population in _LOCO_POPULATIONS:
+            raise ValueError(
+                f'n_genotype_pcs={n_genotype_pcs} is not informative for '
+                f"population={population!r}: LOCO kinship already captures all "
+                f'population structure. Set n_genotype_pcs=0 for CC.'
+            )
 
     meta = sample_metadata.set_index('sample_id').sort_index()
     parts: list[pd.DataFrame] = []
 
-    all_requested = list(fixed_covariates) + (user_covariates or [])
-    missing_cols = [c for c in all_requested if c not in meta.columns]
+    missing_cols = [c for c in covariates if c not in meta.columns]
     if missing_cols:
         raise ValueError(
             f'requested covariate columns not found in sample_metadata: {missing_cols}'
         )
 
-    for col in all_requested:
+    for col in covariates:
         parts.append(_encode_column(meta, col))
-
-    if include_n_cells:
-        if 'n_cells' not in meta.columns:
-            raise ValueError(
-                "include_n_cells=True requires 'n_cells' column in sample_metadata"
-            )
-        _check_nan(meta, 'n_cells')
-        parts.append(
-            pd.DataFrame(
-                np.log10(meta['n_cells'].values.astype(float)),
-                index=meta.index,
-                columns=['log10_n_cells'],
-            )
-        )
 
     if n_expression_pcs > 0:
         parts.append(_expression_pcs(pseudobulk_counts, meta.index, n_expression_pcs))
@@ -145,7 +137,6 @@ def build_covariate_matrix(
 
     result = pd.concat(parts, axis=1).astype(np.float64)
 
-    # final NaN guard
     for col in result.columns[result.isna().any()]:
         bad = result.index[result[col].isna()].tolist()
         raise MissingCovariateError(
@@ -205,16 +196,14 @@ def _genotype_pcs(
 ) -> pd.DataFrame:
     """top-n eigenvectors of the genome-wide kinship matrix.
 
-    captures population structure. for CC, LOCO kinship already
-    handles structure — geno_pcs are primarily useful for DO/MPP/structured.
-    eigenvectors are ordered by descending eigenvalue.
+    captures population structure for DO, MPP, F2, and structured populations.
+    eigh returns ascending eigenvalues — reversed to get top structure first.
     """
     k_df = pd.DataFrame(kinship_matrix, index=kinship_sample_ids, columns=kinship_sample_ids)
     k_sub = k_df.loc[sample_ids, sample_ids].values.astype(float)
 
     n_components = min(n_pcs, len(sample_ids) - 1)
     eigenvalues, eigenvectors = np.linalg.eigh(k_sub)
-    # eigh returns ascending order — reverse to get top eigenvalues first
     idx = np.argsort(eigenvalues)[::-1]
     top_vecs = eigenvectors[:, idx[:n_components]]
 
