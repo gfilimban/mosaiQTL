@@ -40,6 +40,34 @@ ScanModel       = Literal['nb-glmm', 'lmm']
 
 
 @dataclass(slots=True)
+class LMMResult:
+    """LMM fit result at a single locus (internal; used by lmm.py).
+
+    attributes
+    ----------
+    lod      : float  LOD = (n/2) log10(RSS_0/RSS_1) — ML denominator n
+    p_value  : float  F-test p-value
+    h2       : float  heritability fixed from null model
+    f_stat   : float  F statistic
+    betas    : np.ndarray (J-1,)  haplotype effects at this locus
+    sigma2_g : float  genetic variance component
+    sigma2_e : float  residual variance component
+    rss_null : float  weighted RSS under null
+    rss_alt  : float  weighted RSS under alternative
+    """
+
+    lod:      float
+    p_value:  float
+    h2:       float
+    f_stat:   float
+    betas:    np.ndarray
+    sigma2_g: float
+    sigma2_e: float
+    rss_null: float
+    rss_alt:  float
+
+
+@dataclass(slots=True)
 class ScanResult:
     """single-chromosome scan output for one gene.
 

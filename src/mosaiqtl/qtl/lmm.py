@@ -23,27 +23,9 @@ from scipy.optimize import minimize_scalar
 from scipy import stats
 import logging
 
+from ..models.records import LMMResult  # noqa: F401 — re-exported for callers
+
 logger = logging.getLogger('mosaiqtl')
-
-
-class LMMResult:
-    """container for LMM fit results at one locus.
-
-    attributes
-    ----------
-    lod      : float   LOD = (n/2) log10(RSS_0/RSS_1)
-    p_value  : float   F-test p-value
-    h2       : float   heritability from null model
-    betas    : np.ndarray (J-1,)  founder haplotype effects
-    sigma2_g : float   genetic variance component
-    sigma2_e : float   residual variance component
-    rss_null : float   weighted RSS under null
-    rss_alt  : float   weighted RSS under alternative
-    f_stat   : float   F statistic
-    """
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
 
 
 def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):

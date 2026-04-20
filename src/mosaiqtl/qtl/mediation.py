@@ -96,7 +96,7 @@ def mediation_scan_qr(outcome, mediator, genomecache,
     -------
     pd.DataFrame  locus, chr, pos_mb, lod_base, lod_mediated, lod_drop, p_value
     """
-    from . import kinship as kin_module
+    from ..genotype import kinship as kin_module
     from . import lmm as lmm_module
     from ..utils import rint as _rint
 

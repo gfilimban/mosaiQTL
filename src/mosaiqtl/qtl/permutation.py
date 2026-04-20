@@ -99,7 +99,7 @@ def run_threshold_scans(null_outcomes, genomecache,
     -------
     np.ndarray (n_perms,)  per-permutation genome-wide max LOD
     """
-    from . import kinship as kin_module
+    from ..genotype import kinship as kin_module
     from . import lmm as lmm_module
     from ..utils import rint as _rint
 
@@ -240,7 +240,7 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
     np.ndarray (n_boot,)   bootstrap peak positions in Mb
     dict  {'ci_lo', 'ci_hi', 'ci': (lo, hi), 'n_boot', 'n_valid', 'alpha'}
     """
-    from . import kinship as kin_module
+    from ..genotype import kinship as kin_module
     from . import lmm as lmm_module
     from ..utils import rint as _rint
 
