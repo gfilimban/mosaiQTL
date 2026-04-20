@@ -1,0 +1,126 @@
+"""
+founders — canonical strain constants for CC/DO mice
+
+single source of truth for all founder order, colors, and strain palettes.
+no other module in mosaiqtl defines hex color strings — import from here.
+
+axis order rule (enforced in all plots):
+    Founders (FOUNDER_ORDER) → F1s (F1_COLORS key order) → CC strains (alphanumeric)
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+FOUNDER_ORDER: list[str] = [
+    'AJ', 'B6J', '129S1J', 'NODJ', 'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ',
+]
+
+FOUNDER_CODE: dict[str, str] = {
+    'AJ':    'A',
+    'B6J':   'B',
+    '129S1J':'C',
+    'NODJ':  'D',
+    'NZOJ':  'E',
+    'CASTJ': 'F',
+    'PWKJ':  'G',
+    'WSBJ':  'H',
+}
+
+FOUNDER_COLORS: dict[str, str] = {
+    'AJ':    '#F4C245',
+    'B6J':   '#C0BFBF',
+    '129S1J':'#DA9CC1',
+    'NODJ':  '#4F6EAF',
+    'NZOJ':  '#52A5DB',
+    'CASTJ': '#55AF5B',
+    'PWKJ':  '#D83026',
+    'WSBJ':  '#683C91',
+}
+
+F1_COLORS: dict[str, str] = {
+    'B6AF1J':    '#DAC082',
+    'B6129S1F1J':'#CDADC0',
+    'B6CASTF1J': '#8AB78D',
+    'B6NODF1J':  '#8796B7',
+    'B6NZOF1J':  '#89B2CD',
+    'B6PWKF1J':  '#CC7772',
+    'B6WSBF1J':  '#947DA8',
+}
+
+# canonical plot axis order: founders → F1s → CC strains (caller appends CC alphanumeric)
+STRAIN_ORDER: list[str] = FOUNDER_ORDER + list(F1_COLORS.keys())
+
+# neutral greys used in plots — defined here so no module ever hardcodes hex
+COLOR_NEUTRAL_DARK: str = '#444444'   # axis lines, tick labels, reference bars
+COLOR_CC_FALLBACK:  str = '#888888'   # CC strains without ancestry probability data
+
+
+def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
+    h = hex_color.lstrip('#')
+    return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+def _rgb_to_hex(r: float, g: float, b: float) -> str:
+    return '#{:02X}{:02X}{:02X}'.format(
+        round(r * 255), round(g * 255), round(b * 255)
+    )
+
+
+def _blend_hex(color_a: str, color_b: str, t: float = 0.5) -> str:
+    """linear RGB blend; t=0 → color_a, t=1 → color_b."""
+    ra, ga, ba = _hex_to_rgb(color_a)
+    rb, gb, bb = _hex_to_rgb(color_b)
+    return _rgb_to_hex(ra + t * (rb - ra), ga + t * (gb - ga), ba + t * (bb - ba))
+
+
+def cc_strain_palette(
+    cc_strains: list[str],
+    haplotype_probs: Optional[dict[str, list[float]]] = None,
+) -> dict[str, str]:
+    """ancestry-aware color palette for CC strains.
+
+    parameters
+    ----------
+    cc_strains : list[str]
+        CC strain identifiers (e.g. ['CC001', 'CC002', ...])
+    haplotype_probs : dict[str, list[float]], optional
+        per-strain genome-wide mean haplotype probabilities (length 8, FOUNDER_ORDER).
+        when provided, colors are blended between the two dominant founder colors
+        weighted by their relative proportions.
+        when None, a fixed grey (#888888) is returned for all CC strains.
+
+    returns
+    -------
+    dict[str, str]
+        mapping strain name → hex color string
+    """
+    palette: dict[str, str] = {}
+    for strain in sorted(cc_strains):
+        if haplotype_probs is None or strain not in haplotype_probs:
+            palette[strain] = '#888888'
+            continue
+
+        probs = list(haplotype_probs[strain])
+        if len(probs) != 8:
+            palette[strain] = '#888888'
+            continue
+
+        # find two dominant founders
+        indexed = sorted(enumerate(probs), key=lambda x: x[1], reverse=True)
+        i1, p1 = indexed[0]
+        i2, p2 = indexed[1]
+        total = p1 + p2
+        if total < 1e-9:
+            palette[strain] = '#888888'
+            continue
+
+        t = p2 / total  # blend weight toward second-dominant founder
+        color = _blend_hex(
+            FOUNDER_COLORS[FOUNDER_ORDER[i1]],
+            FOUNDER_COLORS[FOUNDER_ORDER[i2]],
+            t,
+        )
+        palette[strain] = color
+
+    return palette

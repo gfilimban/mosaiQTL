@@ -1,9 +1,9 @@
 """
-plotting — qc and results visualization
+validation — phase 2 r vs python qc plots (s1–s11)
 
 all plots use seaborn over matplotlib where possible.
-font: carlito. axes start from zero.
-founder colors follow the cc palette convention.
+font: carlito. axes from zero. dpi=300.
+never import this module from installed package — tests/ only.
 """
 
 import numpy as np
@@ -14,31 +14,20 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
 
+from ..genotype.founders import (
+    FOUNDER_COLORS, F1_COLORS,
+    COLOR_NEUTRAL_DARK, COLOR_CC_FALLBACK,
+)
+
 logger = logging.getLogger('mosaiqtl')
 
-# cc founder color palette (user preference)
-FOUNDER_COLORS = {
-    'AJ':     '#f4c245',
-    'B6J':    '#c0bfbf',
-    '129S1J': '#da9cc1',
-    'NODJ':   '#4f6eaf',
-    'NZOJ':   '#52a5db',
-    'CASTJ':  '#55af5b',
-    'PWKJ':   '#d83026',
-    'WSBJ':   '#683c91',
-}
+# semantic aliases for validation scatter convention (R=red x-axis, Python=blue y-axis)
+_COLOR_PY    = FOUNDER_COLORS['NODJ']   # python points — blue
+_COLOR_R     = FOUNDER_COLORS['PWKJ']   # r reference line — red
+_COLOR_TRUE  = FOUNDER_COLORS['CASTJ']  # true causal locus marker — green
+_COLOR_DISP  = FOUNDER_COLORS['WSBJ']   # dispersion scatter — purple
+_CHR_PALETTE = [FOUNDER_COLORS['NODJ'], FOUNDER_COLORS['B6J']]  # alternating manhattan
 
-F1_COLORS = {
-    'B6AF1J':     '#dac082',
-    'B6129S1F1J': '#cdadc0',
-    'B6CASTF1J':  '#8ab78d',
-    'B6NODF1J':   '#8796b7',
-    'B6NZOF1J':   '#89b2cd',
-    'B6PWKF1J':   '#cc7772',
-    'B6WSBF1J':   '#947da8',
-}
-
-# combine for general use
 ALL_STRAIN_COLORS = {**FOUNDER_COLORS, **F1_COLORS}
 
 
@@ -88,7 +77,7 @@ def plot_lod_profile(scan_result, true_params=None, save_path=None):
 
     # alternate chr colors
     chr_color_map = {}
-    palette = ['#4f6eaf', '#c0bfbf']
+    palette = _CHR_PALETTE
     for i, chrom in enumerate(chromosomes):
         chr_color_map[chrom] = palette[i % 2]
 
@@ -101,14 +90,14 @@ def plot_lod_profile(scan_result, true_params=None, save_path=None):
     # mark peak
     peak = scan_result.peak_locus()
     peak_x = chr_offsets[peak['chromosome']] + peak['position']
-    ax.axhline(y=peak['lod'], color='#d83026', linewidth=0.5,
+    ax.axhline(y=peak['lod'], color=_COLOR_R, linewidth=0.5,
                linestyle='--', alpha=0.5)
     ax.annotate(
         f'peak: chr{peak["chromosome"]}\nLOD={peak["lod"]:.1f}',
         xy=(peak_x, peak['lod']),
         xytext=(peak_x, peak['lod'] + 1),
-        fontsize=9, color='#d83026', ha='center',
-        arrowprops=dict(arrowstyle='->', color='#d83026', lw=0.8),
+        fontsize=9, color=_COLOR_R, ha='center',
+        arrowprops=dict(arrowstyle='->', color=_COLOR_R, lw=0.8),
     )
 
     # mark true locus if provided
@@ -120,7 +109,7 @@ def plot_lod_profile(scan_result, true_params=None, save_path=None):
             if true_mask.sum() > true_idx:
                 true_pos = df.loc[true_mask, 'position'].iloc[true_idx]
                 true_x = chr_offsets[true_chrom] + true_pos
-                ax.axvline(x=true_x, color='#55af5b', linewidth=1,
+                ax.axvline(x=true_x, color=_COLOR_TRUE, linewidth=1,
                            linestyle=':', alpha=0.7, label='true causal locus')
                 ax.legend(fontsize=9)
 
@@ -130,7 +119,7 @@ def plot_lod_profile(scan_result, true_params=None, save_path=None):
         if chr_mask.sum() > 0:
             mid_x = chr_offsets[chrom] + df.loc[chr_mask, 'position'].median()
             ax.text(mid_x, -0.5, f'chr{chrom}', ha='center', fontsize=8,
-                    color='#444444')
+                    color=COLOR_NEUTRAL_DARK)
 
     ax.set_ylim(bottom=0)
     ax.set_ylabel('LOD score')
@@ -225,13 +214,13 @@ def plot_founder_effects(scan_result, genomecache, peak_chrom=None,
     all_effects = np.append(betas, 0.0)
 
     # color by founder palette
-    colors = [FOUNDER_COLORS.get(name, '#888888') for name in all_names]
+    colors = [FOUNDER_COLORS.get(name, COLOR_CC_FALLBACK) for name in all_names]
 
     fig, ax = plt.subplots(figsize=(8, 4))
     bars = ax.bar(range(len(all_names)), all_effects, color=colors,
                   edgecolor='white', linewidth=0.5)
 
-    ax.axhline(y=0, color='#444444', linewidth=0.5)
+    ax.axhline(y=0, color=COLOR_NEUTRAL_DARK, linewidth=0.5)
     ax.set_xticks(range(len(all_names)))
     ax.set_xticklabels(all_names, rotation=45, ha='right', fontsize=10)
     ax.set_ylabel('founder effect ($\\hat{\\beta}_f$)')
@@ -263,10 +252,10 @@ def plot_pvalue_qq(scan_result, save_path=None):
     observed = -np.log10(pvals)
     expected = -np.log10(np.arange(1, n + 1) / (n + 1))
 
-    ax.scatter(expected, observed, s=10, alpha=0.6, color='#4f6eaf',
+    ax.scatter(expected, observed, s=10, alpha=0.6, color=_COLOR_PY,
                edgecolors='none', rasterized=True)
     ax.plot([0, max(expected)], [0, max(expected)], '--',
-            color='#d83026', linewidth=1, label='$y = x$ (null)')
+            color=_COLOR_R, linewidth=1, label='$y = x$ (null)')
 
     # genomic inflation factor
     median_chi2 = np.median(observed) / 0.456  # chi2 df=1 median
@@ -305,12 +294,12 @@ def plot_dispersion_vs_truth(phi_estimated, phi_true, save_path=None):
     phi_e = phi_estimated[valid]
     phi_t = phi_true[valid]
 
-    ax.scatter(phi_t, phi_e, s=20, alpha=0.6, color='#683c91',
+    ax.scatter(phi_t, phi_e, s=20, alpha=0.6, color=_COLOR_DISP,
                edgecolors='white', linewidth=0.3)
 
     # diagonal
     lims = [0, max(phi_t.max(), phi_e.max()) * 1.1]
-    ax.plot(lims, lims, '--', color='#d83026', linewidth=1, label='$y = x$')
+    ax.plot(lims, lims, '--', color=_COLOR_R, linewidth=1, label='$y = x$')
 
     # correlation
     corr = np.corrcoef(phi_t, phi_e)[0, 1]
@@ -364,11 +353,11 @@ def plot_lod_correlation(py_scan_result, r_results_csv, save_path=None):
     fig, ax = plt.subplots(figsize=(5, 5))
 
     ax.scatter(merged['lod_r'], merged['lod_py'], s=12, alpha=0.6,
-               color='#4f6eaf', edgecolors='none', rasterized=True)
+               color=_COLOR_PY, edgecolors='none', rasterized=True)
 
     # diagonal
     lims = [0, max(merged['lod_r'].max(), merged['lod_py'].max()) * 1.1]
-    ax.plot(lims, lims, '--', color='#d83026', linewidth=1, label='$y = x$')
+    ax.plot(lims, lims, '--', color=_COLOR_R, linewidth=1, label='$y = x$')
 
     # correlation
     corr = np.corrcoef(merged['lod_r'], merged['lod_py'])[0, 1]
@@ -420,12 +409,12 @@ def plot_lod_difference(py_scan_result, r_results_csv, save_path=None):
     # color by chromosome
     chromosomes = sorted(merged['chromosome'].unique(),
                          key=lambda x: int(x) if x.isdigit() else 99)
-    palette = ['#4f6eaf', '#c0bfbf']
+    palette = _CHR_PALETTE
     colors = [palette[chromosomes.index(c) % 2] for c in merged['chromosome']]
 
     ax.scatter(range(len(diff)), diff, c=colors, s=8, alpha=0.6,
                edgecolors='none', rasterized=True)
-    ax.axhline(y=0, color='#d83026', linewidth=0.8, linestyle='--')
+    ax.axhline(y=0, color=_COLOR_R, linewidth=0.8, linestyle='--')
 
     # annotate stats
     ax.text(0.98, 0.95,
@@ -491,7 +480,7 @@ def plot_founder_effects_comparison(py_scan_result, genomecache,
     width = 0.35
 
     # python bars
-    colors_py = [FOUNDER_COLORS.get(n, '#888888') for n in all_names]
+    colors_py = [FOUNDER_COLORS.get(n, COLOR_CC_FALLBACK) for n in all_names]
     ax.bar(x - width / 2, py_all, width, color=colors_py,
            edgecolor='white', linewidth=0.5, label='mosaiQTL (Python)')
 
@@ -499,10 +488,10 @@ def plot_founder_effects_comparison(py_scan_result, genomecache,
     if r_effects is not None:
         r_all = np.array([r_effects.get(n, 0.0) for n in all_names])
         ax.bar(x + width / 2, r_all, width, color=colors_py,
-               edgecolor='#444444', linewidth=0.5, alpha=0.5,
+               edgecolor=COLOR_NEUTRAL_DARK, linewidth=0.5, alpha=0.5,
                label='Reference (R)')
 
-    ax.axhline(y=0, color='#444444', linewidth=0.5)
+    ax.axhline(y=0, color=COLOR_NEUTRAL_DARK, linewidth=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels(all_names, rotation=45, ha='right', fontsize=10)
     ax.set_ylabel('founder effect ($\\hat{\\beta}_f$)')
