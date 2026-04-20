@@ -197,7 +197,7 @@ Speed and memory comparison is the meaningful metric for those tools.
 | TASK 0a — sparc NB fixtures | 🟢 done | 517096aa |
 | TASK 1 — genotype/founders.py + viz/validation.py | 🟢 done | 055fc49b |
 | TASK 2 — models/records.py (ScanResult, VQTLResult, FounderEffect, QTLResult, ProvenanceRecord) | 🟢 done | 0586acd8 |
-| TASK 3 — io/covariates.py | 🟡 in progress | — |
+| TASK 3 — io/covariates.py | 🟢 done | — |
 
 ---
 
