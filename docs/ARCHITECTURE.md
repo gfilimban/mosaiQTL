@@ -1,27 +1,21 @@
-# mosaiQTL — Haplotype-Based QTL Mapping for Multiparent Populations
+# mosaiQTL — Architecture, Scope & Intention
+# Human-readable package overview
+# Read this file before touching any code.
+# Companion to: CLAUDE.md (Claude Code instructions) | docs/REFERENCES.md (bibliography)
 
-## Overview
+---
 
-mosaiQTL is a Python package for QTL mapping in multiparent populations,
-designed as a generalizable, model-agnostic hub unified by a shared
-genotype probability backbone.
+## 1. WHAT IS mosaiQTL?
 
-The user controls three orthogonal choices at scan time:
+mosaiQTL is a python package providing **multiomic, haplotype-resolved quantitative trait locus (QTL) mapping
+framework** for multiparent populations (MPPs). mosaiQTL is designed as a generalizable, multi-model hub unified by a shared genotype probability backbone. It maps genetic variants controlling gene
+expression, chromatin accessibility, splicing, and RNA modifications at **cell-type
+resolution** from single-nucleus sequencing data from $n$ repliacate observations based on scan configuration space built using user input.
 
-| Choice | Options | Default |
-|--------|---------|---------|
-| **Statistical model** | NB GLM, LMM (Gaussian), NB-LMM (mixed) | NB GLM |
-| **Phenotype input** | raw counts, normalized expression, collapsed genotype means | raw counts (replicate-aware) |
-| **Aggregation level** | lineage pseudobulk, subtype pseudobulk, cell-level | user-specified |
 
-The **negative binomial GLM on raw pseudobulk counts** is the primary
-mode: it respects the count nature of the data, uses all $n$ replicate
-observations (not collapsed genotype means), includes biological
-covariates (sex, batch), and models library size as an offset. The
-**LMM on RINT-transformed expression** exists as the miQTL-equivalent
-port for validation and backward compatibility, not as the recommended
-default. The **NB-LMM** (NEBULA-LN) operates at cell-level resolution
-for questions that pseudobulking cannot answer.
+The central biological question: *which genomic regions — and which of founder haplotypes
+carried in those regions — causally regulate molecular phenotypes across cell types?*
+
 
 The package is parametric on population structure: the user specifies
 $J$ founder strains, the set of derived lines, and the number of
@@ -30,487 +24,189 @@ DO ($J = 8$, outbred), MAGIC ($J = 4$, $8$, or $19$), heterogeneous
 stocks, or custom crosses. The Collaborative Cross 8-founder population
 serves as the proof-of-concept application.
 
-For single-cell data, mosaiQTL supports three complementary scan
-resolutions as first-class modes, each answering a different biological
-question from the same dataset:
-
-| Mode | Resolution | Question |
-|------|-----------|----------|
-| **Pseudobulk lineage** | Aggregate related cell types (e.g., all myonuclei) | Does haplotype affect expression in this cell program? |
-| **Pseudobulk subtype** | Single cell type (e.g., type2b only) | Does haplotype affect expression specifically in this subtype? |
-| **Cell-level** (NEBULA-LN, vQTL) | Individual cells | Does haplotype affect expression *noise* within this cell type? |
-
-Pseudobulking at a chosen cell-identity level is not a compromise — it
-is the highest-powered scan for lineage-level effects and produces the
-primary eGene catalog. Cell-level modeling answers questions that
-pseudobulking structurally cannot (dispersion QTL, within-subject
-heterogeneity).
+**Current primary application**: eQTL mapping in mouse tissue using
+single-nucleus RNA-seq (snRNA-seq) across the MPP, Collaborative Cross (CC), *33* strains +
+*8* founders + *7* F1 hybrids = 48 genotypes, ~418 samples post-QC.
+Genotyping: GigaMUGA array (~143k markers). Reference genome: mm39 (GRCm39).
+Project: IGVF (Impact of Genomic Variation on Function), Seyedam Lab, UCI.
 
 ---
 
-## Package Structure
+## 2. SCOPE
+
+### In scope (implemented or planned)
+| Modality        | Trait/Condition                  | QTL Code   | Omics type         | Module                  | Status            |
+| --------------- | -------------------------------- | ---------- | ------------------ | ----------------------- | ----------------- |
+| RNA-seq/DNA-seq | Gene Expression                  | cis-eQTL   | Transcriptomics    | nb.py (primary NB-GLMM) | 🔴 planned        |
+| RNA-seq/DNA-seq | Distal Regulation                | trans-eQTL | Transcriptomics    | trans_scan.py           | 🔴 planned        |
+| RNA-seq/DNA-seq | Dispersion Variance              | vQTL       | Transcriptomics    | vqtl.py                 | 🔴 planned        |
+| RNA-seq/DNA-seq | Epistasis / conditional QTL      |            | Transcriptomics    | epistasis.py            | 🔴 planned        |
+| RNA-seq/DNA-seq | Haplotype mediation              |            | Transcriptomics    | mediation.py            | 🔴 planned        |
+| RNA-seq/DNA-seq | Allele-specific expression (ASE) |            | Transcriptomics    | ase.py                  | 🟡 scaffold       |
+| LR-RNA-seq      | Splicing                         | sQTL       | Transcriptomics    | sqtl.py                 | 🔴 planned        |
+| RNA-seq/DNA-seq | SNP fine-mapping                 |            | Genomics           | snp_scan.py             | 🟡 marginal model |
+| ATAC-seq        | Chromatin accessibility          | caQTL      | Genomics           | atac.py                 | 🔴 planned        |
+| dRNA-seq        | RNA modification                 | rmodQTL    | Epigenomics        | mod.py                  | 🔴 planned        |
+| Fiber-seq       | DNA modification                 | dmodQTL    | Epigenomics        | mod.py                  | 🔴 planned        |
+|                 | Permutation-based thresholds     |            | All modalities     | permutation.py          | 🟡 GEV unstable   |
+|                 | Sex × genotype interaction (GxE) |            | All modalities     | gxe.py                  | 🔴 planned        |
+|                 | Multi-tissue / multi-cell-type   |            | All modalities     | pipeline.py layer       | 🔴 planned        |
+|                 | Streamlit data browser           |            | Public data access | app/                    | 🔴 planned        |
+
+All modalities share nb.py as the primary scan engine (NB-GLMM + LOCO via Woodbury).
+New modalities require only a new Stage 1 input handler — the scan is unchanged.
+
+### Out of scope (explicit boundaries)
+- **Pseudobulk aggregation**: mosaiQTL takes pre-aggregated pseudobulk counts and raw
+  count matrices as inputs. Aggregation (sum UMI per sample × cell-type) and
+  normalization are performed upstream by the user's pipeline.
+- FASTQ alignment (here, kallisto)
+- Cell-type clustering and annotation (here, leiden-based clustering was done and annotated using a marker-oriented manual method;  provide annotated AnnData)
+- Doublet detection and ambient RNA removal (here, cellsweep was used; feed clean AnnData)
+- Proteomics / mass spectrometry pQTL
+- GWAS / common-variant association with individual SNPs as primary model
+- Human data (mouse mm39 only; generalization planned post-publication)
+
+---
+
+## 3. MODULE STRUCTURE (src/mosaiqtl/)
 
 ```
-mosaiqtl/
-  __init__.py
-  genome_cache.py     # read/write HAPPY genome cache (RDS, HDF5)
-  kinship.py          # kinship: overall, LOCO, eigen decomposition
-  nb.py               # all NB models: wraps edgePython (pseudobulk + cell-level)
-  lmm.py              # LMM engine: eigendecomposition trick (miQTL port)
-  scan.py             # genome-wide scan orchestrator (model-agnostic dispatch)
-  vqtl.py             # dispersion vQTL: two-stage and joint approaches
-  gxe.py              # genotype × environment interaction QTL (planned)
-  trans.py            # trans-eQTL genome-wide scan (planned)
-  sqtl.py             # splicing QTL via PSI phenotypes (planned)
-  merge.py            # allelic series / merge analysis (planned)
-  snp_scan.py         # imputed SNP association scan (planned)
-  permutation.py      # genome-wide permutation thresholds (planned)
-  utils.py            # RINT, data alignment, design matrices
-  io.py               # read h5ad, PLINK, covariate files (planned)
-
-tests/                # unit tests with small simulated datasets
-validation/           # cross-language validation against R miQTL/qtl2
+src/mosaiqtl/
+├── __init__.py
+├── genotype/               # haplotype data, HMM, kinship, founders
+│   ├── CLAUDE.md
+│   ├── genomecache.py      # read/write HAPPY genome cache; from_rds, from_gigamuga
+│   ├── hmm.py              # forward-backward HMM (n_gen=1 for CC)
+│   ├── kinship.py          # LOCO, eigendecomp cache, Woodbury identity
+│   └── founders.py         # FOUNDER_ORDER, FOUNDER_COLORS, F1_COLORS
+├── qtl/                    # QTL scan engine — all modalities
+│   ├── CLAUDE.md
+│   ├── nb.py               # NB-GLMM Stage 1 and 2 (primary model, transcriptomics)
+│   ├── lmm.py              # Gaussian LMM engine (qtl2/miqtl-port)
+│   ├── scan.py             # Z-matrix n=418, MI, fixef, instability
+│   ├── permutation.py      # fix_h2=True, GEV thresholds
+│   ├── effects.py          # founder haplotype effect estimation
+│   ├── mediation.py        # QR-based mediation
+│   ├── epistasis.py        # pairwise GxG, conditional scanning
+│   ├── vqtl.py             # dispersion QTL, VQTLResult
+│   ├── snp_scan.py         # marginal SNP fine-mapping
+│   └── ase.py              # allele-specific expression (scaffold)
+├── models/                 # shared dataclasses and Pydantic schemas
+│   ├── records.py          # ScanResult, VQTLResult, QTLResult, FounderEffect
+│   └── config.py           # ScanConfig, PipelineConfig (Pydantic v2)
+├── io/                     # all file I/O and covariate construction
+│   ├── CLAUDE.md
+│   ├── covariates.py       # build_covariate_matrix(); user covariate input
+│   ├── anndata_io.py       # AnnData read helpers (backed=True always)
+│   ├── qtl2_io.py          # R/qtl2 format I/O (rpy2, optional extra)
+│   └── results_io.py       # result table serialisation with provenance header
+├── viz/                    # all visualisation
+│   ├── CLAUDE.md
+│   ├── genome.py           # LOD profiles, Manhattan plots (Phase 3 + production)
+│   ├── effects.py          # founder effect bar plots (Phase 3 biological)
+│   ├── haplotypes.py       # haplotype heatmaps, epistasis grids (Phase 3)
+│   ├── validation.py       # Phase 2 R vs Python QC plots ONLY (S1–S11)
+│   └── celltypes.py        # UMAP, dotplots (cell-type summaries)
+├── pipeline.py             # discover, characterize, resolve
+├── cli.py                  # Click CLI (mosaiqtl fit-null/scan/permute/effects/report)
+└── utils.py                # RINT, Z-matrix, align_samples, build_z_matrix
 ```
 
-### Hybrid Dependency Architecture
+### edgePython NB-engine inspiration
+mosaiQTL NB-GLMM model is inspired by[edgePython](https://github.com/pachterlab/edgePython)(Pachter 2026) to implement the negative
+binomial fitting, dispersion estimation, and NEBULA-LN likelihood
 
-mosaiQTL uses [edgePython](https://github.com/pachterlab/edgePython)
-(Pachter 2026) as its NB engine, rather than reimplementing the negative
-binomial fitting, dispersion estimation, and NEBULA-LN likelihood from
-scratch. edgePython provides:
 
-| Component | edgePython function | Used by mosaiQTL in |
-|-----------|--------------------|--------------------|
-| TMM normalization | `calc_norm_factors()` | pseudobulk preprocessing |
-| Common + trended + tagwise $\phi$ | `estimate_disp()` | NB GLM null model (§I Model A) |
-| Empirical Bayes shrinkage (WLEB) | `estimate_tagwise_disp()` | per-gene $\phi$ stabilization |
-| NB GLM fitting (IRLS) | `glm_fit()` | `nb.py` — pseudobulk scan |
-| Quasi-likelihood F-test | `glm_ql_ftest()` | alternative to score test |
-| NEBULA-LN mixed model | `glm_sc_fit()` | `nb.py` — cell-level scan |
-| Cell-level dispersion shrinkage | `shrink_sc_disp()` | `nb.py` — cell-level $\phi$ estimation |
+**Scope boundary enforced in structure:**
+- `preprocessing/`, `annotation/` — do not exist in mosaiQTL; these are upstream
+- `pseudobulk/aggregate.py`, `pseudobulk/normalize.py` — do not exist; aggregation is upstream
+- `io/covariates.py` — the only pseudobulk-related code: reads user-supplied metadata, builds covariate matrix
 
-mosaiQTL provides what edgePython does *not*:
+**Validation plot assignment:**
+- `viz/validation.py` — Phase 2 only (S1–S11 R vs Python QC). Never imported from installed package; tests/ only.
+- `viz/genome.py` + `viz/effects.py` + `viz/haplotypes.py` — Phase 3 biological plots (P1–P4) and production figures
 
-| Component | mosaiQTL module | Novel contribution |
-|-----------|----------------|-------------------|
-| $J$-founder haplotype design matrix | `genome_cache.py` | multiparent population structure |
-| LOCO kinship + eigendecomposition | `kinship.py` | population structure correction |
-| Haplotype score test at each locus | `nb.py`, `scan.py` | $\mathbf{H}_\ell^{(-J)}$ plugged into NB/LMM |
-| Dispersion vQTL (two-stage) | `vqtl.py` | per-subject $\hat{\phi}_i$ → LMM scan |
-| GxE interaction scan | `gxe.py` | $\mathbf{H}_\ell \times$ environment |
-| Trans-eQTL genome-wide scan | `trans.py` | all-chr × all-gene with LOCO |
-| Splicing QTL (PSI phenotype) | `sqtl.py` | junction-level haplotype test |
-| Allelic series / merge analysis | `merge.py` | founder grouping contrasts |
-| LMM port of miQTL | `lmm.py` | validation against R reference |
+**Planned modality modules** (not yet created):
+```
+qtl/atac.py       # ATAC-seq Stage 1 — chromatin accessibility QTL
+qtl/sqtl.py       # splicing ratios Stage 1 — sQTL
+qtl/rnamod.py     # m6A / RNA modification counts Stage 1
+qtl/gxe.py        # sex × genotype interaction
+qtl/trans_scan.py # trans-eQTL with distance filter
+```
 
-The boundary is clean: edgePython handles *how to fit an NB model*;
-mosaiQTL handles *what to test* (which haplotype, at which locus, under
-which genetic model, with which kinship correction).
-
-**Validation against miQTL remains necessary** for all haplotype-specific
-code — the kinship, eigendecomposition, per-locus design matrix
-construction, LOD computation, and founder effect estimation are
-mosaiQTL-native and must match R miQTL output numerically.
 
 ---
 
-## I. Statistical Models
+## 4. DESIGN INTENTION
 
-All models in mosaiQTL share the same haplotype probability backbone
-$\mathbf{H}_\ell \in [0, 1]^{n \times J}$, the same kinship
-infrastructure, and the same scan loop. They differ only in the
-likelihood function and link. The user selects the model at scan time
-via `model='nb'`, `model='lmm'`, or `model='nb_lmm'`.
+### Why this tool exists
+miQTL (R) is the canonical haplotype QTL package for CC/DO mice. It is correct but
+slow, R-only, bulk-data-based, and lacks replicate-awareness and cell-type resolution from single-nucleus data. 
+mosaiQTL ports and extends it to Python with:
+1. A **two-stage NB-GLMM model** that operates on raw counts without ad-hoc normalization
+2. **Cell-type resolution** via per-cell-type pseudobulk inputs (aggregated upstream)
+3. **Novel extensions** (vQTL, epistasis, mediation, ASE) absent from miQTL
+4. **HPC scalability** via Nextflow SLURM pipeline
+5. **Multiomics generalization** — same backbone for ATAC, splicing, RNA/DNA modifications
 
-### Model A — Negative Binomial GLM (primary, `nb.py`)
 
-For pseudobulked raw counts with $n$ replicate-level observations (not
-collapsed genotype means). This is the recommended default for
-count-based phenotypes.
+### USER INPUT 
 
-$$Y_i \sim \text{NB}(\mu_i, \; \phi)$$
+scan configuration space is defined by the user orthogonal choice axes (except test axis model-conditional strains) at scan time: 
 
-$$\log \mu_i = \mathbf{h}_{i(\ell)}^\top \boldsymbol{\gamma} + \mathbf{x}_i^\top \boldsymbol{\alpha} + \log L_i$$
 
-| Symbol | Dimension | Description |
-|--------|-----------|-------------|
-| $Y_i$ | scalar | Raw pseudobulk UMI count for sample $i$ |
-| $\mu_i$ | scalar | Expected count |
-| $\phi$ | scalar | Overdispersion ($\text{Var} = \mu + \phi \mu^2$) |
-| $\mathbf{h}_{i(\ell)}$ | $(J-1) \times 1$ | Founder haplotype probs for sample $i$ at locus $\ell$ |
-| $\boldsymbol{\gamma}$ | $(J-1) \times 1$ | Founder effects on expression (log-fold change) |
-| $\mathbf{x}_i$ | $p \times 1$ | Covariates (intercept, sex, batch, expression PCs) |
-| $L_i$ | scalar | Library size (total UMI for sample $i$), used as offset |
+| Axis                  | CLI flag     | Options                                                       | Default                            |
+| --------------------- | ------------ | ------------------------------------------------------------- | ---------------------------------- |
+| **Population**        | --pop        | `cc`/`do`/`mpp`/`f2`/`structured`                             | user-specified                     |
+| **Statistical Model** | --model      | `nb-glmm`/`lmm`                                               | `nb-glmm`                          |
+| **Test Statistic**    | --test       | nb-glmm: `score`/`lrt` ; lmm: `lrt`/`f_test`                  | nb-glmm: `score` ; lmm: `lrt`      |
+| **Phenotype input**   | --input      | `raw`/`normalized`/`averaged` counts                          | nb-glmm: `raw` ; lmm: `normalized` |
+| **Granularity level** | --granular   | `single-cell`/`single-nuclei`/`pseudobulk`/`bulk`             | user-specified                     |
+| **Scan Window**       | --window     | `cis`/`chr`/`genome`/`loci=set`                               | `chr`                              |
+| **Offset**            | --set-offset | `from_libsize`/`from_file`/`none`                             | `none`                             |
+| **Covariates**        | --covar      | `none`/`user`/`expr_pcs`/`geno_pcs`/ or a mix between any two | `none`                             |
+| **Haplotype**         | --haplotype  | `additive`/`full`/`mi`                                        | `additive`                                   |
 
-The NB GLM operates on all $n$ replicate samples directly. For the CC
-proof-of-concept, $n \approx 418$ (48 genotypes $\times$ ~8.7 replicates),
-sex is a covariate, and the kinship structure is handled by including
-expression PCs or by an explicit random effect (see Model C).
 
-**Test:** Score test (efficient) or likelihood ratio test (more powerful):
+### Design philosophy
+- **Algorithmic innovation over hardware**: score test fits null once per gene, then
+  vectorises over all loci — skips IRLS re-fit per marker (analogous to kallisto
+  pseudoalignment skipping full alignment). Numba JIT for IRLS hot path when profiling shows need.
+- **Composable single-purpose CLI**: `mosaiqtl fit-null`, `scan`, `permute`, `effects`,
+  `report` — each subcommand reads/writes files; no hidden state between stages
+- **Constant-memory streaming**: never materialize the full (genes × loci) LOD matrix;
+  stream per-chromosome, merge on completion
+- **Proper data management**: create analysis-friendly raw and intermediate data; ensures ability to go back and pick up from any step
+- **Minimal core deps**: `pip install mosaiqtl` requires only numpy+pandas+scipy+anndata+h5py
+  (DESIGN-01); GPU and R extras are opt-in
+- **Math companion before code**: every algorithm in `docs/math/` has a derivation
+  before implementation. PRs require derivation → pseudocode → code order (DESIGN-03/05).
+- **Reproducibility baked in**: `ProvenanceRecord` on every scan; seed always written;
+  git commit hash embedded in all output files (DESIGN-06/07)
+- **Measure before optimising**: scalene + pytest-benchmark before any perf PR;
+  benchmark results committed to repo (DESIGN-04)
+- **Moment stats before MLE**: moment-based dispersion default; MLE via flag (faster,
+  adequate for n=48)
 
-The **score test** evaluates the gradient of the log-likelihood at the
-null ($\boldsymbol{\gamma} = \mathbf{0}$). For the NB log-likelihood
-$\ell(\boldsymbol{\gamma})$:
+### Why NB-GLMM (not pure LMM)?
+Single-nucleus RNA-seq counts are overdispersed integers. Log-normalising and treating
+as continuous (LMM) loses statistical power and can inflate false positives for
+lowly-expressed genes. The NB-GLM captures count overdispersion explicitly.
+nb.py implements both stages: Stage 1 (NB-GLMM cell-level null) and Stage 2 (PQL NB-GLMM score scan with LOCO kinship integrated via Woodbury identity, all matrix ops at m×m cost). lmm.py is the Gaussian LMM validation reference only. See: He et al. 2021 (NEBULA, DOI:
+10.1038/s42003-021-02146-6) and Yazar et al. 2022 (DOI: 10.1126/science.abf3041).
 
-$$T_\ell^{\text{score}} = \mathbf{U}(\hat{\boldsymbol{\theta}}_0)^\top \mathcal{I}(\hat{\boldsymbol{\theta}}_0)^{-1} \mathbf{U}(\hat{\boldsymbol{\theta}}_0) \sim \chi^2(J-1)$$
-
-where $\mathbf{U}$ is the score vector and $\mathcal{I}$ is the Fisher
-information, both evaluated at the null MLE $\hat{\boldsymbol{\theta}}_0$.
-The null model is fit once per gene; per-locus evaluation requires only
-matrix products against the haplotype design matrix.
-
-The **LRT** fits both null and alternative models:
-
-$$\Lambda_\ell = 2 \left[ \ell(\hat{\boldsymbol{\theta}}_1) - \ell(\hat{\boldsymbol{\theta}}_0) \right] \sim \chi^2(J-1)$$
-
-More powerful than the score test but requires per-locus IRLS convergence.
-
-**Dispersion estimation:** Gene-wise $\phi$ estimated once under the null
-model using edgePython's three-stage empirical Bayes pipeline:
-
-1. **Common** $\phi$: single value across all genes (starting point)
-2. **Trended** $\tilde{\phi}_g$: smooth function of mean expression
-   (captures the mean-variance relationship)
-3. **Tagwise** $\hat{\phi}_g^{\text{shrunk}}$: per-gene estimate shrunk
-   toward the trend via weighted likelihood empirical Bayes (WLEB):
-
-$$\hat{\phi}_g^{\text{shrunk}} = \frac{d_0 \tilde{\phi}_g + d_g \hat{\phi}_g^{\text{raw}}}{d_0 + d_g}$$
-
-where $d_0$ is the prior degrees of freedom and $d_g$ is the residual
-df for gene $g$. This is edgePython's `estimate_disp()` — identical to
-edgeR's Cox-Reid adjusted profile likelihood approach.
-
-The shrunk $\hat{\phi}_g$ is held fixed during the per-locus genome scan.
-This stabilizes p-values for low-count genes without introducing bias
-for the haplotype effect test.
-
-**Note on vQTL:** This gene-level shrinkage operates across *genes*
-(borrowing information from genes with similar mean expression), not
-across *subjects*. It does not compress the between-subject dispersion
-variation that the vQTL scan is designed to detect.
-
-**Phenotype input:** Raw pseudobulk UMI counts (integers). No RINT, no
-log-CPM transformation. Library size $L_i$ enters as a known offset.
-
-### Model B — Linear Mixed Model (miQTL port, `lmm.py`)
-
-For RINT-transformed or normalized expression. This is the direct port
-of miQTL `scan.h2lmm()` / qtl2 `scan1()`, provided for validation and
-backward compatibility.
-
-$$\mathbf{y} = \mathbf{G}_\ell \boldsymbol{\gamma} + \mathbf{X} \boldsymbol{\alpha} + \mathbf{u} + \boldsymbol{\varepsilon}$$
-
-$$\mathbf{u} \sim \mathcal{N}(\mathbf{0},\; \sigma^2_g \mathbf{K}), \qquad \boldsymbol{\varepsilon} \sim \mathcal{N}(\mathbf{0},\; \sigma^2_e \mathbf{I}_n)$$
-
-| Symbol | Dimension | Description |
-|--------|-----------|-------------|
-| $\mathbf{y}$ | $n \times 1$ | Phenotype vector (RINT or normalized expression) |
-| $\mathbf{G}_\ell$ | $n \times q$ | Genetic predictor at locus $\ell$ (see §II) |
-| $\boldsymbol{\gamma}$ | $q \times 1$ | Genetic effects to be tested |
-| $\mathbf{X}$ | $n \times p$ | Covariate design matrix |
-| $\mathbf{K}$ | $n \times n$ | Kinship matrix (LOCO) |
-| $\sigma^2_g$ | scalar | Polygenic genetic variance |
-| $\sigma^2_e$ | scalar | Residual variance |
-
-**Phenotype input:** RINT-transformed log-CPM (continuous), or collapsed
-genotype means for validation against R miQTL output. The LMM can operate
-on either $n$ replicates (with expanded $\tilde{\mathbf{K}}_{n \times n}$)
-or 48 genotype means (with the native $\mathbf{K}_{48 \times 48}$).
-
-**Eigendecomposition acceleration (Kang et al. 2008):** specific to the
-LMM. Precompute the spectral decomposition $\mathbf{K} = \mathbf{U}
-\mathbf{D} \mathbf{U}^\top$ once per LOCO chromosome. Rotating all
-terms by $\mathbf{U}^\top$ diagonalizes the covariance, reducing each
-per-locus fit from $O(n^3)$ to $O(nq^2)$ weighted least squares. The
-null $h^2$ is estimated once per chromosome via REML.
-
-**Test:** $F$-test on RSS ratio:
-
-$$\text{LOD}_\ell = \frac{n - p}{2} \log_{10} \left( \frac{\text{RSS}_0}{\text{RSS}_1} \right), \qquad F_\ell = \frac{(\text{RSS}_0 - \text{RSS}_1) / q}{\text{RSS}_1 / (n - p - q)}$$
-
-### Model C — NB-LMM / NEBULA-LN (cell-level, `nb.py`)
-
-For cell-level counts without pseudobulking. Uses edgePython's
-`glm_sc_fit()` + `shrink_sc_disp()` for the NB-gamma mixed model
-fitting and cell-level dispersion shrinkage, with mosaiQTL providing
-the haplotype design matrix $\mathbf{H}_\ell^{(-J)}$ at each locus.
-
-See §III for full model specification.
+### Why LOCO kinship?
+The LOCO (leave-one-chromosome-out) kinship matrix is recomputed excluding markers
+on the chromosome being tested. This prevents the QTL signal from inflating the
+random-effect kinship estimate — a bias known as proximal contamination.
+See: Listgarten et al. 2012 (DOI: 10.1038/nmeth.2037).
 
 ---
 
-## II. Genetic Predictor Frameworks
+## 5. Kinship
 
-All three models share the same haplotype probability backbone. The
-frameworks below define how $\mathbf{G}_\ell$ (or equivalently
-$\mathbf{h}_{i(\ell)}$ in the NB GLM) is constructed at each locus.
-They are model-agnostic — any framework can be used with any of
-Models A, B, or C.
-
-### A. Additive Haplotype (implemented ✓)
-
-The default framework, matching miQTL `scan.h2lmm()`. At each locus
-$\ell$, the genetic predictor is the $(J - 1)$-column founder haplotype
-probability matrix (dropping one founder for identifiability):
-
-$$\mathbf{G}_\ell = \mathbf{H}_\ell^{(-J)} \in \mathbb{R}^{n \times (J-1)}$$
-
-where $\mathbf{H}_\ell \in [0, 1]^{n \times J}$ contains the
-probability that subject $i$ carries founder $f$'s haplotype at locus
-$\ell$, with $\sum_{f=1}^{J} H_{i\ell f} = 1$. The number of founders
-$J$ and which founder to drop are user-specified at scan time.
-
-**Test:** $F(J - 1, \; n - p - (J - 1))$ — tests whether *any* founder
-has a differential effect.
-
-**Cost:** $O(n \cdot (J-1)^2)$ per locus.
-
-**Proof-of-concept:** For CC/DO mice, $J = 8$, $q = 7$, drop WSB/EiJ
-by convention. For a 4-way MAGIC, $J = 4$, $q = 3$.
-
-### B. Biallelic SNP Association (design matrix swap)
-
-Impute SNP genotypes from the founder haplotypes. If founders are
-partitioned into reference ($r = 0$) and alternative ($a = 1$) alleles
-at a biallelic SNP, the dosage for subject $i$ is:
-
-$$g_{i\ell} = \sum_{f \in \mathcal{A}} H_{i\ell f}$$
-
-where $\mathcal{A}$ is the set of founders carrying the alternative
-allele. The genetic predictor becomes scalar:
-
-$$\mathbf{G}_\ell = \mathbf{g}_\ell \in \mathbb{R}^{n \times 1}, \qquad q = 1$$
-
-**Test:** $F(1, \; n - p - 1)$ — standard single-SNP association.
-
-**Proximity:** Trivial. Replace $\mathbf{H}_\ell^{(-J)}$ with
-$\mathbf{g}_\ell$ in the existing `fit_lmm_at_locus()` call. No
-changes to the eigendecomposition or scan loop.
-
-**Use case:** Fine-mapping within a QTL region using founder-imputed
-SNPs (matching qtl2 SNP association scans, Broman et al. 2019).
-
-### C. Full Diplotype Model (design matrix swap)
-
-For heterozygous populations (DO mice, F$_1$ hybrids), model all
-$\binom{J}{2} + J$ unordered diplotype states:
-
-$$\mathbf{G}_\ell = \mathbf{P}_\ell^{(-1)} \in \mathbb{R}^{n \times (d-1)}$$
-
-where $d = \binom{J}{2} + J$ and $P_{i\ell d}$ is the probability that
-subject $i$ carries diplotype $d$ (founder pair $f_1 / f_2$) at locus
-$\ell$.
-
-**Test:** $F(d - 1, \; n - p - (d - 1))$ — captures dominance and
-epistatic interactions between founder alleles.
-
-**Proof-of-concept:** For CC/DO with $J = 8$: $d = 36$, $q = 35$.
-For a 4-way cross: $d = 10$, $q = 9$.
-
-### D. Allelic Series / Merge Analysis (contrast matrix)
-
-Test whether subsets of founders share effects. Instead of the full
-$(J - 1)$ df haplotype test, define a grouping
-$\mathcal{S} = \{S_1, S_2, \ldots, S_k\}$ that partitions founders
-into $k$ functional classes, then:
-
-$$\mathbf{G}_\ell = \mathbf{H}_\ell \mathbf{C} \in \mathbb{R}^{n \times (k-1)}$$
-
-where $\mathbf{C} \in \{0, 1\}^{J \times (k-1)}$ is the contrast
-matrix mapping founders to groups (dropping one group for
-identifiability), and $q = k - 1$.
-
-**Example (CC, $J = 8$):** Group wild-derived founders (CAST, PWK, WSB)
-vs. classical lab strains (A/J, B6, 129, NOD, NZO) → $k = 2$, $q = 1$:
-
-$$g_{i\ell} = H_{i\ell,\text{CAST}} + H_{i\ell,\text{PWK}} + H_{i\ell,\text{WSB}}$$
-
-**Proximity:** Matrix multiply $\mathbf{H}_\ell \mathbf{C}$ before
-passing to `fit_lmm_at_locus()`. Enumerate candidate groupings
-programmatically using the Stirling partition numbers
-$S(J, k)$ for $k = 2, \ldots, J - 1$.
-
-**Use case:** Increase power when the true allelic series has fewer
-than 8 distinct effect levels, which is biologically common
-(Keele et al. 2020).
-
-### E. Haley-Knott Regression (simplification)
-
-Drop the kinship term entirely ($\sigma^2_g = 0$):
-
-$$\mathbf{y} = \mathbf{G}_\ell \boldsymbol{\gamma} + \mathbf{X} \boldsymbol{\alpha} + \boldsymbol{\varepsilon}, \qquad \boldsymbol{\varepsilon} \sim \mathcal{N}(\mathbf{0}, \; \sigma^2 \mathbf{I}_n)$$
-
-**Proximity:** Set $h^2 = 0$ in the existing LMM code (all weights
-become 1). No eigendecomposition needed.
-
-**Use case:** Populations with minimal relatedness, or as a fast
-first-pass scan before LMM refinement. Matches qtl2 `scan1()` without
-the `kinship` argument.
-
-### F. Score Test (alternative statistic)
-
-Instead of fitting the full alternative model at every locus, evaluate
-the gradient of the log-likelihood under the null:
-
-$$T_\ell^{\text{score}} = \frac{\left[ \boldsymbol{\gamma}^\top \mathbf{G}_\ell^{*\top} \mathbf{W}^{-1} \hat{\boldsymbol{\varepsilon}}_0 \right]^2}{\boldsymbol{\gamma}^\top \mathbf{G}_\ell^{*\top} \mathbf{W}^{-1} \mathbf{G}_\ell^* \boldsymbol{\gamma}}$$
-
-where $\hat{\boldsymbol{\varepsilon}}_0 = \mathbf{y}^* - \mathbf{X}^* \hat{\boldsymbol{\alpha}}_0$ are null residuals and
-$\mathbf{W} = \text{diag}(\delta d_i + 1)$.
-
-**Proximity:** Moderate. Requires computing the null residuals once per
-chromosome (already done during $h^2$ estimation) and then a single
-matrix-vector product per locus — no per-locus least squares solve.
-
-**Use case:** Order-of-magnitude speedup for genome-wide scans with
-many loci (e.g., trans-eQTL with $\sim 10^5$ tests per gene). The
-score test is asymptotically equivalent to the F-test.
-
----
-
-## III. Cell-Level Negative Binomial Model (NEBULA-LN)
-
-For single-cell eQTL mapping *without* pseudobulking. For cell $j$ in
-subject $i$, gene $g$:
-
-$$Y_{ij} \mid u_i \sim \text{NB}(\mu_{ij}, \; \phi)$$
-
-$$\log \mu_{ij} = \mathbf{x}_{ij}^\top \boldsymbol{\beta} + \mathbf{h}_{i(\ell)}^\top \boldsymbol{\gamma} + u_i + \log L_{ij}$$
-
-$$\exp(u_i) \sim \text{Gamma}\!\left(\frac{1}{\sigma^2}, \; \frac{1}{\sigma^2}\right)$$
-
-| Symbol | Dimension | Description |
-|--------|-----------|-------------|
-| $Y_{ij}$ | scalar | Raw UMI count, cell $j$, subject $i$ |
-| $\mu_{ij}$ | scalar | Expected count |
-| $\phi$ | scalar | Cell-level overdispersion (NB) |
-| $\sigma^2$ | scalar | Subject-level overdispersion (random effect variance) |
-| $\mathbf{x}_{ij}$ | $p \times 1$ | Cell-level + subject-level covariates |
-| $\mathbf{h}_{i(\ell)}$ | $(J-1) \times 1$ | Founder haplotype probs for subject $i$ at locus $\ell$ |
-| $\boldsymbol{\gamma}$ | $(J-1) \times 1$ | Founder effects on mean expression |
-| $L_{ij}$ | scalar | Library size (total UMI for cell $j$) |
-| $u_i$ | scalar | Subject-level random effect |
-
-The NB variance decomposes into technical and biological components:
-
-$$\text{Var}(Y_{ij} \mid u_i) = \mu_{ij} + \phi \, \mu_{ij}^2$$
-
-The NEBULA-LN approximation leverages large cells-per-subject (CPS):
-when CPS is large, the marginal log-likelihood per subject can be
-analytically approximated via the law of large numbers, avoiding the
-Laplace approximation (He et al. 2021).
-
-### Sufficient Statistics (precomputed once per gene)
-
-For each subject $i$:
-
-$$S_i = \sum_{j=1}^{n_i} Y_{ij}, \qquad T_i = \sum_{j=1}^{n_i} \log \Gamma(Y_{ij} + 1), \qquad n_i = \text{cells per subject}$$
-
-These collapse cell-level data to subject-level summaries. The per-locus
-optimization updates only $\boldsymbol{\gamma}$ (haplotype effects) and
-re-estimates $\sigma^2$ and $\phi$.
-
----
-
-## IV. Dispersion vQTL
-
-Maps genetic effects on expression *noise* rather than mean expression.
-This is the key extension requiring single-cell data — pseudobulking
-destroys within-subject variance information.
-
-### Two-Stage Approach (implemented ✓)
-
-**Stage 1:** Estimate per-subject overdispersion $\hat{\phi}_i$ via
-method-of-moments:
-
-$$\hat{\phi}_i = \frac{\text{Var}_j(Y_{ij}) - \bar{Y}_i}{\bar{Y}_i^2}$$
-
-or via per-subject NB maximum likelihood.
-
-**Stage 2:** Scan $\log \hat{\phi}_i$ as a continuous phenotype through
-the standard LMM haplotype scan:
-
-$$\log \hat{\phi}_i = \mathbf{H}_{i(\ell)}^\top \boldsymbol{\beta}_v + \mathbf{x}_i^\top \boldsymbol{\alpha}_v + u_{v,i} + \varepsilon_{v,i}$$
-
-A significant hit means founder haplotype at locus $\ell$ controls the
-*variability* of gene expression across cells within a subject.
-
-### Joint Approach (future)
-
-Extend NEBULA to model the overdispersion itself as a function of
-haplotype:
-
-$$\log \phi_i = \mathbf{h}_{i(\ell)}^\top \boldsymbol{\delta}$$
-
-and test $H_0: \boldsymbol{\delta} = \mathbf{0}$. This is a double
-GLMM — computationally heavier but avoids two-stage estimation error.
-
----
-
-## V. Planned Extensions
-
-### GxE Interaction QTL (`gxe.py`)
-
-Add founder haplotype × environment interaction terms:
-
-$$\mathbf{y} = \mathbf{H}_\ell^{(-J)} \boldsymbol{\beta} + \left(\mathbf{H}_\ell^{(-J)} \odot \mathbf{e}\right) \boldsymbol{\delta} + \mathbf{X} \boldsymbol{\alpha} + \mathbf{u} + \boldsymbol{\varepsilon}$$
-
-where $\mathbf{e}$ is the environment vector (e.g., sex coded as 0/1)
-and $\odot$ denotes element-wise product broadcast across columns.
-
-**Test:** $F(J - 1, \; n - p - 2(J - 1))$ on
-$\boldsymbol{\delta} = \mathbf{0}$.
-
-**Proximity:** Append $\mathbf{H}_\ell^{(-J)} \odot \mathbf{e}$ to the
-design matrix. The eigendecomposition trick applies unchanged since
-$\mathbf{K}$ is unaffected.
-
-### Trans-eQTL (`trans.py`)
-
-Scan all chromosomes for a gene, not just the cis-window. For a gene on
-chromosome $c$, when testing a locus on chromosome $c'$, use the LOCO
-kinship excluding $c'$ (not $c$):
-
-$$\mathbf{K}^{(-c')} = \frac{1}{L_{-c'}} \sum_{\ell \notin c'} \mathbf{H}_\ell \mathbf{H}_\ell^\top$$
-
-**Proximity:** Structurally identical to cis scan — iterate over all
-LOCO chromosomes instead of one. Multiple testing correction via
-Bonferroni across $\sim 19{,}000$ loci per gene, or permutation.
-
-### Splicing QTL (`sqtl.py`)
-
-Phenotype is percent-spliced-in (PSI) per junction per subject:
-
-$$\psi_{ig} = \frac{\text{inclusion}_{ig}}{\text{inclusion}_{ig} + \text{exclusion}_{ig}}$$
-
-After RINT, $\psi$ plugs directly into `scan_h2lmm()` as a continuous
-phenotype. No changes to the LMM engine.
-
-### Conditional / Multi-QTL Scans
-
-After identifying a primary QTL at locus $\ell_1$, add it as a fixed
-covariate and re-scan:
-
-$$\mathbf{y} = \mathbf{H}_{\ell_1}^{(-J)} \boldsymbol{\gamma}_1 + \mathbf{H}_\ell^{(-J)} \boldsymbol{\gamma}_2 + \mathbf{X} \boldsymbol{\alpha} + \mathbf{u} + \boldsymbol{\varepsilon}$$
-
-**Proximity:** Append $\mathbf{H}_{\ell_1}$ to $\mathbf{X}$ and re-run
-the genome scan. Matches miQTL `condition.out.locus.for.scan()`.
-
-### Deferred Extensions
-
-| Extension | Model Class | Proximity | Notes |
-|-----------|-------------|-----------|-------|
-| Fine-mapping (SuSiE) | Bayesian credible sets | Moderate | Operates on scan output, not the LMM engine |
-| Colocalization | Bayesian hypothesis test | Moderate | Compares two scan result objects |
-| Allele-specific expression | Binomial test | New model | Leverages F$_1$ heterozygosity |
-| Pseudotime QTL | LMM with pseudotime covariate | Low | $\mathbf{G}_\ell \times t$ interaction |
-| Composition QTL | Dirichlet regression | New model | Cell-type proportions as multivariate phenotype |
-| Multivariate joint model | MANOVA-LMM | Moderate | Simultaneous mapping across cell types |
-| Bayesian haplotype effects | BayesB/C shrinkage | New model | Hierarchical prior on $\boldsymbol{\gamma}$ |
-
----
-
-## VI. Kinship
 
 The realized kinship between subjects $i$ and $j$ from allele-sharing
 across $L$ loci:
@@ -531,126 +227,342 @@ where $s(i)$ maps animal $i$ to its strain genotype.
 
 ---
 
-## VII. Data Flow
+## 6. DATA FLOW
 
 ```
-h5ad (cells × genes, with cell-type annotations)
-  ↓
-Cell-identity resolution choice:
-  ├─ lineage level (e.g., all myonuclei = type1 + type2a + type2b + type2x)
-  ├─ subtype level (e.g., type2b only)
-  └─ cell level (no aggregation — NEBULA-LN / vQTL)
-  ↓
-┌───────────────────────────────────────────────────────────────┐
-│ PSEUDOBULK PATH (lineage or subtype)                         │
-│   aggregate counts per sample × chosen cell identity         │
-│   → TMM normalize → log-CPM → RINT per gene                 │
-│   → scan.scan_h2lmm()  [highest power for mean eQTL]        │
-└───────────────────────────────────────────────────────────────┘
-┌───────────────────────────────────────────────────────────────┐
-│ CELL-LEVEL PATH (no pseudobulking)                           │
-│   nb.precompute_sufficient_stats()                    │
-│   → nb.scan_nb (cell-level mode)()  [mean eQTL on raw counts]    │
-│   → vqtl.scan_vqtl()  [dispersion eQTL — requires cells]   │
-└───────────────────────────────────────────────────────────────┘
-  ↓
-genome_cache.load()                  → H_ℓ ∈ ℝ^{n × J} per locus
-  ↓
-kinship.calc_kinship_loco()          → {chr: K^{(-c)}} + eigendecompositions
-  ↓
-scan.scan_h2lmm()       → cis-eQTL:  LOD, p, γ (J−1 founder effects)
-vqtl.scan_vqtl()        → vQTL:      LOD for dispersion effect
-gxe.scan_gxe()          → GxE:       LOD for haplotype × environment
-trans.scan_trans()       → trans:     genome-wide LOD
-sqtl.scan_sqtl()        → sQTL:      LOD for splicing effect
-snp_scan.scan_snp()     → SNP assoc: LOD per imputed variant
-merge.scan_merge()      → allelic:   LOD per candidate founder grouping
+[UPSTREAM — not in mosaiQTL, performed by user]
+Raw FASTQ (per strain × batch)
+  → Kallisto
+  → scanpy QC: joint filters, doublet detection, 
+  → cellsweep: ambient RNA removal
+  → Leiden clustering + cell-type annotation
+  → Pseudo-bulk aggregation: sum raw UMI per unit × category
+  → TMM / DESeq2 normalization
+  → Output: per-cell-type AnnData (adata.raw = raw counts) + sample metadata CSV
+
+[mosaiQTL BOUNDARY — inputs below here]
+mosaiQTL accepts:
+  (A) Pseudobulk count matrix  (n_samples × n_genes) per cell type — raw integer counts
+  (B) AnnData with adata.raw preserved — for NB Stage 1 cell-level fit
+  (C) Sample metadata CSV — with mandatory cols: sample_id, sex, batch
+      plus any user-supplied covariates (age, body_weight_g, etc.)
+  (D) Genome cache (HDF5) — haplotype probs
+
+  → Covariate matrix construction        [io/covariates.py]
+      - mandatory: sample_id, sex, batch
+      - user-supplied: any numeric/categorical column from sample metadata
+      - expression PCs (n_expression_pcs=3 default; PEER-equivalent)
+      - categorical user covariates one-hot encoded automatically
+      - NaN in any column: raises MissingCovariateError before scan
+          - Highlight which column
+
+  → Genome cache (HDF5)                  [genotype/genomecache.py]
+      - haplotype probs shape (n_samples, 8, n_loci)
+      - allele encoding uses CC strain calls via qtl2convert
+  → LOCO kinship matrices                [genotype/kinship.py]
+      - one (n_samples × n_samples) matrix per chromosome
+      - Woodbury identity; eigendecomp cached
+
+  → Stage 1+2: NB-GLMM scan            [qtl/nb.py — primary]
+      Stage 1 (fit_null_sc_native): NEBULA-LN cell null per gene
+        - output: phi_shrunk (EB dispersion), sigma2_sample — phi fixed for all Stage 2
+      Stage 2 (scan_nb_gene + fit_null_nb_glmm_loco): PQL NB-GLMM with LOCO kinship
+        - Model: S_i ~ NB(mu_i, phi), log mu_i = x^T beta + u_i + offset
+                 u ~ N(0, tau K_LOCO). phi held fixed from Stage 1.
+        - PQL each iteration: W = mu/(1+phi*mu)  [NB variance fn, phi-dependent]
+                              z = (log mu - offset) + (S-mu)/mu  [NB working response]
+                              Gaussian solver estimates beta, u_hat, tau from (W,z)
+                              mu = exp(x@beta + u_hat + offset)  [back to NB]
+          W and z rederived from NB mu every iteration — model stays NB throughout.
+          Converged solution: PQL approximation to true NB-GLMM (Chen et al. 2016).
+        - Woodbury: V=diag(1/W)+tau*Z K_m Z^T — ops at m×m, never n×n
+        - Score stat: Q_l ~ chi2(J-1); LOD = Q_l/(2 ln 10)
+  → LMM validation reference           [qtl/lmm.py, qtl/scan.py]
+      - Gaussian eigendecomp LMM (Kang 2008 / qtl2) for Phase 2 R comparison
+      - called by: scan.py, permutation.py, mediation.py, epistasis.py
+
+  → Permutation thresholds               [qtl/permutation.py]
+      - fix_h2=True; GEV fit on max-LOD distribution
+      - minimum 1000 permutations; 5000 preferred
+      - expression vector permuted (not genotype)
+
+  → FDR correction                       [pipeline.py]
+      - BH-FDR (anti-conservative without permutation; Storey q-value planned)
+      - eGene discovery
+
+  → Haplotype effects                    [qtl/effects.py]
+      - 8 per-founder effect estimates at peak locus
+      - standard errors + CIs
+
+  → Optional downstream                  [qtl/mediation.py, epistasis.py, vqtl.py]
+      - QR-based mediation analysis
+      - pairwise epistasis scan
+      - dispersion QTL (vQTL)
+      - conditional multi-signal scan
+
+Final outputs:
+  - eGene tables per cell type (gene_id, chr, pos_mb, LOD, FDR, founder effects)
+  - LOD profile CSVs
+  - QC plots (PNG, dpi=300, font Carlito)
+  - HTML Nextflow run report
 ```
 
 ---
 
-## VIII. Compute Cost Estimates
+## 7. COVARIATE HANDLING
 
-Benchmarked at $n = 48$ (CC proof-of-concept, $J = 8$). Costs scale as
-$O(n (J-1)^2)$ per locus for the additive haplotype model, and
-$O(n q^2)$ in general for any design matrix with $q$ genetic parameters.
+Users may supply covariates via the `fixed_covariates` and `user_covariates` parameters in
+`build_covariate_matrix()` (in `io/covariates.py`) and by passing a metadata CSV to the
+Nextflow pipeline. mosaiQTL does not generate covariates — it consumes them from
+user-supplied sample metadata alongside the mandatory defaults.
 
-| Step | Per gene ($n = 48$) | 20k genes | Notes |
-|------|---------------------|-----------|-------|
-| REML $h^2$ estimation (19 chr) | 8.9 ms | 3 min | once per chr per gene |
-| Additive haplotype scan (1k loci/chr) | 0.57 s | 3.2 hr | $q = J - 1$ |
-| SNP association scan (10k SNPs/chr) | 0.19 s | 1.1 hr | $q = 1$ |
-| Two-stage vQTL | 0.57 s | 3.2 hr | same LMM engine |
-| NEBULA-LN (cell-level, $\sim 200$ CPS) | ~38 s | ~210 hr | SLURM parallel |
-| PGMM (Poisson-gamma, closed-form) | ~1.9 s | ~10.5 hr | no cell-level $\phi$ |
+```python
+# covariates (user must supply these columns in sample metadata)
+mandatory = ['sex', 'batch']
+# sex:           X-linked dosage; hormone-driven expression differences
+# batch:         sequencing batch technical variation
+# User-supplied via sample_metadata DataFrame
 
-NEBULA-LN is ~20× slower than LMM per locus. The two-stage vQTL uses
-the cheap LMM scan on pre-estimated $\hat{\phi}$, making it the
-pragmatic first implementation. Full NEBULA-LN is parallelizable across
-genes via SLURM array jobs.
+# Expression PCs (PEER-equivalent confounders)
+# n_expression_pcs=3 default; set 0 to disable
+```
 
----
+In the Nextflow pipeline, pass a metadata CSV with any additional columns:
+```yaml
+# config/default_params.yaml
+sample_metadata: 'config/samplesheet.csv'
+fixed_covariates: ['sex', 'batch', 'age', 'body_weight_g', 'tissue_weight_mg']
+n_expression_pcs: 3
+```
 
-## IX. Validation Strategy
+The model equation including user covariates:
 
-For every module, the validation script:
+$$y = H\alpha + C_{\text{default}}\beta_1 + C_{\text{user}}\beta_2 + Zu + \varepsilon$$
 
-1. Generates a simulated CC dataset (8 founders, 7 F$_1$s, 33 CC strains,
-   8 replicates per strain = 384 samples)
-2. Runs the computation in both Python (mosaiQTL) and R (miQTL/qtl2)
-3. Compares outputs numerically ($r > 0.999$, $\max |\Delta| < 10^{-6}$)
+where $C_{\text{user}}$ is the user-supplied covariate matrix (numeric, no NaN).
+Both $\beta_1$ and $\beta_2$ are included as fixed effects in the NB-GLMM score scan.
 
-| Module | Status | Reference |
-|--------|--------|-----------|
-| Kinship (48×48 LOCO) | ✓ validated | `qtl2::calc_kinship()` |
-| K expansion (48→384) | ✓ validated | R: `k_chr[strain_idx, strain_idx]` |
-| Null $h^2$ estimation | ✓ validated | `qtl2::scan1()` null fit |
-| LOD scores per locus | ✓ validated | `miQTL::scan.h2lmm()` |
-| Dispersion $\hat{\phi}$ estimation | ✓ validated | moment estimator |
-| vQTL scan | ✓ validated | two-stage on simulated data |
-| NB GLM dispersion (edgePython) | planned | `edgePython::estimate_disp()` vs `edgeR` |
-| NB GLM score test | planned | `edgePython::glm_fit()` + custom score |
-| NEBULA-LN $\sigma^2$, $\phi$ | planned | `edgePython::glm_sc_fit()` vs `nebula::nebula()` |
-| Permutation $p$-values | planned | `miQTL` permutation scan |
-| SNP association | planned | `qtl2::scan1snps()` |
-| Merge analysis | planned | manual contrast validation |
 
 ---
 
-## X. References
+## 7. DEPENDENCIES
 
-- Pachter, L. (2026). Differential analysis of genomics count data with
-  edge*. *bioRxiv*.
-  [doi:10.64898/2026.02.16.706223](https://doi.org/10.64898/2026.02.16.706223)
-- He, L. et al. (2021). NEBULA: fast negative binomial mixed model for
-  multi-subject single-cell data. *Commun. Biol.* 4:629.
-  [doi:10.1038/s42003-021-02146-6](https://doi.org/10.1038/s42003-021-02146-6)
-- Kang, H.M. et al. (2008). Efficient control of population structure in
-  model organism association mapping. *Genetics* 178:1709–1723.
-  [doi:10.1534/genetics.107.080101](https://doi.org/10.1534/genetics.107.080101)
-- Keele, G.R. et al. (2020). Determinants of QTL mapping power in the
-  realized Collaborative Cross. *G3* 9:1707–1727.
-  [doi:10.1534/g3.119.400194](https://doi.org/10.1534/g3.119.400194)
-- Keele, G.R. et al. (2020). Genetic fine-mapping and identification of
-  candidate genes and variants for adiposity traits in outbred rats.
-  *PLOS Genet.* 16(1):e1008537.
-  [doi:10.1371/journal.pgen.1008537](https://doi.org/10.1371/journal.pgen.1008537)
-- Broman, K.W. et al. (2019). R/qtl2: software for mapping quantitative
-  trait loci with high-dimensional data and multiparent populations.
-  *Genetics* 211:495–502.
-  [doi:10.1534/genetics.118.301595](https://doi.org/10.1534/genetics.118.301595)
-- Haley, C.S. & Knott, S.A. (1992). A simple regression method for
-  mapping quantitative trait loci in line crosses using flanking markers.
-  *Heredity* 69:315–324.
-  [doi:10.1038/hdy.1992.131](https://doi.org/10.1038/hdy.1992.131)
-- King, E.G. et al. (2014). Bayesian modeling of haplotype effects in
-  multiparent populations. *Genetics* 198:139–156.
-  [doi:10.1534/genetics.114.166249](https://doi.org/10.1534/genetics.114.166249)
-- Robinson, M.D. & Smyth, G.K. (2008). Small-sample estimation of
-  negative binomial dispersion, with applications to SAGE data.
-  *Biostatistics* 9:321–332.
-  [doi:10.1093/biostatistics/kxm030](https://doi.org/10.1093/biostatistics/kxm030)
-- McCarthy, D.J., Chen, Y. & Smyth, G.K. (2012). Differential expression
-  analysis of multifactor RNA-Seq experiments with respect to biological
-  variation. *Nucleic Acids Res.* 40:4288–4297.
-  [doi:10.1093/nar/gks042](https://doi.org/10.1093/nar/gks042)
+### Core (always installed)
+```
+python >= 3.13
+numpy >= 1.26        # array ops, memmap
+pandas >= 2.2        # result tables, covariate matrices
+scipy >= 1.13        # stats, sparse
+h5py >= 3.11         # HDF5 genome cache
+anndata >= 0.10      # AnnData input format
+seaborn >= 0.13      # all plotting
+matplotlib >= 3.9    # figure backend
+pydantic >= 2.7      # config and parameter validation
+click >= 8.1         # CLI entry points
+```
+
+### Optional
+```
+scanpy >= 1.10       # pip install mosaiqtl[sc]  — UMAP/dotplot viz only
+rpy2 >= 3.5          # pip install mosaiqtl[r]   — R/qtl2 cross-validation only
+cupy / torch         # pip install mosaiqtl[gpu] — GPU scan acceleration
+nextflow             # HPC pipeline orchestration (external; see docs/HPC.md)
+```
+
+### Dev
+```
+pytest >= 8.2        pytest-cov >= 5.0    pytest-benchmark >= 4.0
+hypothesis >= 6.100  black >= 24.4        flake8 >= 7.0
+mypy >= 1.10         interrogate >= 1.7   bandit >= 1.7
+memory-profiler      scalene >= 1.5
+```
+
+### R (validation reference only — not installed by default)
+```
+R >= 4.3.3   qtl2   qtl2convert   miqtl   edgeR   ggplot2
+```
+
+---
+
+## 8. STREAMLIT DATA BROWSER (app/)
+
+A public-facing Streamlit application for interactive navigation of CC eQTL results.
+Separate from the analysis package — reads pre-computed outputs only, never re-runs scans.
+
+### Scope
+- Browse eGene tables per cell type (filter by LOD, FDR, chromosome, gene name)
+- Visualise LOD profiles for any gene × cell-type combination
+- Display per-founder haplotype effect plots at peak loci
+- Show vQTL dispersion results alongside mean eQTL
+- Founder color palette and strain ordering consistent with mosaiQTL viz/ conventions
+
+### Architecture
+```
+app/
+├── main.py              <- Streamlit entry point
+├── pages/
+│   ├── 01_Browse.py     <- eGene table with filters
+│   ├── 02_Locus.py      <- LOD profile + founder effects for one gene
+│   ├── 03_Dispersion.py <- vQTL browser
+│   └── 04_About.py      <- dataset description + citation
+├── data/                <- pre-computed result CSVs and HDF5 (.claudeignored)
+│   ├── egenes_*.csv     <- eGene tables per cell type
+│   ├── lod_*.h5         <- LOD profiles (read-only)
+│   └── effects_*.csv    <- founder effects at peak loci
+└── utils/
+    └── plot.py          <- imports from mosaiqtl.viz (same palette + conventions)
+```
+
+### Rules
+- app/ reads pre-computed files only — never imports qtl/, nb.py, or scan functions
+- All colors imported from `mosaiqtl.genotype.founders` — never redefined in app/
+- Streamlit deployment: separate conda env or Docker container; not part of `pip install mosaiqtl`
+- Data files in app/data/ are .claudeignored — never auto-read by Claude Code
+
+### Dependencies (app/ only — not in core mosaiqtl)
+```
+streamlit >= 1.35
+plotly >= 5.20     # interactive LOD profiles
+```
+
+
+---
+
+## 9. VALIDATION APPROACH
+
+mosaiQTL uses a staged validation pipeline. All validation uses **simulated data with
+known ground truth** — no real experimental data required for any validation phase.
+This makes validation fully reproducible and decoupled from HPC data access.
+
+---
+
+### DATA: sparc simulated phenotypes (Phase 2 and Phase 3)
+
+Phase 2 and Phase 3 validation both use phenotypes simulated by **sparc**
+(Keele 2021, github.com/gkeele/sparcc) on the **sparcc_cache** genome cache
+(github.com/gkeele/sparcc_cache), which contains real CC haplotype probabilities
+for the CC lines. This is identical to the miQTL README.md example workflow,
+enabling direct comparison against miQTL ground truth.
+
+```r
+# R — generate sparc phenotypes (run once; save output)
+library(sparcc)
+download.file('https://github.com/gkeele/sparcc_cache/archive/master.zip',
+              destfile = '~/sparcc_cache.zip')
+unzip('~/sparcc_cache.zip')
+genomecache <- '~/sparcc_cache-master'
+
+phenotypes <- sim.CC.data(
+    genomecache     = genomecache,
+    num.lines       = 40,          # 40 CC lines (matches miQTL example)
+    num.sim         = 10,          # 10 simulated phenotypes
+    num.replicates  = 2,           # 2 replicates per line (strain means used for scan)
+    qtl.effect.size = 0.8,         # large effect — ensures detectable QTL signal
+    seed            = 42
+)
+# sparc outputs: phenotypes$data (data.frame with SUBJECT.NAME + sim.y.1..10)
+#                phenotypes$locus (planted QTL locus per simulation)
+#                phenotypes$properties (effect sizes, allelic series)
+```
+
+The planted QTL locus (`phenotypes$locus`) provides ground truth for:
+- Peak position recovery
+- LOD score magnitude
+- Per-founder effect direction
+
+---
+
+### Phase 2 (R vs Python, S1–S11) — sparc + miQTL ground truth
+
+Script: `validation/validate_port.py`
+R reference: `validation/r_reference/port_validation.R`
+Data: sparc phenotypes on sparcc_cache genome cache
+
+**Setup**: R script runs miQTL on sparc phenotypes → exports CSV reference outputs.
+Python script runs mosaiQTL on the same sparcc_cache genome cache + phenotypes →
+compares against R CSVs. LOD concordance is verifiable against known ground truth
+(planted locus position and effect size).
+
+| Stage | What is tested |
+|---|---|
+| S1 | HDF5 genome cache structure vs R HAPPY format (sparcc_cache) |
+| S2 | HMM haplotype probabilities vs R qtl2 (sparcc_cache strains) |
+| S3 | LOCO kinship matrices vs R |
+| S4 | LMM LOD scores vs miQTL — sparc phenotypes; planted locus recovered |
+| S5 | Cache collapse (CC strain compression) |
+| S6 | Permutation thresholds — GEV fit |
+| S7 | Multiple imputation scan |
+| S8 | SNP scan (marginal vs diplotype model difference documented) |
+| S9 | Mediation LOD scores |
+| S10 | Positional confidence intervals — CI overlaps planted locus |
+| S11 | Instability scan |
+
+Pass criterion for S4: planted locus recovered as peak in ≥8/10 simulated phenotypes.
+
+---
+
+### Phase 3 (NB model consistency, P1–P4) — sparc-derived single-cell simulation
+
+Script: `validation/validate_phase3.py`
+Data: simulated single-cell counts derived from sparc phenotypes (no real data needed)
+
+**Strategy**: sparc provides strain-level continuous phenotypes with known QTL signal.
+Phase 3 converts these into single-cell-adjacent NB count data by:
+
+1. **Strain means → NB parameters**: for each sparc simulation, treat the strain mean
+   phenotype as the log-mean of a NB distribution. Per-strain counts are drawn as:
+   ```python
+   # For each strain i, gene g:
+   mu_i = exp(sparc_mean_i * effect_scale + baseline)
+   counts_ig = rng.negative_binomial(1/phi, 1/(1 + phi*mu_i), size=n_cells_per_strain)
+   # phi ~ 0.3 (typical skeletal muscle overdispersion from gastroc data)
+   # n_cells_per_strain ~ Poisson(200) (realistic per-strain cell count)
+   ```
+2. **Planted signal preserved**: strains with high sparc phenotype value get higher
+   NB mean → QTL signal is preserved in the NB count layer
+3. **Known ground truth**: planted locus from sparc is recoverable if NB-GLMM scan
+   is correctly implemented
+
+```python
+# Python — generate Phase 3 NB counts from sparc output
+from validation.sim_sc import sparc_to_nb_counts
+
+counts_cells, strain_ids, true_locus = sparc_to_nb_counts(
+    phenotypes_h5    = 'validation/sparcc_data/phenotypes.h5',  # no rpy2
+    sim_index        = 0,                  # which of the 10 simulations to use
+    phi              = 0.3,                # NB dispersion
+    n_cells_mean     = 200,               # avg cells per strain
+    seed             = 42,
+)
+# counts_cells: (n_genes=1, n_cells) raw UMI counts
+# strain_ids:   (n_cells,) strain per cell
+# true_locus:   str — planted locus from sparc
+```
+
+A utility `validation/sim_sc.py` implements `sparc_to_nb_counts()`.
+
+| Section | Gate | Ground truth check |
+|---|---|---|
+| P1 scan_nb | planted locus in top 5% by LOD | sparc true_locus recovered |
+| P2 scan_vqtl | ≥1 result | dispersion heterogeneity present |
+| P3 scan_epistasis | lod_additive > 0 | additive signal detectable |
+| P4 scan_conditional | signal1_lod > 0 | primary signal recoverable |
+
+Biological anchors (*Piezo1*, *Ccdc171*, *Pmis2*) remain as production checks
+on real gastroc data (HPC only) but are not required for CI validation.
+
+---
+
+## 10. KNOWN OPEN ISSUES (when validation was based on actual data)
+
+| Issue | Location | Priority |
+|---|---|---|
+| S6 GEV instability — `mean_delta=0.619 > 0.5` | permutation.py | HIGH |
+| S2 needs `haplotype_vals_r.csv` rerun | port_validation.R | MED |
+| S11 chr-type bug fixed but not rerun | validate_port.py | MED |
+| S8 marginal vs diplotype model difference documented, not resolved | snp_scan.py | LOW |
+| Storey q-value not yet implemented (BH-FDR anti-conservative) | pipeline.py | HIGH |
+| No baseline benchmarks measured yet | benchmarks/ | MED |
+
+---
+*Last updated: see git log. Canonical source: github.com/gfilimban/mosaiqtl/docs/ARCHITECTURE.md*
