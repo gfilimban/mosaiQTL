@@ -26,48 +26,43 @@ def _wls_null_rss(y_rot, x_rot, w_inv):
     return float(e @ (e * w_inv)), beta
 
 
-def _batch_lod(y_rot, x_rot, probs_chr, w_inv, nf1, n, rss0, valid):
+def _batch_lod(y_rot, x_rot, probs_chr, w_inv, n, rss0, valid):
     """vectorised LOD over all loci on one chromosome.
 
-    probs_chr : (L, n_strains, J) — sliced to valid rows and nf1 cols inside.
-    returns   : lod (L,), p_value (L,), betas (L, J-1)
+    probs_chr : (L, n_strains, J) — caller passes all J founders; row-subsetted
+                by valid inside. pinv handles rank J-1 (sum-to-one) or J-2 (one
+                near-zero founder), matching r's rank-tolerant QR in lm.fit().
+    returns   : lod (L,), p_value (L,), betas (L, J)
     """
     p  = x_rot.shape[1]
-    q  = nf1
-    df2 = n - p - q
 
-    H  = probs_chr[:, valid, :nf1]               # (L, n, J-1)
-    # rotate
-    # H_rot[l,k,j] = sum_n eigvec[n,k] * H[l,n,j] — but we work in
-    # weighted space: H_w[l,n,j] = H[l,n,j] * sqrt(w_inv[n])
-    # already have x_rot = U' X * w_sqrt; same for H
-    # we need to apply the same rotation that produced y_rot/x_rot
-    # NOTE: caller passes pre-rotated y_rot, x_rot; H must be rotated too.
-    # We pass evc (eigvecs) and w_sqrt separately; this helper keeps the
-    # interface clean by accepting already-formed x_rot and doing H inline.
-    # → caller passes H already rotated and weighted; see mediation_scan_qr.
+    H  = probs_chr[:, valid, :]               # (L, n, J) all founders
 
     # FWL: residualise H on X
     xt_pinv  = np.linalg.lstsq(x_rot.T @ x_rot, x_rot.T, rcond=None)[0]  # (p,n)
-    proj     = np.einsum('pn,lnj->lpj', xt_pinv, H, optimize=True)        # (L,p,J-1)
-    H_perp   = H - np.einsum('np,lpj->lnj', x_rot, proj, optimize=True)   # (L,n,J-1)
+    proj     = np.einsum('pn,lnj->lpj', xt_pinv, H, optimize=True)        # (L,p,J)
+    H_perp   = H - np.einsum('np,lpj->lnj', x_rot, proj, optimize=True)   # (L,n,J)
 
-    c    = np.einsum('lnj,n->lj', H_perp, y_rot * w_inv, optimize=True)   # (L,J-1)
-    # Gram matrices (L, J-1, J-1)
+    c    = np.einsum('lnj,n->lj', H_perp, y_rot * w_inv, optimize=True)   # (L,J)
+    # Gram matrices (L, J, J)
     G    = np.einsum('lnj,lnk->ljk', H_perp * w_inv[None,:,None], H_perp,
                      optimize=True)
-    G   += np.eye(q)[None] * 1e-10
-    betas = np.linalg.solve(G, c[..., None]).squeeze(-1)                   # (L,J-1)
+    # pinv handles rank J-1 (normal) and J-2 (near-zero founder) per locus
+    betas = (np.linalg.pinv(G, rcond=1e-10) @ c[..., None]).squeeze(-1)   # (L,J)
 
     rss_red = np.einsum('lj,lj->l', c, betas)                              # (L,)
     rss1    = np.maximum(rss0 - rss_red, 1e-30)
     lod     = np.where(rss1 < rss0, (n / 2.0) * np.log10(rss0 / rss1), 0.0)
 
-    if df2 > 0:
-        f_stat = np.maximum((rss0 - rss1) / q / (rss1 / df2), 0.0)
-        pval   = 1.0 - sp_stats.f.cdf(f_stat, q, df2)
-    else:
-        pval   = np.ones(len(lod))
+    q_eff   = np.linalg.matrix_rank(G)                                     # (L,)
+    df2_arr = np.maximum(n - p - q_eff, 1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        f_stat = np.where(q_eff > 0,
+                          np.maximum((rss0-rss1)/np.maximum(q_eff,1)/(rss1/df2_arr),
+                                     0.0), 0.0)
+        pval   = np.where(df2_arr > 0,
+                          1.0 - sp_stats.f.cdf(f_stat, q_eff, df2_arr),
+                          1.0)
 
     return lod, pval, betas
 
@@ -119,7 +114,6 @@ def mediation_scan_qr(outcome, mediator, genomecache,
     m_std = (m - m.mean()) / max(m.std(), 1e-10)
     x_med = np.hstack([m_std[:, None], x_base])   # (n, p+1)
 
-    nf1 = genomecache.n_founders - 1
     rows_base = []
 
     for chrom in genomecache.chromosomes:
@@ -132,6 +126,7 @@ def mediation_scan_qr(outcome, mediator, genomecache,
         # rotate + weight — sqrt(w_inv) applied for WLS formulation
 
         def _rot_wt(x_cov, h2):
+            """Rotate and weight x_cov by eigendecomp of kinship for given h2."""
             delta = h2 / max(1 - h2, 1e-10)
             w_inv = 1.0 / (delta * ev + 1.0)
             w_sqrt = np.sqrt(w_inv)
@@ -150,17 +145,17 @@ def mediation_scan_qr(outcome, mediator, genomecache,
 
         # pre-rotate haplotype block for this chromosome
         # H_rot[l,k,j] = (U'[valid] H[l,valid,:])_k * w_sqrt_b[k]
-        H_raw = probs[:, valid, :nf1]                           # (L, n, J-1)
+        H_raw = probs[:, valid, :]                              # (L, n, J) all founders
         # rotate via einsum: H_rot = einsum('nk,lnj->lkj', ev_v, H_raw)
         H_rot_b = np.einsum('nk,lnj->lkj', ev_v, H_raw, optimize=True) \
-                   * w_sqrt_b[None, :, None]                    # (L, n, J-1)
+                   * w_sqrt_b[None, :, None]                    # (L, n, J)
         H_rot_m = np.einsum('nk,lnj->lkj', ev_v, H_raw, optimize=True) \
                    * w_sqrt_m[None, :, None]
 
         lod_b, _, _ = _batch_lod(
-            y_rot_b, x_rot_b, H_rot_b, np.ones(n), nf1, n, rss0_b, slice(None))
+            y_rot_b, x_rot_b, H_rot_b, np.ones(n), n, rss0_b, slice(None))
         lod_m, pv, _ = _batch_lod(
-            y_rot_m, x_rot_m, H_rot_m, np.ones(n), nf1, n, rss0_m, slice(None))
+            y_rot_m, x_rot_m, H_rot_m, np.ones(n), n, rss0_m, slice(None))
 
         lod_drop = np.maximum(lod_b - lod_m, 0.0)
 
@@ -207,9 +202,8 @@ def fixef_mediation_scan(outcome, mediator, genomecache,
     m_std  = (m - m.mean()) / max(m.std(), 1e-10)
     x_med  = np.hstack([m_std[:, None], x_base])
 
-    nf1 = genomecache.n_founders - 1
-
     def _rss0(x):
+        """Return residual sum of squares from OLS of y on x."""
         b = np.linalg.lstsq(x, y, rcond=None)[0]
         e = y - x @ b; return float(e @ e)
 
@@ -219,7 +213,7 @@ def fixef_mediation_scan(outcome, mediator, genomecache,
     rows = []
     for chrom in genomecache.chromosomes:
         lids, pos, probs = genomecache.get_chromosome(chrom)  # (L, m, J)
-        H = probs[:, valid, :nf1]                               # (L, n, J-1)
+        H = probs[:, valid, :]                                  # (L, n, J) all founders
 
         if just_these_loci is not None:
             mask = np.isin(lids, list(just_these_loci))
@@ -227,7 +221,7 @@ def fixef_mediation_scan(outcome, mediator, genomecache,
         if not len(lids):
             continue
 
-        # vectorised OLS via FWL for both models
+        # vectorised OLS via FWL for both models; pinv handles rank J-1 (sum-to-one)
         for x_cov, rss0, p_cov, model_tag in [
             (x_base, rss0_b, p_b, 'base'),
             (x_med,  rss0_m, p_m, 'med'),
@@ -237,8 +231,7 @@ def fixef_mediation_scan(outcome, mediator, genomecache,
             H_perp  = H - np.einsum('np,lpj->lnj', x_cov, proj, optimize=True)
             c       = np.einsum('lnj,n->lj', H_perp, y, optimize=True)
             G       = np.einsum('lnj,lnk->ljk', H_perp, H_perp, optimize=True)
-            G      += np.eye(nf1)[None] * 1e-10
-            betas   = np.linalg.solve(G, c[..., None]).squeeze(-1)
+            betas   = (np.linalg.pinv(G, rcond=1e-10) @ c[..., None]).squeeze(-1)
             rss_red = np.einsum('lj,lj->l', c, betas)
             rss1    = np.maximum(rss0 - rss_red, 1e-30)
             lod     = np.where(rss1 < rss0, (n/2.0)*np.log10(rss0/rss1), 0.0)
@@ -247,12 +240,16 @@ def fixef_mediation_scan(outcome, mediator, genomecache,
                 lod_b = lod
             else:
                 lod_m = lod
-                df2 = n - p_cov - nf1
-                if df2 > 0:
-                    f_stat = np.maximum((rss0-rss1)/nf1/(rss1/df2), 0.0)
-                    pval   = 1.0 - sp_stats.f.cdf(f_stat, nf1, df2)
-                else:
-                    pval = np.ones(len(lod))
+                q_eff = np.linalg.matrix_rank(G)
+                df2_arr = np.maximum(n - p_cov - q_eff, 1)
+                with np.errstate(invalid='ignore', divide='ignore'):
+                    f_stat = np.where(
+                        q_eff > 0,
+                        np.maximum((rss0-rss1)/np.maximum(q_eff,1)/(rss1/df2_arr), 0.0),
+                        0.0)
+                    pval   = np.where(df2_arr > 0,
+                                      1.0 - sp_stats.f.cdf(f_stat, q_eff, df2_arr),
+                                      1.0)
 
         df = pd.DataFrame({
             'locus':        lids, 'chr': chrom, 'pos_mb': pos.astype(float),

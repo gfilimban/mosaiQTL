@@ -224,7 +224,7 @@ def plot_founder_effects(scan_result, genomecache, peak_chrom=None,
     ax.set_xticklabels(all_names, rotation=45, ha='right', fontsize=10)
     ax.set_ylabel('founder effect ($\\hat{\\beta}_f$)')
     ax.set_title(f'founder haplotype effects at peak (chr{peak_chrom})')
-    sns.despine()
+    sns.despine(ax=ax)
 
     plt.tight_layout()
     if save_path:
@@ -267,7 +267,7 @@ def plot_pvalue_qq(scan_result, save_path=None):
     ax.set_ylabel('observed $-\\log_{10}(p)$')
     ax.set_title('QQ plot')
     ax.legend(fontsize=9)
-    sns.despine()
+    sns.despine(ax=ax)
 
     plt.tight_layout()
     if save_path:
@@ -310,7 +310,7 @@ def plot_dispersion_vs_truth(phi_estimated, phi_true, save_path=None):
     ax.set_ylabel('estimated $\\hat{\\phi}_i$')
     ax.set_title('per-subject dispersion estimation')
     ax.legend(fontsize=9)
-    sns.despine()
+    sns.despine(ax=ax)
 
     plt.tight_layout()
     if save_path:
@@ -370,7 +370,7 @@ def plot_lod_correlation(py_scan_result, r_results_csv, save_path=None):
     ax.set_ylabel('mosaiQTL LOD (Python)')
     ax.set_title('cross-language LOD comparison')
     ax.legend(fontsize=9)
-    sns.despine()
+    sns.despine(ax=ax)
 
     plt.tight_layout()
     if save_path:
@@ -426,7 +426,7 @@ def plot_lod_difference(py_scan_result, r_results_csv, save_path=None):
     ax.set_xlabel('locus index')
     ax.set_ylabel('$\\Delta$ LOD (Python $-$ R)')
     ax.set_title('LOD residuals')
-    sns.despine()
+    sns.despine(ax=ax)
 
     plt.tight_layout()
     if save_path:
@@ -495,7 +495,7 @@ def plot_founder_effects_comparison(py_scan_result, genomecache,
     ax.set_ylabel('founder effect ($\\hat{\\beta}_f$)')
     ax.set_title(f'founder effects comparison at peak (chr{peak["chromosome"]})')
     ax.legend(fontsize=9)
-    sns.despine()
+    sns.despine(ax=ax)
 
     plt.tight_layout()
     if save_path:
@@ -596,3 +596,250 @@ def plot_validation_panel(scan_result, k_matrix, genomecache,
 
     plt.close('all')
     logger.info(f'qc panel saved to {save_dir}/')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S6/S7/S9/S11 — scan-type comparison helpers
+# Each function overlays Python and R output for a specific scan type.
+# Pattern: Python ScanResult + R CSV (same column schema as plot_lod_correlation).
+# Works for both LMM and NB outputs since both return ScanResult.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_permutation_comparison(py_thresholds, r_thresholds_csv,
+                                 alpha=0.05, save_path=None):
+    """compare permutation-derived LOD thresholds: Python vs R (S6).
+
+    parameters
+    ----------
+    py_thresholds : dict  {alpha: lod_threshold}  from get_gev_thresholds()
+    r_thresholds_csv : str  path to r thresholds CSV (columns: alpha, threshold)
+    alpha : float  significance level to annotate
+    save_path : str or None
+    """
+    import pandas as pd
+    set_style()
+
+    r_df = pd.read_csv(r_thresholds_csv)
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    py_thresh = py_thresholds.get(alpha, float('nan'))
+
+    r_match = r_df[np.isclose(r_df['alpha'].values, alpha)]
+    r_thresh = float(r_match['threshold'].values[0]) if len(r_match) > 0 else float('nan')
+
+    ax.bar(['Python', 'R'], [py_thresh, r_thresh],
+           color=[_COLOR_PY, _COLOR_R], width=0.5)
+    ax.set_ylabel('LOD threshold')
+    ax.set_title(f'permutation threshold comparison (α = {alpha})')
+    sns.despine(ax=ax)
+
+    delta = abs(py_thresh - r_thresh)
+    ax.text(0.98, 0.95, f'|Δ| = {delta:.3f}',
+            transform=ax.transAxes, ha='right', va='top', fontsize=10)
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        logger.info(f'saved: {save_path}')
+    return fig, ax
+
+
+def plot_mi_scan_comparison(py_mi_result, r_mi_csv, save_path=None):
+    """compare MI-averaged LOD scores: Python vs R reference (S7).
+
+    mirrors miQTL multi.imput.lmmbygls — R averages LOD over n_imp draws.
+
+    parameters
+    ----------
+    py_mi_result : ScanResult  from scan_h2lmm_mi()
+    r_mi_csv : str  path to r MI scan CSV (columns: locus, lod)
+    save_path : str or None
+    """
+    import pandas as pd
+    set_style()
+
+    py_df = py_mi_result.to_dataframe()
+    r_df = pd.read_csv(r_mi_csv)
+    merged = py_df.merge(r_df, left_on='locus_id', right_on='locus',
+                         suffixes=('_py', '_r'))
+    if len(merged) == 0:
+        logger.warning('plot_mi_scan_comparison: no shared loci')
+        return None, None
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.scatter(merged['lod_r'], merged['lod_py'], s=12, alpha=0.6,
+               color=_COLOR_PY, edgecolors='none', rasterized=True)
+    lims = [0, max(merged['lod_r'].max(), merged['lod_py'].max()) * 1.1]
+    ax.plot(lims, lims, '--', color=_COLOR_R, linewidth=1)
+    corr = np.corrcoef(merged['lod_r'], merged['lod_py'])[0, 1]
+    ax.text(0.05, 0.95, f'$r$ = {corr:.6f}\n$n$ = {len(merged)}',
+            transform=ax.transAxes, fontsize=10, va='top')
+    ax.set_xlim(left=0); ax.set_ylim(bottom=0)
+    ax.set_xlabel('MI LOD (R)'); ax.set_ylabel('MI LOD (Python)')
+    ax.set_title('multiple-imputation scan comparison (S7)')
+    sns.despine(ax=ax)
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig, ax
+
+
+def plot_mediation_comparison(py_mediation_df, r_mediation_csv,
+                               mediator_col='mediator_lod', save_path=None):
+    """compare mediation LOD scores: Python vs R reference (S9).
+
+    mirrors miQTL mediation.scan.qr / extract.mediation.qr.
+
+    parameters
+    ----------
+    py_mediation_df : pd.DataFrame  from fixef_mediation_scan(); columns: locus_id, lod
+    r_mediation_csv : str  path to r mediation CSV
+    mediator_col : str  LOD column in r CSV
+    save_path : str or None
+    """
+    import pandas as pd
+    set_style()
+
+    r_df = pd.read_csv(r_mediation_csv)
+    merged = py_mediation_df.merge(r_df, left_on='locus_id',
+                                    right_on='locus',
+                                    suffixes=('_py', '_r'))
+    if len(merged) == 0:
+        logger.warning('plot_mediation_comparison: no shared loci')
+        return None, None
+
+    py_col = f'{mediator_col}_py' if f'{mediator_col}_py' in merged.columns else mediator_col
+    r_col = f'{mediator_col}_r' if f'{mediator_col}_r' in merged.columns else mediator_col
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.scatter(merged[r_col], merged[py_col], s=12, alpha=0.6,
+               color=_COLOR_PY, edgecolors='none', rasterized=True)
+    lims = [0, max(merged[r_col].max(), merged[py_col].max()) * 1.1]
+    ax.plot(lims, lims, '--', color=_COLOR_R, linewidth=1)
+    corr = np.corrcoef(merged[r_col], merged[py_col])[0, 1]
+    ax.text(0.05, 0.95, f'$r$ = {corr:.6f}',
+            transform=ax.transAxes, fontsize=10, va='top')
+    ax.set_xlim(left=0); ax.set_ylim(bottom=0)
+    ax.set_xlabel('mediation LOD (R)'); ax.set_ylabel('mediation LOD (Python)')
+    ax.set_title('mediation scan comparison (S9)')
+    sns.despine(ax=ax)
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig, ax
+
+
+def plot_instability_comparison(py_instability, r_instability_csv,
+                                 save_path=None):
+    """compare instability LOD scores: Python vs R reference (S11).
+
+    mirrors miQTL instability.lm.scan — bootstrap mean LOD over subsamples.
+
+    parameters
+    ----------
+    py_instability : ScanResult  from instability_lm_scan()
+    r_instability_csv : str  path to r instability CSV (columns: locus, lod)
+    save_path : str or None
+    """
+    import pandas as pd
+    set_style()
+
+    py_df = py_instability.to_dataframe()
+    r_df = pd.read_csv(r_instability_csv)
+    merged = py_df.merge(r_df, left_on='locus_id', right_on='locus',
+                         suffixes=('_py', '_r'))
+    if len(merged) == 0:
+        logger.warning('plot_instability_comparison: no shared loci')
+        return None, None
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.scatter(merged['lod_r'], merged['lod_py'], s=12, alpha=0.6,
+               color=_COLOR_PY, edgecolors='none', rasterized=True)
+    lims = [0, max(merged['lod_r'].max(), merged['lod_py'].max()) * 1.1]
+    ax.plot(lims, lims, '--', color=_COLOR_R, linewidth=1)
+    corr = np.corrcoef(merged['lod_r'], merged['lod_py'])[0, 1]
+    ax.text(0.05, 0.95, f'$r$ = {corr:.6f}',
+            transform=ax.transAxes, fontsize=10, va='top')
+    ax.set_xlim(left=0); ax.set_ylim(bottom=0)
+    ax.set_xlabel('instability LOD (R)'); ax.set_ylabel('instability LOD (Python)')
+    ax.set_title('instability scan comparison (S11)')
+    sns.despine(ax=ax)
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig, ax
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NB-specific validation (no R reference — internal consistency checks)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_phi_distribution(phi_shrunk, phi_raw=None, save_path=None):
+    """histogram of EB-shrunk dispersion estimates across genes (NB Stage 1).
+
+    parameters
+    ----------
+    phi_shrunk : np.ndarray  EB-shrunk φ per gene (from fit_null_sc_native)
+    phi_raw : np.ndarray or None  raw per-gene φ before shrinkage
+    save_path : str or None
+    """
+    set_style()
+    fig, ax = plt.subplots(figsize=(6, 4))
+    bins = np.linspace(0, max(float(np.nanpercentile(phi_shrunk, 99)), 1e-3), 40)
+    ax.hist(phi_shrunk[~np.isnan(phi_shrunk)], bins=bins,
+            color=_COLOR_PY, alpha=0.7, label='shrunk φ')
+    if phi_raw is not None:
+        ax.hist(phi_raw[~np.isnan(phi_raw)], bins=bins,
+                color=_COLOR_R, alpha=0.4, label='raw φ')
+        ax.legend(fontsize=9)
+    ax.set_xlim(left=0)
+    ax.set_xlabel('overdispersion φ')
+    ax.set_ylabel('gene count')
+    ax.set_title('NB Stage 1: dispersion distribution')
+    sns.despine(ax=ax)
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig, ax
+
+
+def plot_nb_vs_lmm_comparison(nb_scan_result, lmm_scan_result, save_path=None):
+    """scatter of NB score LOD vs Gaussian LMM LOD at each locus.
+
+    validates that the NB and LMM scans agree in direction and roughly
+    in magnitude when the trait is approximately Gaussian. high correlation
+    is expected for genes with moderate dispersion.
+
+    parameters
+    ----------
+    nb_scan_result  : ScanResult  from scan_nb_gene()
+    lmm_scan_result : ScanResult  from scan_h2lmm()
+    save_path : str or None
+    """
+    set_style()
+
+    nb_df  = nb_scan_result.to_dataframe()
+    lmm_df = lmm_scan_result.to_dataframe()
+    merged = nb_df.merge(lmm_df, on='locus_id', suffixes=('_nb', '_lmm'))
+    if len(merged) == 0:
+        logger.warning('plot_nb_vs_lmm_comparison: no shared loci')
+        return None, None
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.scatter(merged['lod_lmm'], merged['lod_nb'], s=12, alpha=0.6,
+               color=_COLOR_PY, edgecolors='none', rasterized=True)
+    lims = [0, max(merged['lod_lmm'].max(), merged['lod_nb'].max()) * 1.1]
+    ax.plot(lims, lims, '--', color=_COLOR_R, linewidth=1, alpha=0.5, label='y = x')
+    if len(merged) > 2:
+        corr = np.corrcoef(merged['lod_lmm'], merged['lod_nb'])[0, 1]
+        ax.text(0.05, 0.95, f'$r$ = {corr:.3f}',
+                transform=ax.transAxes, fontsize=10, va='top')
+    ax.set_xlim(left=0); ax.set_ylim(bottom=0)
+    ax.set_xlabel('LMM LOD'); ax.set_ylabel('NB score LOD')
+    ax.set_title('NB vs LMM LOD comparison')
+    ax.legend(fontsize=9)
+    sns.despine(ax=ax)
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    return fig, ax

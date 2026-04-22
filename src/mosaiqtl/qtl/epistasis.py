@@ -63,7 +63,7 @@ def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
         betas_b         : np.ndarray (J-1,)  main effects locus b
         betas_int       : np.ndarray ((J-1)²,) interaction effects
     """
-    from . import kinship as kin_module
+    from ..genotype import kinship as kin_module
     from . import lmm as lmm_module
     from ..utils import rint as _rint
 
@@ -73,6 +73,7 @@ def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
 
     # locate locus_a and locus_b in cache
     def _get_locus_probs(locus_id):
+        """Return haplotype probability array (n_samples, J) for locus_id."""
         for chrom in genomecache.chromosomes:
             lids, pos, probs = genomecache.get_chromosome(chrom)
             idx = np.where(lids == locus_id)[0]
@@ -250,7 +251,7 @@ def scan_conditional(scan_result, genomecache, covariates=None,
     list of ScanResult  one per independent signal found (length 1..n_signals)
         scan_result[0] is always the original (primary) result
     """
-    from . import kinship as kin_module
+    from ..genotype import kinship as kin_module
     from .scan import ScanResult
 
     if not len(scan_result.lod):
@@ -329,7 +330,7 @@ def scan_conditional_with_y(phenotype, scan_result, genomecache,
     -------
     list of ScanResult
     """
-    from . import kinship as kin_module
+    from ..genotype import kinship as kin_module
     from . import lmm as lmm_module
     from ..utils import rint as _rint
     from .scan import scan_h2lmm

@@ -49,7 +49,7 @@ class LMMResult:
     p_value  : float  F-test p-value
     h2       : float  heritability fixed from null model
     f_stat   : float  F statistic
-    betas    : np.ndarray (J-1,)  haplotype effects at this locus
+    betas    : np.ndarray (J,)    haplotype effects at this locus (sum ≈ 0)
     sigma2_g : float  genetic variance component
     sigma2_e : float  residual variance component
     rss_null : float  weighted RSS under null

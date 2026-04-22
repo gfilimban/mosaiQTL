@@ -330,6 +330,7 @@ class GenomeCache:
         #       written by build_genomecache.R from final_markers — preferred
         #   (b) per-chr files: gmap_dir/GM_gmap{chr}.csv (legacy layout)
         def _load_maps(map_dir, prefix, flat_name):
+            """Load flat or per-chr map CSV; prefer flat_name, fall back to prefix*.csv."""
             flat = os.path.join(map_dir, flat_name)
             if os.path.exists(flat):
                 return pd.read_csv(flat, comment='#')
@@ -362,6 +363,7 @@ class GenomeCache:
         # sort key: integer chrs by value, X=20, others=99
 
         def _chr_key(c):
+            """Sort key: numeric chrs by value, X=20, others=99."""
             s = str(c)
             return int(s) if s.isdigit() else (20 if s == 'X' else 99)
         gmap_shared['_k'] = gmap_shared['chr'].map(_chr_key)
@@ -1121,6 +1123,7 @@ def build(args=None):
     )
 
     def _parse_list(val):
+        """Parse a comma-separated string or a JSON file path into a list."""
         if val.endswith('.json') and os.path.exists(val):
             with open(val) as fh:
                 return json.load(fh)

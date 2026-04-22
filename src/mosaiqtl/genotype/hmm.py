@@ -1,3 +1,4 @@
+"""Forward-backward HMM for CC/DO haplotype reconstruction."""
 # hmm.py
 # pure python CC/DO haplotype reconstruction HMM
 #

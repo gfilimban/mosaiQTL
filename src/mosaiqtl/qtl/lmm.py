@@ -106,9 +106,9 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
 
     parameters
     ----------
-    y_rot    : np.ndarray (n,)     U'y
-    h_rot    : np.ndarray (n, J-1) U'H  — haplotype design (one col dropped)
-    x_rot    : np.ndarray (n, p)   U'X
+    y_rot    : np.ndarray (n,)   U'y
+    h_rot    : np.ndarray (n, J) U'H  — all J founders; lstsq handles rank J-1
+    x_rot    : np.ndarray (n, p) U'X
     eigvals  : np.ndarray (n,)     eigenvalues of LOCO kinship
     h2_null  : float               null heritability
     use_reml : bool                (unused for LOD; kept for API compatibility)
@@ -136,15 +136,11 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
     resid_null = y_rot - x_rot @ beta_null
     rss_null   = float(resid_null @ (resid_null * w_inv))
 
-    # alternative model: y* = [H* X*] [γ; α]
-    z_rot = np.hstack([h_rot, x_rot])
-    zw    = z_rot * w_inv[:, None]
-    try:
-        beta_alt = np.linalg.solve(zw.T @ z_rot, zw.T @ y_rot)
-    except np.linalg.LinAlgError:
-        return LMMResult(lod=0.0, p_value=1.0, h2=h2_null, f_stat=0.0,
-                         betas=np.zeros(q), sigma2_g=0.0, sigma2_e=0.0,
-                         rss_null=rss_null, rss_alt=rss_null)
+    # alternative model: y* = [H* X*] [γ; α] — lstsq handles rank-deficient H
+    z_rot    = np.hstack([h_rot, x_rot])
+    zw       = z_rot * np.sqrt(w_inv)[:, None]
+    yw       = y_rot * np.sqrt(w_inv)
+    beta_alt = np.linalg.lstsq(zw, yw, rcond=1e-10)[0]
     resid_alt = y_rot - z_rot @ beta_alt
     rss_alt   = float(resid_alt @ (resid_alt * w_inv))
 
@@ -154,20 +150,23 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
     else:
         lod = 0.0
 
-    # F-test p-value
-    df2 = n - p - q
-    if df2 > 0 and rss_alt > 0:
-        f_stat  = ((rss_null - rss_alt) / q) / (rss_alt / df2)
+    # effective rank for correct df (lstsq result may have fewer active directions)
+    q_eff = int(np.linalg.matrix_rank(
+        np.hstack([h_rot, x_rot]) * np.sqrt(w_inv)[:, None], tol=1e-10)) - p
+    q_eff = max(q_eff, 0)
+    df2   = n - p - q_eff
+    if df2 > 0 and rss_alt > 0 and q_eff > 0:
+        f_stat  = ((rss_null - rss_alt) / q_eff) / (rss_alt / df2)
         f_stat  = max(f_stat, 0.0)
-        p_value = 1.0 - stats.f.cdf(f_stat, q, df2)
+        p_value = 1.0 - stats.f.cdf(f_stat, q_eff, df2)
     else:
         f_stat  = 0.0
         p_value = 1.0
 
-    sigma2_total = rss_alt / max(n - p - q, 1)
+    sigma2_total = rss_alt / max(n - p - q_eff, 1)
     return LMMResult(
         lod=lod, p_value=p_value, h2=h2_null, f_stat=f_stat,
-        betas=beta_alt[:q],
+        betas=beta_alt[:q],          # first q cols = founder betas (J)
         sigma2_g=h2_null * sigma2_total,
         sigma2_e=(1 - h2_null) * sigma2_total,
         rss_null=rss_null, rss_alt=rss_alt,
@@ -182,9 +181,15 @@ def scan_chromosome(y, genomecache, chrom, x_covariates,
     replaces the per-locus python loop with a single tensor computation
     via the frisch-waugh-lovell (fwl) theorem. all loci share the same
     weight vector w and null model, so:
-        rss_alt[l] = rss_null - c[l]' (H_perp[l]'H_perp[l])^{-1} c[l]
+        rss_alt[l] = rss_null - c[l]' G[l]+ c[l]
     where H_perp[l] = M_X H_t[l] (weighted H residualized on X),
-    c[l] = H_perp[l]' e0, e0 = null residual.
+    c[l] = H_perp[l]' e0, G[l]+ = Moore-Penrose pseudoinverse of G[l].
+
+    using all J founders (not J-1): the sum-to-one constraint makes the
+    J×J gram matrix rank J-1 at regular loci. at loci where one founder
+    has near-zero probability the rank is J-2. pinv handles both cases,
+    matching r's rank-tolerant qr decomposition in lm.fit() exactly.
+    returned betas are shape (n_loci, J) and satisfy sum ≈ 0.
 
     equivalent to qtl2::scan_pg_onechr (rcpp), now in numpy.
 
@@ -202,14 +207,13 @@ def scan_chromosome(y, genomecache, chrom, x_covariates,
 
     returns
     -------
-    dict: locus_ids, positions, lod, p_value, betas
+    dict: locus_ids, positions, lod, p_value, betas (n_loci, J)
     """
     locus_ids, positions, probs = genomecache.get_chromosome(chrom)
     n_loci = len(locus_ids)
-    nf1    = genomecache.n_founders - 1
+    nf     = genomecache.n_founders   # J — all founders
     n      = len(y)
     p      = x_covariates.shape[1]
-    q      = nf1
 
     # ── shared weight vector from h² ─────────────────────────────────────────
     delta  = h2_null / max(1.0 - h2_null, 1e-10)
@@ -224,45 +228,53 @@ def scan_chromosome(y, genomecache, chrom, x_covariates,
     except np.linalg.LinAlgError:
         return {'locus_ids': locus_ids, 'positions': positions,
                 'lod': np.zeros(n_loci), 'p_value': np.ones(n_loci),
-                'betas': np.zeros((n_loci, nf1))}
+                'betas': np.zeros((n_loci, nf))}
     e0   = yt - xt @ beta_null                       # null residual (n,)
     rss0 = float(e0 @ e0)                            # scalar null rss
 
-    # ── build & rotate haplotype array (n_loci, n, J-1) ─────────────────────
-    H = probs[:, :, :nf1]                            # (n_loci, m, J-1)
+    # ── build & rotate haplotype array (n_loci, n, J) ────────────────────────
+    H = probs                                         # (n_loci, m, J) all founders
     if z_mat is not None:
         H = np.einsum('nm,lmj->lnj', z_mat, H, optimize=True)
     # rotate by u': H_rot[l,k,j] = sum_n eigvecs[n,k] * H[l,n,j]
-    H_t = np.einsum('nk,lnj->lkj', eigvecs, H, optimize=True)  # (n_loci, n, J-1)
+    H_t = np.einsum('nk,lnj->lkj', eigvecs, H, optimize=True)  # (n_loci, n, J)
     H_t *= w_sqrt[None, :, None]                     # apply sqrt weights in-place
 
     # ── residualize H on X via fwl ───────────────────────────────────────────
     # xt_pinv = (X'X)^{-1} X', shape (p, n)
     xt_pinv  = np.linalg.solve(xtwx, xt.T)           # (p, n)
     # proj_coef[l,p,j] = sum_n xt_pinv[p,n] * H_t[l,n,j]
-    proj     = np.einsum('pn,lnj->lpj', xt_pinv, H_t, optimize=True)  # (n_loci, p, J-1)
-    H_perp   = H_t - np.einsum('np,lpj->lnj', xt, proj, optimize=True)  # (n_loci, n, J-1)
+    proj     = np.einsum('pn,lnj->lpj', xt_pinv, H_t, optimize=True)  # (n_loci, p, J)
+    H_perp   = H_t - np.einsum('np,lpj->lnj', xt, proj, optimize=True)  # (n_loci, n, J)
 
     # ── gram matrices and rhs ────────────────────────────────────────────────
-    c_all = np.einsum('lnj,n->lj', H_perp, e0, optimize=True)       # (n_loci, J-1)
-    G_all = np.einsum('lnj,lnk->ljk', H_perp, H_perp, optimize=True)  # (n_loci, J-1, J-1)
-    G_all += np.eye(q)[None] * 1e-10                 # ridge for singular loci
+    c_all = np.einsum('lnj,n->lj', H_perp, e0, optimize=True)       # (n_loci, J)
+    G_all = np.einsum('lnj,lnk->ljk', H_perp, H_perp, optimize=True)  # (n_loci, J, J)
 
-    # numpy 2.x: batched vector solve requires b shape (...,m,1) not (...,m)
-    beta_h = np.linalg.solve(G_all, c_all[..., None]).squeeze(-1)  # (n_loci, J-1)
+    # pinv (batched SVD) matches r's rank-tolerant QR: rank J-1 normally,
+    # rank J-2 at loci where a founder has near-zero probability.
+    # rcond=1e-10 relative to each matrix's largest singular value.
+    G_pinv   = np.linalg.pinv(G_all, rcond=1e-10)              # (n_loci, J, J)
+    beta_h   = (G_pinv @ c_all[..., None]).squeeze(-1)          # (n_loci, J)
 
     # ── rss, lod, p-values ───────────────────────────────────────────────────
-    rss_red  = np.einsum('lj,lj->l', c_all, beta_h)  # (n_loci,) rss reduction
-    rss1     = np.maximum(rss0 - rss_red, 1e-30)     # (n_loci,) alt rss
+    rss_red  = np.einsum('lj,lj->l', c_all, beta_h)             # (n_loci,)
+    rss1     = np.maximum(rss0 - rss_red, 1e-30)                # (n_loci,) alt rss
     lod_arr  = np.where(rss1 < rss0,
                         (n / 2.0) * np.log10(rss0 / rss1), 0.0)
 
-    df2 = n - p - q
-    if df2 > 0:
-        f_stat   = np.maximum((rss0 - rss1) / q / (rss1 / df2), 0.0)
-        pval_arr = 1.0 - stats.f.cdf(f_stat, q, df2)
-    else:
-        pval_arr = np.ones(n_loci)
+    # per-locus effective rank — correct df for F-test / p-value
+    q_eff    = np.linalg.matrix_rank(G_all)                      # (n_loci,) int
+    df2_arr  = np.maximum(n - p - q_eff, 1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        f_stat   = np.where(
+            q_eff > 0,
+            np.maximum((rss0 - rss1) / np.maximum(q_eff, 1) / (rss1 / df2_arr), 0.0),
+            0.0)
+        pval_arr = np.where(
+            df2_arr > 0,
+            1.0 - stats.f.cdf(f_stat, q_eff, df2_arr),
+            1.0)
 
     return {'locus_ids': locus_ids, 'positions': positions,
             'lod': lod_arr, 'p_value': pval_arr, 'betas': beta_h}

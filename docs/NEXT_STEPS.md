@@ -5,6 +5,57 @@
 
 ---
 
+## PRIORITY
+The priority is replicating the minimal miQTL example workflow to validate that
+the coding logic base is being imported into Python accurately. Expansions stem
+their ground truth from here.
+
+  Phase 1 — minimal miQTL workflow (port_sim_validation.R mirror) ← START HERE
+  Phase 2 — full miQTL port + replicate-awareness (same minimal structure as Phase 1)
+  Phase 3 — NB vs LMM (nb.py correctness vs lmm.py validated port)
+
+Tests must be modified alongside each phase. Every new port = new unit test.
+
+---
+
+## TASK P1 — PHASE 1: MINIMAL MIQTL WORKFLOW (TOP PRIORITY)
+
+Replicate `validation/r_reference/port_sim_validation.R` exactly in Python.
+This is the miQTL README.md example workflow. If Python can match R here,
+the core logic base is correct. Everything else is an expansion from this ground truth.
+
+### Step 1 — minimal R additions (port_sim_validation.R)
+
+Already implemented. The R script exports to `validation/phase1/r_data/`:
+- `phenotypes.csv`, `true_loci.csv` — phenotype data
+- `rop_lod.csv`, `mi_lod.csv` — R LOD scores
+- `perm_threshold.csv` — GEV threshold
+
+Run: `Rscript validation/r_reference/port_sim_validation.R`
+
+### Step 2 — create validation/validate_sim.py
+
+Python mirror of port_sim_validation.R. Already implemented (see validation/validate_sim.py).
+
+Pass criteria:
+  P1-S1  ROP LOD r² vs R  ≥ 0.999
+  P1-S2  MI LOD r vs R    ≥ 0.75
+  P1-S3  GEV threshold delta vs R  < 0.5 LOD
+
+Run: `python validation/validate_sim.py`
+
+### Step 3 — Phase 1 integration test
+
+tests/integration/test_phase1_workflow.py — smoke tests that the Phase 1 workflow
+runs end-to-end on conftest tiny fixtures (no sparcc_cache needed for unit tests).
+
+### Blocking issues before Phase 1 can pass
+
+- sparcc_cache must be downloaded and port_sim_validation.R must be run to generate CSVs
+- see TASK 0a for sparcc_cache setup
+
+---
+
 ## TASK 0a — SPARC DATA SETUP (do before any validation)
 
 Download sparcc_cache and generate sparc phenotypes. Required for both Phase 2 and Phase 3 validation.
@@ -801,7 +852,7 @@ Key wikilinks to create:
 - `[[PQL_Woodbury]]` ↔ `[[LOCO_Kinship]]` (Woodbury operates on LOCO K_m)
 - `[[Phase2_S1_S11]]` ↔ `[[NB_GLM_Stage1]]` (validation context)
 - `[[Goals_Tracker]]` ↔ `[[Phase2_S1_S11]]`, `[[Phase3_P1_P4]]`
-Note: FWL belongs to lmm.py (Gaussian validation reference only) — not a Stage 2 wikilink.
+Note: FWL belongs to lmm.py (Gaussian validated port) — not a Stage 2 wikilink.
       Replace FWL_LMM_Stage2.md with PQL_Woodbury.md in the algorithm docs.
 
 `.gitignore` additions:

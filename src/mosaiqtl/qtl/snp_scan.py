@@ -109,7 +109,8 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
             h_locus   = probs[nearest_i][valid]   # (n_valid, J)
 
             # impute snp dosage: d = sum_f h_f * g_f  (g_f = alt allele count)
-            def _to_float(v):  # coerce missing codes (N, -, etc.) to nan
+            def _to_float(v):
+                """Coerce allele value to float; missing codes (N, -, etc.) become nan."""  # noqa: E501
                 try: return float(v)
                 except (TypeError, ValueError): return np.nan
             geno_f = np.array([_to_float(row.get(f, np.nan)) for f in founders_cache])

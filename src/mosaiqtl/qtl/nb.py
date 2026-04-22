@@ -362,6 +362,50 @@ def pseudobulk_sum(counts_cells, strain_ids, gene_mask=None):
     return pb, pb_ncells, strains
 
 
+def precompute_sufficient_stats(counts, subject_ids, library_sizes=None):
+    """compute per-subject count statistics from cell-level data (1 gene).
+
+    used by vqtl.py to estimate per-subject overdispersion.
+
+    parameters
+    ----------
+    counts : np.ndarray (n_cells,)  raw UMI counts for one gene
+    subject_ids : array-like (n_cells,)  subject per cell
+    library_sizes : np.ndarray (n_cells,) or None  (reserved, unused)
+
+    returns
+    -------
+    dict with keys:
+        subjects    : np.ndarray (n_subjects,) unique subject IDs
+        n_cells     : np.ndarray (n_subjects,) cells per subject
+        mean_count  : np.ndarray (n_subjects,) mean count per subject
+        var_count   : np.ndarray (n_subjects,) variance of count per subject
+    """
+    counts = np.asarray(counts, dtype=np.float64)
+    subject_ids = np.asarray(subject_ids)
+    subjects, inv = np.unique(subject_ids, return_inverse=True)
+    n_subj = len(subjects)
+
+    n_cells    = np.bincount(inv, minlength=n_subj).astype(np.float64)
+    sum_counts = np.bincount(inv, weights=counts, minlength=n_subj)
+    mean_count = np.where(n_cells > 0, sum_counts / np.maximum(n_cells, 1), 0.0)
+
+    # variance via E[X^2] - (E[X])^2
+    sum_sq     = np.bincount(inv, weights=counts ** 2, minlength=n_subj)
+    var_count  = np.where(
+        n_cells > 1,
+        sum_sq / np.maximum(n_cells, 1) - mean_count ** 2,
+        0.0,
+    )
+
+    return {
+        'subjects':   subjects,
+        'n_cells':    n_cells,
+        'mean_count': mean_count,
+        'var_count':  var_count,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # stage 2 — genome-wide score test
 # ─────────────────────────────────────────────────────────────────────────────
@@ -424,6 +468,7 @@ def _pql_tau_reml_wb(z, x, K_m, Z, W, tau_init=0.1):
     ZtWZ      = Z.T @ (W[:, None] * Z)               # (m, m), precomputed
 
     def _neg_reml(log_tau):
+        """Negative REML log-likelihood (Woodbury form) as a function of log(tau)."""
         tau = np.exp(log_tau)
         M   = K_inv / tau + ZtWZ                     # (m, m)
         try:
@@ -466,6 +511,7 @@ def _pql_tau_reml(z, x, k_mat, w_vec, tau_init=0.1):
     tau : float  REML estimate, clipped to [1e-8, inf)
     """
     def _neg_reml(log_tau):
+        """Negative REML log-likelihood (dense form) as a function of log(tau)."""
         tau = np.exp(log_tau)
         V   = np.diag(1.0 / w_vec) + tau * k_mat
         try:
@@ -855,6 +901,7 @@ def scan_nb(counts_cells, genomecache, strain_ids_cells,
 
     # stage 2: per-gene scan
     def _one(gi):
+        """Run Stage 2 scan for gene index gi; returns (gene_id, ScanResult)."""
         gid  = gene_ids_pass[gi]
         cis  = cis_loci_dict.get(gid) if cis_loci_dict else None
         return gid, scan_nb_gene(

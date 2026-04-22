@@ -194,7 +194,7 @@ scan configuration space is defined by the user orthogonal choice axes (except t
 Single-nucleus RNA-seq counts are overdispersed integers. Log-normalising and treating
 as continuous (LMM) loses statistical power and can inflate false positives for
 lowly-expressed genes. The NB-GLM captures count overdispersion explicitly.
-nb.py implements both stages: Stage 1 (NB-GLMM cell-level null) and Stage 2 (PQL NB-GLMM score scan with LOCO kinship integrated via Woodbury identity, all matrix ops at m×m cost). lmm.py is the Gaussian LMM validation reference only. See: He et al. 2021 (NEBULA, DOI:
+nb.py implements both stages: Stage 1 (NB-GLMM cell-level null) and Stage 2 (PQL NB-GLMM score scan with LOCO kinship integrated via Woodbury identity, all matrix ops at m×m cost). lmm.py is the Gaussian LMM validated port. See: He et al. 2021 (NEBULA, DOI:
 10.1038/s42003-021-02146-6) and Yazar et al. 2022 (DOI: 10.1126/science.abf3041).
 
 ### Why LOCO kinship?
@@ -277,7 +277,7 @@ mosaiQTL accepts:
           Converged solution: PQL approximation to true NB-GLMM (Chen et al. 2016).
         - Woodbury: V=diag(1/W)+tau*Z K_m Z^T — ops at m×m, never n×n
         - Score stat: Q_l ~ chi2(J-1); LOD = Q_l/(2 ln 10)
-  → LMM validation reference           [qtl/lmm.py, qtl/scan.py]
+  → LMM validated port                  [qtl/lmm.py, qtl/scan.py]
       - Gaussian eigendecomp LMM (Kang 2008 / qtl2) for Phase 2 R comparison
       - called by: scan.py, permutation.py, mediation.py, epistasis.py
 
@@ -377,7 +377,7 @@ mypy >= 1.10         interrogate >= 1.7   bandit >= 1.7
 memory-profiler      scalene >= 1.5
 ```
 
-### R (validation reference only — not installed by default)
+### R (validated port — not installed by default)
 ```
 R >= 4.3.3   qtl2   qtl2convert   miqtl   edgeR   ggplot2
 ```

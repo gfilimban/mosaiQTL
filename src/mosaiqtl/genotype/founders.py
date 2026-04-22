@@ -52,16 +52,19 @@ F1_COLORS: dict[str, str] = {
 STRAIN_ORDER: list[str] = FOUNDER_ORDER + list(F1_COLORS.keys())
 
 # neutral greys used in plots — defined here so no module ever hardcodes hex
-COLOR_NEUTRAL_DARK: str = '#444444'   # axis lines, tick labels, reference bars
-COLOR_CC_FALLBACK:  str = '#888888'   # CC strains without ancestry probability data
+COLOR_NEUTRAL_DARK:  str = '#444444'   # axis lines, tick labels, reference bars
+COLOR_CC_FALLBACK:   str = '#888888'   # CC strains without ancestry probability data
+COLOR_NEUTRAL_LIGHT: str = '#E8E8E8'   # NaN/masked cells in heatmaps
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
+    """Convert '#RRGGBB' hex string to (r, g, b) floats in [0, 1]."""
     h = hex_color.lstrip('#')
     return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))  # type: ignore[return-value]
 
 
 def _rgb_to_hex(r: float, g: float, b: float) -> str:
+    """Convert (r, g, b) floats in [0, 1] to '#RRGGBB' hex string."""
     return '#{:02X}{:02X}{:02X}'.format(
         round(r * 255), round(g * 255), round(b * 255)
     )

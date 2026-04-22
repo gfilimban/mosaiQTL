@@ -151,6 +151,7 @@ def build_covariate_matrix(
 # ---------------------------------------------------------------------------
 
 def _check_nan(df: pd.DataFrame, col: str) -> None:
+    """Raise MissingCovariateError if any value in col is NaN."""
     bad = df.index[df[col].isna()].tolist()
     if bad:
         raise MissingCovariateError(

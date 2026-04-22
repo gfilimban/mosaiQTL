@@ -38,11 +38,12 @@ class ScanResult:
     positions    : np.ndarray (L,) float physical position (Mb)
     lod          : np.ndarray (L,) float LOD scores
     p_value      : np.ndarray (L,) float F-test p-values
-    betas        : np.ndarray (L, J-1)   founder haplotype effects
+    betas        : np.ndarray (L, J)     founder haplotype effects (sum ≈ 0)
     h2_null      : dict {chrom: float}   null h² per LOCO chr
     phenotype_id : str
     """
     def __init__(self, **kwargs):
+        """Set all scan result fields from keyword arguments."""
         for k, v in kwargs.items():
             setattr(self, k, v)
 
@@ -246,6 +247,7 @@ def scan_multi_gene(phenotype_matrix, gene_ids, genomecache,
         from multiprocessing import Pool
 
         def _one(args):
+            """Worker: scan one gene; returns (gene_id, ScanResult)."""
             gi, gid = args
             return gid, scan_h2lmm(
                 phenotype_matrix[:, gi], genomecache, covariates,
@@ -324,35 +326,35 @@ def fixef_eqtl_scan(phenotype, genomecache, covariates=None,
 
     for chrom in genomecache.chromosomes:
         lids, pos, probs = genomecache.get_chromosome(chrom)
-        nf1 = genomecache.n_founders - 1
+        nf = genomecache.n_founders   # J — all founders; lstsq handles rank J-1
         for i_l, lid in enumerate(lids):
             if just_these_loci and lid not in just_these_loci:
                 continue
-            h   = probs[i_l]
+            h   = probs[i_l]          # (n, J) — all founders
             if z_sub is not None:
                 h = z_sub @ h
-            h   = h[:, :nf1]
             z_  = np.hstack([h, x])
-            q   = nf1
             try:
-                beta = np.linalg.lstsq(z_, y, rcond=None)[0]
+                beta = np.linalg.lstsq(z_, y, rcond=1e-10)[0]
                 e1   = y - z_ @ beta
                 rss1 = float(e1 @ e1)
             except Exception:
                 all_lod.append(0.0); all_pval.append(1.0)
-                all_betas.append(np.zeros(nf1)); all_lids.append(lid)
+                all_betas.append(np.zeros(nf)); all_lids.append(lid)
                 all_chrs.append(chrom); all_pos.append(pos[i_l]); continue
             lod  = max((n/2.0)*np.log10(max(rss0,1e-30)/max(rss1,1e-30)), 0.0)
-            df2  = n - p - q
-            if df2 > 0 and rss1 > 0:
-                f   = ((rss0-rss1)/q)/(rss1/df2)
-                pv  = 1.0 - _stats.f.cdf(max(f,0), q, df2)
+            # effective rank: rank([H, X]) - rank(X) = haplotype df
+            q_eff = max(int(np.linalg.matrix_rank(z_, tol=1e-10)) - p, 0)
+            df2  = n - p - q_eff
+            if df2 > 0 and rss1 > 0 and q_eff > 0:
+                f   = ((rss0-rss1)/q_eff)/(rss1/df2)
+                pv  = 1.0 - _stats.f.cdf(max(f, 0), q_eff, df2)
             else:
                 pv  = 1.0
-            all_lod.append(lod); all_pval.append(pv); all_betas.append(beta[:nf1])
+            all_lod.append(lod); all_pval.append(pv); all_betas.append(beta[:nf])
             all_lids.append(lid); all_chrs.append(chrom); all_pos.append(pos[i_l])
 
-    nf1_out = genomecache.n_founders - 1
+    nf_out = genomecache.n_founders
     return ScanResult(
         locus_ids   = np.array(all_lids),
         chromosomes = np.array(all_chrs),
@@ -360,7 +362,7 @@ def fixef_eqtl_scan(phenotype, genomecache, covariates=None,
         lod         = np.array(all_lod),
         p_value     = np.array(all_pval),
         betas       = (np.vstack(all_betas) if all_betas
-                       else np.empty((0, nf1_out))),
+                       else np.empty((0, nf_out))),
         h2_null     = {},
         phenotype_id = phenotype_id,
     )
@@ -410,13 +412,17 @@ def instability_lm_scan(phenotype, genomecache, covariates=None,
                   else None)
 
         class _SubCache:
+            """Genome cache view restricted to a subset of sample indices."""
+
             def __init__(self, cache, idx):
+                """Wrap cache, storing the index subset for subsetting probs."""
                 self._c = cache; self._idx = idx
                 self.chromosomes = cache.chromosomes
                 self.n_founders  = cache.n_founders
                 self.sample_ids  = [cache.sample_ids[i] for i in idx]
 
             def get_chromosome(self, chrom):
+                """Return lids, pos, and subset probs for chrom."""
                 lids, pos, probs = self._c.get_chromosome(chrom)
                 return lids, pos, probs[:, self._idx, :]
 
@@ -466,7 +472,7 @@ def scan_h2lmm_mi(phenotype, genomecache, covariates=None,
     -------
     ScanResult  lod = mean over n_imp imputations
     """
-    from .genomecache import GenomeCache as _GC
+    from ..genotype.genomecache import GenomeCache as _GC
     rng = np.random.default_rng(seed)
 
     if kinship_decomp is None:

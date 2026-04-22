@@ -47,6 +47,7 @@ class VQTLResult:
         corresponding mean eqtl scan (for comparison)
     """
     def __init__(self, **kwargs):
+        """Set all vQTL result fields from keyword arguments."""
         for k, v in kwargs.items():
             setattr(self, k, v)
 
@@ -134,6 +135,7 @@ def estimate_dispersion_per_subject(counts, subject_ids, library_sizes=None,
 
             # nb log-likelihood as function of log(φ)
             def neg_ll(log_phi):
+                """Negative NB log-likelihood as a function of log(phi)."""
                 phi = np.exp(log_phi)
                 r = 1.0 / phi  # nb size parameter
                 from scipy.special import gammaln

@@ -108,7 +108,7 @@ def discover(phenotype_matrix, gene_ids, genomecache,
     """
     if model == 'nb':
         # counts_cells: (n_genes, n_cells); sample_ids: per-cell strain ids
-        from .nb import scan_nb as _scan_nb
+        from .qtl.nb import scan_nb as _scan_nb
         scan_results = _scan_nb(
             phenotype_matrix, genomecache, sample_ids,
             gene_ids=gene_ids, covariates_cells=covariates,
@@ -304,7 +304,7 @@ def _run_snp_catalogue(disc, cache, mgp_vcf=None, window_mb=10.0,
     if mgp_vcf is None:
         logger.warning('snp_catalogue: mgp_vcf not provided — skipping')
         return {}
-    from .snp_scan import build_snp_catalogue
+    from .qtl.snp_scan import build_snp_catalogue
     return build_snp_catalogue(
         disc.scan, cache, mgp_vcf,
         window_mb=window_mb, founders=founders)
@@ -323,7 +323,7 @@ def _run_conditional_scan(disc, cache, covariates,
     (rather than peak-locus residual) reduces false secondary signals from
     LD within the block.
     """
-    from .epistasis import scan_conditional
+    from .qtl.epistasis import scan_conditional
     results = {}
     for gid, sr in disc.scan.items():
         if len(sr.lod) == 0: continue
@@ -376,7 +376,7 @@ def _run_ase_kallisto(disc, f1_fastq_dirs=None, founder_fastas=None,
         return {}
     if tool != 'kallisto':
         raise NotImplementedError(f'ase tool {tool!r} not implemented; use "kallisto"')
-    from .ase import run_kallisto_ase
+    from .qtl.ase import run_kallisto_ase
     return run_kallisto_ase(f1_fastq_dirs, founder_fastas, gtf_path,
                              threads=threads)
 

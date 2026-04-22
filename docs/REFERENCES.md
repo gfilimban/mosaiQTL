@@ -37,7 +37,7 @@
 
 | Reference | DOI | Role in mosaiQTL |
 |---|---|---|
-| Kang HM et al. Efficient control of population structure in model organism association mapping. *Genetics* 2008 | 10.1534/genetics.107.080101 | Eigendecomp LMM (lmm.py validation reference); EMMA algorithm |
+| Kang HM et al. Efficient control of population structure in model organism association mapping. *Genetics* 2008 | 10.1534/genetics.107.080101 | Eigendecomp LMM (lmm.py validated port); EMMA algorithm |
 | Lippert C et al. FaST linear mixed models for genome-wide association studies. *Nat Methods* 2011 | 10.1038/nmeth.1681 | Spectral decomp scan — lmm.py design; explains why ops stay at n×n for Gaussian |
 | Taylor DL et al. Factored spectrally normalized phosphorylation (tensorQTL). *Genome Biol* 2019 | 10.1186/s13059-019-1836-7 | GPU-accelerated QTL scan — SPEED-03 comparison baseline |
 | Halko N et al. Finding structure with randomness: probabilistic algorithms for matrix decomposition. *SIAM Rev* 2011 | 10.1137/090771806 | Randomised SVD — kinship PC computation strategy |
