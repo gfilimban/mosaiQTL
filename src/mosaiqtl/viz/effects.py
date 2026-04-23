@@ -38,18 +38,19 @@ def coef_profile(
     linewidth: float = 1.1,
     alpha: float = 0.85,
     show_legend: bool = True,
+    ylim: Optional[float] = None,
 ) -> plt.Axes:
     """Founder coefficient profiles along a chromosome.
 
     Plots all J founder haplotype effect estimates as colored lines across
-    the chromosome. The J-th founder is recovered via sum-to-zero.
+    the chromosome.
 
     Parameters
     ----------
     positions : np.ndarray
         Marker positions in Mb, shape (n_loci,).
     betas : np.ndarray
-        Haplotype effects, shape (n_loci, J-1).
+        Haplotype effects, shape (n_loci, J) sum-to-zero, or (n_loci, J-1).
     founders : list[str]
         Founder names in FOUNDER_ORDER; controls line colors.
     ax : plt.Axes, optional
@@ -62,6 +63,9 @@ def coef_profile(
         Line opacity.
     show_legend : bool
         Include founder color legend.
+    ylim : float, optional
+        Symmetric y-axis limit ±ylim. Clips blown-up betas at near-zero-prob
+        loci (rare founders → huge coefficients). Recommended: 3× phenotype SD.
 
     Returns
     -------
@@ -70,7 +74,17 @@ def coef_profile(
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 3), dpi=300)
 
-    full = np.column_stack([betas, -betas.sum(axis=1)])  # (n_loci, J)
+    order = np.argsort(positions)
+    positions = positions[order]
+    betas = betas[order]
+
+    # accept (n_loci, J) sum-to-zero betas or legacy (n_loci, J-1)
+    j = len(founders)
+    if betas.shape[1] == j - 1:
+        full = np.column_stack([betas, -betas.sum(axis=1)])
+    else:
+        full = betas  # already J columns
+
     for fi, fname in enumerate(founders):
         color = FOUNDER_COLORS.get(fname, COLOR_CC_FALLBACK)
         ax.plot(positions, full[:, fi], color=color, linewidth=linewidth,
@@ -78,6 +92,8 @@ def coef_profile(
 
     ax.axhline(0, color=COLOR_NEUTRAL_DARK, linewidth=0.5, zorder=1)
     ax.set_xlim(float(positions[0]), float(positions[-1]))
+    if ylim is not None:
+        ax.set_ylim(-ylim, ylim)
     ax.set_xlabel(f'Chr {chrom} position (Mb)' if chrom else 'Position (Mb)')
     ax.set_ylabel('Founder effect')
     if show_legend:

@@ -60,6 +60,9 @@ def lod_profile(
     """
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 3), dpi=300)
+    order = np.argsort(positions)
+    positions = positions[order]
+    lod = lod[order]
     ax.plot(positions, lod, color=color, linewidth=linewidth, zorder=2)
     ax.set_xlim(float(positions[0]), float(positions[-1]))
     ax.set_ylim(0, max(float(lod.max()) * 1.15, 1.0))
@@ -115,10 +118,13 @@ def manhattan(
 
     for ci, chrom in enumerate(chroms):
         pos, lod = scans[chrom]
+        order = np.argsort(pos)
+        pos   = pos[order]
+        lod   = lod[order]
         x     = pos + offset
         color = (highlight_color if chrom == highlight_chrom
                  else _CHR_COLORS[ci % 2])
-        ax.plot(x, lod, color=color, linewidth=0.8, zorder=2)
+        ax.scatter(x, lod, color=color, s=1.2, linewidths=0, zorder=2, rasterized=True)
         xticks.append(float(offset + (pos[-1] - pos[0]) / 2))
         xlabels.append(chrom)
         offset += float(pos[-1]) + _CHR_GAP_MB
@@ -165,6 +171,9 @@ def lod_interval(
     -------
     plt.Axes
     """
+    order = np.argsort(positions)
+    positions = positions[order]
+    lod = lod[order]
     ax     = lod_profile(positions, lod, ax=ax, chrom=chrom, color=color)
     cutoff = float(lod.max()) - lod_drop
     ax.fill_between(positions, 0, lod, where=(lod >= cutoff),

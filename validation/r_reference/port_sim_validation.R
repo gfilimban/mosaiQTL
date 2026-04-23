@@ -53,10 +53,10 @@ names(w) <- names(miqtl.rop.scan$fit0$y)
 miqtl.rop.scan$fit0$weights <- w
 
 permuted_phenotype <- generate.sample.outcomes.matrix(scan.object = miqtl.rop.scan,
-                                                      method = "permutation", num.samples = 100)
+                                                      method = "permutation", num.samples = 500)
 
 permuted_scans <- run.threshold.scans(sim.threshold.object = permuted_phenotype,
-                                      keep.full.scans=TRUE,
+                                      keep.full.scans=FALSE,
                                       genomecache  = genomecache,
                                       data = phenotypes$data,
                                       use.multi.impute = FALSE,
@@ -64,6 +64,16 @@ permuted_scans <- run.threshold.scans(sim.threshold.object = permuted_phenotype,
 
 permute_threshold <- get.gev.thresholds(threshold.scans = permuted_scans,
                                         percentile = 0.95)
+
+# export raw max-LODs for empirical comparison in Python (avoids GEV instability at n=100)
+perm_max_lods_r <- if (is.numeric(permuted_scans)) {
+  as.numeric(permuted_scans)
+} else {
+  sapply(permuted_scans, function(s) max(as.numeric(s$LOD), na.rm = TRUE))
+}
+write.csv(data.frame(perm_index = seq_along(perm_max_lods_r) - 1L,
+                     max_lod    = perm_max_lods_r),
+          'validation/phase1/r_data/perm_max_lods.csv', row.names = FALSE)
 
 # peak QTL locus
 
@@ -151,7 +161,7 @@ dev.off()
 # per-founder allele effect sizes (beta) across QTL chromosome — reference for allele effects comparison
 # ylim clipped to ±3 — rare founders (H/WSB, G/PWK) near-zero probability → blown-up coefs at some loci
 png('validation/phase1/r_plots/allele_effects_region.png', width=2700, height=1500, res=300)
-allele.plotter.region(scan.object = miqtl.rop.scan, chr = qtl_chr, ylim = c(-3, 3))
+allele.plotter.region(scan.object = miqtl.rop.scan, chr = qtl_chr)
 dev.off()
 
 
