@@ -9,8 +9,10 @@ global design — pheno_id / geno_id split:
     geno_id  : identifiers for rows of the genome cache (m ≤ n)
 
 when n > m (replicated CC strains), a Z matrix (n×m) maps each
-phenotype sample to its genotype:
-    H_n = Z H_m     kinship expanded to K_n = Z K_m Z^T
+phenotype sample to its strain genotype. phenotype and covariates
+are reduced to strain means (m,) before scanning. h² and the scan
+both operate at strain level (m×m K_m eigendecomp); H is never
+expanded to n.
 
 when n == m and ids match, Z == I and all results are identical
 to the 1:1 case.
@@ -23,7 +25,7 @@ import logging
 
 from ..genotype import kinship as kin_module
 from . import lmm as lmm_module
-from ..utils import rint, build_z_matrix, expand_kinship
+from ..utils import rint, build_z_matrix
 
 logger = logging.getLogger('mosaiqtl')
 
@@ -99,13 +101,16 @@ def _resolve_z(sample_ids, genomecache, pheno_id=None, geno_id=None):
 def scan_h2lmm(phenotype, genomecache, covariates=None,
                kinship_decomp=None, sample_ids=None,
                use_rint=True, use_reml=True, phenotype_id='unknown',
-               fixed_h2_dict=None):
+               fixed_h2_dict=None, model='additive'):
     """haplotype-based genome-wide scan with LOCO LMM.
 
-    supports both 1:1 (n == m) and replicated (n > m) designs via
-    the Z-matrix expansion. when sample_ids is provided and differs
-    from genomecache.sample_ids, Z is built automatically.
+    supports both 1:1 (n == m) and replicated (n > m) designs.
 
+    replicated design: when sample_ids differs from genomecache.sample_ids,
+    Z is built automatically and phenotype/covariates are reduced to strain
+    means before scanning. h² is estimated at strain level (m×m K_m
+    eigendecomp) and the scan operates entirely in the m-dimensional strain
+    space.
 
     parameters
     ----------
@@ -119,10 +124,15 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
     use_rint        : bool  apply rank-inverse normal transformation
     use_reml        : bool  REML for h² estimation (ML for LOD)
     phenotype_id    : str
+    model           : str  'additive' (default) or 'full'
+        'additive' — 8 haplotype columns per locus (J founders).
+        'full'     — J*(J+1)/2 diplotype columns constructed from additive
+                     probs via outer product P(fi/fj)=P(fi)*P(fj); valid
+                     for CC inbred data where heterozygous probs ≈ 0.
 
     returns
     -------
-    ScanResult
+    ScanResult  (betas shape (L, J) for additive; (L, J*(J+1)/2) for full)
     """
     n = len(phenotype)
 
@@ -154,6 +164,13 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
     # Z matrix for this valid subset
     z_sub = z_mat[valid] if z_mat is not None else None
 
+    # replicate-aware: compute strain means once; scan and h² operate at m-strain level.
+    if z_sub is not None:
+        r_counts = z_sub.sum(axis=0)             # (m,) replicates per strain
+        y        = (z_sub.T @ y) / r_counts      # strain-mean phenotype (m,)
+        x        = (z_sub.T @ x) / r_counts[:, None]  # strain-mean covariates (m, p)
+        z_sub    = None                           # H stays at m level in scan_chromosome
+
     # kinship
     if kinship_decomp is None:
         kd_raw  = kin_module.calc_kinship(genomecache, method='loco')
@@ -171,13 +188,7 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
         _ev  = kinship_decomp[chrom]['values']
         _evc = kinship_decomp[chrom]['vectors']
 
-        # if Z exists, expand kinship to sample space
-        if z_sub is not None:
-            k_m   = _evc @ np.diag(_ev) @ _evc.T   # reconstruct K_m
-            k_n   = expand_kinship(k_m, z_sub)       # K_n = Z K_m Z'
-            evals, evecs = np.linalg.eigh(k_n)
-        else:
-            evals, evecs = _ev, _evc[valid] if _evc.shape[0] > len(y) else _evc
+        evals, evecs = _ev, _evc[valid] if _evc.shape[0] > len(y) else _evc
 
         y_rot = evecs.T @ y
         x_rot = evecs.T @ x
@@ -190,7 +201,7 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
         h2_null_dict[chrom] = h2
 
         chr_res = lmm_module.scan_chromosome(
-            y, genomecache, chrom, x, evals, evecs, h2, use_reml, z_sub)
+            y, genomecache, chrom, x, evals, evecs, h2, use_reml, z_sub, model)
 
         n_loci = len(chr_res['locus_ids'])
         all_lids.append(chr_res['locus_ids'])
@@ -209,6 +220,7 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
         betas       = np.vstack(all_betas),
         h2_null     = h2_null_dict,
         phenotype_id = phenotype_id,
+        model        = model,
     )
 
 
@@ -482,9 +494,13 @@ def scan_h2lmm_mi(phenotype, genomecache, covariates=None,
     # only impute chromosomes that will actually be scanned
     _chrom_list = [c for c in genomecache.chromosomes if c in kinship_decomp]
 
-    # pre-estimate h2 once from the REAL cache — held fixed across all imputations
-    valid_mi = ~np.isnan(phenotype)
-    y_base   = phenotype[valid_mi].copy()
+    # pre-estimate h² once from the REAL cache — held fixed across all imputations.
+    # replicate-aware: same strain-mean path as scan_h2lmm.
+    _sid_mi    = (list(sample_ids) if sample_ids is not None
+                  else list(genomecache.sample_ids))
+    _z_mi, _vs = _resolve_z(_sid_mi, genomecache)
+    valid_mi   = (~np.isnan(phenotype)) & _vs
+    y_base     = phenotype[valid_mi].copy()
     if use_rint:
         from ..utils import rint as _rint_mi
         y_base = _rint_mi(y_base)
@@ -492,10 +508,16 @@ def scan_h2lmm_mi(phenotype, genomecache, covariates=None,
               else np.ones((valid_mi.sum(), 1), dtype=float))
     if not np.allclose(x_base[:, 0], 1.0):
         x_base = np.hstack([np.ones((len(x_base), 1)), x_base])
+    _zsub_mi = _z_mi[valid_mi] if _z_mi is not None else None
+    if _zsub_mi is not None:
+        _r_mi  = _zsub_mi.sum(axis=0)
+        y_base = (_zsub_mi.T @ y_base) / _r_mi
+        x_base = (_zsub_mi.T @ x_base) / _r_mi[:, None]
     fixed_h2 = {}
     for _c in _chrom_list:
         _ev  = kinship_decomp[_c]['values']
-        _evc = kinship_decomp[_c]['vectors'][valid_mi]
+        _evc = (kinship_decomp[_c]['vectors'] if _zsub_mi is not None
+                else kinship_decomp[_c]['vectors'][valid_mi])
         _yr  = _evc.T @ y_base
         _xr  = _evc.T @ x_base
         _h2, _ = lmm_module.estimate_h2_null(_yr, _xr, _ev,

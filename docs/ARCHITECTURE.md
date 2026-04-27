@@ -178,7 +178,7 @@ scan configuration space is defined by the user orthogonal choice axes (except t
   `report` — each subcommand reads/writes files; no hidden state between stages
 - **Constant-memory streaming**: never materialize the full (genes × loci) LOD matrix;
   stream per-chromosome, merge on completion
-- **Proper data management**: create analysis-friendly raw and intermediate data; ensures ability to go back and pick up from any step
+- **Proper data management**: create and save analysis-friendly raw and intermediate data; ensures ability to go back and pick up from any step
 - **Minimal core deps**: `pip install mosaiqtl` requires only numpy+pandas+scipy+anndata+h5py
   (DESIGN-01); GPU and R extras are opt-in
 - **Math companion before code**: every algorithm in `docs/math/` has a derivation
@@ -187,8 +187,7 @@ scan configuration space is defined by the user orthogonal choice axes (except t
   git commit hash embedded in all output files (DESIGN-06/07)
 - **Measure before optimising**: scalene + pytest-benchmark before any perf PR;
   benchmark results committed to repo (DESIGN-04)
-- **Moment stats before MLE**: moment-based dispersion default; MLE via flag (faster,
-  adequate for n=48)
+- **Moment stats before MLE**: moment-based dispersion default; MLE via flag
 
 ### Why NB-GLMM (not pure LMM)?
 Single-nucleus RNA-seq counts are overdispersed integers. Log-normalising and treating

@@ -1054,6 +1054,41 @@ Source data: `founder_assignment_comparison.csv` — one row per (chromosome × 
 
 ---
 
+---
+
+## Session Progress Log
+
+### 2026-04-19
+| Task | Status | Commit |
+|---|---|---|
+| TASK 0a — sparc NB fixtures | 🟢 done | 517096aa |
+| TASK 1 — genotype/founders.py + viz/validation.py | 🟢 done | 055fc49b |
+| TASK 2 — models/records.py (ScanResult, VQTLResult, FounderEffect, QTLResult, ProvenanceRecord) | 🟢 done | 0586acd8 |
+| TASK 3 — io/covariates.py | 🟢 done | — |
+
+### 2026-04-20
+| Task | Status | Commit |
+|---|---|---|
+| SWE-03 — zero flake8 violations | 🟢 done | 7717cbbc |
+| SWE-04 — 100% interrogate docstring coverage | 🟢 done | — |
+| VIZ-01/02/04/05 — viz/genome.py + viz/effects.py (all functions) | 🟢 done | — |
+| VIZ-03/08 — viz/haplotypes.py (prob_heatmap, pxg, kinship_heatmap, epistasis_heatmap) | 🟢 done | — |
+| COLOR_NEUTRAL_LIGHT — added to genotype/founders.py as canonical masked-cell color | 🟢 done | — |
+| n_48 → n_strains rename in genomecache.py | 🟢 done | — |
+
+### 2026-04-22
+| Task | Status | Commit |
+|---|---|---|
+| J-founder refactor — lmm.py, scan.py, mediation.py: all J founders + pinv + per-locus rank | 🟢 done | — |
+| P1-S1 fix — root cause: Python dropped WSB always; R pivots to near-zero founder | 🟢 done | — |
+| P1-S3 fix — increased n_perms 10→100 in R+Python for stable GEV; 10 was too noisy | 🟢 done | — |
+| SWE-03 — zero flake8 violations maintained (nf1 cleanup, test file noqa, E272 fixes) | 🟢 done | — |
+| validate_sim.py — font suppression, betas_peak shape fix (J not J-1), comment updates | 🟢 done | — |
+| test_betas_shape — updated assertion to (n_loci, J) | 🟢 done | — |
+| VQTL-03 note — TestEstimateDispersion skipped pending precompute_sufficient_stats | 🟢 done | — |
+
+---
+
 ### Global notes on plot choices
 
 **Bland-Altman vs scatter.** Scatter plots measure *correlation*; Bland-Altman plots measure *agreement*. A Pearson r of 0.999 is compatible with systematic bias of any size. For method validation, Bland-Altman is therefore the primary method-comparison tool (Bland & Altman 1986). Scatter is retained as a secondary view.

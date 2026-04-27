@@ -9,6 +9,7 @@
 
 | Reference | DOI | Role in mosaiQTL |
 |---|---|---|
+| Keele GR et al. Determinants of QTL mapping power in the realized Collaborative Cross. *G3* 2019 | 10.1534/genetics.116.197434 | miQTL — the R package mosaiQTL ports and validates against |
 | Broman KW et al. R/qtl2: Software for Mapping Quantitative Trait Loci with High-Dimensional Data. *Genetics* 2019 | 10.1534/genetics.119.302286 | Primary R validation reference; qtl2 LOD formula defines our LOD denominator=n rule |
 | Gatti DM et al. Quantitative Trait Locus Mapping Methods for Diversity Outbred Mice. *G3* 2014 | 10.1534/g3.114.013748 | miQTL conceptual basis; haplotype probability scan design |
 | Churchill GA & Doerge RW. Empirical threshold values for quantitative trait mapping. *Genetics* 1994 | 10.1093/genetics/138.3.963 | Permutation threshold theory — defines permute-expression-not-genotype rule |
@@ -71,6 +72,7 @@
 |---|---|---|
 | Bray NL et al. Near-optimal probabilistic RNA-seq quantification (kallisto). *Nat Biotechnol* 2016 | 10.1038/nbt.3519 | Algorithmic innovation over hardware; math-first design |
 | Melsted P et al. Modular, efficient and constant-memory preprocessing (bustools). *Nat Biotechnol* 2021 | 10.1038/s41587-021-00870-2 | Constant-memory streaming; minimal deps; DESIGN-01 basis |
+| Research Data Alliance FAIR4RS Working Group. FAIR Principles for Research Software. *RDA* 2022 | 10.15497/RDA00068 | Reproducibility, provenance, and open-science standards for mosaiQTL outputs |
 | Pimentel H et al. Differential analysis of RNA-seq with sleuth. *Nat Methods* 2017 | 10.1038/nmeth.4324 | LRT on count models; math-first documentation |
 
 ---

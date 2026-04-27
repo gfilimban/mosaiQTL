@@ -28,9 +28,9 @@ Data: sparcc_cache + phenotypes.csv (from port_sim_validation.R export)
 
 | ID | Section | R function | Threshold | Current | Status |
 |---|---|---|---|---|---|
-| P1-S1 | ROP scan LOD r² | scan.h2lmm (ROP) | ≥ 0.990 | 0.9975 | ⚠️ needs rerun |
-| P1-S2 | MI scan LOD r | scan.h2lmm (MI, num.imp=11) | ≥ 0.75 | 0.9756 | ⚠️ needs rerun |
-| P1-S3 | GEV threshold delta | get.gev.thresholds (95th pct) | < 0.5 LOD | fix: chrom=peak_chr | ⚠️ needs rerun |
+| P1-S1 | ROP scan LOD r² | scan.h2lmm (ROP) | ≥ 0.990 | 0.9975 | 🟢 |
+| P1-S2 | MI scan LOD r | scan.h2lmm (MI, num.imp=11) | ≥ 0.75 | 0.9756 | 🟢 |
+| P1-S3 | GEV threshold delta | get.gev.thresholds (95th pct) | < 0.5 LOD | 0.1543 | 🟢 |
 
 Run: `python validation/validate_sim.py`
 Pass = all three gates green simultaneously.
@@ -38,44 +38,31 @@ Pass = all three gates green simultaneously.
 ---
 
 ## VALIDATION — Phase 2 (R vs Python, S1–S11)
-### For reference: from original validation plan using gastroc data
+## VALIDATION — Phase 2 simulated (S1–S11, sparc data, independent of gastroc)
+Scripts: validation/r_reference/port_sim_validation_p2.R → validation/validate_sim_p2.py
+Data: sparcc_cache + sim.CC.data(seed=42) — independent from Phase 1 sim
+Uses real LOCO kinship (Phase 1 used identity/OLS shortcut).
+
 | ID | Section | Threshold | Current | Status |
 |---|---|---|---|---|
-| VAL-S1 | Cache info | loci_max_delta expected | - | 🔴 |
-| VAL-S2 | Haplotype probs r | > 0.90 | - | 🔴 |
-| VAL-S3 | Kinship LOCO r | > 0.999 | - | 🔴 |
-| VAL-S4 | LMM LOD pass rate | >= 50% | - | 🔴 |
-| VAL-S5 | LOD preservation | > 0.9990 | - | 🔴 |
-| VAL-S6 | Permutation mean delta | < 0.50 | - | 🔴 |
-| VAL-S7 | MI scan LOD r | > 0.75 | - | 🔴 |
-| VAL-S9 | Mediation LOD r | > 0.90 | - | 🔴 |
-| VAL-S10 | CI overlap | True | - | 🔴 |
-| VAL-S11 | Instability r | > 0.90 | - | 🔴 |
+| P2-S1 | Cache structure | loci delta=0, founders match, samples match | - | 🔴 not yet run |
+| P2-S2 | Haplotype argmax concordance | ≥ 0.95 | - | 🔴 not yet run |
+| P2-S3 | LOCO kinship r (worst chr) | > 0.999 | - | 🔴 not yet run |
+| P2-S4 | LMM scan pass rate (10 sims) | ≥ 50% at r² ≥ 0.990 | - | 🔴 not yet run |
+| P2-S5 | Cache collapse | ≥5% removed AND lod_r² ≥ 0.999 | - | 🔴 not yet run |
+| P2-S6 | GEV threshold delta | < 0.5 LOD | - | 🔴 not yet run |
+| P2-S7 | MI scan LOD r | ≥ 0.75 | - | 🔴 not yet run |
+| P2-S8 | SNP scan | gated: allele_dir required | ⚠️ GATED | ⚠️ gated |
+| P2-S9 | Mediation LOD r | ≥ 0.90 | - | 🔴 not yet run |
+| P2-S10 | Bootstrap CI contains planted locus | True | - | 🔴 not yet run |
+| P2-S11 | Instability LOD r | ≥ 0.90 | - | 🔴 not yet run |
 
-- Threshold column values needs rechecking
-
-
-## VALIDATION — Phase 2 (R vs Python, S1–S11)
-### For reference: from original validation plan using gastroc data
-| ID | Section | Threshold | Current | Status |
-|---|---|---|---|---|
-| EXVAL-S1 | Cache info | loci_max_delta expected | 1237 (correct) | 🟢 |
-| EXVAL-S2 | Haplotype probs r | > 0.90 | pending R rerun | ⚠️ |
-| EXVAL-S3 | Kinship LOCO r | > 0.999 | 0.9998 | 🟢 |
-| EXVAL-S4 | LMM LOD pass rate | >= 50% | 60.2% | 🟢 |
-| EXVAL-S5 | LOD preservation | > 0.9990 | 0.9999 | 🟢 |
-| EXVAL-S6 | Permutation mean delta | < 0.50 | 0.619 | ❌ |
-| EXVAL-S7 | MI scan LOD r | > 0.75 | 0.8191 | 🟢 |
-| EXVAL-S9 | Mediation LOD r | > 0.90 | 0.9983 | 🟢 |
-| EXVAL-S10 | CI overlap | True | True | 🟢 |
-| EXVAL-S11 | Instability r | > 0.90 | pending rerun | ⚠️ |
-
-Genuine passes: 7/11. Open: S6 GEV instability (undiagnosed) | S2 needs R rerun | S11 needs rerun.
 ```bash
-Rscript validation/r_reference/port_validation.R all Inf 2
-python validation/validate_port.py --sections 2,11
+Rscript validation/r_reference/port_sim_validation_p2.R
+python validation/validate_sim_p2.py
+python validation/validate_sim_p2.py --sections 3,4,6   # selective
+python validation/validate_sim_p2.py --force             # force rerun
 ```
-
 
 ---
 
@@ -159,7 +146,7 @@ and Taschuk & Wilson 2017 (10.1371/journal.pcbi.1005412).
 ## LMM EXTENSIONS (post-validation)
 | ID | Description | Prerequisite | Status |
 |---|---|---|---|
-| LMM-EXT-01 | Replicate-aware LMM: rewrite lmm.py with Z-matrix as primary path; sample-level y, x_covariates (sex/batch per replicate); K_s = Z K_strains Z'; update all callers (scan.py, permutation.py, mediation.py, epistasis.py, snp_scan.py) | VAL-S4 ✅ | 🔴 |
+| LMM-EXT-01 | Replicate-aware LMM: scan.py reduces replicate samples to strain means via Z; h² and scan operate at strain level (m×m). Implemented in scan_h2lmm and scan_h2lmm_mi. Replicate covariates (sex/batch per replicate) averaged into strain-mean covariates automatically. | — | 🟢 |
 | LMM-EXT-02 | Update test_lmm.py to use sample-level fixtures (tiny_phenotype, tiny_covariates, kinship_samples, z_matrix) | LMM-EXT-01 | 🔴 |
 
 ---
@@ -195,7 +182,7 @@ Reproducibility standard: Peng RD (2011) Reproducible research in computational 
 ## BENCHMARKING VS TOOLS
 | Tool | Model | Dataset | LOD r² | Speedup | Memory | Status |
 |---|---|---|---|---|---|---|
-| miQTL (R) | haplotype LMM | chr8, 50 genes | 0.973 median (measured) | not yet timed | not measured | 🟡 |
+| miQTL (R) | haplotype LMM | chr8, 50 genes | — | not yet timed | not measured | 🔴 |
 | R/qtl2 | haplotype LMM | chr8, 50 genes | — | — | — | 🔴 |
 | tensorQTL | linear QTL (GPU) | sim_cc48 | n/a (no haplotype) | — | — | 🔴 |
 | limix | LMM flexible | sim_cc48 | n/a (no haplotype) | — | — | 🔴 |
@@ -254,18 +241,21 @@ Functions in the miQTL R codebase not yet ported to Python. Assessed against
 | `mediation.scan.qr()` | `qtl/mediation.py` | |
 | `calc.kinship.from.genomecache.with.DOQTL()` | `genotype/kinship.py::calc_kinship` | |
 | `DiploprobReader` / `happy.*()` | `genotype/genomecache.py::GenomeCache` | |
-| `get.allele.effects.from.fixef()` | `ScanResult.betas` (J-1 per locus) | betas stored per locus in scan output |
+| `get.allele.effects.from.fixef()` + `get.allele.effects.from.ranef()` | `qtl/effects.py::get_allele_effects` | fixef (pinv) + ranef (ridge/BLUP) methods |
 | `genome.plotter.whole()` | `viz/genome.py::lod_profile` | |
 | `allele.plotter.whole()` | `viz/effects.py::coef_profile` | |
 | `prob.heatmap.*()` | `viz/haplotypes.py::prob_heatmap` | |
 | `rint()` | `utils.py::rint` | |
 
+### Already ported — HIGH priority (added)
+| ID | miQTL R function(s) | Python location | Notes |
+|---|---|---|---|
+| PORT-01 | `collapse.genomecache()` | `genotype/genomecache.py::collapse_genomecache` | 🟢 ported — greedy L2 forward scan |
+| PORT-02 | `scan.h2lmm(model='full')` | `qtl/scan.py::scan_h2lmm` + `qtl/lmm.py::scan_chromosome` | 🟢 ported — outer-product diplotype probs; valid for CC inbred data |
+| PORT-03 | `get.allele.effects.from.ranef()` + `get.allele.effects.from.fixef()` | `qtl/effects.py::get_allele_effects` | 🟢 ported — FWL gram + pseudoinverse (fixef) / ridge BLUP (ranef) |
+
 ### Not yet ported — HIGH priority
 | ID | miQTL R function(s) | Target Python location | Why needed |
-|---|---|---|---|
-| PORT-01 | `collapse.genomecache()` | `genotype/genomecache.py::collapse_genomecache` | S5 LOD preservation; reduces scan cost |
-| PORT-02 | `scan.h2lmm(model='full')` | `qtl/scan.py::scan_h2lmm` + `qtl/lmm.py::scan_chromosome` — add `model='full'` | full 36-diplotype model captures dominance/het; different LOD profile from additive |
-| PORT-03 | `get.allele.effects.from.ranef()` + peak-locus refit | `qtl/effects.py` (file missing) | BLUP effects at peak locus; more stable than fixed-effect betas for low-h2 loci |
 
 ### Not yet ported — MEDIUM priority
 | ID | miQTL R function(s) | Target Python location | Why needed |
@@ -302,37 +292,6 @@ Correct design: Stage 2 is PQL NB-GLMM score test for dispersion effects, mirror
 | Date | Goal | Was | Now | Commit | Resolution |
 |---|---|---|---|---|---|
 | — | — | — | — | — | — |
-
----
-
-## SESSION PROGRESS (2026-04-19)
-| Task | Status | Commit |
-|---|---|---|
-| TASK 0a — sparc NB fixtures | 🟢 done | 517096aa |
-| TASK 1 — genotype/founders.py + viz/validation.py | 🟢 done | 055fc49b |
-| TASK 2 — models/records.py (ScanResult, VQTLResult, FounderEffect, QTLResult, ProvenanceRecord) | 🟢 done | 0586acd8 |
-| TASK 3 — io/covariates.py | 🟢 done | — |
-
-## SESSION PROGRESS (2026-04-20)
-| Task | Status | Commit |
-|---|---|---|
-| SWE-03 — zero flake8 violations | 🟢 done | 7717cbbc |
-| SWE-04 — 100% interrogate docstring coverage | 🟢 done | — |
-| VIZ-01/02/04/05 — viz/genome.py + viz/effects.py (all functions) | 🟢 done | — |
-| VIZ-03/08 — viz/haplotypes.py (prob_heatmap, pxg, kinship_heatmap, epistasis_heatmap) | 🟢 done | — |
-| COLOR_NEUTRAL_LIGHT — added to genotype/founders.py as canonical masked-cell color | 🟢 done | — |
-| n_48 → n_strains rename in genomecache.py | 🟢 done | — |
-
-## SESSION PROGRESS (2026-04-22)
-| Task | Status | Commit |
-|---|---|---|
-| J-founder refactor — lmm.py, scan.py, mediation.py: all J founders + pinv + per-locus rank | 🟢 done | — |
-| P1-S1 fix — root cause: Python dropped WSB always; R pivots to near-zero founder | 🟢 done | — |
-| P1-S3 fix — increased n_perms 10→100 in R+Python for stable GEV; 10 was too noisy | 🟢 done | — |
-| SWE-03 — zero flake8 violations maintained (nf1 cleanup, test file noqa, E272 fixes) | 🟢 done | — |
-| validate_sim.py — font suppression, betas_peak shape fix (J not J-1), comment updates | 🟢 done | — |
-| test_betas_shape — updated assertion to (n_loci, J) | 🟢 done | — |
-| VQTL-03 note — TestEstimateDispersion skipped pending precompute_sufficient_stats | 🟢 done | — |
 
 ---
 

@@ -71,7 +71,8 @@ def run_threshold_scans(null_outcomes, genomecache,
                         covariates=None, kinship_decomp=None,
                         chrom=None,
                         fix_h2=True,
-                        use_rint=True, use_reml=True):
+                        use_rint=True, use_reml=True,
+                        sample_ids=None):
     """scan null phenotype columns to build the peak-LOD null distribution.
 
 
@@ -94,6 +95,10 @@ def run_threshold_scans(null_outcomes, genomecache,
         False — re-estimate h² for each permuted phenotype (slow, more correct).
     use_rint       : bool  apply rank-inverse normal transform to phenotype
     use_reml       : bool  REML for h² estimation
+    sample_ids     : list of str or None
+        replicate sample IDs (length n).  when provided, each permuted
+        phenotype is averaged to strain means via the Z-matrix before
+        scanning; kinship_decomp must be at strain level (m×m).
 
     returns
     -------
@@ -121,17 +126,29 @@ def run_threshold_scans(null_outcomes, genomecache,
     if not np.allclose(x[:, 0], 1.0):            # ensure intercept present
         x = np.hstack([np.ones((n, 1)), x])
 
+    # replicate path: reduce to strain means if sample_ids provided
+    z_mat    = None
+    r_counts = None
+    x_scan   = x
+    if sample_ids is not None:
+        from ..utils import build_z_matrix
+        z_mat, _  = build_z_matrix(list(sample_ids), list(genomecache.sample_ids))
+        r_counts  = z_mat.sum(axis=0)
+        x_scan    = (z_mat.T @ x) / r_counts[:, None]
+
     # pre-compute per-chrom h² from original phenotype (fix_h2=True mode)
     h2_fixed = {}
     if fix_h2:
         if phenotype is None:
             raise ValueError('phenotype required when fix_h2=True')
         y0 = _rint(phenotype) if use_rint else phenotype.copy()
+        if z_mat is not None:
+            y0 = (z_mat.T @ y0) / r_counts
         for c in chrs:
             ev  = kinship_decomp[c]['values']
             evc = kinship_decomp[c]['vectors']
             h2_fixed[c], _ = lmm_module.estimate_h2_null(
-                evc.T @ y0, evc.T @ x, ev,
+                evc.T @ y0, evc.T @ x_scan, ev,
                 method='reml' if use_reml else 'ml')
 
     n_perms  = null_outcomes.shape[1]
@@ -144,6 +161,8 @@ def run_threshold_scans(null_outcomes, genomecache,
         y_p = null_outcomes[:, p_idx]                   # permuted phenotype
         if use_rint:
             y_p = _rint(y_p)
+        if z_mat is not None:
+            y_p = (z_mat.T @ y_p) / r_counts
 
         best = -np.inf
         for c in chrs:
@@ -154,12 +173,12 @@ def run_threshold_scans(null_outcomes, genomecache,
                 h2 = h2_fixed[c]                        # reuse pre-computed h²
             else:
                 h2, _ = lmm_module.estimate_h2_null(
-                    evc.T @ y_p, evc.T @ x, ev,
+                    evc.T @ y_p, evc.T @ x_scan, ev,
                     method='reml' if use_reml else 'ml')
 
             # scan_chromosome handles y/x rotation internally
             res  = lmm_module.scan_chromosome(
-                y_p, genomecache, c, x, ev, evc, h2, use_reml=use_reml)
+                y_p, genomecache, c, x_scan, ev, evc, h2, use_reml=use_reml)
             best = max(best, float(res['lod'].max()))
 
         max_lods[p_idx] = best
@@ -216,7 +235,8 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
                          peak_chrom=None,
                          fix_h2=True,
                          use_rint=True, use_reml=True,
-                         ci_alpha=0.05):
+                         ci_alpha=0.05,
+                         sample_ids=None):
     """run single-chromosome scans on parametric bootstrap samples to compute
     a positional confidence interval for a QTL.
 
@@ -234,6 +254,10 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
     use_rint           : bool
     use_reml           : bool
     ci_alpha           : float  confidence level = 1 - ci_alpha (default 0.05 = 95% CI)
+    sample_ids         : list of str or None
+        replicate sample IDs (length n).  when provided, each bootstrap
+        phenotype is averaged to strain means before scanning; kinship_decomp
+        must be at strain level (m×m).
 
     returns
     -------
@@ -259,15 +283,27 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((n, 1)), x])
 
+    # replicate path: reduce to strain means if sample_ids provided
+    z_mat    = None
+    r_counts = None
+    x_scan   = x
+    if sample_ids is not None:
+        from ..utils import build_z_matrix
+        z_mat, _  = build_z_matrix(list(sample_ids), list(genomecache.sample_ids))
+        r_counts  = z_mat.sum(axis=0)
+        x_scan    = (z_mat.T @ x) / r_counts[:, None]
+
     # pre-compute h² from original phenotype
     h2_fixed = {}
     if fix_h2:
         y0 = _rint(phenotype) if use_rint else phenotype.copy()
+        if z_mat is not None:
+            y0 = (z_mat.T @ y0) / r_counts
         for c in chrs:
             ev  = kinship_decomp[c]['values']
             evc = kinship_decomp[c]['vectors']
             h2_fixed[c], _ = lmm_module.estimate_h2_null(
-                evc.T @ y0, evc.T @ x, ev,
+                evc.T @ y0, evc.T @ x_scan, ev,
                 method='reml' if use_reml else 'ml')
 
     n_boot   = bootstrap_outcomes.shape[1]
@@ -280,6 +316,8 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
         y_b = bootstrap_outcomes[:, b_idx]
         if use_rint:
             y_b = _rint(y_b)
+        if z_mat is not None:
+            y_b = (z_mat.T @ y_b) / r_counts
 
         best_lod = -np.inf
         best_pos = np.nan
@@ -292,11 +330,11 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
                 h2 = h2_fixed[c]
             else:
                 h2, _ = lmm_module.estimate_h2_null(
-                    evc.T @ y_b, evc.T @ x, ev,
+                    evc.T @ y_b, evc.T @ x_scan, ev,
                     method='reml' if use_reml else 'ml')
 
             res    = lmm_module.scan_chromosome(
-                y_b, genomecache, c, x, ev, evc, h2, use_reml=use_reml)
+                y_b, genomecache, c, x_scan, ev, evc, h2, use_reml=use_reml)
             peak_i = int(np.argmax(res['lod']))
             if res['lod'][peak_i] > best_lod:
                 best_lod = res['lod'][peak_i]

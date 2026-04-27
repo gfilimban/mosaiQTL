@@ -39,7 +39,7 @@ class GenomeCache:
         number of founder strains
     """
 
-    def __init__(self, sample_ids, founders, data=None):
+    def __init__(self, sample_ids, founders, data=None, _h5_handle=None):
         """initialize genome cache.
 
         parameters
@@ -50,15 +50,27 @@ class GenomeCache:
             founder strain names
         data : dict or None
             {chr_id: {'locus_ids': array, 'positions': array,
-                       'probs': 3d array (n_loci, n_subjects, n_founders)}}
+                       'probs': ndarray or h5py.Dataset (n_loci, n_subjects, n_founders)}}
+        _h5_handle : h5py.File or None
+            open HDF5 file kept alive for lazy probs reads; closed in __del__
         """
         self.sample_ids = np.asarray(sample_ids)
         self.founders = list(founders)
         self.n_founders = len(founders)
         self._data = data if data is not None else {}
+        self._h5_handle = _h5_handle
         self.crossinfo = None   # DataFrame (strains × A-H) from cc_crossinfo.csv
         self.x_donor   = {}     # strain_id -> founder_col of x-chr donor
         self.chromosomes = sorted(self._data.keys())
+
+    def __del__(self):
+        """close open HDF5 handle on garbage collection."""
+        h = getattr(self, '_h5_handle', None)
+        if h is not None:
+            try:
+                h.close()
+            except Exception:
+                pass
 
     def get_locus(self, chrom, locus_idx):
         """retrieve haplotype probabilities for a single locus.
@@ -75,10 +87,13 @@ class GenomeCache:
         np.ndarray (n_subjects, n_founders)
             founder haplotype probabilities at this locus
         """
-        return self._data[chrom]['probs'][locus_idx]
+        return np.asarray(self._data[chrom]['probs'][locus_idx])
 
     def get_chromosome(self, chrom):
         """retrieve all loci for a chromosome.
+
+        loads probs into RAM at call time — one chromosome in RAM during scan,
+        not all chromosomes (lazy h5py Dataset or eager numpy array both handled).
 
         parameters
         ----------
@@ -92,7 +107,7 @@ class GenomeCache:
         probs : np.ndarray (n_loci, n_subjects, n_founders)
         """
         d = self._data[chrom]
-        return d['locus_ids'], d['positions'], d['probs']
+        return d['locus_ids'], d['positions'], np.asarray(d['probs'])
 
     def n_loci(self, chrom):
         """number of loci on a chromosome."""
@@ -113,35 +128,34 @@ class GenomeCache:
         """
         import h5py
 
+        # file kept open — probs Datasets are lazy; get_chromosome() loads one
+        # chromosome at a time (n_loci × n_strains × J × 8 B) rather than the
+        # full genome simultaneously
+        f = h5py.File(filepath, 'r')
+        founders = [s.decode() for s in f['founders'][:]]
+        sample_ids = None
         data = {}
-        with h5py.File(filepath, 'r') as f:
-            # read founder names
-            founders = [s.decode() for s in f['founders'][:]]
 
-            # read sample ids from first chromosome
-            sample_ids = None
+        for key in f.keys():
+            if not key.startswith('chr'):
+                continue
+            grp = f[key]
+            chrom = key.replace('chr', '')
 
-            for key in f.keys():
-                if not key.startswith('chr'):
-                    continue
-                grp = f[key]
-                chrom = key.replace('chr', '')
+            if sample_ids is None:
+                sample_ids = np.array(
+                    [s.decode() for s in grp['sample_ids'][:]]
+                )
 
-                # read sample ids (same across all chromosomes)
-                if sample_ids is None:
-                    sample_ids = np.array(
-                        [s.decode() for s in grp['sample_ids'][:]]
-                    )
+            data[chrom] = {
+                'locus_ids': np.array(
+                    [s.decode() for s in grp['locus_ids'][:]]
+                ),
+                'positions': grp['positions'][:].astype(np.float64),
+                'probs':     grp['probs'],   # h5py Dataset — NOT loaded into RAM
+            }
 
-                data[chrom] = {
-                    'locus_ids': np.array(
-                        [s.decode() for s in grp['locus_ids'][:]]
-                    ),
-                    'positions': grp['positions'][:].astype(np.float64),
-                    'probs': grp['probs'][:].astype(np.float64),
-                }
-
-        return GenomeCache(sample_ids, founders, data)
+        return GenomeCache(sample_ids, founders, data, _h5_handle=f)
 
     def to_hdf5(self, filepath):
         """save genome cache to native hdf5 format.
@@ -1195,6 +1209,62 @@ def build(args=None):
         if os.path.exists(fp):
             size_mb = os.path.getsize(fp) / 1e6
             logger.info(f'    {fname:<22s} {size_mb:6.1f} MB')
+
+
+def collapse_genomecache(
+    cache: 'GenomeCache',
+    criterion: str = 'l2_norm',
+    tol: float = 0.02,
+) -> 'GenomeCache':
+    """reduce a genome cache by removing redundant loci.
+
+    greedy forward scan per chromosome: keep a locus if its normalized
+    L2 distance from the previous kept locus exceeds ``tol``.  the first
+    locus on each chromosome is always kept.
+
+    parameters
+    ----------
+    cache     : GenomeCache
+    criterion : str  only 'l2_norm' supported
+    tol       : float
+        minimum normalized L2 distance to keep a locus.
+        normalized by sqrt(n_strains × n_founders) so that tol=0.02 is
+        meaningful regardless of cache dimensions.
+
+    returns
+    -------
+    GenomeCache  with fewer loci per chromosome; same sample_ids and founders
+    """
+    if criterion != 'l2_norm':
+        raise ValueError(f'unsupported criterion: {criterion!r}')
+
+    new_data: dict = {}
+    for chrom in cache.chromosomes:
+        lids, pos, probs = cache.get_chromosome(chrom)
+        n_loci, n_strains, n_founders = probs.shape
+        norm_factor = np.sqrt(n_strains * n_founders)
+
+        keep = [0]
+        ref  = probs[0].ravel()
+        for i in range(1, n_loci):
+            if np.linalg.norm(probs[i].ravel() - ref) / norm_factor >= tol:
+                keep.append(i)
+                ref = probs[i].ravel()
+
+        idx = np.array(keep)
+        new_data[chrom] = {
+            'locus_ids': lids[idx],
+            'positions': pos[idx],
+            'probs':     probs[idx],
+        }
+        logger.info(f'collapse {chrom}: {n_loci} -> {len(idx)} loci '
+                    f'({100*(1-len(idx)/n_loci):.1f}% removed)')
+
+    return GenomeCache(
+        sample_ids=cache.sample_ids,
+        founders=cache.founders,
+        data=new_data,
+    )
 
 
 if __name__ == '__main__':

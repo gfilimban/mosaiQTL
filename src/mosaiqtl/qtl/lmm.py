@@ -175,7 +175,7 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
 
 def scan_chromosome(y, genomecache, chrom, x_covariates,
                     eigvals, eigvecs, h2_null, use_reml=True,
-                    z_mat=None):
+                    z_mat=None, model='additive'):
     """scan all loci on one chromosome — vectorized batch WLS.
 
     replaces the per-locus python loop with a single tensor computation
@@ -189,7 +189,10 @@ def scan_chromosome(y, genomecache, chrom, x_covariates,
     J×J gram matrix rank J-1 at regular loci. at loci where one founder
     has near-zero probability the rank is J-2. pinv handles both cases,
     matching r's rank-tolerant qr decomposition in lm.fit() exactly.
-    returned betas are shape (n_loci, J) and satisfy sum ≈ 0.
+
+    model='additive' (default): betas shape (n_loci, J), sum ≈ 0 per locus.
+    model='full': constructs diplotype probs via outer product P(fi/fj)=P(fi)*P(fj)
+        for i≤j.  valid for CC inbred data; betas shape (n_loci, J*(J+1)/2).
 
     equivalent to qtl2::scan_pg_onechr (rcpp), now in numpy.
 
@@ -204,16 +207,24 @@ def scan_chromosome(y, genomecache, chrom, x_covariates,
     h2_null      : float
     use_reml     : bool                (unused for lod; kept for api compat)
     z_mat        : np.ndarray (n, m) or None
+    model        : str                 'additive' (default) or 'full'
 
     returns
     -------
-    dict: locus_ids, positions, lod, p_value, betas (n_loci, J)
+    dict: locus_ids, positions, lod, p_value, betas (n_loci, nf)
     """
     locus_ids, positions, probs = genomecache.get_chromosome(chrom)
     n_loci = len(locus_ids)
     nf     = genomecache.n_founders   # J — all founders
     n      = len(y)
     p      = x_covariates.shape[1]
+
+    if model == 'full':
+        # diplotype probs: P(fi/fj) = P(fi)*P(fj) for i<=j  (CC outer-product approx)
+        J        = nf
+        _ii, _jj = np.triu_indices(J)
+        probs    = probs[:, :, _ii] * probs[:, :, _jj]   # (n_loci, n_strains, J*(J+1)/2)
+        nf       = len(_ii)
 
     # ── shared weight vector from h² ─────────────────────────────────────────
     delta  = h2_null / max(1.0 - h2_null, 1e-10)

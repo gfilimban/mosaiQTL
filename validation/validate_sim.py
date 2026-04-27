@@ -384,8 +384,10 @@ def run(sparcc_cache, r_data, out_dir):
         from scipy.stats import genextreme as _gev
 
         r_max_lods_path = r_data / 'perm_max_lods.csv'
-        r_max_lods = (pd.read_csv(r_max_lods_path)['max_lod'].values
-                      if r_max_lods_path.exists() else None)
+        r_max_lods_raw = (pd.read_csv(r_max_lods_path)['max_lod'].values
+                          if r_max_lods_path.exists() else None)
+        r_max_lods = (r_max_lods_raw[np.isfinite(r_max_lods_raw)]
+                      if r_max_lods_raw is not None else None)
 
         all_vals = (max_lods if r_max_lods is None
                     else np.concatenate([max_lods, r_max_lods]))

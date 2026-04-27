@@ -9,6 +9,7 @@ import pytest  # noqa: F401
 sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
 
 from mosaiqtl.qtl.lmm import estimate_h2_null, scan_chromosome
+from mosaiqtl.qtl.scan import scan_h2lmm
 
 
 class TestEstimateH2Null:
@@ -117,3 +118,104 @@ class TestScanChromosome:
         )
         pv = result['p_value']
         assert np.all(pv >= 0.0) and np.all(pv <= 1.0 + 1e-8)
+
+
+class TestScanChromosomeFull:
+    def test_full_betas_shape(self, tiny_cache, tiny_kinship,
+                              tiny_strain_phenotype, tiny_strain_covariates):
+        chrom = tiny_cache.chromosomes[0]
+        K = tiny_kinship[chrom]
+        eigvals, eigvecs = np.linalg.eigh(K)
+        h2, _ = estimate_h2_null(
+            eigvecs.T @ tiny_strain_phenotype,
+            eigvecs.T @ tiny_strain_covariates,
+            eigvals,
+        )
+        result = scan_chromosome(
+            tiny_strain_phenotype, tiny_cache, chrom, tiny_strain_covariates,
+            eigvals, eigvecs, h2, model='full',
+        )
+        n_loci = len(tiny_cache._data[chrom]['locus_ids'])
+        J = tiny_cache.n_founders
+        nf_full = J * (J + 1) // 2
+        assert result['betas'].shape == (n_loci, nf_full)
+
+    def test_full_lod_nonnegative(self, tiny_cache, tiny_kinship,
+                                   tiny_strain_phenotype, tiny_strain_covariates):
+        chrom = tiny_cache.chromosomes[0]
+        K = tiny_kinship[chrom]
+        eigvals, eigvecs = np.linalg.eigh(K)
+        h2, _ = estimate_h2_null(
+            eigvecs.T @ tiny_strain_phenotype,
+            eigvecs.T @ tiny_strain_covariates,
+            eigvals,
+        )
+        result = scan_chromosome(
+            tiny_strain_phenotype, tiny_cache, chrom, tiny_strain_covariates,
+            eigvals, eigvecs, h2, model='full',
+        )
+        assert np.all(result['lod'] >= -1e-8)
+
+    def test_full_lod_finite(self, tiny_cache, tiny_kinship,
+                              tiny_strain_phenotype, tiny_strain_covariates):
+        chrom = tiny_cache.chromosomes[0]
+        K = tiny_kinship[chrom]
+        eigvals, eigvecs = np.linalg.eigh(K)
+        h2, _ = estimate_h2_null(
+            eigvecs.T @ tiny_strain_phenotype,
+            eigvecs.T @ tiny_strain_covariates,
+            eigvals,
+        )
+        result = scan_chromosome(
+            tiny_strain_phenotype, tiny_cache, chrom, tiny_strain_covariates,
+            eigvals, eigvecs, h2, model='full',
+        )
+        assert np.all(np.isfinite(result['lod']))
+
+
+class TestReplicatePath:
+    """scan_h2lmm with replicated samples produces same LOD as manual strain means."""
+
+    def test_replicate_path_matches_strain_means(
+        self, tiny_cache, tiny_kinship, tiny_phenotype, sample_strain_map,
+    ):
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        from mosaiqtl.utils import build_z_matrix
+
+        kd = decomp_kinship(tiny_kinship)
+
+        # 40-sample phenotype with strain-map IDs — strain means computed internally
+        res_rep = scan_h2lmm(
+            tiny_phenotype, tiny_cache,
+            kinship_decomp=kd,
+            sample_ids=list(sample_strain_map),
+            use_rint=False,
+        )
+
+        # direct strain-mean path: manually average 4 replicates per strain
+        Z, _ = build_z_matrix(list(sample_strain_map), list(tiny_cache.sample_ids))
+        r    = Z.sum(axis=0)
+        y_bar = (Z.T @ tiny_phenotype) / r
+        res_strain = scan_h2lmm(
+            y_bar, tiny_cache,
+            kinship_decomp=kd,
+            use_rint=False,
+        )
+
+        np.testing.assert_allclose(res_rep.lod, res_strain.lod, rtol=1e-6,
+                                    err_msg='replicate path LOD must match strain-mean LOD')
+
+    def test_replicate_path_lod_finite(
+        self, tiny_cache, tiny_kinship, tiny_phenotype, sample_strain_map,
+    ):
+        from mosaiqtl.genotype.kinship import decomp_kinship
+
+        kd = decomp_kinship(tiny_kinship)
+        res = scan_h2lmm(
+            tiny_phenotype, tiny_cache,
+            kinship_decomp=kd,
+            sample_ids=list(sample_strain_map),
+            use_rint=False,
+        )
+        assert np.all(np.isfinite(res.lod))
+        assert np.all(res.lod >= 0.0)
