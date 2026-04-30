@@ -27,6 +27,8 @@ def prob_heatmap(
     *,
     ax: Optional[plt.Axes] = None,
     phenotype: Optional[np.ndarray] = None,
+    phenotype_id: str = 'phenotype',
+    gene: str = '',
     sample_labels: Optional[list[str]] = None,
     chrom: str = '',
     position_mb: Optional[float] = None,
@@ -34,22 +36,26 @@ def prob_heatmap(
 ) -> plt.Axes:
     """Haplotype dosage heatmap at a single locus, optionally sorted by phenotype.
 
-    Rows are samples; columns are founders. When phenotype is supplied, rows
-    are sorted in ascending phenotype order so allelic series patterns are visible.
+    Founders are on the y-axis; samples (sorted ascending by phenotype) are on
+    the x-axis.  A secondary x-axis on top shows phenotype values at five
+    quantile positions, matching the miQTL ``prob.heatmap`` layout.
 
     Parameters
     ----------
     hap_probs : np.ndarray
-        Shape (n_samples, J) founder probabilities at one locus. Must sum to 1
-        across the J axis.
+        Shape (n_samples, J) founder probabilities at one locus.
     founders : list[str]
         Founder names; length must equal hap_probs.shape[1].
     ax : plt.Axes, optional
         Axes to draw on; created at dpi=300 if None.
     phenotype : np.ndarray, optional
-        Shape (n_samples,) trait values; rows sorted ascending when provided.
+        Shape (n_samples,) trait values; samples sorted ascending when provided.
+    phenotype_id : str
+        Phenotype name used in the x-axis label.
+    gene : str
+        eGene name; when provided, becomes the primary title element.
     sample_labels : list[str], optional
-        Row tick labels; suppressed when n_samples > 30.
+        Unused in current layout (kept for API compatibility).
     chrom : str
         Chromosome label for title.
     position_mb : float, optional
@@ -61,43 +67,63 @@ def prob_heatmap(
     -------
     plt.Axes
     """
+    n_samples_in = hap_probs.shape[0]
     if ax is None:
-        n = hap_probs.shape[0]
-        height = max(3.0, n * 0.12)
-        _, ax = plt.subplots(figsize=(5, height), dpi=300)
+        width = max(5.0, n_samples_in * 0.18)
+        _, ax = plt.subplots(figsize=(width, 3.5), dpi=300)
 
-    mat = np.asarray(hap_probs, dtype=float)
+    mat = np.asarray(hap_probs, dtype=float)   # (n_samples, J)
+    pheno_sorted: Optional[np.ndarray] = None
     if phenotype is not None:
         order = np.argsort(phenotype)
         mat = mat[order]
-        if sample_labels is not None:
-            sample_labels = [sample_labels[i] for i in order]
+        pheno_sorted = phenotype[order]
 
-    n_samples = mat.shape[0]
+    # founders on y-axis (rows), samples on x-axis (columns) — matches miQTL layout
+    mat = mat.T                                 # (J, n_samples)
+    J         = mat.shape[0]
+    n_samples = mat.shape[1]
+
     im = ax.imshow(mat, aspect='auto', cmap=cmap, vmin=0.0, vmax=1.0,
                    interpolation='nearest')
-    plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label='Probability')
+    plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label='Haplotype Dose')
 
-    ax.set_xticks(np.arange(len(founders)))
-    ax.set_xticklabels(founders, rotation=45, ha='right', fontsize=7)
-    ax.set_xlabel('Founder')
-    ax.set_ylabel('Sample (sorted by phenotype)' if phenotype is not None else 'Sample')
+    # y-axis: founder names
+    ax.set_yticks(np.arange(J))
+    ax.set_yticklabels(founders, fontsize=7)
 
-    if sample_labels is not None and n_samples <= 30:
-        ax.set_yticks(np.arange(n_samples))
-        ax.set_yticklabels(sample_labels, fontsize=6)
-    else:
-        ax.set_yticks([])
+    # x-axis bottom: samples label; no individual ticks
+    ax.set_xticks([])
+    ax.set_xlabel('Samples (sorted ascending)', fontsize=8)
 
-    title_parts = []
+    # x-axis top: trait values at 5 quantile-spaced sample positions
+    # — makes clear the numbers are trait values, not genomic coordinates
+    if pheno_sorted is not None and n_samples >= 5:
+        ax_top = ax.twiny()
+        tick_cols = np.linspace(0, n_samples - 1, 5).astype(int)
+        ax_top.set_xlim(-0.5, n_samples - 0.5)
+        ax_top.set_xticks(tick_cols)
+        ax_top.set_xticklabels(
+            [f'{pheno_sorted[i]:.2f}' for i in tick_cols], fontsize=7)
+        ax_top.tick_params(top=True, length=3)
+        ax_top.set_xlabel(f'{phenotype_id} (trait value)', fontsize=7, labelpad=4)
+        _set_font(ax_top)
+
+    # title: gene name prominent; locus position secondary
+    loc_parts = []
     if chrom:
-        title_parts.append(f'Chr {chrom}')
+        loc_parts.append(f'Chr {chrom}')
     if position_mb is not None:
-        title_parts.append(f'{position_mb:.2f} Mb')
-    if title_parts:
-        ax.set_title(' · '.join(title_parts), fontsize=8, pad=4)
+        loc_parts.append(f'{position_mb:.2f} Mb')
+    loc_str = ' · '.join(loc_parts)
+    if gene:
+        title = f'{gene}  —  {loc_str}' if loc_str else gene
+    else:
+        title = loc_str
+    if title:
+        ax.set_title(title, fontsize=9, pad=4)
 
-    sns.despine(ax=ax, left=(n_samples > 30))
+    sns.despine(ax=ax)
     _set_font(ax)
     return ax
 
