@@ -86,6 +86,15 @@ validation/sparcc_cache/
 validation/sparcc_data/
 tests/fixtures/data/
 
+# gastroc benchmark — large data files and regenerated outputs
+validation/gastroc_data/counts_lognorm.h5
+validation/gastroc_data/gastroc_pheno.rds
+validation/gastroc_data/metadata.csv
+validation/gastroc_data/*.csv
+validation/gastroc_data/plots/
+validation/gastroc_data/chr*/
+validation/gastroc_data/genomecache_collapsed/
+
 # slide deck build artifacts
 docs/slides/*.pptx
 
@@ -93,3 +102,4 @@ docs/slides/*.pptx
 claude/*.md
 graphify-out
 CLAUDE.md
+.aider*
