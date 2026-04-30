@@ -53,15 +53,19 @@ def calc_kinship(genomecache, method='loco'):
     num_tot   = sum(chr_num.values())
     nloci_tot = sum(chr_nloci.values())
 
+    def _norm(K: np.ndarray) -> np.ndarray:
+        d = np.diag(K).mean()
+        return K / d if d > 0 else K
+
     if method == 'overall':
-        return {'overall': num_tot / nloci_tot}
+        return {'overall': _norm(num_tot / nloci_tot)}
 
     elif method == 'loco':
-        return {c: (num_tot - chr_num[c]) / (nloci_tot - chr_nloci[c])
+        return {c: _norm((num_tot - chr_num[c]) / (nloci_tot - chr_nloci[c]))
                 for c in chr_num}
 
     elif method == 'chr':
-        return {c: chr_num[c] / chr_nloci[c] for c in chr_num}
+        return {c: _norm(chr_num[c] / chr_nloci[c]) for c in chr_num}
 
     else:
         raise ValueError(f'unknown kinship method: {method!r}')
