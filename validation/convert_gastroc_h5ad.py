@@ -78,11 +78,56 @@ def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path) -> None:
     log.info('writing %s', meta_path)
     obs.reset_index(drop=True).to_csv(meta_path, index=False)
 
+    # ── write gene annotations CSV ────────────────────────────────────────────
+    var = adata.var.copy()
+    var = var.reset_index(names='_var_index')
+    # use existing gene_id column if present, otherwise fall back to the index
+    if 'gene_id' not in var.columns:
+        var = var.rename(columns={'_var_index': 'gene_id'})
+    else:
+        var = var.drop(columns='_var_index')
+
+    # normalise chromosome column — accept common naming variants
+    chr_col = next(
+        (c for c in var.columns if c.lower() in ('chromosome', 'chrom', 'chr', 'seqname', 'seqnames')),
+        None,
+    )
+    start_col = next(
+        (c for c in var.columns if c.lower() in ('start', 'chromstart', 'gene_start', 'start_position')),
+        None,
+    )
+    end_col = next(
+        (c for c in var.columns if c.lower() in ('end', 'chromend', 'gene_end', 'end_position')),
+        None,
+    )
+
+    if chr_col is None:
+        log.warning('no chromosome column found in adata.var — gene_info.csv will lack chr; '
+                    'available columns: %s', list(var.columns))
+    else:
+        log.info('  gene annotations: chr_col=%s  start_col=%s  end_col=%s',
+                 chr_col, start_col, end_col)
+
+    # key must match adata.var_names — that's what gets written to HDF5 /genes
+    # and read back by R as gene column names via make.names()
+    gene_info = pd.DataFrame({'gene_id': adata.var_names})
+    if chr_col is not None:
+        # strip "chr" prefix if present so values match genomecache ("1".."19","X")
+        gene_info['chr'] = (var[chr_col].astype(str)
+                            .str.replace(r'^chr', '', regex=True))
+    if start_col is not None:
+        gene_info['start'] = pd.to_numeric(var[start_col], errors='coerce').astype('Int64')
+    if end_col is not None:
+        gene_info['end'] = pd.to_numeric(var[end_col], errors='coerce').astype('Int64')
+
+    gene_info_path = out_dir / 'gene_info.csv'
+    log.info('writing %s  (%d genes)', gene_info_path, len(gene_info))
+    gene_info.to_csv(gene_info_path, index=False)
+
     log.info('done — %d samples, %d genes', adata.n_obs, adata.n_vars)
-    log.info('canonical order: %d founders, %d F1s, %d CC strains',
-             sum(1 for g in obs['genotype'] if g in FOUNDER_ORDER),
-             sum(1 for g in obs['genotype'] if g in STRAIN_ORDER and g not in FOUNDER_ORDER),
-             sum(1 for g in obs['genotype'] if g.startswith('CC')))
+    for ds, grp in obs.groupby('dataset', sort=True):
+        log.info('  dataset=%-12s  %d samples  genotypes: %s',
+                 ds, len(grp), ', '.join(sorted(grp['genotype'].unique())))
 
 
 def main() -> None:

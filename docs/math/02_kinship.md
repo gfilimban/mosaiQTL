@@ -116,14 +116,38 @@ across all permutations (when `fix_h2=True`) and all loci on that chromosome.
 
 ---
 
-## 5. Connection to GLS
+## 5. Per-chromosome contribution kinship $K^{(c)}$
 
-The LMM model is:
+LOCO kinship $K^{(-c)}$ excludes chromosome $c$. The complement —
+the kinship contribution *from* chromosome $c$ alone — is:
 
-$$y = X\alpha + u + \varepsilon, \quad u \sim \mathcal{N}(0, \sigma^2_g K),\; \varepsilon \sim \mathcal{N}(0, \sigma^2_e I)$$
+$$K^{(c)}_{ij} = \frac{\displaystyle\sum_{\ell \in c} h_{i\ell}^\top h_{j\ell}}{L_c}
+              = \frac{K_{\text{genome}} \cdot L - K^{(-c)} \cdot (L - L_c)}{L_c}$$
 
-The GLS estimator $\hat{\alpha}_{\text{GLS}} = (X^\top V^{-1} X)^{-1} X^\top V^{-1} y$
-with $V = \sigma^2_e(\delta K + I)$ is equivalent to OLS on the eigenrotated
-system: OLS on $(\tilde{y}, \tilde{X})$ with weights $w_k^{-1} = 1/(\delta\lambda_k+1)$.
-The kinship eigendecomp transforms GLS into weighted OLS — no explicit $V^{-1}$
-needed anywhere in the scan.
+where $K_{\text{genome}} = \frac{1}{L}\sum_\ell h_{i\ell}^\top h_{j\ell}$
+is the overall genome-wide kinship.
+
+**Derivation:** The genome-wide numerator is the sum of all per-chromosome
+numerators. A single pass accumulates $K^{(-c)}$ for all $c$; from those,
+$K_{\text{genome}}$ is recovered as the weighted average:
+
+$$K_{\text{genome}} = \frac{\displaystyle\sum_c K^{(-c)} \cdot (L - L_c)}{(n_{\text{chr}} - 1)\, L}$$
+
+and then $K^{(c)}$ follows from the identity above.
+
+**Use case:** $K^{(c)}$ shows the haplotype sharing structure attributable to
+a single chromosome — useful for visualizing cis-genetic architecture and
+identifying chromosomes with unusual sharing patterns (e.g., chrX sex dosage
+effects). It is derived entirely from the LOCO matrices; no re-reading of the
+genomecache is required.
+
+**R implementation** (in `gastroc_miqtl_scan.R` S3):
+
+```r
+K_genome <- Reduce('+', lapply(chrs, function(ch) {
+  kinship_loco[[ch]] * (L - cache_info$n_loci[cache_info$chr == ch])
+})) / ((n_chr - 1) * L)
+
+K_c <- (K_genome * L - kinship_loco[[chr]] * (L - L_c)) / L_c
+```
+

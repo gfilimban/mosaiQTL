@@ -40,7 +40,7 @@ TIME_MERGE="02:00:00"     # merge + python validation
 MEM="32G"
 CPUS=4
 CONDA_ENV="bioinfo"
-R_LIB_PATH="/share/crsp/lab/seyedam/gfilimba/miniconda3/envs/bioinfo/lib/R/library"  # update if conda path differs
+R_LIB_PATH="/data/homezvol2/gfilimba/miniconda3/envs/bioinfo/lib/R/library"  # update if conda path differs
 
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
@@ -69,8 +69,9 @@ SETUP_SCRIPT=$(cat << SLURM
 #SBATCH --error=${SETUP_LOG}
 
 echo "[setup] started \$(date)"
-source \$(conda info --base)/etc/profile.d/conda.sh
-conda activate ${CONDA_ENV}
+source ~/miniconda3/etc/profile.d/conda.sh
+source ~/miniconda3/etc/profile.d/mamba.sh
+mamba activate ${CONDA_ENV}
 export R_LIB_PATH="${R_LIB_PATH}"
 
 # genome-level sections only: s1 cache, s2 haplotype, s3 kinship, s6 collapse
@@ -107,8 +108,9 @@ for CHR in "${CHRS[@]}"; do
 #SBATCH --dependency=afterok:${SETUP_JID:-1}
 
 echo "[chr${CHR}] started \$(date)"
-source \$(conda info --base)/etc/profile.d/conda.sh
-conda activate ${CONDA_ENV}
+source ~/miniconda3/etc/profile.d/conda.sh
+source ~/miniconda3/etc/profile.d/mamba.sh
+mamba activate ${CONDA_ENV}
 export R_LIB_PATH="${R_LIB_PATH}"
 
 # per-chromosome sections: s4 lmm scan, s5 permutation, s7 MI,
@@ -153,8 +155,9 @@ MERGE_SCRIPT_CONTENT=$(cat << SLURM
 #SBATCH --dependency=${DEP_STR:-afterok:1}
 
 echo "[merge] started \$(date)"
-source \$(conda info --base)/etc/profile.d/conda.sh
-conda activate ${CONDA_ENV}
+source ~/miniconda3/etc/profile.d/conda.sh
+source ~/miniconda3/etc/profile.d/mamba.sh
+mamba activate ${CONDA_ENV}
 export R_LIB_PATH="${R_LIB_PATH}"
 
 # merge per-chr R outputs

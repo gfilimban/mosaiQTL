@@ -9,7 +9,8 @@
 #   Rscript merge_chr_outputs.R         → gastroc_data/{lod_genome,allele_effects_chr8,
 #                                                        timing_chr,timing_genome}.csv
 # ─────────────────────────────────────────────────────────────────────────────
-pkg_dir  <- '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl'
+pkg_dir  <- Sys.getenv('MOSAIQTL_DIR',
+             unset = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl')
 out_dir  <- file.path(pkg_dir, 'validation', 'gastroc_data')
 
 chrs <- c(as.character(1:19), 'X')

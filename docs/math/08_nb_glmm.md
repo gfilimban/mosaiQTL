@@ -111,16 +111,100 @@ $m$ strain means before scanning. NB-GLMM keeps all $n$ pseudobulk observations
 and expands the $m$-row haplotype matrix to $n$ rows via the strain-to-sample
 mapping.
 
-**LOCO kinship random effect via PQL + Woodbury:**
-A kinship random effect $u \sim \mathcal{N}(0, \tau K^{(-c)})$ can be integrated
-into Stage 2 via Penalized Quasi-Likelihood (PQL, Breslow & Clayton 1993).
-The PQL iteration linearizes the NB likelihood into a working Gaussian response,
-then solves the resulting LMM using the Woodbury identity to keep all operations
-at $m \times m$ cost:
+### 5.1 Why PQL: the marginal likelihood has no closed form
 
-$$V^{-1} = W^{-1} - W^{-1}Z(Z^\top W^{-1}Z + \tau^{-1}K^{(-c)-1})^{-1}Z^\top W^{-1}$$
+In any GLMM, the random effect $u$ is a latent variable. The marginal
+likelihood requires integrating it out:
 
-where $W = \text{diag}(\mu/(1+\hat\phi\mu))$ are the NB working weights.
+$$p(y \mid \beta, \tau) = \int p(y \mid u,\, \beta)\ p(u \mid \tau)\ du$$
+
+The prior on $u$ is always Gaussian: $u \sim \mathcal{N}(0, \tau K_m)$.
+This is true in both LMM and NB-GLMM — kinship *is* the random effect covariance
+in both cases.
+
+**LMM:** $p(y_i \mid u_i) = \mathcal{N}(x_i^\top\beta + u_i,\; \sigma^2)$.
+Gaussian $\times$ Gaussian integrates exactly. The marginal is
+$y \sim \mathcal{N}(X\beta,\; \sigma^2 I + \tau ZKZ^\top)$ — a single matrix solve,
+no iteration.
+
+**NB-GLMM:** $p(y_i \mid u_i) = \text{NB}(\exp(x_i^\top\beta + u_i),\; \phi)$.
+The link is logarithmic, not identity, and the NB distribution is not conjugate
+with the Gaussian prior on $u$. The integral:
+
+$$\int \text{NB}\!\left(y_i;\; e^{x_i^\top\beta + u_i},\; \phi\right)\cdot
+  \mathcal{N}(u_i;\; 0,\; \tau K_m)\; du_i$$
+
+has no closed form. PQL (Breslow & Clayton 1993) bypasses this by never computing
+the integral directly — instead it approximates the NB log-likelihood locally
+as Gaussian at each step and solves that Gaussian system exactly.
+
+### 5.2 PQL working linearization
+
+At iteration $t$, given current estimates $\hat\mu^{(t)}$, construct:
+
+$$z_i = \underbrace{(\log\hat\mu_i - \text{offset}) +
+  \frac{y_i - \hat\mu_i}{\hat\mu_i}}_{\text{NB working response}}
+\qquad
+W_i = \frac{\hat\mu_i}{1 + \hat\phi\, \hat\mu_i}$$
+
+$z$ is a first-order Taylor expansion of the NB log-likelihood around $\hat\mu$.
+$W$ is the NB variance weight — it encodes how much information each observation
+carries at its current mean. Both change at every iteration because $\hat\mu$
+changes.
+
+Now treat $z$ and $W$ as fixed and solve the weighted Gaussian GLMM:
+
+$$z = X\beta + Zu + \varepsilon, \qquad
+  \varepsilon \sim \mathcal{N}(0,\, W^{-1}), \qquad
+  u \sim \mathcal{N}(0,\, \tau K_m)$$
+
+This has a closed-form solution. The updated $\hat\beta$, $\hat{u}$ give new
+$\hat\mu = \exp(X\hat\beta + Z\hat{u} + \text{offset})$, which recomputes $z$
+and $W$. Repeat until convergence.
+
+### 5.3 Kinship enters through the random effect covariance
+
+At each PQL step the marginal covariance of the working response is:
+
+$$V = W^{-1} + \tau\, Z K_m^{(-c)} Z^\top \qquad (n \times n)$$
+
+where $K_m^{(-c)}$ is the $m \times m$ LOCO kinship for chromosome $c$ at strain
+level, and $Z$ is the $n \times m$ sample-to-strain mapping matrix.
+
+Kinship does not change the *reason* PQL is needed — that is a property of
+the NB likelihood alone. Kinship determines the *structure* of $V$ that
+must be inverted at each PQL step.
+
+### 5.4 Woodbury identity at each PQL step
+
+Naively inverting the $n \times n$ matrix $V$ at every iteration costs
+$O(n^3)$. With $n = 418$ samples, many loci, and many genes this is
+prohibitive.
+
+The Woodbury identity rewrites the inverse in terms of the $m \times m$
+strain-level system ($m = 48$):
+
+$$V^{-1} = W - WZ\left(\tau^{-1}K_m^{-1} + Z^\top WZ\right)^{-1}Z^\top W$$
+
+The inner matrix is $m \times m$, so its inversion costs $O(m^3)$.
+Because $m \ll n$, this is the dominant saving per iteration.
+
+**Dependency chain:**
+
+```
+NB likelihood non-conjugate with Gaussian prior on u
+    → cannot integrate out u in closed form
+    → PQL: iterate, constructing Gaussian working model at each step
+        ↓
+        each step requires V⁻¹ where V = W⁻¹ + τ Z K_m Z^T
+        W changes every step (depends on current μ̂)
+        → cannot pre-eigendecompose V once (as LMM does)
+        → Woodbury: reduce O(n³) inversion to O(m³) per iteration
+```
+
+PQL is a mathematical necessity (NB non-conjugate). Woodbury is an efficiency
+tool that makes the kinship inversion inside each PQL step tractable.
+Both are needed; they solve orthogonal problems.
 
 ---
 
