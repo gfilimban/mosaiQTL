@@ -13,6 +13,10 @@ from mosaiqtl.qtl.permutation import (
     run_threshold_scans,
     get_gev_thresholds,
     run_positional_scans,
+    KinshipSingularError,
+    _draw_kinship_re,
+    _null_fit_params,
+    _parametric_null_col,
 )
 
 
@@ -220,3 +224,107 @@ class TestRunPositionalScans:
             use_rint=False,
         )
         assert ci['ci_lo'] <= ci['ci_hi']
+
+
+# ── parametric permutation helpers ───────────────────────────────────────────
+
+class TestParametricHelpers:
+    """unit tests for _null_fit_params, _draw_kinship_re, _parametric_null_col."""
+
+    def _make_psd_kinship(self, n, seed=0):
+        rng = np.random.default_rng(seed)
+        A = rng.standard_normal((n, n))
+        K = A @ A.T / n + np.eye(n) * 0.1
+        return K
+
+    def test_null_fit_params_shape(self):
+        rng = np.random.default_rng(0)
+        n, p = 20, 2
+        y_rot = rng.standard_normal(n)
+        x_rot = np.column_stack([np.ones(n), rng.standard_normal(n)])
+        eigvals = np.abs(rng.standard_normal(n)) + 0.1
+        beta, sigma2_g, sigma2_e = _null_fit_params(y_rot, x_rot, eigvals, h2=0.3)
+        assert beta.shape == (p,)
+        assert sigma2_g > 0
+        assert sigma2_e > 0
+
+    def test_null_fit_params_variance_partition(self):
+        rng = np.random.default_rng(1)
+        n = 30
+        y_rot = rng.standard_normal(n)
+        x_rot = np.ones((n, 1))
+        eigvals = np.ones(n)
+        h2 = 0.4
+        _, sigma2_g, sigma2_e = _null_fit_params(y_rot, x_rot, eigvals, h2=h2)
+        # sigma2_g / (sigma2_g + sigma2_e) should equal h2
+        assert abs(sigma2_g / (sigma2_g + sigma2_e) - h2) < 1e-10
+
+    def test_draw_kinship_re_shape(self):
+        rng = np.random.default_rng(42)
+        n = 15
+        K = self._make_psd_kinship(n)
+        u = _draw_kinship_re(K, sigma2_g=0.5, rng=rng)
+        assert u.shape == (n,)
+
+    def test_draw_kinship_re_singular_raises(self):
+        rng = np.random.default_rng(0)
+        # rank-1 matrix: all eigenvalues near zero except one
+        v = np.ones(10) / np.sqrt(10)
+        K_singular = np.outer(v, v) * 1e-10
+        with pytest.raises(KinshipSingularError):
+            _draw_kinship_re(K_singular, sigma2_g=1.0, rng=rng)
+
+    def test_parametric_null_col_same_values(self, tiny_cache, tiny_kinship,
+                                              tiny_strain_phenotype,
+                                              tiny_strain_covariates):
+        """rank-permuted output must contain the same values as input y."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        rng = np.random.default_rng(7)
+        kd  = decomp_kinship(tiny_kinship)
+        c   = list(tiny_cache.chromosomes)[0]
+        ev  = kd[c]['values']
+        evc = kd[c]['vectors']
+        K_c = tiny_kinship[c]
+        y   = tiny_strain_phenotype.copy()
+        y_p = _parametric_null_col(y, tiny_strain_covariates, K_c, evc, ev,
+                                   h2=0.3, use_reml=True, rng=rng)
+        assert y_p.shape == y.shape
+        assert np.allclose(np.sort(y_p), np.sort(y))
+
+    def test_run_threshold_scans_parametric_shape(self, tiny_cache, tiny_kinship,
+                                                   tiny_strain_phenotype,
+                                                   tiny_strain_covariates):
+        """parametric mode returns (n_perms,) max-LOD array."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        kd = decomp_kinship(tiny_kinship)
+        n_perms = 5
+        # null_outcomes used only for n_perms in parametric mode
+        dummy = np.empty((len(tiny_strain_phenotype), n_perms))
+        c0 = list(tiny_cache.chromosomes)[0]
+        max_lods = run_threshold_scans(
+            dummy, tiny_cache,
+            phenotype=tiny_strain_phenotype,
+            covariates=tiny_strain_covariates,
+            kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
+            chrom=c0,
+            fix_h2=True,
+            permutation_method='parametric',
+            use_rint=False,
+            seed=99,
+        )
+        assert max_lods.shape == (n_perms,)
+        assert np.all(max_lods >= 0)
+
+    def test_run_threshold_scans_parametric_requires_kinship_loco(
+            self, tiny_cache, tiny_kinship, tiny_strain_phenotype):
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        kd = decomp_kinship(tiny_kinship)
+        dummy = np.empty((len(tiny_strain_phenotype), 3))
+        with pytest.raises(ValueError, match='kinship_loco'):
+            run_threshold_scans(
+                dummy, tiny_cache,
+                phenotype=tiny_strain_phenotype,
+                kinship_decomp=kd,
+                permutation_method='parametric',
+            )

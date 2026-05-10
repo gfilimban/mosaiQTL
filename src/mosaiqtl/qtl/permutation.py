@@ -17,6 +17,11 @@ design notes:
     gene mode used in validation); leave None for full-genome threshold.
   - run_positional_scans operates in genotype space (m samples), consistent
     with kinship_decomp which is always (m×m) before Z-expansion.
+  - permutation_method='plain' (default) shuffles y labels — matches Phase 1
+    identity-kinship (τ²≈0) validation.
+    permutation_method='parametric' mirrors miQTL sampling.processes.R lines
+    110-137: draws u~N(0,K·σ²_g), e~N(0,σ²_e·I), rank-permutes y using the
+    parametric sample's order. Required for Phase 2 real LOCO kinship.
 """
 
 import numpy as np
@@ -24,6 +29,10 @@ import logging
 from scipy.stats import genextreme
 
 logger = logging.getLogger('mosaiqtl')
+
+
+class KinshipSingularError(ValueError):
+    """raised when a LOCO kinship matrix is not PSD (min eigenvalue < 1e-8)."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -63,22 +72,133 @@ def generate_null_outcomes(y, n_samples=1000, method='permutation', seed=1):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# parametric null helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _null_fit_params(
+    y_rot: np.ndarray,
+    x_rot: np.ndarray,
+    eigvals: np.ndarray,
+    h2: float,
+    use_reml: bool = True,
+) -> tuple[np.ndarray, float, float]:
+    """recover beta_hat and variance components at a given h².
+
+    parameters
+    ----------
+    y_rot   : (n,)    U'y — rotated phenotype
+    x_rot   : (n, p)  U'X — rotated covariates
+    eigvals : (n,)    eigenvalues of kinship matrix
+    h2      : float   heritability
+    use_reml: bool
+
+    returns
+    -------
+    beta      : (p,)  fixed-effect estimates
+    sigma2_g  : float genetic variance  (= h2 * sigma2_total)
+    sigma2_e  : float residual variance (= (1-h2) * sigma2_total)
+    """
+    if x_rot.ndim == 1:
+        x_rot = x_rot[:, None]
+    n, p = len(y_rot), x_rot.shape[1]
+    delta = h2 / (1.0 - h2)
+    w_inv = 1.0 / (delta * eigvals + 1.0)
+    xw    = x_rot * w_inv[:, None]
+    beta  = np.linalg.solve(xw.T @ x_rot, xw.T @ y_rot)
+    resid = y_rot - x_rot @ beta
+    wrss  = float(resid @ (resid * w_inv))
+    df    = (n - p) if use_reml else n
+    sigma2_total = wrss / df
+    return beta, h2 * sigma2_total, (1.0 - h2) * sigma2_total
+
+
+def _draw_kinship_re(
+    K: np.ndarray,
+    sigma2_g: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """draw u ~ N(0, K·sigma2_g) with PSD guard.
+
+    raises KinshipSingularError when min eigenvalue of K < 1e-8,
+    mirroring the behaviour of R's mnormt::rmnorm (chol fails on near-singular K).
+    """
+    min_eig = float(np.linalg.eigvalsh(K).min())
+    if min_eig < 1e-8:
+        raise KinshipSingularError(
+            f'LOCO kinship not PSD (min_eig={min_eig:.2e}); '
+            'skipping chromosome — mirrors R behaviour on singular K'
+        )
+    return rng.multivariate_normal(np.zeros(len(K)), K * sigma2_g)
+
+
+def _parametric_null_col(
+    y: np.ndarray,
+    x: np.ndarray,
+    K: np.ndarray,
+    evc: np.ndarray,
+    ev: np.ndarray,
+    h2: float,
+    use_reml: bool,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """one kinship-informed parametric null column.
+
+    mirrors miQTL sampling.processes.R lines 110-137:
+      u ~ N(0, K·sigma2_g)
+      e ~ N(0, sigma2_e·I)
+      y_null = X@beta_hat + u + e
+      return y[argsort(y_null)]   # rank-permute y by y_null's order
+
+    parameters
+    ----------
+    y    : (m,)    original strain-level phenotype (after RINT if requested)
+    x    : (m, p)  strain-level covariates
+    K    : (m, m)  raw LOCO kinship for this chromosome
+    evc  : (m, m)  eigenvectors of K (from kinship_decomp)
+    ev   : (m,)    eigenvalues of K
+    h2   : float   heritability under the null
+    use_reml : bool
+    rng  : np.random.Generator
+
+    returns
+    -------
+    (m,)  rank-permuted y (same values as y, different order)
+
+    raises
+    ------
+    KinshipSingularError  if K is not PSD — caller should skip the chromosome
+    """
+    y_rot = evc.T @ y
+    x_rot = evc.T @ x
+    beta, sigma2_g, sigma2_e = _null_fit_params(y_rot, x_rot, ev, h2, use_reml)
+    u      = _draw_kinship_re(K, sigma2_g, rng)
+    e      = rng.normal(0.0, np.sqrt(max(sigma2_e, 0.0)), size=len(y))
+    y_null = x @ beta + u + e
+    return y[np.argsort(y_null)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # threshold scans
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_threshold_scans(null_outcomes, genomecache,
                         phenotype=None,
                         covariates=None, kinship_decomp=None,
+                        kinship_loco=None,
                         chrom=None,
                         fix_h2=True,
+                        permutation_method='plain',
                         use_rint=True, use_reml=True,
-                        sample_ids=None):
+                        sample_ids=None,
+                        seed=1):
     """scan null phenotype columns to build the peak-LOD null distribution.
 
 
     parameters
     ----------
-    null_outcomes  : np.ndarray (n, n_perms)  from generate_null_outcomes()
+    null_outcomes  : np.ndarray (n, n_perms)  from generate_null_outcomes().
+        in 'parametric' mode the array is used only to determine n_perms;
+        its contents are ignored.
     genomecache   : GenomeCache
     phenotype      : np.ndarray (n,) or None
         original phenotype; required when fix_h2=True to pre-estimate h².
@@ -86,19 +206,27 @@ def run_threshold_scans(null_outcomes, genomecache,
     covariates     : np.ndarray (n, p) or None
     kinship_decomp : dict or None  {chrom: {'values':, 'vectors':}}
         if None, computed from genomecache (loco).
+    kinship_loco   : dict or None  {chrom: np.ndarray (m, m)}
+        raw LOCO kinship matrices (not decomposed).  required when
+        permutation_method='parametric'.  ignored for 'plain'.
     chrom          : str or None
         if given, restrict scans to this chromosome only (validation mode).
         if None, scan all chromosomes (full-genome threshold).
     fix_h2         : bool  default True
-        True  — estimate h² once from `phenotype` and reuse across perms
-                 (fast; matches validate_port.py inline loop).
-        False — re-estimate h² for each permuted phenotype (slow, more correct).
+        True  — estimate h² once from `phenotype` and reuse across perms.
+        False — re-estimate h² for each permuted phenotype (slow).
+    permutation_method : str  'plain' (default) or 'parametric'
+        'plain'      — shuffle y labels; matches Phase 1 OLS / τ²≈0 scans.
+        'parametric' — kinship-informed rank-permutation matching miQTL
+                       sampling.processes.R lines 110-137; required for
+                       Phase 2 real LOCO kinship (τ² > 0).
     use_rint       : bool  apply rank-inverse normal transform to phenotype
     use_reml       : bool  REML for h² estimation
     sample_ids     : list of str or None
         replicate sample IDs (length n).  when provided, each permuted
         phenotype is averaged to strain means via the Z-matrix before
         scanning; kinship_decomp must be at strain level (m×m).
+    seed           : int  rng seed (used only for 'parametric' mode)
 
     returns
     -------
@@ -107,6 +235,12 @@ def run_threshold_scans(null_outcomes, genomecache,
     from ..genotype import kinship as kin_module
     from . import lmm as lmm_module
     from ..utils import rint as _rint
+
+    if permutation_method not in ('plain', 'parametric'):
+        raise ValueError(
+            f"permutation_method must be 'plain' or 'parametric', got {permutation_method!r}")
+    if permutation_method == 'parametric' and kinship_loco is None:
+        raise ValueError("kinship_loco is required when permutation_method='parametric'")
 
     # build kinship decomp if not supplied
     if kinship_decomp is None:
@@ -150,33 +284,55 @@ def run_threshold_scans(null_outcomes, genomecache,
             h2_fixed[c], _ = lmm_module.estimate_h2_null(
                 evc.T @ y0, evc.T @ x_scan, ev,
                 method='reml' if use_reml else 'ml')
+    else:
+        if phenotype is not None:
+            y0 = _rint(phenotype) if use_rint else phenotype.copy()
+            if z_mat is not None:
+                y0 = (z_mat.T @ y0) / r_counts
+        else:
+            y0 = None
 
     n_perms  = null_outcomes.shape[1]
     max_lods = np.zeros(n_perms)
+    rng      = np.random.default_rng(seed) if permutation_method == 'parametric' else None
 
     for p_idx in range(n_perms):
         if (p_idx + 1) % 100 == 0:
             logger.info(f'  threshold scan {p_idx+1}/{n_perms}')
 
-        y_p = null_outcomes[:, p_idx]                   # permuted phenotype
-        if use_rint:
-            y_p = _rint(y_p)
-        if z_mat is not None:
-            y_p = (z_mat.T @ y_p) / r_counts
-
         best = -np.inf
+
         for c in chrs:
             ev  = kinship_decomp[c]['values']
             evc = kinship_decomp[c]['vectors']
 
-            if fix_h2:
-                h2 = h2_fixed[c]                        # reuse pre-computed h²
+            if permutation_method == 'parametric':
+                # kinship-informed rank-permutation (miQTL sampling.processes.R:110-137)
+                h2 = h2_fixed[c] if fix_h2 else None
+                if not fix_h2:
+                    h2, _ = lmm_module.estimate_h2_null(
+                        evc.T @ y0, evc.T @ x_scan, ev,
+                        method='reml' if use_reml else 'ml')
+                try:
+                    y_p = _parametric_null_col(
+                        y0, x_scan, kinship_loco[c], evc, ev, h2, use_reml, rng)
+                except KinshipSingularError as exc:
+                    logger.warning(f'  chr{c}  perm {p_idx}  [skip] {exc}')
+                    continue
             else:
-                h2, _ = lmm_module.estimate_h2_null(
-                    evc.T @ y_p, evc.T @ x_scan, ev,
-                    method='reml' if use_reml else 'ml')
+                # plain shuffle
+                y_p = null_outcomes[:, p_idx]
+                if use_rint:
+                    y_p = _rint(y_p)
+                if z_mat is not None:
+                    y_p = (z_mat.T @ y_p) / r_counts
+                if fix_h2:
+                    h2 = h2_fixed[c]
+                else:
+                    h2, _ = lmm_module.estimate_h2_null(
+                        evc.T @ y_p, evc.T @ x_scan, ev,
+                        method='reml' if use_reml else 'ml')
 
-            # scan_chromosome handles y/x rotation internally
             res  = lmm_module.scan_chromosome(
                 y_p, genomecache, c, x_scan, ev, evc, h2, use_reml=use_reml)
             best = max(best, float(res['lod'].max()))
