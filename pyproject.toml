@@ -1,0 +1,79 @@
+[build-system]
+requires = ['setuptools>=68', 'wheel']
+build-backend = 'setuptools.build_meta'
+
+[project]
+name = 'mosaiqtl'
+version = '0.2.0'
+description = 'model-agnostic haplotype-based QTL mapping for multiparent populations'
+license = { text = 'GPL-3.0-or-later' }
+readme = 'README.md'
+requires-python = '>=3.13'
+dependencies = [
+    'numpy>=1.26',
+    'scipy>=1.13',
+    'pandas>=2.2',
+    'h5py>=3.11',
+    'anndata>=0.10',
+    'matplotlib>=3.9',
+    'seaborn>=0.13',
+    'pydantic>=2.7',
+    'click>=8.1',
+]
+
+[project.optional-dependencies]
+sc  = ['scanpy>=1.10']
+r   = ['rpy2>=3.5']
+dev = [
+    'pytest>=8.2',
+    'pytest-cov>=5.0',
+    'pytest-benchmark>=4.0',
+    'hypothesis>=6.100',
+    'black>=24.4',
+    'flake8>=7.0',
+    'mypy>=1.10',
+    'interrogate>=1.7',
+    'bandit>=1.7',
+    'statsmodels>=0.13',
+]
+
+[project.scripts]
+build-cache = 'mosaiqtl.genotype.genomecache:build'
+
+[tool.setuptools.packages.find]
+where = ['src']
+
+# ── pytest ────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths   = ['tests']
+addopts     = '-q'
+
+# ── coverage ──────────────────────────────────────────────────────────────────
+[tool.coverage.run]
+source = ['src/mosaiqtl']
+
+[tool.coverage.report]
+show_missing = true
+fail_under   = 70    # baseline; target SWE-01 is 90%
+
+# ── interrogate ───────────────────────────────────────────────────────────────
+[tool.interrogate]
+fail-under = 100
+verbose    = 0
+quiet      = false
+ignore-init-method = true
+ignore-init-module = true
+ignore-magic       = true
+ignore-semiprivate = false
+ignore-private     = false
+
+# ── mypy ──────────────────────────────────────────────────────────────────────
+[tool.mypy]
+strict          = true
+python_version  = '3.13'
+warn_return_any = true
+
+# ── bandit ────────────────────────────────────────────────────────────────────
+[tool.bandit]
+targets    = ['src']
+level      = 'MEDIUM'   # -ll equivalent: medium and high severity only

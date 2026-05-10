@@ -6,7 +6,7 @@
 #             git pull /path/to/mosaiqtl.bundle main --rebase   (updates)
 # ─────────────────────────────────────────────────────────────────────────────
 
-.PHONY: bundle check test validate validate-chr8 validate-phase2 \
+.PHONY: bundle lint coverage test test-unit validate validate-chr8 validate-phase2 \
         validate-phase3 validate-phase3-quick clean clean-phase3
 
 # ── bundle ───────────────────────────────────────────────────────────────────
@@ -15,14 +15,24 @@ bundle:
 	@echo "created mosaiqtl.bundle  ($(shell git log -1 --format='%h %s'))"
 	@echo "pull:  git pull /path/to/mosaiqtl.bundle main --rebase"
 
-# ── syntax check ─────────────────────────────────────────────────────────────
-check:
-	python -m py_compile mosaiqtl/*.py validation/validate_port.py validation/validate_phase3.py
-	@echo "syntax OK"
+# ── lint (black check + flake8 + mypy + interrogate) ─────────────────────────
+lint:
+	black --check src/ tests/
+	flake8 src/ tests/
+	interrogate --fail-under 100 src/mosaiqtl/
+	mypy --strict src/mosaiqtl/
 
 # ── unit tests ───────────────────────────────────────────────────────────────
+test-unit:
+	pytest tests/unit/ -x -q
+
 test:
-	python -m pytest tests/ -v
+	pytest tests/unit/ tests/integration/ --ignore=tests/benchmarks/ -q
+
+# ── coverage ──────────────────────────────────────────────────────────────────
+coverage:
+	pytest tests/unit/ tests/integration/ --ignore=tests/benchmarks/ \
+	    --cov=src/mosaiqtl --cov-report=term-missing -q
 
 # ── phase 2 validation (S1–S11, port vs miQTL R) ─────────────────────────────
 validate-phase2:
