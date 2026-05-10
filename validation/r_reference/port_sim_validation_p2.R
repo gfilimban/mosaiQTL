@@ -316,57 +316,49 @@ cat('  exported lod_r.csv:', nrow(do.call(rbind, lod_rows)), 'rows\n')
 # ─────────────────────────────────────────────────────────────────────────────
 if (run_section(5)) {
 cat('\nS5: cache collapse...\n')
-coll_summary <- tryCatch({
-    genomecache_coll <- file.path(r_data, 'sparcc_cache_collapsed')
-    suppressWarnings(collapse.genomecache(
-        original.cache  = genomecache,
-        new.cache       = genomecache_coll,
-        criterion       = 'l2.norm',
-        proportion.tol  = 0.02
-    ))
-    # count loci per chr by reading markers.RData directly — same source
-    # collapse.genomecache uses internally (these.loci / reduced.loci)
-    count_markers <- function(cache_path, chr) {
-        f <- file.path(cache_path, 'additive', paste0('chr', chr), 'markers.RData')
-        e <- new.env(parent = emptyenv())
-        tryCatch({ load(f, envir = e); length(e$markers) }, error = function(err) NA_integer_)
-    }
-    all_chrs <- names(loci_by_chr)
-    loci_full_by_chr <- sapply(all_chrs, function(chr) count_markers(genomecache,      chr))
-    loci_coll_by_chr <- sapply(all_chrs, function(chr) count_markers(genomecache_coll, chr))
-    coll_df <- data.frame(
-        chr           = names(loci_by_chr),
-        n_loci_full   = as.integer(loci_full_by_chr),
-        n_loci_coll   = as.integer(loci_coll_by_chr),
-        pct_removed   = round(100 * (1 - loci_coll_by_chr / loci_full_by_chr), 2),
-        stringsAsFactors = FALSE)
+genomecache_coll <- file.path(r_data, 'sparcc_cache_collapsed')
+collapse.genomecache(
+    original.cache  = genomecache,
+    new.cache       = genomecache_coll,
+    criterion       = 'l2.norm',
+    proportion.tol  = 0.02
+)
 
-    # rescan sim.y.1 with collapsed cache to test LOD preservation
-    sc_coll <- scan.h2lmm(
-        genomecache      = genomecache_coll,
-        data             = phenotypes$data,
-        pheno.id         = 'SUBJECT.NAME.1',
-        geno.id          = 'SUBJECT.NAME.1',
-        formula          = sim.y.1 ~ 1,
-        use.multi.impute = FALSE
-    )
-    lod_coll_df <- data.frame(
-        locus  = names(sc_coll$LOD),
-        chr    = sc_coll$chr,
-        pos_mb = sc_coll$pos$Mb,
-        lod    = as.numeric(sc_coll$LOD),
-        stringsAsFactors = FALSE)
-    write.csv(lod_coll_df, file.path(r_data, 'lod_collapsed_r.csv'), row.names = FALSE)
-    cat('  cache collapsed; rescan done\n')
-    coll_df
-}, error = function(e) {
-    cat('  WARNING: collapse.genomecache failed:', conditionMessage(e), '\n')
-    cat('  S5 will be skipped in Python validation\n')
-    data.frame(chr = names(loci_by_chr), n_loci_full = NA, n_loci_coll = NA,
-               pct_removed = NA, stringsAsFactors = FALSE)
-})
-write.csv(coll_summary, file.path(r_data, 'collapsed_cache_summary.csv'),
-          row.names = FALSE)
+# count loci per chr via markers.RData (same source collapse.genomecache uses)
+count_markers <- function(cache_path, chr) {
+    f <- file.path(cache_path, 'additive', paste0('chr', chr), 'markers.RData')
+    e <- new.env(parent = emptyenv())
+    load(f, envir = e)
+    length(e$markers)
+}
+all_chrs         <- names(loci_by_chr)
+loci_full_by_chr <- sapply(all_chrs, function(chr) count_markers(genomecache,      chr))
+loci_coll_by_chr <- sapply(all_chrs, function(chr) count_markers(genomecache_coll, chr))
+coll_summary <- data.frame(
+    chr         = names(loci_by_chr),
+    n_loci_full = as.integer(loci_full_by_chr),
+    n_loci_coll = as.integer(loci_coll_by_chr),
+    pct_removed = round(100 * (1 - loci_coll_by_chr / loci_full_by_chr), 2),
+    stringsAsFactors = FALSE)
+
+# rescan sim.y.1 with collapsed cache to test LOD preservation
+sc_coll <- scan.h2lmm(
+    genomecache      = genomecache_coll,
+    data             = phenotypes$data,
+    pheno.id         = 'SUBJECT.NAME.1',
+    geno.id          = 'SUBJECT.NAME.1',
+    formula          = sim.y.1 ~ 1,
+    use.multi.impute = FALSE
+)
+lod_coll_df <- data.frame(
+    locus  = names(sc_coll$LOD),
+    chr    = sc_coll$chr,
+    pos_mb = sc_coll$pos$Mb,
+    lod    = as.numeric(sc_coll$LOD),
+    stringsAsFactors = FALSE)
+write.csv(lod_coll_df,   file.path(r_data, 'lod_collapsed_r.csv'),        row.names = FALSE)
+write.csv(coll_summary,  file.path(r_data, 'collapsed_cache_summary.csv'), row.names = FALSE)
+cat('  cache collapsed; rescan done\n')
 }  # end S5
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -396,6 +388,15 @@ perm_threshold <- get.gev.thresholds(
     threshold.scans = perm_scans,
     percentile      = 0.95)
 
+# export raw max-LODs (same pattern as Phase 1 port_sim_validation.R)
+perm_max_lods_r <- if (is.numeric(perm_scans)) {
+    as.numeric(perm_scans)
+} else {
+    sapply(perm_scans, function(s) max(as.numeric(s$LOD), na.rm = TRUE))
+}
+write.csv(data.frame(perm_index = seq_along(perm_max_lods_r),
+                     max_lod    = perm_max_lods_r),
+          file.path(r_data, 'perm_max_lods_r.csv'), row.names = FALSE)
 write.csv(data.frame(threshold = unname(perm_threshold)),
           file.path(r_data, 'thresholds_r.csv'), row.names = FALSE)
 cat('  GEV threshold:', round(unname(perm_threshold), 3), '\n')
@@ -558,7 +559,7 @@ simple_out <- generate.simple.sample.outcomes.matrix(
     formula     = sim.y.1 ~ 1,
     data        = phenotypes$data,
     pheno.id    = 'SUBJECT.NAME.1',
-    method      = 'bootstrap',
+    method      = 'permutation',
     num.samples = 250,
     seed        = 1)
 instab_scan <- instability.lm.scan(

@@ -18,6 +18,8 @@ after eigendecomposition K = U D U':
   - LOD uses ML formula (n/2 log10 ratio), not REML
 """
 
+import gc
+
 import numpy as np
 from scipy.optimize import minimize_scalar
 from scipy import stats
@@ -291,3 +293,111 @@ def scan_chromosome(y, genomecache, chrom, x_covariates,
 
     return {'locus_ids': locus_ids, 'positions': positions,
             'lod': lod_arr, 'p_value': pval_arr, 'betas': beta_h}
+
+
+def scan_chromosome_batch(
+    Y_mat: np.ndarray,
+    genomecache: 'GenomeCache',  # type: ignore[name-defined]
+    chrom: str,
+    x_covariates: np.ndarray,
+    eigvals: np.ndarray,
+    eigvecs: np.ndarray,
+    h2_null: float,
+    z_mat: 'np.ndarray | None' = None,
+    model: str = 'additive',
+    batch_size: int = 500,
+) -> np.ndarray:
+    """scan one chromosome for a batch of permuted phenotypes.
+
+    precomputes H_perp and G_pinv once (genotype-only); only the null
+    residual e0 varies per permutation.  designed for permutation threshold
+    estimation with fix_h2=True (constant weight vector across all perms).
+
+    savings vs calling scan_chromosome N_perms times:
+      - H_perp einsum: O(n_loci × n × J) computed once, not N_perms times
+      - G_pinv batched SVD: O(n_loci × J³) computed once, not N_perms times
+      - per-perm work reduces to O(n_loci × J × batch_size)
+
+    parameters
+    ----------
+    Y_mat      : (n, N_perms)  permuted/null phenotype columns,
+                 already rint-transformed and z_mat-reduced if applicable
+    genomecache
+    chrom
+    x_covariates : (n, p)  at scan level (strain-mean if z_mat was applied)
+    eigvals    : (n,)
+    eigvecs    : (n, n)
+    h2_null    : float  from fix_h2 pre-estimation
+    z_mat      : (n_rep, n) or None  kept for API consistency; callers that
+                 need z_mat reduction should pass already-reduced Y_mat and
+                 the strain-level x_covariates/eigvals/eigvecs
+    model      : 'additive' or 'full'
+    batch_size : int  mini-batch size over the N_perms axis (memory control)
+
+    returns
+    -------
+    np.ndarray (N_perms,)  per-permutation max LOD on this chromosome
+    """
+    locus_ids, _, probs = genomecache.get_chromosome(chrom)
+    n_loci  = len(locus_ids)
+    nf      = genomecache.n_founders
+    n       = eigvals.shape[0]
+    n_perms = Y_mat.shape[1]
+
+    if model == 'full':
+        J = nf
+        _ii, _jj = np.triu_indices(J)
+        probs = probs[:, :, _ii] * probs[:, :, _jj]
+        nf = len(_ii)
+
+    # ── genotype-only precomputation (same for every permutation) ─────────────
+    delta  = h2_null / max(1.0 - h2_null, 1e-10)
+    w_sqrt = 1.0 / np.sqrt(delta * eigvals + 1.0)          # (n,)
+
+    xt      = (eigvecs.T @ x_covariates) * w_sqrt[:, None]  # (n, p)
+    xtwx    = xt.T @ xt                                      # (p, p)
+    xt_pinv = np.linalg.solve(xtwx, xt.T)                   # (p, n)
+
+    H = probs                                                # (n_loci, n, J)
+    H_t = np.einsum('nk,lnj->lkj', eigvecs, H, optimize=True)  # (n_loci, n, J)
+    H_t *= w_sqrt[None, :, None]
+
+    proj   = np.einsum('pn,lnj->lpj', xt_pinv, H_t, optimize=True)   # (n_loci, p, J)
+    H_perp = H_t - np.einsum('np,lpj->lnj', xt, proj, optimize=True) # (n_loci, n, J)
+    del H, H_t, proj
+    gc.collect()
+
+    G_all  = np.einsum('lnj,lnk->ljk', H_perp, H_perp, optimize=True)  # (n_loci, J, J)
+    G_pinv = np.linalg.pinv(G_all, rcond=1e-10)                         # (n_loci, J, J)
+    del G_all
+    gc.collect()
+
+    # ── mini-batch loop over permutations ─────────────────────────────────────
+    max_lods = np.full(n_perms, -np.inf)
+
+    for p0 in range(0, n_perms, batch_size):
+        p1   = min(p0 + batch_size, n_perms)
+        Y_b  = Y_mat[:, p0:p1]                               # (n, b)
+
+        YT   = (eigvecs.T @ Y_b) * w_sqrt[:, None]           # (n, b)
+        e0   = YT - xt @ (xt_pinv @ YT)                      # (n, b)
+        rss0 = (e0 * e0).sum(axis=0)                          # (b,)
+
+        c    = np.einsum('lnj,nb->ljb', H_perp, e0, optimize=True)    # (n_loci, J, b)
+        Gc   = np.einsum('ljk,lkb->ljb', G_pinv, c, optimize=True)    # (n_loci, J, b)
+        rss_red = np.einsum('ljb,ljb->lb', c, Gc, optimize=True)      # (n_loci, b)
+        del c, Gc
+
+        rss1    = np.maximum(rss0[None, :] - rss_red, 1e-30)          # (n_loci, b)
+        lod_b   = np.where(
+            rss1 < rss0[None, :],
+            (n / 2.0) * np.log10(rss0[None, :] / rss1),
+            0.0,
+        )                                                              # (n_loci, b)
+        max_lods[p0:p1] = lod_b.max(axis=0)
+        del rss_red, rss1, lod_b, e0, YT
+
+    del H_perp, G_pinv
+    gc.collect()
+
+    return max_lods

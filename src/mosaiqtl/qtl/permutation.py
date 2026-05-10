@@ -139,6 +139,51 @@ def _draw_kinship_re(
     return rng.multivariate_normal(np.zeros(len(K)), K * sigma2_g)
 
 
+def _draw_parametric_batch(
+    y: np.ndarray,
+    x: np.ndarray,
+    K: np.ndarray,
+    evc: np.ndarray,
+    ev: np.ndarray,
+    h2: float,
+    use_reml: bool,
+    n_perms: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """draw n_perms parametric null phenotypes simultaneously.
+
+    vectorised version of _parametric_null_col: draws all u and e vectors
+    at once, then rank-permutes y by each null column's order.
+    PSD check done once instead of once per permutation.
+
+    raises KinshipSingularError if K is not PSD.
+
+    returns
+    -------
+    np.ndarray (n, n_perms)  each column is y rank-permuted by one null draw
+    """
+    y_rot = evc.T @ y
+    x_rot = evc.T @ x
+    beta, sigma2_g, sigma2_e = _null_fit_params(y_rot, x_rot, ev, h2, use_reml)
+
+    min_eig = float(np.linalg.eigvalsh(K).min())
+    if min_eig < 1e-8:
+        raise KinshipSingularError(
+            f'LOCO kinship not PSD (min_eig={min_eig:.2e}); '
+            'skipping chromosome — mirrors R behaviour on singular K'
+        )
+
+    # draw all u ~ N(0, K·sigma2_g) at once: (n_perms, n) → (n, n_perms)
+    U_mat  = rng.multivariate_normal(
+        np.zeros(len(y)), K * sigma2_g, size=n_perms).T
+    E_mat  = rng.normal(0.0, np.sqrt(max(sigma2_e, 0.0)),
+                        size=(len(y), n_perms))
+    Y_null = (x @ beta)[:, None] + U_mat + E_mat           # (n, n_perms)
+
+    # rank-permute y by each column's argsort — vectorised
+    return y[np.argsort(Y_null, axis=0)]                    # (n, n_perms)
+
+
 def _parametric_null_col(
     y: np.ndarray,
     x: np.ndarray,
@@ -195,10 +240,11 @@ def run_threshold_scans(null_outcomes, genomecache,
                         kinship_loco=None,
                         chrom=None,
                         fix_h2=True,
-                        permutation_method='plain',
+                        permutation_method='parametric',
                         use_rint=True, use_reml=True,
                         sample_ids=None,
-                        seed=1):
+                        seed=1,
+                        batch_size=500):
     """scan null phenotype columns to build the peak-LOD null distribution.
 
 
@@ -223,11 +269,12 @@ def run_threshold_scans(null_outcomes, genomecache,
     fix_h2         : bool  default True
         True  — estimate h² once from `phenotype` and reuse across perms.
         False — re-estimate h² for each permuted phenotype (slow).
-    permutation_method : str  'plain' (default) or 'parametric'
-        'plain'      — shuffle y labels; matches Phase 1 OLS / τ²≈0 scans.
+    permutation_method : str  'parametric' (default) or 'plain'
         'parametric' — kinship-informed rank-permutation matching miQTL
-                       sampling.processes.R lines 110-137; required for
-                       Phase 2 real LOCO kinship (τ² > 0).
+                       sampling.processes.R lines 110-137; draws u~N(0,K·σ²_g),
+                       rank-permutes y by the null order.  correct default.
+        'plain'      — simple shuffle; equivalent only when τ²≈0 (identity
+                       kinship / OLS).  used by Phase 1 validation only.
     use_rint       : bool  apply rank-inverse normal transform to phenotype
     use_reml       : bool  REML for h² estimation
     sample_ids     : list of str or None
@@ -235,10 +282,22 @@ def run_threshold_scans(null_outcomes, genomecache,
         phenotype is averaged to strain means via the Z-matrix before
         scanning; kinship_decomp must be at strain level (m×m).
     seed           : int  rng seed (used only for 'parametric' mode)
+    batch_size     : int  mini-batch size for the fast vectorised path
+        (fix_h2=True + plain).  500 balances memory and loop overhead;
+        reduce if RAM is tight.
 
     returns
     -------
     np.ndarray (n_perms,)  per-permutation genome-wide max LOD
+
+    notes
+    -----
+    fast path (fix_h2=True + permutation_method='plain'):
+        precomputes H_perp and G_pinv once per chromosome then vectorises
+        over all permutations in mini-batches via scan_chromosome_batch.
+        O(n_perms × n_loci × J) vs O(n_perms × n_loci × J²) for slow path.
+    slow path (fix_h2=False or permutation_method='parametric'):
+        calls scan_chromosome once per permutation per chromosome.
     """
     from ..genotype import kinship as kin_module
     from . import lmm as lmm_module
@@ -304,6 +363,49 @@ def run_threshold_scans(null_outcomes, genomecache,
     max_lods = np.zeros(n_perms)
     rng      = np.random.default_rng(seed) if permutation_method == 'parametric' else None
 
+    # ── fast vectorised path: fix_h2=True ────────────────────────────────────
+    # precomputes H_perp / G_pinv once per chromosome; only e0 varies per perm.
+    # plain:      builds one Y_mat for all chromosomes (no kinship draw per perm)
+    # parametric: rebuilds Y_mat per chromosome using that chr's K_loco
+    # ~100–500× faster than the slow path on large n_loci.
+    if fix_h2 and permutation_method in ('plain', 'parametric'):
+        plain_mat = None
+        if permutation_method == 'plain':
+            # same permuted matrix reused across all chromosomes
+            if use_rint:
+                plain_mat = np.column_stack([_rint(null_outcomes[:, i])
+                                             for i in range(n_perms)])
+            else:
+                plain_mat = null_outcomes.astype(float)
+            if z_mat is not None:
+                plain_mat = (z_mat.T @ plain_mat) / r_counts[:, None]
+
+        for c in chrs:
+            ev  = kinship_decomp[c]['values']
+            evc = kinship_decomp[c]['vectors']
+            h2  = h2_fixed[c]
+
+            if permutation_method == 'parametric':
+                # chromosome-specific null draw using K_loco[c]
+                try:
+                    null_mat_c = _draw_parametric_batch(
+                        y0, x_scan, kinship_loco[c], evc, ev,
+                        h2, use_reml, n_perms, rng)
+                except KinshipSingularError as exc:
+                    logger.warning('  chr%s  [skip] %s', c, exc)
+                    continue
+            else:
+                null_mat_c = plain_mat
+
+            chr_max = lmm_module.scan_chromosome_batch(
+                null_mat_c, genomecache, c, x_scan, ev, evc, h2,
+                batch_size=batch_size)
+            max_lods = np.maximum(max_lods, chr_max)
+            logger.info('  [batch] chr%s  max_lod=%.3f', c, float(chr_max.max()))
+
+        return max_lods
+
+    # ── slow path: fix_h2=False ───────────────────────────────────────────────
     for p_idx in range(n_perms):
         if (p_idx + 1) % 100 == 0:
             logger.info(f'  threshold scan {p_idx+1}/{n_perms}')

@@ -637,6 +637,7 @@ top_chr  <- if (!is.null(peak_lod_df)) as.character(peak_lod_df$chr[1]) else all
 # S5 — permutation threshold: one per chromosome, using that chr's top gene
 # ─────────────────────────────────────────────────────────────────────────────
 thresholds_chr_path <- file.path(out_dir, 'thresholds_chr.csv')
+t_s5 <- proc.time()
 
 if (run(5)) {
   stopifnot(!is.null(peak_lod_df))
@@ -741,6 +742,7 @@ if (!is.null(peak_lod_df) && file.exists(thresholds_chr_path)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S6 — cache collapse (genome-wide, unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
+t_s6 <- proc.time()
 if (run(6)) {
   cat('\n[S6] cache collapse\n')
   collapsed_dir <- file.path(out_dir, 'genomecache_collapsed')
@@ -769,6 +771,7 @@ if (run(6)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S7 — MI scan: all significant genes on their peak chromosome
 # ─────────────────────────────────────────────────────────────────────────────
+t_s7 <- proc.time()
 if (run(7)) {
   stopifnot(!is.null(sig_genes_df))
   cat(sprintf('\n[S7] MI scan — %d significant genes\n', nrow(sig_genes_df)))
@@ -800,6 +803,7 @@ if (run(7)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S8 — SNP scan: significant genes on their peak chromosome (gated)
 # ─────────────────────────────────────────────────────────────────────────────
+t_s8 <- proc.time()
 if (run(8)) {
   if (!dir.exists(allele_dir)) {
     cat('\n[S8] SKIPPED — allele_dir not found:', allele_dir, '\n')
@@ -835,6 +839,7 @@ if (run(8)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S9 — mediation: significant genes, all other sig genes as candidate mediators
 # ─────────────────────────────────────────────────────────────────────────────
+t_s9 <- proc.time()
 if (run(9)) {
   stopifnot(!is.null(sig_genes_df), !is.null(peak_lod_df))
   cat(sprintf('\n[S9] mediation — %d significant genes\n', nrow(sig_genes_df)))
@@ -891,6 +896,7 @@ if (run(9)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S10 — bootstrap positional CI: all significant genes
 # ─────────────────────────────────────────────────────────────────────────────
+t_s10 <- proc.time()
 if (run(10)) {
   stopifnot(!is.null(sig_genes_df))
   cat(sprintf('\n[S10] bootstrap CI — %d significant genes\n', nrow(sig_genes_df)))
@@ -950,6 +956,7 @@ if (run(10)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S11 — instability scan: all genes, cis (same loop structure as S4)
 # ─────────────────────────────────────────────────────────────────────────────
+t_s11 <- proc.time()
 if (run(11)) {
   cat('\n[S11] instability scan — all genes, cis\n')
   inst_rows <- list()
@@ -992,8 +999,10 @@ if (run(11)) {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# timing summary
+# timing summary — S4 per-chromosome + S5-S11 section wall-clock
 # ─────────────────────────────────────────────────────────────────────────────
+t_end <- proc.time()
+
 if (run(4) && file.exists(timing_chr_path) && file.exists(timing_genome_path)) {
   tc <- read.csv(timing_chr_path)
   tg <- read.csv(timing_genome_path)
@@ -1005,5 +1014,33 @@ if (run(4) && file.exists(timing_chr_path) && file.exists(timing_genome_path)) {
         row.names = FALSE)
   cat('────────────────────────────────────────────────────────────────────\n')
 }
+
+# write per-section wall-clock (S5-S11) to timing_sections.csv
+# t_sN is set just before each section guard regardless of whether it ran;
+# elapsed since t_sN captures the wall time of that section (0 if skipped).
+elapsed_s <- function(t_start, t_end) as.numeric(t_end['elapsed'] - t_start['elapsed'])
+sec_rows <- list(
+  data.frame(section='S5_permutation',   elapsed_s=elapsed_s(t_s5,  t_s6),  stringsAsFactors=FALSE),
+  data.frame(section='S6_cache_collapse', elapsed_s=elapsed_s(t_s6,  t_s7),  stringsAsFactors=FALSE),
+  data.frame(section='S7_mi_scan',        elapsed_s=elapsed_s(t_s7,  t_s8),  stringsAsFactors=FALSE),
+  data.frame(section='S8_snp_scan',       elapsed_s=elapsed_s(t_s8,  t_s9),  stringsAsFactors=FALSE),
+  data.frame(section='S9_mediation',      elapsed_s=elapsed_s(t_s9,  t_s10), stringsAsFactors=FALSE),
+  data.frame(section='S10_bootstrap_ci',  elapsed_s=elapsed_s(t_s10, t_s11), stringsAsFactors=FALSE),
+  data.frame(section='S11_instability',   elapsed_s=elapsed_s(t_s11, t_end), stringsAsFactors=FALSE)
+)
+sec_df <- do.call(rbind, sec_rows)
+sec_df$chr       <- chr_arg
+sec_df$scan_type <- scan_type
+sec_df$timestamp <- format(Sys.time(), '%Y-%m-%dT%H:%M:%S')
+
+write.csv(sec_df, file.path(out_dir, 'timing_sections.csv'), row.names = FALSE)
+
+cat('\n── section timing (S5-S11) ─────────────────────────────────────────\n')
+for (i in seq_len(nrow(sec_df))) {
+  cat(sprintf('  %-24s  %6.0f s  (%s)\n',
+              sec_df$section[i], sec_df$elapsed_s[i],
+              if (sec_df$elapsed_s[i] > 0) 'ran' else 'skipped'))
+}
+cat('────────────────────────────────────────────────────────────────────\n')
 
 cat('\ndone\n')
