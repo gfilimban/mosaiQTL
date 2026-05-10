@@ -242,12 +242,6 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
         gc.collect()
         log.info('  LOCO kinship computed and cached')
 
-    # Identity kinship (OLS) for permutation scans — matches R miQTL default
-    # run.threshold.scans uses no explicit kinship → effectively OLS; must match
-    _ns = len(cache.sample_ids)
-    ols_kd = {c: {'values': np.zeros(_ns), 'vectors': np.eye(_ns)}
-              for c in cache.chromosomes}
-    del _ns
 
     # ── shared scan reference on sim.y.1 (used by S6/S9/S10/S11) ─────────────
     rop_scan_1 = None
@@ -761,8 +755,8 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                                   for v in r2_df['pass'].values]
                     ax_r2.bar(r2_df['sim_idx'], r2_df['r2'],
                               color=colors_bar, edgecolor='white', linewidth=0.5)
-                    ax_r2.axhline(0.990, color='#444444', linewidth=0.8,
-                                  linestyle='--', label='threshold 0.990')
+                    ax_r2.axhline(0.975, color='#444444', linewidth=0.8,
+                                  linestyle='--', label='threshold 0.975')
                     ax_r2.set_xlabel('Simulation index', fontsize=8)
                     ax_r2.set_ylabel('LOD r² vs R', fontsize=8)
                     ax_r2.set_title(
@@ -1100,18 +1094,29 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                         kinship_decomp=kinship_decomp,
                         use_rint=False, phenotype_id='sim.y.1')
 
+                # reconstruct raw LOCO kinship matrices from decomp for parametric mode
+                kinship_loco = {
+                    c: (kinship_decomp[c]['vectors']
+                        * kinship_decomp[c]['values'][None, :]
+                        @ kinship_decomp[c]['vectors'].T)
+                    for c in [peak_chrom]
+                }
+
                 null_y   = generate_null_outcomes(sim_ys[1], n_samples=250,
                                                   method='permutation', seed=1)
-                # OLS permutations (ols_kd) match Phase 1 approach.
-                # R uses LOCO-LMM with fixed h²>0 → systematically lower threshold.
-                # Gate tests GEV fit quality (GEV vs empirical < 0.5), not R agreement.
                 max_lods = run_threshold_scans(
                     null_y, cache,
                     phenotype=sim_ys[1],
-                    kinship_decomp=ols_kd,
+                    kinship_decomp=kinship_decomp,
+                    kinship_loco=kinship_loco,
                     fix_h2=True, use_rint=False,
                     chrom=peak_chrom,
+                    permutation_method='parametric',
+                    seed=1,
                 )
+                del kinship_loco
+                gc.collect()
+
                 threshold, gev_params = get_gev_thresholds(max_lods, percentile=0.95)
                 gev_emp_delta = abs(threshold - gev_params['empirical_quantile'])
                 log.info('  GEV threshold = %.3f  empirical = %.3f  delta = %.4f',
@@ -1125,34 +1130,47 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     'empirical_quantile': gev_params['empirical_quantile'],
                 }]).to_csv(py_dir / 's6_threshold.csv', index=False)
 
+                # load R reference (now exported by port_sim_validation_p2.R)
+                r_thresh      = None
+                r_max_lods    = None
                 thresh_r_path = r_data / 'thresholds_r.csv'
-                r_thresh = None
+                perm_r_path   = r_data / 'perm_max_lods_r.csv'
                 if thresh_r_path.exists():
                     r_thresh = float(pd.read_csv(thresh_r_path)['threshold'].iloc[0])
-                    log.info('  R GEV threshold = %.3f (informational)', r_thresh)
-                else:
-                    log.info('  thresholds_r.csv missing — R threshold not shown')
+                    log.info('  R GEV threshold = %.3f', r_thresh)
+                if perm_r_path.exists():
+                    r_max_lods = pd.read_csv(perm_r_path)['max_lod'].values
 
+                thr_delta = abs(threshold - r_thresh) if r_thresh is not None else float('nan')
                 pd.DataFrame([{
-                    'threshold_python':   threshold,
-                    'empirical_quantile': gev_params['empirical_quantile'],
-                    'gev_emp_delta':      gev_emp_delta,
+                    'threshold_python':    threshold,
+                    'threshold_r':         r_thresh,
+                    'threshold_delta':     thr_delta,
+                    'empirical_quantile':  gev_params['empirical_quantile'],
+                    'gev_emp_delta':       gev_emp_delta,
                 }]).to_csv(cmp_dir / 's6_threshold.csv', index=False)
+
                 results['P2-S6'] = _check(
                     'GEV fit delta (GEV vs empirical)', gev_emp_delta, 0.5, '<')
 
                 x_lo  = max_lods.min() - 0.3
                 x_hi  = max_lods.max() + 0.3
+                if r_max_lods is not None:
+                    x_lo = min(x_lo, r_max_lods.min() - 0.3)
+                    x_hi = max(x_hi, r_max_lods.max() + 0.3)
                 bins  = np.linspace(x_lo, x_hi, 26)
                 x_crv = np.linspace(x_lo, x_hi, 300)
 
                 fig, ax = plt.subplots(figsize=(5, 3), dpi=300)
+                if r_max_lods is not None:
+                    ax.hist(r_max_lods, bins=bins, color='#D83026', edgecolor='white',
+                            linewidth=0.4, alpha=0.5, density=True, label='R perms')
                 ax.hist(max_lods, bins=bins, color='#52A5DB', edgecolor='white',
                         linewidth=0.4, alpha=0.7, density=True, label='Python perms')
                 ax.plot(x_crv,
                         _gev.pdf(x_crv, gev_params['c'],
                                  loc=gev_params['loc'], scale=gev_params['scale']),
-                        color='#4F6EAF', linewidth=1.2, label='GEV fit')
+                        color='#4F6EAF', linewidth=1.2, label='Py GEV fit')
                 ax.axvline(threshold, color='#D83026', linewidth=1.2,
                            label=f'Py GEV {threshold:.2f}')
                 ax.axvline(gev_params['empirical_quantile'], color='#55AF5B',
@@ -1160,11 +1178,11 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                            label=f'empirical p95 {gev_params["empirical_quantile"]:.2f}')
                 if r_thresh is not None:
                     ax.axvline(r_thresh, color='#C8A400', linewidth=1.0, linestyle=':',
-                               label=f'R GEV {r_thresh:.2f} (info)')
+                               label=f'R GEV {r_thresh:.2f}  Δ={thr_delta:.3f}')
                 ax.set_xlabel('Max LOD per permutation', fontsize=8)
                 ax.set_ylabel('Density', fontsize=8)
                 ax.set_title(
-                    f'Python perm max-LOD (n={len(max_lods)})'
+                    f'Perm max-LOD (n={len(max_lods)})'
                     f'  GEV-emp Δ={gev_emp_delta:.3f}', fontsize=9)
                 ax.legend(fontsize=7)
                 sns.despine(ax=ax)
