@@ -9,16 +9,15 @@ all other covariates are opt-in via function parameters.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
 from scipy.sparse.linalg import svds
 
-logger = logging.getLogger('mosaiqtl')
+from mosaiqtl.models.config import Population
 
-# populations where LOCO kinship absorbs all structure — geno_pcs add nothing
-_LOCO_POPULATIONS: frozenset[str] = frozenset({'cc'})
+logger = logging.getLogger('mosaiqtl')
 
 
 class MissingCovariateError(ValueError):
@@ -35,7 +34,7 @@ def build_covariate_matrix(
     covariates: list[str] = [],
     n_expression_pcs: int = 0,
     n_genotype_pcs: int = 0,
-    population: Optional[str] = None,
+    population: Optional[Union[str, Population]] = None,
     pseudobulk_counts: Optional[pd.DataFrame] = None,
     kinship_matrix: Optional[np.ndarray] = None,
     kinship_sample_ids: Optional[list[str]] = None,
@@ -61,8 +60,9 @@ def build_covariate_matrix(
         informative for DO, MPP, F2, and structured populations only —
         not permitted for CC: LOCO kinship already captures all structure.
         requires population to be set when > 0.
-    population : str or None
-        population design identifier ('cc', 'do', 'mpp', 'f2', 'structured').
+    population : str, Population, or None
+        population design. accepts a Population instance (preferred) or a
+        string name ('cc', 'do', 'mpp', 'f2', 'structured').
         required when n_genotype_pcs > 0 to enforce informativeness.
     pseudobulk_counts : pd.DataFrame or None
         samples × genes pseudobulk count matrix; required when
@@ -107,11 +107,12 @@ def build_covariate_matrix(
                 f'n_genotype_pcs={n_genotype_pcs} requires kinship_matrix and '
                 f'kinship_sample_ids; pass both or set n_genotype_pcs=0'
             )
-        if population in _LOCO_POPULATIONS:
+        if _loco_sufficient(population):
+            pop_label = population.name if isinstance(population, Population) else population
             raise ValueError(
                 f'n_genotype_pcs={n_genotype_pcs} is not informative for '
-                f"population={population!r}: LOCO kinship already captures all "
-                f'population structure. Set n_genotype_pcs=0 for CC.'
+                f"population={pop_label!r}: LOCO kinship already captures all "
+                f'population structure. Set n_genotype_pcs=0.'
             )
 
     meta = sample_metadata.set_index('sample_id').sort_index()
@@ -149,6 +150,20 @@ def build_covariate_matrix(
 # ---------------------------------------------------------------------------
 # private helpers
 # ---------------------------------------------------------------------------
+
+def _loco_sufficient(population: Optional[Union[str, Population]]) -> bool:
+    """Return True when LOCO kinship fully absorbs population structure.
+
+    accepts a Population instance (preferred) or a string name for backward
+    compatibility. the string path treats 'cc' as loco_sufficient=True since
+    that was the only population supported before Population was introduced.
+    """
+    if population is None:
+        return False
+    if isinstance(population, Population):
+        return population.loco_sufficient
+    return population == 'cc'
+
 
 def _check_nan(df: pd.DataFrame, col: str) -> None:
     """Raise MissingCovariateError if any value in col is NaN."""

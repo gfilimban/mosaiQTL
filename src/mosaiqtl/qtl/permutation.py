@@ -30,6 +30,14 @@ from scipy.stats import genextreme
 
 logger = logging.getLogger('mosaiqtl')
 
+__all__ = [
+    'KinshipSingularError',
+    'generate_null_outcomes',
+    'run_threshold_scans',
+    'get_gev_thresholds',
+    'run_positional_scans',
+]
+
 
 class KinshipSingularError(ValueError):
     """raised when a LOCO kinship matrix is not PSD (min eigenvalue < 1e-8)."""

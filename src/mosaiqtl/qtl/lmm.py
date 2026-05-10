@@ -27,6 +27,8 @@ from ..models.records import LMMResult  # noqa: F401 — re-exported for callers
 
 logger = logging.getLogger('mosaiqtl')
 
+__all__: list[str] = []   # internal engine — no public symbols; import via scan.py
+
 
 def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):
     """estimate heritability under the null model (no QTL effect).

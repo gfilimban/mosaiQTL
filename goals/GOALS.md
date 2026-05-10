@@ -151,6 +151,15 @@ and Taschuk & Wilson 2017 (10.1371/journal.pcbi.1005412).
 
 ---
 
+## MPP GENERALIZATION (post-Phase-2)
+| ID | Description | Prerequisite | Status |
+|---|---|---|---|
+| MPP-01 | founders.py structural refactor: migrate FOUNDER_ORDER, FOUNDER_COLORS, F1_COLORS, STRAIN_ORDER from top-level constants to CCPopulation fields; viz/effects.py, viz/haplotypes.py, and viz/genome.py pull founder order and colors from `cache.population` instead of direct imports from founders.py | Phase 2 validation passes | 🔴 |
+| MPP-02 | GenomeCache carries a `population: Population` field populated on load; scan functions pass `cache.population` downstream instead of accepting separate `founders` args | MPP-01 | 🔴 |
+| MPP-03 | Add MAGIC-19 example Population instance (19 founders, Arabidopsis MAGIC or wheat MAGIC as reference) | MPP-01 | 🔴 |
+
+---
+
 ## DESIGN GOALS (pachterlab-inspired)
 From: Melsted et al. 2021 (10.1038/s41587-021-00870-2), Bray et al. 2016 (10.1038/nbt.3519).
 Reproducibility standard: Peng RD (2011) Reproducible research in computational science. Science. 10.1126/science.1213847

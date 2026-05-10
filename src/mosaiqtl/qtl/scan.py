@@ -29,6 +29,17 @@ from ..utils import rint, build_z_matrix
 
 logger = logging.getLogger('mosaiqtl')
 
+__all__ = [
+    'ScanResult',
+    'scan_h2lmm',
+    'scan_h2lmm_mi',
+    'scan_multi_gene',
+    'grab_locus_from_scan',
+    'lod_drop_ci',
+    'fixef_eqtl_scan',
+    'instability_lm_scan',
+]
+
 
 class ScanResult:
     """container for genome-wide scan output.

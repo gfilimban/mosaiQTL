@@ -601,7 +601,64 @@ Caller skips the chromosome and logs a warning (mirrors R behaviour).
 
 ---
 
-## 11. KNOWN OPEN ISSUES (when validation was based on actual data)
+## 11. MPP GENERALIZATION — POPULATION BOUNDARY
+
+The codebase is parametric on population structure. All population-specific
+configuration lives in a `Population` instance (`models/config.py`); the scan
+engine, kinship, and HMM are population-agnostic.
+
+### Two categories of CC-specific code
+
+**Type A — by design, belongs in Population config**
+
+These are not bugs. They are parameters that differ across populations and must
+be supplied by the user as part of their `Population` instance:
+
+| Parameter | CC value | Encoded in |
+|---|---|---|
+| `founders` list and order | 8 CC founders | `Population.founders` |
+| per-founder hex colors | `FOUNDER_COLORS` dict | `Population.colors` |
+| `genotyping_error_prob` | 0.002 (GigaMUGA) | `Population.genotyping_error_prob` |
+| `n_gen` | 1 (consensus map) | `Population.n_gen` |
+| `inbred` | True | `Population.inbred` |
+| `chromosome_names` | mm39 autosomes + chrX | `Population.chromosome_names` |
+
+**Type B — analysis engine leakage (actual bugs)**
+
+These are hardcoded assumptions in the engine that break non-CC use silently.
+They are fixed as encountered; do not introduce new ones:
+
+| Location | Old code | Fixed code | Status |
+|---|---|---|---|
+| `genotype/founders.py:cc_strain_palette` | `len(probs) != 8` | `len(FOUNDER_ORDER)` | ✅ fixed |
+| `io/covariates.py:_LOCO_POPULATIONS` | `frozenset({'cc'})` | `population.loco_sufficient` | ✅ fixed |
+
+### Population as API boundary
+
+`Population` (frozen Pydantic model) is the single object that crosses the
+boundary between user configuration and the engine. It is:
+- **frozen**: hashable, safe as a dict key or function arg; no mutation after construction
+- **validated**: `colors` must cover all `founders`; enforced at construction time
+- **serialisable**: `.model_dump()` / `.model_validate()` for config files
+
+`CCPopulation` in `genotype/founders.py` is the built-in default instance.
+Users building DO, MAGIC, or custom MPP pipelines construct their own
+`Population` and pass it to `ScanConfig.population` (as a name string) or
+directly to engine functions that accept `Population`.
+
+### founders.py structural refactor (post-Phase-2)
+
+The current `founders.py` contains a mix of CC constants and utility functions
+that other modules import directly. After Phase 2 validation passes, these will
+be migrated so that viz and engine modules pull colors and founder order from
+`cache.population` (the Population on the GenomeCache) rather than importing
+from `founders.py` directly. This is tracked as a goal in GOALS.md.
+Until then, `founders.py` remains the single source of truth for all CC hex
+colors — never redefine a hex string anywhere else.
+
+---
+
+## 12. KNOWN OPEN ISSUES (when validation was based on actual data)
 
 | Issue | Location | Priority |
 |---|---|---|

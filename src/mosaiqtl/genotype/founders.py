@@ -6,11 +6,16 @@ no other module in mosaiqtl defines hex color strings — import from here.
 
 axis order rule (enforced in all plots):
     Founders (FOUNDER_ORDER) → F1s (F1_COLORS key order) → CC strains (alphanumeric)
+
+CCPopulation is the default Population instance for 8-founder CC mice.
+import it from here rather than constructing it at call sites.
 """
 
 from __future__ import annotations
 
 from typing import Optional
+
+from mosaiqtl.models.config import Population
 
 FOUNDER_ORDER: list[str] = [
     'AJ', 'B6J', '129S1J', 'NODJ', 'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ',
@@ -105,7 +110,7 @@ def cc_strain_palette(
             continue
 
         probs = list(haplotype_probs[strain])
-        if len(probs) != 8:
+        if len(probs) != len(FOUNDER_ORDER):
             palette[strain] = '#888888'
             continue
 
@@ -127,3 +132,34 @@ def cc_strain_palette(
         palette[strain] = color
 
     return palette
+
+
+# ---------------------------------------------------------------------------
+# CCPopulation — default Population instance for 8-founder CC/DO mice (mm39)
+# ---------------------------------------------------------------------------
+CCPopulation: Population = Population(
+    name='cc',
+    founders=FOUNDER_ORDER,
+    colors=FOUNDER_COLORS,
+    f1_colors=F1_COLORS,
+    has_sex_chromosomes=True,
+    sex_chromosome='chrX',
+    x_donors=[],   # set by caller when sex-chromosome QTL handling is needed
+    genotyping_error_prob=0.002,
+    n_gen=1,
+    inbred=True,
+    loco_sufficient=True,
+)
+
+__all__ = [
+    'FOUNDER_ORDER',
+    'FOUNDER_CODE',
+    'FOUNDER_COLORS',
+    'F1_COLORS',
+    'STRAIN_ORDER',
+    'COLOR_NEUTRAL_DARK',
+    'COLOR_CC_FALLBACK',
+    'COLOR_NEUTRAL_LIGHT',
+    'cc_strain_palette',
+    'CCPopulation',
+]

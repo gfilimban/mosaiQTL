@@ -23,6 +23,11 @@ import logging
 
 logger = logging.getLogger('mosaiqtl')
 
+__all__ = [
+    'calc_kinship',
+    'decomp_kinship',
+]
+
 
 def calc_kinship(genomecache, method='loco'):
     """Compute kinship matrices from haplotype probabilities.
