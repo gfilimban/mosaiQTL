@@ -139,7 +139,7 @@ and Taschuk & Wilson 2017 (10.1371/journal.pcbi.1005412).
 | SWE-04 | Public API docstring coverage | 100% | 100% 🟢 | interrogate --fail-under 100 |
 | SWE-05 | Bandit critical security issues | 0 | — | bandit -r src/ -ll |
 | SWE-06 | src/ layout migration complete | done | 🟢 | manual |
-| SWE-07 | CI pipeline active on main | green | 🔴 | .github/workflows/ci.yml (GitHub Actions docs: docs.github.com/actions) |
+| SWE-07 | CI pipeline active on main | green | 🟢 | .github/workflows/ci.yml — lint+test+security+mypy(warn) |
 
 ---
 
