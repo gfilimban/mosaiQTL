@@ -54,6 +54,7 @@ def calc_kinship(genomecache, method='loco'):
     nloci_tot = sum(chr_nloci.values())
 
     def _norm(K: np.ndarray) -> np.ndarray:
+        """Normalise K so the mean diagonal entry equals 1."""
         d = np.diag(K).mean()
         return K / d if d > 0 else K
 

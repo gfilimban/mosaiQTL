@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── lint ────────────────────────────────────────────────────────────────────
+  lint:
+    name: lint (flake8 + interrogate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: install
+        run: pip install -e '.[dev]'
+
+      - name: flake8
+        run: flake8 src/ tests/
+
+      - name: interrogate (docstring 100%)
+        run: interrogate --fail-under 100 src/mosaiqtl/
+
+  # ── type-check (non-blocking until SWE-02 is clean) ────────────────────────
+  type-check:
+    name: mypy --strict (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: install
+        run: pip install -e '.[dev]'
+
+      - name: mypy
+        run: mypy --strict src/mosaiqtl/
+
+  # ── unit + integration tests ────────────────────────────────────────────────
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: install
+        run: pip install -e '.[dev]'
+
+      - name: pytest + coverage
+        run: |
+          pytest tests/unit/ tests/integration/ \
+            --ignore=tests/benchmarks/ \
+            -q \
+            --cov=src/mosaiqtl \
+            --cov-report=term-missing \
+            --cov-fail-under=70
+
+  # ── security ────────────────────────────────────────────────────────────────
+  security:
+    name: bandit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: install bandit
+        run: pip install bandit
+
+      - name: bandit
+        run: bandit -r src/ -ll
