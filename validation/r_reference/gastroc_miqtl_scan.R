@@ -671,6 +671,22 @@ if (run(5)) {
       w <- rep(1, length(rop_ch$fit0$y)); names(w) <- names(rop_ch$fit0$y)
       rop_ch$fit0$weights <- w
 
+      # pre-check: generate.sample.outcomes.matrix calls
+      #   mnormt::rmnorm(..., varcov = K*tau2)  [sampling.processes.R line 116]
+      # which calls chol(K*tau2) internally. K is the LOCO kinship reduced to
+      # unique genotypes present in the scan. if any eigenvalue of K is near-zero
+      # (low founder diversity on this chr) chol fails. only reached when tau2 > 0.
+      tau2_est <- rop_ch$fit0.REML$tau2.mle
+      if (!is.null(tau2_est) && tau2_est > 0) {
+        K_min_eig <- min(eigen(kinship_loco[[ch]], symmetric = TRUE,
+                               only.values = TRUE)$values)
+        if (K_min_eig < 1e-8) {
+          cat(sprintf('  chr%s  gene=%s  [skip] near-singular LOCO kinship (min_eig=%.2e)\n',
+                      ch, cand_gene, K_min_eig))
+          next
+        }
+      }
+
       perm_out   <- generate.sample.outcomes.matrix(
         scan.object = rop_ch, model.type = 'null',
         method = 'permutation', num.samples = 1000, seed = 1

@@ -552,11 +552,62 @@ on real gastroc data (HPC only) but are not required for CI validation.
 
 ---
 
-## 10. KNOWN OPEN ISSUES (when validation was based on actual data)
+## 10. PERMUTATION DESIGN GAP — KINSHIP SAMPLING
+
+miQTL's `generate.sample.outcomes.matrix` with `method='permutation'` is **not** a
+simple phenotype shuffle. It draws from the kinship-informed null distribution:
+
+```r
+# sampling.processes.R lines 110–137
+u ~ N(0, K·τ²)          # kinship random effect — requires chol(K·τ²)
+e ~ N(0, diag(1/w)·σ²)  # residual
+ŷ = Xβ + u + e           # parametric null sample
+y_perm[i] = y[rank(ŷ)]  # rank-permute original y using ŷ's order
+```
+
+Python's `generate_null_outcomes` (permutation.py) does a plain shuffle:
+```python
+rng.permutation(y)        # no kinship sampling; τ² not used
+```
+
+**Consequence:** Python and R permutation semantics diverge whenever τ² > 0.
+Phase 1 validation used identity kinship (τ²=0, OLS) specifically to avoid this gap.
+Phase 2 validation (real LOCO kinship) will expose the divergence in S6 threshold gate.
+
+**Design requirement for Python `generate_null_outcomes`:**
+To match miQTL, the parametric permutation path must:
+1. Draw `u ~ N(0, K_m·τ²)` using `np.random.multivariate_normal` (calls Cholesky on K_m)
+2. Draw `e ~ N(0, diag(1/w)·σ²)` — scalar normal if w uniform
+3. Rank-permute original y using ŷ's order
+
+**Cholesky requirement on LOCO kinship:**
+`np.random.multivariate_normal(zeros(m), K_m·τ²)` requires K_m to be PSD.
+Near-zero eigenvalues occur on chromosomes with low founder diversity (few loci,
+locally fixed founders, or chrX in sex-structured data). This is the same failure
+mode as `mnormt::rmnorm` in R, patched in `gastroc_miqtl_scan.R` S5 with a
+pre-check `min(eigvalsh(K_loco[ch])) > 1e-8` before calling `generate.sample.outcomes.matrix`.
+
+**Required guard in Python (permutation.py):**
+```python
+def _draw_kinship_re(K: np.ndarray, tau2: float,
+                     rng: np.random.Generator) -> np.ndarray:
+    min_eig = np.linalg.eigvalsh(K).min()
+    if min_eig < 1e-8:
+        raise KinshipSingularError(f'LOCO kinship not PSD (min_eig={min_eig:.2e})')
+    return rng.multivariate_normal(np.zeros(len(K)), K * tau2)
+```
+
+Caller skips the chromosome and logs a warning (mirrors R behaviour).
+
+---
+
+## 11. KNOWN OPEN ISSUES (when validation was based on actual data)
 
 | Issue | Location | Priority |
 |---|---|---|
-| S6 GEV instability — `mean_delta=0.619 > 0.5` | permutation.py | HIGH |
+| Permutation gap: Python uses plain shuffle; miQTL uses kinship-informed rank-permutation | permutation.py | HIGH |
+| Cholesky guard needed: `_draw_kinship_re` must check PSD before sampling | permutation.py | HIGH |
+| S6 GEV instability — `mean_delta=0.619 > 0.5` (partly caused by permutation gap above) | permutation.py | HIGH |
 | S2 needs `haplotype_vals_r.csv` rerun | port_validation.R | MED |
 | S11 chr-type bug fixed but not rerun | validate_port.py | MED |
 | S8 marginal vs diplotype model difference documented, not resolved | snp_scan.py | LOW |
