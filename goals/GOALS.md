@@ -140,6 +140,7 @@ and Taschuk & Wilson 2017 (10.1371/journal.pcbi.1005412).
 | SWE-05 | Bandit critical security issues | 0 | — | bandit -r src/ -ll |
 | SWE-06 | src/ layout migration complete | done | 🟢 | manual |
 | SWE-07 | CI pipeline active on main | green | 🟢 | .github/workflows/ci.yml — lint+test+security+mypy(warn) |
+| SWE-08 | io/base.py BioFileParser ABC: shared read/validate/stream contract for all format parsers | implement when second I/O format parser is added (post-Phase-2); premature before ≥2 concrete parsers exist | 🔴 |
 
 ---
 
