@@ -483,8 +483,8 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     worst_r = float(rs_df['r'].min())
                     results['P2-S3'] = _check('kinship r (worst chr)', worst_r, 0.999)
 
-                    # kinship diagonal scatter: R vs Python per-strain self-kinship
-                    # (one point per strain per chromosome — shows calibration)
+                    # off-diagonal scatter: R vs Python pairwise kinship across all chrs
+                    # (diagonal is always 1.0 in R's DOQTL normalisation — not informative)
                     k_scatter_rows: list[dict] = []
                     all_strains_list = list(cache.sample_ids)
                     for chrom in sorted(cache.chromosomes):
@@ -496,16 +496,18 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                                   if str(s) in mat_r_df.columns]
                         if len(common) < 2:
                             continue
-                        K_r_diag = np.diag(mat_r_df.loc[common, common].values)
+                        K_r_mat = mat_r_df.loc[common, common].values
                         K_py_full = (kinship_decomp[chrom]['vectors']
                                      @ np.diag(kinship_decomp[chrom]['values'])
                                      @ kinship_decomp[chrom]['vectors'].T)
                         common_idx = [all_strains_list.index(s) for s in common]
-                        K_py_diag = K_py_full[common_idx, common_idx]
-                        for k_r, k_py in zip(K_r_diag, K_py_diag):
+                        K_py_mat = K_py_full[np.ix_(common_idx, common_idx)]
+                        # lower triangle only (off-diagonal pairwise values)
+                        tri = np.tril_indices(len(common), k=-1)
+                        for k_r, k_py in zip(K_r_mat[tri], K_py_mat[tri]):
                             k_scatter_rows.append(
                                 {'chr': chrom, 'k_r': k_r, 'k_py': k_py})
-                        del K_py_full
+                        del K_py_full, K_py_mat
                         gc.collect()
 
                     if k_scatter_rows:
@@ -513,16 +515,17 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                         ks_df.to_csv(cmp_dir / 's3_kinship_diag.csv', index=False)
                         fig, ax = plt.subplots(figsize=(4, 4), dpi=300)
                         ax.scatter(ks_df['k_r'], ks_df['k_py'],
-                                   s=3, alpha=0.4, color='#4F6EAF', linewidths=0,
+                                   s=1, alpha=0.2, color='#4F6EAF', linewidths=0,
                                    rasterized=True)
-                        lo = min(ks_df['k_r'].min(), ks_df['k_py'].min())
-                        hi = max(ks_df['k_r'].max(), ks_df['k_py'].max())
+                        lo = min(float(ks_df['k_r'].min()), float(ks_df['k_py'].min()))
+                        hi = max(float(ks_df['k_r'].max()), float(ks_df['k_py'].max()))
                         ax.plot([lo, hi], [lo, hi], color='#D83026',
                                 linewidth=0.8, linestyle='--')
-                        ax.set_xlabel('R kinship (diagonal)', fontsize=8)
-                        ax.set_ylabel('Python kinship (diagonal)', fontsize=8)
+                        ax.set_xlabel('R kinship (off-diagonal)', fontsize=8)
+                        ax.set_ylabel('Python kinship (off-diagonal)', fontsize=8)
                         ax.set_title(
-                            f'Kinship diag (worst r={worst_r:.5f})', fontsize=9)
+                            f'Kinship off-diag all chrs (worst r={worst_r:.5f})',
+                            fontsize=9)
                         sns.despine(ax=ax)
                         fig.tight_layout()
                         fig.savefig(plt_dir / 's3_kinship_diag_scatter.png', dpi=300,
@@ -1523,7 +1526,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     phenotype_id='sim.y.1',
                     just_these_loci=set(locus_ids_c.tolist()),
                 )
-                instab_py = _scan_to_df(instab_scan)
+                instab_py = _scan_to_df(instab_scan).sort_values('position_mb').reset_index(drop=True)
                 instab_py.to_csv(py_dir / 's11_instability.csv', index=False)
                 log.info('  peak instability LOD = %.3f', float(instab_scan.lod.max()))
 

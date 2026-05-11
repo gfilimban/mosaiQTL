@@ -197,6 +197,7 @@ spot_loci <- unlist(lapply(names(loci_by_chr), function(chr) {
 }))
 hap_rows <- lapply(spot_loci, function(loc) {
     m       <- reader$getLocusMatrix(loc, model = 'additive')
+    m       <- m / rowSums(m)
     df      <- as.data.frame(m)
     df$strain    <- rownames(m)
     df$locus     <- loc
@@ -382,6 +383,28 @@ w <- rep(1, length(rop_scan$fit0$y))
 names(w) <- names(rop_scan$fit0$y)
 rop_scan$fit0$weights <- w
 
+# PSD guard: generate.sample.outcomes.matrix calls chol(K*tau2) internally.
+# FP noise eigenvalues (~-3e-16) cause chol failures → all-NA scans → -Inf max-LODs.
+s6_psd_ok <- TRUE
+tau2_s6   <- rop_scan$fit0.REML$tau2.mle
+if (!is.null(tau2_s6) && tau2_s6 > 0) {
+    k_path_s6 <- file.path(r_data, paste0('kinship_mat_r_chr', qtl_chr, '.csv'))
+    if (file.exists(k_path_s6)) {
+        K_s6 <- as.matrix(read.csv(k_path_s6, row.names = 1,
+                                   stringsAsFactors = FALSE))
+        K_min_eig_s6 <- min(eigen(K_s6, symmetric = TRUE, only.values = TRUE)$values)
+        rm(K_s6); gc()
+        cat(sprintf('  LOCO kinship chr%s min_eig=%.2e\n', qtl_chr, K_min_eig_s6))
+        if (K_min_eig_s6 < -1e-8) {
+            cat(sprintf('  [skip] near-singular LOCO kinship — S6 skipped\n'))
+            s6_psd_ok <- FALSE
+        }
+    }
+}
+if (!s6_psd_ok) {
+    cat('  perm_max_lods_r.csv not written (kinship not PSD)\n')
+} else {
+
 perm_out <- generate.sample.outcomes.matrix(
     scan.object = rop_scan,
     method      = 'permutation',
@@ -418,6 +441,7 @@ genome.plotter.whole(scan.list = list(ROP = rop_scan),
                      hard.thresholds = unname(perm_threshold))
 dev.off()
 cat('  plot: rop_with_threshold.png\n')
+}  # end s6_psd_ok else
 }  # end S6
 
 t_s7 <- proc.time()
