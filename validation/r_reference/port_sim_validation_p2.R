@@ -144,6 +144,7 @@ if (!force_rerun && length(list.files(probs_dir, '*.csv')) > 0) {
         chr_loci <- scan_loci[scan_chr == chr]
         rows <- lapply(chr_loci, function(loc) {
             m         <- reader$getLocusMatrix(loc, model = 'additive')
+            m         <- m / rowSums(m)
             df        <- as.data.frame(m)
             df$strain <- rownames(m)
             df$locus  <- loc

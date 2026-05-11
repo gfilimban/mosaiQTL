@@ -112,11 +112,13 @@ def _load_cache_from_probs_csv(
             df.groupby('locus')['pos_mb'].first()
             .reindex(loci).values.astype(np.float64)
         )
-        probs = df[founder_cols].values.reshape(len(loci), n_strains, 8)
+        probs = df[founder_cols].values.reshape(len(loci), n_strains, 8).astype(np.float64)
+        row_sums = probs.sum(axis=2, keepdims=True)
+        probs = probs / np.where(row_sums > 0, row_sums, 1.0)
         data[chr_id] = {
             'locus_ids': np.array(loci),
             'positions': positions,
-            'probs':     probs.astype(np.float64),
+            'probs':     probs,
         }
 
     if not data:
