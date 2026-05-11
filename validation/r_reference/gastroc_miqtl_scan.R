@@ -628,6 +628,15 @@ if (run(4)) {
     sub[which.max(sub$lod), ]
   }))
   peak_lod_df <- peak_lod_df[order(-peak_lod_df$lod), ]
+} else if (!is.null(chr_arg) && file.exists(file.path(s4_out_dir, 'lod.csv'))) {
+  # single-chr restart: S4 wrote chr{N}/lod.csv but not the genome-wide CSV
+  cat(sprintf('[S4] loading cached chr%s/lod.csv\n', chr_arg))
+  lod_genome  <- read.csv(file.path(s4_out_dir, 'lod.csv'), stringsAsFactors = FALSE)
+  peak_lod_df <- do.call(rbind, lapply(unique(lod_genome$gene), function(g) {
+    sub <- lod_genome[lod_genome$gene == g, ]
+    sub[which.max(sub$lod), ]
+  }))
+  peak_lod_df <- peak_lod_df[order(-peak_lod_df$lod), ]
 }
 
 top_gene <- if (!is.null(peak_lod_df)) peak_lod_df$gene[1] else gene_cols[1]
@@ -681,7 +690,7 @@ if (run(5)) {
       if (!is.null(tau2_est) && tau2_est > 0) {
         K_min_eig <- min(eigen(kinship_loco[[ch]], symmetric = TRUE,
                                only.values = TRUE)$values)
-        if (K_min_eig < 1e-8) {
+        if (K_min_eig < -1e-8) {
           cat(sprintf('  chr%s  gene=%s  [skip] near-singular LOCO kinship (min_eig=%.2e)\n',
                       ch, cand_gene, K_min_eig))
           next

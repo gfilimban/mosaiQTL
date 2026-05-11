@@ -17,11 +17,11 @@ design notes:
     gene mode used in validation); leave None for full-genome threshold.
   - run_positional_scans operates in genotype space (m samples), consistent
     with kinship_decomp which is always (m×m) before Z-expansion.
-  - permutation_method='plain' (default) shuffles y labels — matches Phase 1
-    identity-kinship (τ²≈0) validation.
-    permutation_method='parametric' mirrors miQTL sampling.processes.R lines
-    110-137: draws u~N(0,K·σ²_g), e~N(0,σ²_e·I), rank-permutes y using the
-    parametric sample's order. Required for Phase 2 real LOCO kinship.
+  - permutation_method='parametric' (default) mirrors miQTL sampling.processes.R
+    lines 110-137: draws u~N(0,K·σ²_g), e~N(0,σ²_e·I), rank-permutes y using the
+    parametric sample's order. Correct for real LOCO kinship (Phase 2+).
+    permutation_method='plain' shuffles y labels — valid only when τ²≈0 (identity
+    kinship / OLS); used by Phase 1 validation only.
 """
 
 import numpy as np
@@ -40,7 +40,7 @@ __all__ = [
 
 
 class KinshipSingularError(ValueError):
-    """raised when a LOCO kinship matrix is not PSD (min eigenvalue < 1e-8)."""
+    """raised when a LOCO kinship matrix is genuinely non-PSD (min eigenvalue < -1e-8)."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -131,7 +131,7 @@ def _draw_kinship_re(
     mirroring the behaviour of R's mnormt::rmnorm (chol fails on near-singular K).
     """
     min_eig = float(np.linalg.eigvalsh(K).min())
-    if min_eig < 1e-8:
+    if min_eig < -1e-8:
         raise KinshipSingularError(
             f'LOCO kinship not PSD (min_eig={min_eig:.2e}); '
             'skipping chromosome — mirrors R behaviour on singular K'
@@ -167,7 +167,7 @@ def _draw_parametric_batch(
     beta, sigma2_g, sigma2_e = _null_fit_params(y_rot, x_rot, ev, h2, use_reml)
 
     min_eig = float(np.linalg.eigvalsh(K).min())
-    if min_eig < 1e-8:
+    if min_eig < -1e-8:
         raise KinshipSingularError(
             f'LOCO kinship not PSD (min_eig={min_eig:.2e}); '
             'skipping chromosome — mirrors R behaviour on singular K'

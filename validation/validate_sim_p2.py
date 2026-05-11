@@ -994,7 +994,8 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 log.info('  %s lod_r.csv not found — S4 skipped', SKIP)
                 results['P2-S4'] = None
 
-    timing_rows.append({'section': 'S4_lmm_scan', 'elapsed_s': time.perf_counter() - _t_sec})
+    timing_rows.append({'section': 'S4_lmm_scan', 'elapsed_s': time.perf_counter() - _t_sec,
+                        'note': '10 phenotype scans, all chr'})
 
     # ── build rop_scan_1 if needed by S6/S9/S10/S11 but S4 not in sections ───
     rop_needed = bool({6, 9, 10, 11} & sections)
@@ -1218,7 +1219,8 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 log.info('  %s peak_chrom unknown — S6 skipped', SKIP)
                 results['P2-S6'] = None
 
-    timing_rows.append({'section': 'S6_permutation', 'elapsed_s': time.perf_counter() - _t_sec})
+    timing_rows.append({'section': 'S6_permutation', 'elapsed_s': time.perf_counter() - _t_sec,
+                        'note': 'n=250 perms, peak chr (vectorized vs R sequential)'})
 
     # ─────────────────────────────────────────────────────────────────────────
     # S7 — MI scan
@@ -1270,7 +1272,8 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 log.info('  %s mi_lod_r.csv not found — S7 skipped', SKIP)
                 results['P2-S7'] = None
 
-    timing_rows.append({'section': 'S7_mi_scan', 'elapsed_s': time.perf_counter() - _t_sec})
+    timing_rows.append({'section': 'S7_mi_scan', 'elapsed_s': time.perf_counter() - _t_sec,
+                        'note': 'n_imp=11, all chr'})
 
     # ─────────────────────────────────────────────────────────────────────────
     # S8 — SNP scan (gated: skip if no snp_lod_r.csv or allele_dir)
@@ -1493,7 +1496,8 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                          SKIP)
                 results['P2-S10'] = None
 
-    timing_rows.append({'section': 'S10_bootstrap_ci', 'elapsed_s': time.perf_counter() - _t_sec})
+    timing_rows.append({'section': 'S10_bootstrap_ci', 'elapsed_s': time.perf_counter() - _t_sec,
+                        'note': 'n=100 bootstrap, peak chr'})
 
     # ─────────────────────────────────────────────────────────────────────────
     # S11 — instability scan
@@ -1579,7 +1583,8 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                          SKIP)
                 results['P2-S11'] = None
 
-    timing_rows.append({'section': 'S11_instability', 'elapsed_s': time.perf_counter() - _t_sec})
+    timing_rows.append({'section': 'S11_instability', 'elapsed_s': time.perf_counter() - _t_sec,
+                        'note': 'n=100 subsamples, peak chr'})
     timing_rows.append({'section': 'total', 'elapsed_s': time.perf_counter() - _t0_run})
 
     # ── gate summary + timing ─────────────────────────────────────────────────
@@ -1645,6 +1650,9 @@ def _print_summary(
             line = f"  {row['section']:<24s}  {s_py:8.1f} s  ({s_py/60:5.2f} min)"
             if 'speedup' in t_df.columns and pd.notna(row.get('speedup')):
                 line += f"  ×{float(row['speedup']):.1f} vs R"
+            note = row.get('note') if isinstance(row.get('note'), str) else None
+            if note:
+                line += f'  [{note}]'
             log.info(line)
         log.info('  timing written to: %s/py_data/timing_sections.csv', out_dir)
 

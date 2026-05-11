@@ -585,14 +585,15 @@ To match miQTL, the parametric permutation path must:
 Near-zero eigenvalues occur on chromosomes with low founder diversity (few loci,
 locally fixed founders, or chrX in sex-structured data). This is the same failure
 mode as `mnormt::rmnorm` in R, patched in `gastroc_miqtl_scan.R` S5 with a
-pre-check `min(eigvalsh(K_loco[ch])) > 1e-8` before calling `generate.sample.outcomes.matrix`.
+pre-check `min(eigvalsh(K_loco[ch])) < -1e-8` before calling `generate.sample.outcomes.matrix`.
+Threshold is negative to allow floating-point noise around zero (-3e-16 is valid PSD).
 
 **Required guard in Python (permutation.py):**
 ```python
 def _draw_kinship_re(K: np.ndarray, tau2: float,
                      rng: np.random.Generator) -> np.ndarray:
     min_eig = np.linalg.eigvalsh(K).min()
-    if min_eig < 1e-8:
+    if min_eig < -1e-8:
         raise KinshipSingularError(f'LOCO kinship not PSD (min_eig={min_eig:.2e})')
     return rng.multivariate_normal(np.zeros(len(K)), K * tau2)
 ```
