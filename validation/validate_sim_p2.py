@@ -34,6 +34,7 @@ import argparse
 import gc
 import logging
 import sys
+import time
 from pathlib import Path
 
 logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
@@ -179,7 +180,9 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
     for d in (py_dir, cmp_dir, plt_dir):
         d.mkdir(parents=True, exist_ok=True)
 
-    results: dict = {}   # gate key → True/False/None
+    results: dict = {}         # gate key → True/False/None
+    timing_rows: list[dict] = []
+    _t0_run = time.perf_counter()
 
     # ── load phenotypes (defines sample space for all sections) ───────────────
     pheno_path = r_data / 'phenotypes.csv'
@@ -254,6 +257,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
     # S1 — cache structure
     # ─────────────────────────────────────────────────────────────────────────
     sec = 1
+    _t_sec = time.perf_counter()
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS1: cache structure...')
@@ -312,10 +316,13 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
             results['P2-S1'] = s1_ok
             _mark_done(py_dir, str(sec))
 
+    timing_rows.append({'section': 'S1_cache_structure', 'elapsed_s': time.perf_counter() - _t_sec})
+
     # ─────────────────────────────────────────────────────────────────────────
     # S2 — haplotype probability spot-check
     # ─────────────────────────────────────────────────────────────────────────
     sec = 2
+    _t_sec = time.perf_counter()
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS2: haplotype prob concordance...')
@@ -432,10 +439,13 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 log.info('  %s haplotype_vals_r.csv not found — S2 skipped', SKIP)
                 results['P2-S2'] = None
 
+    timing_rows.append({'section': 'S2_haplotype_probs', 'elapsed_s': time.perf_counter() - _t_sec})
+
     # ─────────────────────────────────────────────────────────────────────────
     # S3 — LOCO kinship matrices
     # ─────────────────────────────────────────────────────────────────────────
     sec = 3
+    _t_sec = time.perf_counter()
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS3: LOCO kinship matrices...')
@@ -664,10 +674,13 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 log.info('  %s kinship_r.csv not found — S3 skipped', SKIP)
                 results['P2-S3'] = None
 
+    timing_rows.append({'section': 'S3_kinship_loco', 'elapsed_s': time.perf_counter() - _t_sec})
+
     # ─────────────────────────────────────────────────────────────────────────
     # S4 — LMM scan (10 phenotypes)
     # ─────────────────────────────────────────────────────────────────────────
     sec = 4
+    _t_sec = time.perf_counter()
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS4: LMM scan (10 phenotypes)...')
@@ -979,6 +992,8 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 log.info('  %s lod_r.csv not found — S4 skipped', SKIP)
                 results['P2-S4'] = None
 
+    timing_rows.append({'section': 'S4_lmm_scan', 'elapsed_s': time.perf_counter() - _t_sec})
+
     # ── build rop_scan_1 if needed by S6/S9/S10/S11 but S4 not in sections ───
     rop_needed = bool({6, 9, 10, 11} & sections)
     if rop_needed and rop_scan_1 is None and 1 in sim_ys:
@@ -1014,6 +1029,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
     # gate: ≥5% loci removed AND lod_r² ≥ 0.999
     # ─────────────────────────────────────────────────────────────────────────
     sec = 5
+    _t_sec = time.perf_counter()
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS5: cache collapse (tol=0.02)...')
@@ -1079,10 +1095,13 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     gc.collect()
             _mark_done(py_dir, str(sec))
 
+    timing_rows.append({'section': 'S5_cache_collapse', 'elapsed_s': time.perf_counter() - _t_sec})
+
     # ─────────────────────────────────────────────────────────────────────────
     # S6 — permutation / GEV threshold
     # ─────────────────────────────────────────────────────────────────────────
     sec = 6
+    _t_sec = time.perf_counter()
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS6: permutation thresholds (n=250, chr%s)...', peak_chrom)
@@ -1197,10 +1216,13 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 log.info('  %s peak_chrom unknown — S6 skipped', SKIP)
                 results['P2-S6'] = None
 
+    timing_rows.append({'section': 'S6_permutation', 'elapsed_s': time.perf_counter() - _t_sec})
+
     # ─────────────────────────────────────────────────────────────────────────
     # S7 — MI scan
     # ─────────────────────────────────────────────────────────────────────────
     sec = 7
+    _t_sec = time.perf_counter()
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS7: MI scan (num_imp=11)...')
@@ -1246,10 +1268,13 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 log.info('  %s mi_lod_r.csv not found — S7 skipped', SKIP)
                 results['P2-S7'] = None
 
+    timing_rows.append({'section': 'S7_mi_scan', 'elapsed_s': time.perf_counter() - _t_sec})
+
     # ─────────────────────────────────────────────────────────────────────────
     # S8 — SNP scan (gated: skip if no snp_lod_r.csv or allele_dir)
     # ─────────────────────────────────────────────────────────────────────────
     sec = 8
+    _t_sec = time.perf_counter()
     if sec in sections:
         log.info('\nS8: SNP scan (gated)...')
         snp_r_path = r_data / 'snp_lod_r.csv'
@@ -1272,10 +1297,13 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 log.info('  %s S8 errored — SKIPPED', SKIP)
                 results['P2-S8'] = None
 
+    timing_rows.append({'section': 'S8_snp_scan', 'elapsed_s': time.perf_counter() - _t_sec})
+
     # ─────────────────────────────────────────────────────────────────────────
     # S9 — mediation
     # ─────────────────────────────────────────────────────────────────────────
     sec = 9
+    _t_sec = time.perf_counter()
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS9: mediation (outcome=sim.y.1, mediator=sim.y.2, chr%s)...',
@@ -1334,10 +1362,13 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                          SKIP)
                 results['P2-S9'] = None
 
+    timing_rows.append({'section': 'S9_mediation', 'elapsed_s': time.perf_counter() - _t_sec})
+
     # ─────────────────────────────────────────────────────────────────────────
     # S10 — bootstrap positional CI
     # ─────────────────────────────────────────────────────────────────────────
     sec = 10
+    _t_sec = time.perf_counter()
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS10: bootstrap positional CI (n=100, chr%s)...', peak_chrom)
@@ -1460,10 +1491,13 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                          SKIP)
                 results['P2-S10'] = None
 
+    timing_rows.append({'section': 'S10_bootstrap_ci', 'elapsed_s': time.perf_counter() - _t_sec})
+
     # ─────────────────────────────────────────────────────────────────────────
     # S11 — instability scan
     # ─────────────────────────────────────────────────────────────────────────
     sec = 11
+    _t_sec = time.perf_counter()
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS11: instability scan (n=100, prop=0.63, chr%s)...', peak_chrom)
@@ -1543,13 +1577,20 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                          SKIP)
                 results['P2-S11'] = None
 
-    # ── gate summary ──────────────────────────────────────────────────────────
-    _print_summary(results, out_dir)
+    timing_rows.append({'section': 'S11_instability', 'elapsed_s': time.perf_counter() - _t_sec})
+    timing_rows.append({'section': 'total', 'elapsed_s': time.perf_counter() - _t0_run})
+
+    # ── gate summary + timing ─────────────────────────────────────────────────
+    _print_summary(results, out_dir, timing_rows)
     return results
 
 
-def _print_summary(results: dict, out_dir: Path) -> None:
-    """print gate summary table and write gate_summary.csv."""
+def _print_summary(
+    results: dict,
+    out_dir: Path,
+    timing_rows: 'list[dict] | None' = None,
+) -> None:
+    """print gate summary table and write gate_summary.csv + timing_sections.csv."""
     gate_order = [
         ('P2-S1',  'cache structure'),
         ('P2-S2',  'haplotype concordance ≥ 0.95'),
@@ -1585,6 +1626,25 @@ def _print_summary(results: dict, out_dir: Path) -> None:
     log.info('  %d/%d sections pass', n_pass, n_total)
     pd.DataFrame(rows).to_csv(
         Path(out_dir) / 'py_data' / 'gate_summary.csv', index=False)
+
+    if timing_rows:
+        t_df = pd.DataFrame(timing_rows)
+        # try to load R timing for comparison
+        r_timing_path = Path(out_dir) / 'r_data' / 'timing_sections.csv'
+        if r_timing_path.exists():
+            r_t = pd.read_csv(r_timing_path)[['section', 'elapsed_s']].rename(
+                columns={'elapsed_s': 'elapsed_s_r'})
+            t_df = t_df.merge(r_t, on='section', how='left')
+            t_df['speedup'] = t_df['elapsed_s_r'] / t_df['elapsed_s'].replace(0, float('nan'))
+        t_df.to_csv(Path(out_dir) / 'py_data' / 'timing_sections.csv', index=False)
+        log.info('\n── Timing summary (Python) ───────────────────────────────────────')
+        for _, row in t_df.iterrows():
+            s_py = float(row['elapsed_s'])
+            line = f"  {row['section']:<24s}  {s_py:8.1f} s  ({s_py/60:5.2f} min)"
+            if 'speedup' in t_df.columns and pd.notna(row.get('speedup')):
+                line += f"  ×{float(row['speedup']):.1f} vs R"
+            log.info(line)
+        log.info('  timing written to: %s/py_data/timing_sections.csv', out_dir)
 
 
 def main() -> None:

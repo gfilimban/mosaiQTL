@@ -44,6 +44,9 @@ lib_path <- Sys.getenv('R_LIB_PATH',
 if (dir.exists(lib_path)) .libPaths(c(lib_path, .libPaths()))
 for (pkg in c('sparcc', 'miqtl')) suppressWarnings(library(pkg, character.only = TRUE))
 
+t_start    <- proc.time()
+elapsed_s  <- function(t0, t1) as.numeric(t1['elapsed'] - t0['elapsed'])
+
 # crossprod mask fix (same as port_validation.R)
 if (!is.primitive(crossprod) || typeof(crossprod) != 'builtin') {
     assign('crossprod',  base::crossprod,  envir = globalenv())
@@ -125,6 +128,7 @@ if (!force_rerun && file.exists(setup_cache)) {
          file = setup_cache)
     cat('  setup cached to', setup_cache, '\n')
 }
+t_after_setup <- proc.time()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Export haplotype probabilities (scan loci, all chromosomes)
@@ -154,10 +158,12 @@ if (!force_rerun && length(list.files(probs_dir, '*.csv')) > 0) {
             nrow(rows[[1]]), 'strains\n')
     }
 }
+t_after_probs <- proc.time()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # S1 — cache info
 # ─────────────────────────────────────────────────────────────────────────────
+t_s1 <- proc.time()
 if (run_section(1)) {
 cat('\nS1: cache info...\n')
 cache_info <- do.call(rbind, lapply(names(loci_by_chr), function(chr) {
@@ -177,6 +183,7 @@ write.csv(data.frame(sample_id = phenotypes$data$SUBJECT.NAME.1),
 cat('  exported cache_info_r.csv:', nrow(cache_info), 'chromosomes\n')
 }  # end S1
 
+t_s2 <- proc.time()
 # ─────────────────────────────────────────────────────────────────────────────
 # S2 — haplotype probability spot-check (5 random loci per chromosome)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -201,6 +208,7 @@ write.csv(hap_vals, file.path(r_data, 'haplotype_vals_r.csv'), row.names = FALSE
 cat('  exported haplotype_vals_r.csv:', nrow(hap_vals), 'rows\n')
 }  # end S2
 
+t_s3 <- proc.time()
 # ─────────────────────────────────────────────────────────────────────────────
 # S3 — LOCO kinship matrices
 # K_loco_c = (L_all * K_all - L_c * K_c) / (L_all - L_c)
@@ -258,6 +266,7 @@ write.csv(do.call(rbind, kinship_summary),
           file.path(r_data, 'kinship_r.csv'), row.names = FALSE)
 }  # end S3
 
+t_s4 <- proc.time()
 # ─────────────────────────────────────────────────────────────────────────────
 # S4 — LMM scan (ROP) for all 10 phenotypes
 # ─────────────────────────────────────────────────────────────────────────────
@@ -311,6 +320,7 @@ write.csv(do.call(rbind, effect_rows),
 cat('  exported lod_r.csv:', nrow(do.call(rbind, lod_rows)), 'rows\n')
 }  # end S4
 
+t_s5 <- proc.time()
 # ─────────────────────────────────────────────────────────────────────────────
 # S5 — cache collapse
 # ─────────────────────────────────────────────────────────────────────────────
@@ -361,6 +371,7 @@ write.csv(coll_summary,  file.path(r_data, 'collapsed_cache_summary.csv'), row.n
 cat('  cache collapsed; rescan done\n')
 }  # end S5
 
+t_s6 <- proc.time()
 # ─────────────────────────────────────────────────────────────────────────────
 # S6 — permutation thresholds (n=250, peak chromosome only)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -407,6 +418,7 @@ dev.off()
 cat('  plot: rop_with_threshold.png\n')
 }  # end S6
 
+t_s7 <- proc.time()
 # ─────────────────────────────────────────────────────────────────────────────
 # S7 — multiple imputation (num.imp=11)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -428,6 +440,7 @@ write.csv(data.frame(locus  = names(mi_scan$LOD),
 cat('  MI peak LOD:', round(max(as.numeric(mi_scan$LOD)), 3), '\n')
 }  # end S7
 
+t_s8 <- proc.time()
 # ─────────────────────────────────────────────────────────────────────────────
 # S8 — SNP scan (gated: requires allele_dir)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -456,6 +469,7 @@ if (dir.exists(allele_dir)) {
 }
 }  # end S8
 
+t_s9 <- proc.time()
 # ─────────────────────────────────────────────────────────────────────────────
 # S9 — mediation (outcome=sim.y.1, mediator=sim.y.2, peak chromosome)
 # Two-scan approach: base scan vs. scan with sim.y.2 as covariate.
@@ -496,6 +510,7 @@ cat('  median lod_drop:', round(median(lod_drop_raw, na.rm = TRUE), 3),
     '  (null expected: ~0, independent phenotypes)\n')
 }  # end S9
 
+t_s10 <- proc.time()
 # ─────────────────────────────────────────────────────────────────────────────
 # S10 — bootstrap positional CI (100 bootstraps at peak locus)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -550,6 +565,7 @@ cat('  95% CI: [', round(ci_lo, 2), ',', round(ci_hi, 2), '] Mb\n')
 cat('  peak locus:', qtl_locus, '@', round(planted_mb, 2), 'Mb\n')
 }  # end S10
 
+t_s11 <- proc.time()
 # ─────────────────────────────────────────────────────────────────────────────
 # S11 — instability scan
 # ─────────────────────────────────────────────────────────────────────────────
@@ -578,6 +594,7 @@ write.csv(pval_df, file.path(r_data, 'instability_r.csv'), row.names = FALSE)
 cat('  instability scan done;', nrow(pval_df), 'loci x', ncol(pval_mat), 'bootstrap scans\n')
 }  # end S11
 
+t_plots <- proc.time()
 # ── reference plots (only if S1/S6 ran and objects exist) ─────────────────
 if (exists('rop_scan')) {
     png(file.path(r_plots, 'rop_scan.png'), width=3000, height=1500, res=300)
@@ -588,6 +605,38 @@ if (exists('rop_scan')) {
     allele.plotter.region(scan.object = rop_scan, chr = qtl_chr)
     dev.off()
 }
+t_end <- proc.time()
+
+# ── timing summary ─────────────────────────────────────────────────────────
+ts <- format(Sys.time(), '%Y-%m-%dT%H:%M:%S')
+timing_rows <- list(
+    data.frame(section='setup',        elapsed_s=elapsed_s(t_start,       t_after_setup), timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='probs_export', elapsed_s=elapsed_s(t_after_setup, t_after_probs), timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='S1_cache_info',       elapsed_s=elapsed_s(t_s1,  t_s2),  timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='S2_haplotype_probs',  elapsed_s=elapsed_s(t_s2,  t_s3),  timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='S3_kinship_loco',     elapsed_s=elapsed_s(t_s3,  t_s4),  timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='S4_lmm_scan',         elapsed_s=elapsed_s(t_s4,  t_s5),  timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='S5_cache_collapse',   elapsed_s=elapsed_s(t_s5,  t_s6),  timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='S6_permutation',      elapsed_s=elapsed_s(t_s6,  t_s7),  timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='S7_mi_scan',          elapsed_s=elapsed_s(t_s7,  t_s8),  timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='S8_snp_scan',         elapsed_s=elapsed_s(t_s8,  t_s9),  timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='S9_mediation',        elapsed_s=elapsed_s(t_s9,  t_s10), timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='S10_bootstrap_ci',    elapsed_s=elapsed_s(t_s10, t_s11), timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='S11_instability',     elapsed_s=elapsed_s(t_s11, t_plots), timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='reference_plots',     elapsed_s=elapsed_s(t_plots, t_end), timestamp=ts, stringsAsFactors=FALSE),
+    data.frame(section='total',               elapsed_s=elapsed_s(t_start, t_end), timestamp=ts, stringsAsFactors=FALSE)
+)
+timing_df <- do.call(rbind, timing_rows)
+write.csv(timing_df, file.path(r_data, 'timing_sections.csv'), row.names = FALSE)
+
+cat('\n── Timing summary (R) ───────────────────────────────────────────────────\n')
+for (i in seq_len(nrow(timing_df))) {
+    cat(sprintf('  %-24s  %8.1f s  (%5.2f min)\n',
+        timing_df$section[i],
+        timing_df$elapsed_s[i],
+        timing_df$elapsed_s[i] / 60))
+}
+cat('  timing written to:', file.path(r_data, 'timing_sections.csv'), '\n')
 
 cat('\n── Phase 2 sim R reference complete ────────────────────────────────────\n')
 cat('  outputs in:', r_data, '\n')
