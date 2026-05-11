@@ -405,6 +405,7 @@ perm_max_lods_r <- if (is.numeric(perm_scans)) {
 } else {
     sapply(perm_scans, function(s) max(as.numeric(s$LOD), na.rm = TRUE))
 }
+perm_max_lods_r <- perm_max_lods_r[is.finite(perm_max_lods_r)]
 write.csv(data.frame(perm_index = seq_along(perm_max_lods_r),
                      max_lod    = perm_max_lods_r),
           file.path(r_data, 'perm_max_lods_r.csv'), row.names = FALSE)
@@ -584,14 +585,18 @@ instab_scan <- instability.lm.scan(
     model                = 'additive',
     seed                 = 1,
     chr                  = qtl_chr)
-loci_s11  <- colnames(instab_scan$full.results$p.values)
+# p.values is (n_scans x n_loci); reduce to median -log10(p) per locus
 pval_mat  <- instab_scan$full.results$p.values
-pval_df   <- as.data.frame(t(pval_mat))
-pval_df$locus  <- loci_s11
-pval_df$chr    <- instab_scan$full.results$chr
-pval_df$pos_mb <- instab_scan$full.results$pos$Mb
-write.csv(pval_df, file.path(r_data, 'instability_r.csv'), row.names = FALSE)
-cat('  instability scan done;', nrow(pval_df), 'loci x', ncol(pval_mat), 'bootstrap scans\n')
+loci_s11  <- colnames(pval_mat)
+instab_lod <- apply(-log10(pval_mat), 2, median, na.rm = TRUE)
+write.csv(data.frame(
+    locus  = loci_s11,
+    chr    = instab_scan$full.results$chr,
+    pos_mb = instab_scan$full.results$pos$Mb,
+    lod    = as.numeric(instab_lod)),
+    file.path(r_data, 'instability_r.csv'), row.names = FALSE)
+cat('  instability scan done;', length(loci_s11), 'loci x',
+    nrow(pval_mat), 'subsamples\n')
 }  # end S11
 
 t_plots <- proc.time()
