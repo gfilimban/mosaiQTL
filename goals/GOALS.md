@@ -285,6 +285,8 @@ Functions in the miQTL R codebase not yet ported to Python. Assessed against
 
 ### Not yet ported — HIGH priority
 | ID | miQTL R function(s) | Target Python location | Why needed |
+|---|---|---|---|
+| PORT-08 | `build.allele.dir()` (miQTL reads chrN.alleles flat format; no R equivalent in miqtl namespace — must be built from GigaMUGA founder genotype data) | `genotype/snp_db.py::build_founder_allele_db(gm_csv, out_h5)` + `load_founder_alleles(h5)` | S8 validation requires founder allele calls per SNP. Current snp_scan.py has three overlapping formats (per-SNP .RData via rpy2; flat chrN.alleles text; Sanger MGP VCF via pysam); the rpy2 path writes ~74k .RData files and has the same scaling bottleneck as miQTL R. Correct design: single `founder_alleles.h5` HDF5 database built from GM_ccfo_mm39.csv (already available in miqtl dir); `imputed_snp_scan_h2lmm` loads via `load_founder_alleles`. Deprecate rpy2-dependent `build_allele_dir()` and `read_allele_dir()` in snp_scan.py. Standalone `validation/build_allele_dir.py` script also has hardcoded paths and cannot be integrated as-is — delete once PORT-08 ships. Unblocks P2-S8 validation: GigaMUGA markers are genome-wide and phenotype-independent; the same `founder_alleles.h5` is used by Phase 2 sim S8 and gastroc S8 alike |
 
 ### Not yet ported — MEDIUM priority
 | ID | miQTL R function(s) | Target Python location | Why needed |

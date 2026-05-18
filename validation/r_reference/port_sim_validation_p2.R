@@ -491,17 +491,17 @@ perm_scans <- run.threshold.scans(
     chr                  = qtl_chr,
     scan.seed            = 1)
 
+# run.threshold.scans with chr= returns a list; $max.statistics$LOD is the
+# per-permutation max-LOD vector.  get.gev.thresholds does not extract LOD
+# correctly from this list format — pass the numeric vector directly.
+perm_max_lods_r <- as.numeric(perm_scans$max.statistics$LOD)
+perm_max_lods_r <- perm_max_lods_r[is.finite(perm_max_lods_r)]
+
 perm_threshold <- get.gev.thresholds(
-    threshold.scans = perm_scans,
+    threshold.scans = perm_max_lods_r,
     use.lod         = TRUE,
     percentile      = 0.95,
     type            = 'max')
-
-# run.threshold.scans with chr= returns a list object; $max.statistics$LOD is the
-# per-permutation max-LOD vector.  The is.numeric branch was for the chr-less call
-# (plain numeric vector) but Phase 2 always passes chr=qtl_chr → list path.
-perm_max_lods_r <- as.numeric(perm_scans$max.statistics$LOD)
-perm_max_lods_r <- perm_max_lods_r[is.finite(perm_max_lods_r)]
 write.csv(data.frame(perm_index = seq_along(perm_max_lods_r),
                      max_lod    = perm_max_lods_r),
           file.path(r_data, 'perm_max_lods_r.csv'), row.names = FALSE)
