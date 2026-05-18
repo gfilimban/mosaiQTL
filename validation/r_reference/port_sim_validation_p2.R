@@ -491,18 +491,19 @@ perm_scans <- run.threshold.scans(
     chr                  = qtl_chr,
     scan.seed            = 1)
 
-# run.threshold.scans with chr= returns $max.statistics$LOD as a named/list
-# object — evir::gev fits the wrong thing and get.gev.thresholds returns ~3.0.
-# Extract to a plain numeric vector, then re-wrap in the structure the function
-# expects (list(max.statistics=list(LOD=...))) so it still calls the miQTL path.
 perm_max_lods_r <- as.numeric(perm_scans$max.statistics$LOD)
 perm_max_lods_r <- perm_max_lods_r[is.finite(perm_max_lods_r)]
 
-perm_threshold <- get.gev.thresholds(
-    threshold.scans = list(max.statistics = list(LOD = perm_max_lods_r)),
-    use.lod         = TRUE,
-    percentile      = 0.95,
-    type            = 'max')
+# get.gev.thresholds(use.lod=TRUE, type='max') uses p=1-percentile=0.05, which
+# returns the LOWER 5th percentile via evir::qgev(0.05) — the wrong tail for a
+# significance threshold.  Use evir directly (the same library used internally)
+# with qgev(0.95) = upper 95th percentile, matching Python's
+# scipy.stats.genextreme.ppf(0.95).
+gev_fit        <- evir::gev(perm_max_lods_r)
+perm_threshold <- evir::qgev(0.95,
+    xi    = gev_fit$par.est['xi'],
+    sigma = gev_fit$par.est['sigma'],
+    mu    = gev_fit$par.est['mu'])
 write.csv(data.frame(perm_index = seq_along(perm_max_lods_r),
                      max_lod    = perm_max_lods_r),
           file.path(r_data, 'perm_max_lods_r.csv'), row.names = FALSE)
