@@ -491,14 +491,15 @@ perm_scans <- run.threshold.scans(
     chr                  = qtl_chr,
     scan.seed            = 1)
 
-# run.threshold.scans with chr= returns a list; $max.statistics$LOD is the
-# per-permutation max-LOD vector.  get.gev.thresholds does not extract LOD
-# correctly from this list format — pass the numeric vector directly.
+# run.threshold.scans with chr= returns $max.statistics$LOD as a named/list
+# object — evir::gev fits the wrong thing and get.gev.thresholds returns ~3.0.
+# Extract to a plain numeric vector, then re-wrap in the structure the function
+# expects (list(max.statistics=list(LOD=...))) so it still calls the miQTL path.
 perm_max_lods_r <- as.numeric(perm_scans$max.statistics$LOD)
 perm_max_lods_r <- perm_max_lods_r[is.finite(perm_max_lods_r)]
 
 perm_threshold <- get.gev.thresholds(
-    threshold.scans = perm_max_lods_r,
+    threshold.scans = list(max.statistics = list(LOD = perm_max_lods_r)),
     use.lod         = TRUE,
     percentile      = 0.95,
     type            = 'max')
