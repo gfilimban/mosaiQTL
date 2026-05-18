@@ -2,7 +2,8 @@
 #
 # Self-contained: generates its own sim.CC.data phenotypes (independent of Phase 1).
 # Exports phenotypes + haplotype prob CSVs so Python can build its own cache.
-# Uses LOCO kinship throughout (not the identity/OLS shortcut used in Phase 1).
+# Uses LOCO kinship throughout: K=K_loco[[chr]] passed explicitly to every scan.h2lmm
+# call.  scan.h2lmm without K= uses fix.par=0 (OLS) and sets fit0$K=NULL — not LOCO.
 #
 # Sections:
 #   s1.  cache info          → cache_info_r.csv, founders_r.csv, sample_ids_r.csv
@@ -69,16 +70,25 @@ if (!dir.exists(genomecache)) {
 }
 
 # ── setup: sim data + rop_scan (cached to avoid full rescan on reruns) ────────
+# rop_scan is always a LOCO LMM scan restricted to the peak chromosome so that
+# fit0$K is set → generate.sample.outcomes.matrix uses LOCO kinship for S6/S9/S10.
+# scan.h2lmm without K= uses fix.par=0 (OLS) and stores K=NULL in fit0; we must
+# pass K explicitly to get a proper LMM.  K_loco is computed here and reused by S3-S11.
 setup_cache <- file.path(r_data, 'setup_cache.RData')
 
-if (!force_rerun && file.exists(setup_cache)) {
+needs_setup <- force_rerun || !file.exists(setup_cache)
+if (!needs_setup) {
     cat('\nLoading cached setup from', setup_cache, '...\n')
-    load(setup_cache)   # restores: phenotypes, rop_scan, reader, scan_loci,
-                        #           scan_chr, scan_mb, loci_by_chr,
+    load(setup_cache)   # restores: phenotypes, rop_scan, K_loco, reader,
+                        #           scan_loci, scan_chr, scan_mb, loci_by_chr,
                         #           qtl_idx, qtl_locus, qtl_chr
-    cat('  peak:', qtl_locus, '| chr', qtl_chr,
-        '| LOD', round(as.numeric(rop_scan$LOD)[qtl_idx], 3), '\n')
-} else {
+    if (!exists('K_loco')) {
+        cat('  [stale cache: K_loco missing] forcing recompute\n')
+        needs_setup <- TRUE
+    }
+}
+
+if (needs_setup) {
     # Phase 2 generates its own independent phenotypes (seed=42 for reproducibility).
     set.seed(42)
     phenotypes <- sim.CC.data(
@@ -99,31 +109,97 @@ if (!force_rerun && file.exists(setup_cache)) {
                          locus = phenotypes$locus),
               file.path(r_data, 'true_loci.csv'), row.names = FALSE)
 
-    # ROP scan on sim.y.1 — shared reference used by S3/S6/S9/S10/S11.
-    # scan.h2lmm computes LOCO kinship from genomecache internally.
-    cat('\nRunning ROP scan (sim.y.1) for shared reference...\n')
+    reader <- DiploprobReader$new(genomecache)
+
+    # OLS genome-wide scan — used only to get locus/position metadata.
+    # (scan.h2lmm with K=NULL → OLS; LOCO scans happen below)
+    cat('\nOLS scan for locus metadata...\n')
+    ols_scan  <- scan.h2lmm(
+        genomecache      = genomecache,
+        data             = phenotypes$data,
+        pheno.id         = 'SUBJECT.NAME.1',
+        geno.id          = 'SUBJECT.NAME.1',
+        formula          = sim.y.1 ~ 1,
+        use.multi.impute = FALSE,
+        return.allele.effects = FALSE
+    )
+    scan_loci   <- names(ols_scan$LOD)
+    scan_chr    <- setNames(ols_scan$chr,    scan_loci)
+    scan_mb     <- setNames(ols_scan$pos$Mb, scan_loci)
+    loci_by_chr <- split(scan_loci, scan_chr)
+    cat('  loci:', length(scan_loci), 'across', length(loci_by_chr), 'chromosomes\n')
+    rm(ols_scan); gc()
+
+    # LOCO kinship: K_loco[[chr]] = (L_all*K_all - L_c*K_c) / (L_all - L_c)
+    # Must be computed before rop_scan so that rop_scan$fit0$K is set correctly.
+    cat('\nComputing LOCO kinship for all chromosomes...\n')
+    K_all       <- suppressWarnings(calc.kinship.from.genomecache.with.DOQTL(genomecache))
+    cache_norm  <- normalizePath(genomecache)
+    cache_add   <- file.path(cache_norm, 'additive')
+    L_by_chr    <- sapply(names(loci_by_chr), function(chr)
+        length(list.files(file.path(cache_add, paste0('chr', chr)))))
+    L_all       <- sum(L_by_chr)
+    K_loco      <- list()
+    for (chr_c in names(loci_by_chr)) {
+        tmp_cache <- file.path(tempdir(), paste0('kd_setup_chr', chr_c))
+        for (model_dir in c('additive', 'full', 'genotype')) {
+            src <- file.path(cache_norm, model_dir, paste0('chr', chr_c))
+            dst_parent <- file.path(tmp_cache, model_dir)
+            if (dir.exists(src)) {
+                dir.create(dst_parent, recursive = TRUE, showWarnings = FALSE)
+                file.symlink(from = src,
+                             to   = file.path(dst_parent, paste0('chr', chr_c)))
+            }
+        }
+        K_c  <- suppressWarnings(calc.kinship.from.genomecache.with.DOQTL(tmp_cache))
+        unlink(tmp_cache, recursive = TRUE)
+        L_c           <- L_by_chr[[chr_c]]
+        K_loco_c      <- (L_all * K_all - L_c * K_c) / (L_all - L_c)
+        K_loco[[chr_c]] <- (K_loco_c + t(K_loco_c)) / 2
+    }
+    rm(K_all); gc()
+    cat('  LOCO kinship computed for', length(K_loco), 'chromosomes\n')
+
+    # Genome-wide LOCO scan (per-chromosome loop) to find true LOCO peak.
+    cat('\nGenome-wide LOCO scan (sim.y.1) to find peak...\n')
+    lod_genome <- c()
+    for (chr_c in names(loci_by_chr)) {
+        sc_c <- scan.h2lmm(
+            genomecache      = genomecache,
+            data             = phenotypes$data,
+            pheno.id         = 'SUBJECT.NAME.1',
+            geno.id          = 'SUBJECT.NAME.1',
+            formula          = sim.y.1 ~ 1,
+            K                = K_loco[[chr_c]],
+            chr              = chr_c,
+            use.multi.impute = FALSE,
+            return.allele.effects = FALSE)
+        lod_genome[names(sc_c$LOD)] <- as.numeric(sc_c$LOD)
+    }
+    qtl_idx   <- which.max(lod_genome)
+    qtl_locus <- names(lod_genome)[qtl_idx]
+    qtl_chr   <- unname(scan_chr[qtl_locus])
+    cat('  LOCO peak:', qtl_locus, '| chr', qtl_chr,
+        '| LOD', round(lod_genome[qtl_idx], 3), '\n')
+
+    # rop_scan: LOCO LMM scan restricted to qtl_chr — used by S6/S9/S10/S11.
+    # Storing K=K_loco[[qtl_chr]] in fit0 ensures generate.sample.outcomes.matrix
+    # uses LOCO kinship for permutation/bootstrap null draws.
+    cat('\nBuilding rop_scan (LOCO, chr', qtl_chr, ')...\n')
     rop_scan <- scan.h2lmm(
         genomecache           = genomecache,
         data                  = phenotypes$data,
         pheno.id              = 'SUBJECT.NAME.1',
         geno.id               = 'SUBJECT.NAME.1',
         formula               = sim.y.1 ~ 1,
+        K                     = K_loco[[qtl_chr]],
+        chr                   = qtl_chr,
         use.multi.impute      = FALSE,
         return.allele.effects = TRUE
     )
-    qtl_idx   <- which.max(rop_scan$LOD)
-    qtl_locus <- names(rop_scan$LOD)[qtl_idx]
-    qtl_chr   <- rop_scan$chr[qtl_idx]
-    cat('  peak:', qtl_locus, '| chr', qtl_chr,
-        '| LOD', round(as.numeric(rop_scan$LOD)[qtl_idx], 3), '\n')
+    cat('  rop_scan peak LOD:', round(max(as.numeric(rop_scan$LOD)), 3), '\n')
 
-    reader    <- DiploprobReader$new(genomecache)
-    scan_loci <- names(rop_scan$LOD)
-    scan_chr  <- setNames(rop_scan$chr,    scan_loci)
-    scan_mb   <- setNames(rop_scan$pos$Mb, scan_loci)
-    loci_by_chr <- split(scan_loci, scan_chr)
-
-    save(phenotypes, rop_scan, reader, scan_loci, scan_chr, scan_mb,
+    save(phenotypes, rop_scan, K_loco, reader, scan_loci, scan_chr, scan_mb,
          loci_by_chr, qtl_idx, qtl_locus, qtl_chr,
          file = setup_cache)
     cat('  setup cached to', setup_cache, '\n')
@@ -245,12 +321,12 @@ for (chr_c in names(loci_by_chr)) {
     K_c  <- suppressWarnings(calc.kinship.from.genomecache.with.DOQTL(tmp_cache))
     unlink(tmp_cache, recursive = TRUE)
 
-    L_c    <- L_by_chr[[chr_c]]
-    K_loco <- (L_all * K_all - L_c * K_c) / (L_all - L_c)
-    K_loco <- (K_loco + t(K_loco)) / 2
+    L_c      <- L_by_chr[[chr_c]]
+    K_loco_c <- (L_all * K_all - L_c * K_c) / (L_all - L_c)
+    K_loco_c <- (K_loco_c + t(K_loco_c)) / 2
 
-    km_df        <- as.data.frame(K_loco)
-    km_df$strain <- rownames(K_loco)
+    km_df        <- as.data.frame(K_loco_c)
+    km_df$strain <- rownames(K_loco_c)
     km_df        <- km_df[, c('strain', setdiff(names(km_df), 'strain'))]
     write.csv(km_df,
               file.path(r_data, paste0('kinship_mat_r_chr', chr_c, '.csv')),
@@ -258,11 +334,11 @@ for (chr_c in names(loci_by_chr)) {
 
     kinship_summary[[chr_c]] <- data.frame(
         chr          = chr_c,
-        mean_diag    = mean(diag(K_loco)),
-        mean_offdiag = mean(K_loco[lower.tri(K_loco)]),
+        mean_diag    = mean(diag(K_loco_c)),
+        mean_offdiag = mean(K_loco_c[lower.tri(K_loco_c)]),
         stringsAsFactors = FALSE)
     cat('  chr', chr_c, '  diag mean =',
-        round(mean(diag(K_loco)), 4), '\n')
+        round(mean(diag(K_loco_c)), 4), '\n')
 }
 write.csv(do.call(rbind, kinship_summary),
           file.path(r_data, 'kinship_r.csv'), row.names = FALSE)
@@ -273,47 +349,54 @@ t_s4 <- proc.time()
 # S4 — LMM scan (ROP) for all 10 phenotypes
 # ─────────────────────────────────────────────────────────────────────────────
 if (run_section(4)) {
-cat('\nS4: LMM scan (10 phenotypes)...\n')
+cat('\nS4: LMM scan (10 phenotypes, LOCO per chromosome)...\n')
 lod_rows    <- list()
 effect_rows <- list()
 
 for (sim_i in 1:10) {
     pheno_col <- paste0('sim.y.', sim_i)
-    cat('  sim.y.', sim_i, '... ', sep = '')
-    sc <- scan.h2lmm(
-        genomecache          = genomecache,
-        data                 = phenotypes$data,
-        pheno.id             = 'SUBJECT.NAME.1',
-        geno.id              = 'SUBJECT.NAME.1',
-        formula              = as.formula(paste(pheno_col, '~ 1')),
-        use.multi.impute     = FALSE,
-        return.allele.effects = TRUE
-    )
-    peak_i <- which.max(sc$LOD)
-    cat('peak LOD =', round(as.numeric(sc$LOD)[peak_i], 2),
-        'at', names(sc$LOD)[peak_i], '\n')
-
-    lod_rows[[sim_i]] <- data.frame(
-        sim_idx  = sim_i,
-        locus    = names(sc$LOD),
-        chr      = sc$chr,
-        pos_mb   = sc$pos$Mb,
-        lod      = as.numeric(sc$LOD),
-        stringsAsFactors = FALSE)
-
-    if (!is.null(sc$allele.effects)) {
-        ae <- sc$allele.effects
-        peak_loc <- names(sc$LOD)[peak_i]
-        if (peak_loc %in% colnames(ae)) {
-            eff <- ae[, peak_loc]
-            effect_rows[[sim_i]] <- data.frame(
-                sim_idx  = sim_i,
-                locus    = peak_loc,
-                founder  = names(eff),
-                beta     = as.numeric(eff),
-                stringsAsFactors = FALSE)
+    cat('  sim.y.', sim_i, '...\n', sep = '')
+    sim_lod_rows <- list()
+    # per-chromosome LOCO scan: K=K_loco[[chr]] for each chromosome
+    for (chr_c in names(loci_by_chr)) {
+        sc_c <- scan.h2lmm(
+            genomecache           = genomecache,
+            data                  = phenotypes$data,
+            pheno.id              = 'SUBJECT.NAME.1',
+            geno.id               = 'SUBJECT.NAME.1',
+            formula               = as.formula(paste(pheno_col, '~ 1')),
+            K                     = K_loco[[chr_c]],
+            chr                   = chr_c,
+            use.multi.impute      = FALSE,
+            return.allele.effects = (chr_c == qtl_chr))
+        sim_lod_rows[[chr_c]] <- data.frame(
+            sim_idx  = sim_i,
+            locus    = names(sc_c$LOD),
+            chr      = sc_c$chr,
+            pos_mb   = sc_c$pos$Mb,
+            lod      = as.numeric(sc_c$LOD),
+            stringsAsFactors = FALSE)
+        # allele effects at peak locus (only from qtl_chr scan)
+        if (chr_c == qtl_chr && !is.null(sc_c$allele.effects)) {
+            ae       <- sc_c$allele.effects
+            peak_i_c <- which.max(as.numeric(sc_c$LOD))
+            peak_loc <- names(sc_c$LOD)[peak_i_c]
+            if (peak_loc %in% colnames(ae)) {
+                eff <- ae[, peak_loc]
+                effect_rows[[sim_i]] <- data.frame(
+                    sim_idx = sim_i,
+                    locus   = peak_loc,
+                    founder = names(eff),
+                    beta    = as.numeric(eff),
+                    stringsAsFactors = FALSE)
+            }
         }
     }
+    sim_df  <- do.call(rbind, sim_lod_rows)
+    peak_i  <- which.max(sim_df$lod)
+    cat('    peak LOD =', round(sim_df$lod[peak_i], 2),
+        'at', sim_df$locus[peak_i], '(chr', sim_df$chr[peak_i], ')\n')
+    lod_rows[[sim_i]] <- sim_df
 }
 write.csv(do.call(rbind, lod_rows),
           file.path(r_data, 'lod_r.csv'), row.names = FALSE)
@@ -379,29 +462,18 @@ t_s6 <- proc.time()
 # ─────────────────────────────────────────────────────────────────────────────
 if (run_section(6)) {
 cat('\nS6: permutation thresholds (n=250, chr', qtl_chr, ')...\n')
-w <- rep(1, length(rop_scan$fit0$y))
-names(w) <- names(rop_scan$fit0$y)
-rop_scan$fit0$weights <- w
-
-# PSD guard: generate.sample.outcomes.matrix calls chol(K*tau2) internally.
-# FP noise eigenvalues (~-3e-16) cause chol failures → all-NA scans → -Inf max-LODs.
-s6_psd_ok <- TRUE
-tau2_s6   <- rop_scan$fit0.REML$tau2.mle
-if (!is.null(tau2_s6) && tau2_s6 > 0) {
-    k_path_s6 <- file.path(r_data, paste0('kinship_mat_r_chr', qtl_chr, '.csv'))
-    if (file.exists(k_path_s6)) {
-        K_s6 <- as.matrix(read.csv(k_path_s6, row.names = 1,
-                                   stringsAsFactors = FALSE))
-        K_min_eig_s6 <- min(eigen(K_s6, symmetric = TRUE, only.values = TRUE)$values)
-        rm(K_s6); gc()
-        cat(sprintf('  LOCO kinship chr%s min_eig=%.2e\n', qtl_chr, K_min_eig_s6))
-        if (K_min_eig_s6 < -1e-8) {
-            cat(sprintf('  [skip] near-singular LOCO kinship — S6 skipped\n'))
-            s6_psd_ok <- FALSE
-        }
-    }
-}
+# rop_scan was built with K=K_loco[[qtl_chr]] in setup, so fit0$K is the LOCO
+# kinship matrix.  generate.sample.outcomes.matrix will use it for the
+# kinship-informed rank-permutation (tau2 > 0 → u ~ N(0, K*tau2)).
+# PSD guard: chol(K*tau2) fails if K has negative eigenvalues.
+K_s6         <- K_loco[[qtl_chr]]
+K_eigs_s6    <- eigen(K_s6, symmetric = TRUE, only.values = TRUE)$values
+K_min_eig_s6 <- min(K_eigs_s6)
+K_psd_tol_s6 <- max(abs(K_eigs_s6)) * nrow(K_s6)^2 * .Machine$double.eps
+cat(sprintf('  LOCO kinship chr%s min_eig=%.2e\n', qtl_chr, K_min_eig_s6))
+s6_psd_ok <- K_min_eig_s6 >= -K_psd_tol_s6
 if (!s6_psd_ok) {
+    cat(sprintf('  [skip] near-singular LOCO kinship — S6 skipped\n'))
     cat('  perm_max_lods_r.csv not written (kinship not PSD)\n')
 } else {
 
@@ -421,14 +493,14 @@ perm_scans <- run.threshold.scans(
 
 perm_threshold <- get.gev.thresholds(
     threshold.scans = perm_scans,
-    percentile      = 0.95)
+    use.lod         = TRUE,
+    percentile      = 0.95,
+    type            = 'max')
 
-# export raw max-LODs (same pattern as Phase 1 port_sim_validation.R)
-perm_max_lods_r <- if (is.numeric(perm_scans)) {
-    as.numeric(perm_scans)
-} else {
-    sapply(perm_scans, function(s) max(as.numeric(s$LOD), na.rm = TRUE))
-}
+# run.threshold.scans with chr= returns a list object; $max.statistics$LOD is the
+# per-permutation max-LOD vector.  The is.numeric branch was for the chr-less call
+# (plain numeric vector) but Phase 2 always passes chr=qtl_chr → list path.
+perm_max_lods_r <- as.numeric(perm_scans$max.statistics$LOD)
 perm_max_lods_r <- perm_max_lods_r[is.finite(perm_max_lods_r)]
 write.csv(data.frame(perm_index = seq_along(perm_max_lods_r),
                      max_lod    = perm_max_lods_r),
@@ -449,13 +521,17 @@ t_s7 <- proc.time()
 # S7 — multiple imputation (num.imp=11)
 # ─────────────────────────────────────────────────────────────────────────────
 if (run_section(7)) {
-cat('\nS7: MI scan (num.imp=11)...\n')
+cat('\nS7: MI scan (num.imp=11, chr', qtl_chr, ', LOCO K)...\n')
+# Restrict to qtl_chr with LOCO K — matches Python scan_h2lmm_mi(chrom=peak_chrom).
+# Full genome MI with LOCO would require 20×11 scans; chr-restricted is practical.
 mi_scan <- scan.h2lmm(
     genomecache      = genomecache,
     data             = phenotypes$data,
     pheno.id         = 'SUBJECT.NAME.1',
     geno.id          = 'SUBJECT.NAME.1',
     formula          = sim.y.1 ~ 1,
+    K                = K_loco[[qtl_chr]],
+    chr              = qtl_chr,
     use.multi.impute = TRUE,
     num.imp          = 11)
 write.csv(data.frame(locus  = names(mi_scan$LOD),
@@ -509,13 +585,14 @@ lod_base_c  <- as.numeric(rop_scan$LOD)[chr_mask]
 loci_c      <- names(rop_scan$LOD)[chr_mask]
 pos_mb_c    <- rop_scan$pos$Mb[chr_mask]
 
-# mediated scan: include sim.y.2 as fixed covariate
+# mediated scan: include sim.y.2 as fixed covariate; LOCO K matches Python
 med_scan <- scan.h2lmm(
     genomecache      = genomecache,
     data             = phenotypes$data,
     pheno.id         = 'SUBJECT.NAME.1',
     geno.id          = 'SUBJECT.NAME.1',
     formula          = sim.y.1 ~ sim.y.2,
+    K                = K_loco[[qtl_chr]],
     use.multi.impute = FALSE,
     chr              = qtl_chr)
 lod_med_c <- as.numeric(med_scan$LOD)
@@ -542,12 +619,15 @@ t_s10 <- proc.time()
 # ─────────────────────────────────────────────────────────────────────────────
 if (run_section(10)) {
 cat('\nS10: bootstrap CI (n=250)...\n')
+# LOCO K required so fit1$K is set → alt-model BLUP bootstrap uses kinship structure.
 qtl_fit <- scan.h2lmm(
     genomecache      = genomecache,
     data             = phenotypes$data,
     pheno.id         = 'SUBJECT.NAME.1',
     geno.id          = 'SUBJECT.NAME.1',
     formula          = sim.y.1 ~ 1,
+    K                = K_loco[[qtl_chr]],
+    chr              = qtl_chr,
     use.multi.impute = FALSE,
     just.these.loci  = qtl_locus)
 

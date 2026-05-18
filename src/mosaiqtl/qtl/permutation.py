@@ -40,7 +40,12 @@ __all__ = [
 
 
 class KinshipSingularError(ValueError):
-    """raised when a LOCO kinship matrix is genuinely non-PSD (min eigenvalue < -1e-8)."""
+    """raised when a LOCO kinship matrix is genuinely non-PSD.
+
+    threshold: min_eig < -(max_eig × n² × machine_epsilon) — n² accounts for
+    Cholesky floating-point accumulation (O(n²) ops), not just eigenvalue
+    computation noise (O(n×eps)).  n×eps was too tight and missed failures.
+    """
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -127,11 +132,14 @@ def _draw_kinship_re(
 ) -> np.ndarray:
     """draw u ~ N(0, K·sigma2_g) with PSD guard.
 
-    raises KinshipSingularError when min eigenvalue of K < 1e-8,
-    mirroring the behaviour of R's mnormt::rmnorm (chol fails on near-singular K).
+    raises KinshipSingularError when min eigenvalue of K is more negative than
+    max_eig × n² × machine_epsilon — n² accounts for Cholesky O(n²) floating-point
+    accumulation, not just eigenvalue computation error (n×eps too tight).
     """
-    min_eig = float(np.linalg.eigvalsh(K).min())
-    if min_eig < -1e-8:
+    eigs    = np.linalg.eigvalsh(K)
+    min_eig = float(eigs.min())
+    psd_tol = float(eigs.max()) * len(K) ** 2 * float(np.finfo(float).eps)
+    if min_eig < -psd_tol:
         raise KinshipSingularError(
             f'LOCO kinship not PSD (min_eig={min_eig:.2e}); '
             'skipping chromosome — mirrors R behaviour on singular K'
@@ -166,8 +174,10 @@ def _draw_parametric_batch(
     x_rot = evc.T @ x
     beta, sigma2_g, sigma2_e = _null_fit_params(y_rot, x_rot, ev, h2, use_reml)
 
-    min_eig = float(np.linalg.eigvalsh(K).min())
-    if min_eig < -1e-8:
+    eigs    = np.linalg.eigvalsh(K)
+    min_eig = float(eigs.min())
+    psd_tol = float(eigs.max()) * len(K) ** 2 * float(np.finfo(float).eps)
+    if min_eig < -psd_tol:
         raise KinshipSingularError(
             f'LOCO kinship not PSD (min_eig={min_eig:.2e}); '
             'skipping chromosome — mirrors R behaviour on singular K'

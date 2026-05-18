@@ -4,7 +4,8 @@ validate_sim_p2.py — Phase 2 simulated validation: all 11 miQTL functions
 Python mirror of validation/r_reference/port_sim_validation_p2.R.
 Self-contained: builds its own GenomeCache from phase2_sim/r_data/probs/
 (Phase 2 R script runs sim.CC.data() independently; cannot reuse Phase 1 cache).
-Uses real LOCO kinship throughout — no OLS shortcut.
+Uses real LOCO kinship throughout — R passes K=K_loco[[chr]] explicitly (scan.h2lmm
+without K= is OLS, not LOCO); Python uses kinship_decomp from calc_kinship(method='loco').
 
 Sections:
   S1  cache structure          loci/founders/samples match R
@@ -1119,27 +1120,28 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                         kinship_decomp=kinship_decomp,
                         use_rint=False, phenotype_id='sim.y.1')
 
-                # reconstruct raw LOCO kinship matrices from decomp for parametric mode
-                kinship_loco = {
+                # parametric permutation — matches miQTL generate.sample.outcomes.matrix
+                # method='permutation' which draws u~N(0,K*tau2) then rank-permutes y.
+                # Both R and Python use LOCO kinship → thresholds should agree.
+                kinship_loco_s6 = {
                     c: (kinship_decomp[c]['vectors']
                         * kinship_decomp[c]['values'][None, :]
                         @ kinship_decomp[c]['vectors'].T)
                     for c in [peak_chrom]
                 }
-
                 null_y   = generate_null_outcomes(sim_ys[1], n_samples=250,
                                                   method='permutation', seed=1)
                 max_lods = run_threshold_scans(
                     null_y, cache,
                     phenotype=sim_ys[1],
                     kinship_decomp=kinship_decomp,
-                    kinship_loco=kinship_loco,
+                    kinship_loco=kinship_loco_s6,
                     fix_h2=True, use_rint=False,
                     chrom=peak_chrom,
                     permutation_method='parametric',
                     seed=1,
                 )
-                del kinship_loco
+                del kinship_loco_s6
                 gc.collect()
 
                 threshold, gev_params = get_gev_thresholds(max_lods, percentile=0.95)
@@ -1175,8 +1177,13 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     'gev_emp_delta':       gev_emp_delta,
                 }]).to_csv(cmp_dir / 's6_threshold.csv', index=False)
 
-                results['P2-S6'] = _check(
-                    'GEV fit delta (GEV vs empirical)', gev_emp_delta, 0.5, '<')
+                if r_thresh is not None:
+                    log.info('  Python vs R threshold delta = %.4f', thr_delta)
+                    results['P2-S6'] = _check(
+                        'GEV threshold delta (Python vs R)', thr_delta, 0.5, '<')
+                else:
+                    results['P2-S6'] = _check(
+                        'GEV fit delta (GEV vs empirical)', gev_emp_delta, 0.5, '<')
 
                 x_lo  = max_lods.min() - 0.3
                 x_hi  = max_lods.max() + 0.3
@@ -1381,9 +1388,26 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS10: bootstrap positional CI (n=100, chr%s)...', peak_chrom)
             ci_r_path = r_data / 'ci_summary_r.csv'
-            if ci_r_path.exists() and 1 in sim_ys and peak_chrom:
-                boot_y = generate_null_outcomes(sim_ys[1], n_samples=100,
-                                                method='bootstrap', seed=1)
+            if ci_r_path.exists() and 1 in sim_ys and peak_chrom and rop_scan_1 is not None:
+                # alt model residual bootstrap: preserve the haplotype QTL component at the
+                # peak locus so every bootstrap sample retains the QTL signal.
+                # Plain resampling (method='bootstrap') destroys signal → CI spans whole chr.
+                chrom_mask_s10 = rop_scan_1.chromosomes == peak_chrom
+                lod_c_s10      = rop_scan_1.lod[chrom_mask_s10]
+                pk_idx_s10     = int(np.argmax(lod_c_s10))
+                _lids_s10, _pos_s10, probs_c_s10 = cache.get_chromosome(peak_chrom)
+                H_peak_s10    = probs_c_s10[pk_idx_s10, :, :]                           # (n, J)
+                alpha_s10     = rop_scan_1.betas[chrom_mask_s10][pk_idx_s10, :]          # (J,)
+                y_qtl_s10     = H_peak_s10 @ alpha_s10                                   # (n,)
+                y_resid_s10   = sim_ys[1] - y_qtl_s10
+                del probs_c_s10
+                gc.collect()
+                rng_s10 = np.random.default_rng(1)
+                boot_y = np.column_stack([
+                    y_qtl_s10 + rng_s10.choice(y_resid_s10,
+                                                size=len(y_resid_s10), replace=True)
+                    for _ in range(100)
+                ])
                 boot_positions, ci = run_positional_scans(
                     boot_y, cache,
                     phenotype=sim_ys[1],
@@ -1543,8 +1567,13 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     if 'p_value' in instab_py.columns:
                         planted_freq = float(1.0 - instab_py['p_value'].iloc[planted_idx])
                     else:
-                        # fallback: rank LOD — planted locus should be near top
-                        rank = int(np.sum(instab_scan.lod > instab_scan.lod[planted_idx]))
+                        # fallback: rank LOD — planted locus should be near top.
+                        # instab_py is sorted by position_mb; planted_idx is in that sorted
+                        # order, so use instab_py['lod'] (not instab_scan.lod which is
+                        # in cache order) to avoid an index mismatch.
+                        planted_lod = float(
+                            instab_py.loc[instab_py['locus'] == planted_locus, 'lod'].iloc[0])
+                        rank = int(np.sum(instab_py['lod'] > planted_lod))
                         planted_freq = 1.0 - rank / max(len(py_loci), 1)
                     log.info('  planted locus %s peak_freq = %.3f',
                              planted_locus, planted_freq)

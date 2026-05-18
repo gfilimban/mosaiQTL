@@ -666,44 +666,47 @@ if (run(5)) {
       n_obs <- sum(!is.na(pheno_df[[cand_gene]]))
       if (n_obs < 20L) next   # too few observations for a stable null fit
 
-      f_ch  <- as.formula(paste(cand_gene, '~ dataset'))
-      rop_ch <- scan.h2lmm(
+      # Permutation at strain level (pheno.id == geno.id = 'genotype').
+      # generate.sample.outcomes.matrix + run.threshold.scans fail for replicated
+      # data: scan.h2lmm stores the expanded n×n K (Z K Z^T) in fit0$K; both
+      # generate.sample.outcomes.matrix (via reduce.large.K) and
+      # generate.simple.permutation.index.matrix (which stores fit0$K) then pass
+      # the n×n K back to scan.h2lmm, causing chol() failures or dimension mismatches.
+      # At strain level K is m×m throughout — kinship-aware, no expansion, no crash.
+      K_ch <- kinship_loco[[ch]]
+      # PSD guard: K_ch is m×m (not expanded) — check is accurate.
+      K_eigs    <- eigen(K_ch, symmetric = TRUE, only.values = TRUE)$values
+      K_min_eig <- min(K_eigs)
+      K_psd_tol <- max(abs(K_eigs)) * nrow(K_ch)^2 * .Machine$double.eps
+      if (K_min_eig < -K_psd_tol) {
+        cat(sprintf('  chr%s  gene=%s  [skip] near-singular LOCO kinship (min_eig=%.2e)\n',
+                    ch, cand_gene, K_min_eig))
+        next
+      }
+
+      rop_ch_strain <- scan.h2lmm(
         genomecache           = genomecache,
-        data                  = pheno_df,
-        pheno.id              = 'sample_id',
+        data                  = strain_means,
+        pheno.id              = 'genotype',
         geno.id               = 'genotype',
-        formula               = f_ch,
-        K                     = kinship_loco[[ch]],
+        formula               = as.formula(paste(cand_gene, '~ 1')),
+        K                     = K_ch,
         use.multi.impute      = FALSE,
         return.allele.effects = FALSE,
         chr                   = ch
       )
-      w <- rep(1, length(rop_ch$fit0$y)); names(w) <- names(rop_ch$fit0$y)
-      rop_ch$fit0$weights <- w
+      w_s <- rep(1, length(rop_ch_strain$fit0$y))
+      names(w_s) <- names(rop_ch_strain$fit0$y)
+      rop_ch_strain$fit0$weights <- w_s
 
-      # pre-check: generate.sample.outcomes.matrix calls
-      #   mnormt::rmnorm(..., varcov = K*tau2)  [sampling.processes.R line 116]
-      # which calls chol(K*tau2) internally. K is the LOCO kinship reduced to
-      # unique genotypes present in the scan. if any eigenvalue of K is near-zero
-      # (low founder diversity on this chr) chol fails. only reached when tau2 > 0.
-      tau2_est <- rop_ch$fit0.REML$tau2.mle
-      if (!is.null(tau2_est) && tau2_est > 0) {
-        K_min_eig <- min(eigen(kinship_loco[[ch]], symmetric = TRUE,
-                               only.values = TRUE)$values)
-        if (K_min_eig < -1e-8) {
-          cat(sprintf('  chr%s  gene=%s  [skip] near-singular LOCO kinship (min_eig=%.2e)\n',
-                      ch, cand_gene, K_min_eig))
-          next
-        }
-      }
-
-      perm_out   <- generate.sample.outcomes.matrix(
-        scan.object = rop_ch, model.type = 'null',
-        method = 'permutation', num.samples = 1000, seed = 1
+      perm_idx   <- generate.simple.permutation.index.matrix(
+        scan.object = rop_ch_strain, num.samples = 1000, seed = 1
       )
-      perm_scans <- run.threshold.scans(
-        sim.threshold.object = perm_out, keep.full.scans = FALSE,
-        genomecache = genomecache, data = pheno_df, chr = ch
+      perm_scans <- run.simple.permutation.threshold.scans(
+        sim.threshold.object = perm_idx, keep.full.scans = FALSE,
+        genomecache = genomecache,
+        formula     = as.formula(paste(cand_gene, '~ 1')),
+        data        = strain_means, chr = ch
       )
       thr_gene <- cand_gene
       break
@@ -915,19 +918,32 @@ if (run(10)) {
     gene <- sig_genes_df$gene[i]
     ch   <- as.character(sig_genes_df$chr[i])
     cat(sprintf('  [%d/%d] %s  chr%s\n', i, nrow(sig_genes_df), gene, ch))
-    f_g <- as.formula(paste(gene, '~ dataset'))
+    # Bootstrap CI at strain level (pheno.id == geno.id = 'genotype').
+    # generate.sample.outcomes.matrix with pheno.id != geno.id stores the expanded
+    # n×n K in fit0$K; reduce.large.K then returns n×n (duplicate-name bug) and
+    # chol() fails on the rank-deficient matrix. Strain-level scan keeps K at m×m.
+    K_g         <- kinship_loco[[ch]]
+    K_eigs_g    <- eigen(K_g, symmetric = TRUE, only.values = TRUE)$values
+    K_min_eig_g <- min(K_eigs_g)
+    K_psd_tol_g <- max(abs(K_eigs_g)) * nrow(K_g)^2 * .Machine$double.eps
+    if (K_min_eig_g < -K_psd_tol_g) {
+      cat(sprintf('    [skip] near-singular LOCO kinship (min_eig=%.2e) — CI skipped\n',
+                  K_min_eig_g))
+      next
+    }
 
+    f_strain <- as.formula(paste(gene, '~ 1'))
     rop_g <- scan.h2lmm(
-      genomecache = genomecache, data = pheno_df,
-      pheno.id = 'sample_id', geno.id = 'genotype',
-      formula = f_g, K = kinship_loco[[ch]],
+      genomecache = genomecache, data = strain_means,
+      pheno.id = 'genotype', geno.id = 'genotype',
+      formula = f_strain, K = K_g,
       use.multi.impute = FALSE, return.allele.effects = FALSE, chr = ch
     )
     peak_locus_g <- grab.locus.from.scan(rop_g)
     rop_g_alt <- scan.h2lmm(
-      genomecache = genomecache, data = pheno_df,
-      pheno.id = 'sample_id', geno.id = 'genotype',
-      formula = f_g, K = kinship_loco[[ch]],
+      genomecache = genomecache, data = strain_means,
+      pheno.id = 'genotype', geno.id = 'genotype',
+      formula = f_strain, K = K_g,
       use.multi.impute = FALSE, return.allele.effects = FALSE,
       chr = ch, just.these.loci = peak_locus_g
     )
@@ -939,7 +955,7 @@ if (run(10)) {
       method = 'bootstrap', num.samples = 200, seed = 1
     )
     ci_result <- run.positional.scans(
-      sim.object = boot_out, genomecache = genomecache, data = pheno_df
+      sim.object = boot_out, genomecache = genomecache, data = strain_means
     )
     peak_mb_g <- rop_g$pos[['Mb']][which.max(rop_g$LOD)]
     ci_mb_g   <- ci_result$peak.loci.pos$Mb

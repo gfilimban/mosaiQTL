@@ -89,7 +89,7 @@ Requires sim_cc48 fixture with planted eQTL signal. Run: `python -m mosaiqtl.uti
 | BIO-A2 | Type I error at permutation threshold | FPR | <= 0.05 | — | sim_cc48_null |
 | BIO-A3 | Founder effect accuracy | r vs true effects | >= 0.90 | — | sim_cc48_n200qtl |
 | BIO-A4 | LOD concordance vs R/qtl2 | r² | >= 0.999 | — | chr8_50genes_subset |
-| BIO-A5 | FDR control at q < 0.05 | observed FDR | <= 0.05 | — | sim_cc48_n200qtl |
+| BIO-A5 | FDR control at q < 0.05 using Storey q-value (SWE-09) — BH-FDR placeholder must be replaced before this gate is meaningful | observed FDR | <= 0.05 | — | sim_cc48_n200qtl |
 
 ---
 
@@ -141,6 +141,7 @@ and Taschuk & Wilson 2017 (10.1371/journal.pcbi.1005412).
 | SWE-06 | src/ layout migration complete | done | 🟢 | manual |
 | SWE-07 | CI pipeline active on main | green | 🟢 | .github/workflows/ci.yml — lint+test+security+mypy(warn) |
 | SWE-08 | io/base.py BioFileParser ABC: shared read/validate/stream contract for all format parsers | implement when second I/O format parser is added (post-Phase-2); premature before ≥2 concrete parsers exist | 🔴 |
+| SWE-09 | Replace BH-FDR placeholder in pipeline.py with Storey q-value (Storey 2002, 10.1111/1467-9868.00346). BH assumes π₀=1 (all genes null); Storey estimates π₀ from the p-value distribution shape and calibrates FDR against the true null proportion — recovering power lost by BH when real signal is present. This directly determines which genes are called eGenes. The BH line in pipeline.py with `# Storey q-value planned` is a placeholder that has been present since initial scaffolding and should not reach production. Validation: BIO-A5 (observed FDR ≤ 0.05 on sim_cc48_n200qtl) must use Storey q-value, not BH | `pipeline.py` | Phase 2 passes | 🔴 |
 
 ---
 
@@ -158,10 +159,27 @@ and Taschuk & Wilson 2017 (10.1371/journal.pcbi.1005412).
 | MPP-01 | founders.py structural refactor: migrate FOUNDER_ORDER, FOUNDER_COLORS, F1_COLORS, STRAIN_ORDER from top-level constants to CCPopulation fields; viz/effects.py, viz/haplotypes.py, and viz/genome.py pull founder order and colors from `cache.population` instead of direct imports from founders.py | Phase 2 validation passes | 🔴 |
 | MPP-02 | GenomeCache carries a `population: Population` field populated on load; scan functions pass `cache.population` downstream instead of accepting separate `founders` args | MPP-01 | 🔴 |
 | MPP-03 | Add MAGIC-19 example Population instance (19 founders, Arabidopsis MAGIC or wheat MAGIC as reference) | MPP-01 | 🔴 |
+| MPP-04 | Add `Population.cross_type: str` field (`'cc'`, `'do'`, `'magic19'`, `'f2'`, etc.) enabling factory-style dispatch (mirrors qtl2 `crosstype` → `QTLCross` factory). Required for `geno2allele_matrix` virtual dispatch in PORT-06 and for HMM `init()`/`step()` parameterisation across designs | MPP-01 | 🔴 |
+| MPP-05 | Store `founder_geno` per chromosome in GenomeCache (founders × markers integer matrix, same format as qtl2 `cross2$founder_geno`). Required for SNP scan correctness (PORT-04/05) and for `geno2allele_matrix` computation in PORT-06. Currently absent — SNP scan silently missing founder allele context | MPP-02 | 🔴 |
+| MPP-06 | Add `cross_info: np.ndarray \| None` to GenomeCache — per-individual integer metadata encoding generation number (DO), cross direction (F2), or Y-chromosome / mitochondrial haplotype origin (CC). In CC, chrY and mtDNA are maternally and paternally inherited intact (no recombination), so `cross_info` encodes which founder contributed the intact Y and mt haplotype per strain; this unlocks correct sex-chr and organelle QTL scanning without conflating autosomal founder-averaging with non-recombining segments | MPP-02 | 🔴 |
 
 ---
 
-## DESIGN GOALS (pachterlab-inspired)
+## QTL2-DERIVED SCAN API IMPROVEMENTS (post-Phase-2)
+Patterns present in R/qtl2 and absent from mosaiQTL. Scan entry points already match qtl2 (full LOCO dict accepted; kinship_decomp dispatched per-chr internally). Items below are genuinely absent.
+
+| ID | Description | Location | Prerequisite | Status |
+|---|---|---|---|---|
+| QTL2-01 | `find_peaks(scan_result, map, threshold, drop=1.5, prob=0.95)` — unified peak-finding returning a DataFrame (chr, pos_mb, lod, ci_lo_mb, ci_hi_mb). Currently absent; peak-finding is done ad-hoc in pipeline.py and validation scripts. Should support both LOD-drop (via `lod_drop_ci`) and Bayes CI (QTL2-02) as the interval method | `qtl/scan.py` | — | 🔴 |
+| QTL2-02 | `bayes_int(scan_result, map, prob=0.95)` — Bayesian credible interval derived by treating the LOD curve as proportional to a log-posterior (flat prior) and finding the shortest interval containing `prob` mass. Complements `lod_drop_ci` (LOD-support threshold); the two methods make different assumptions about profile shape and are reported together in fine-mapping | `qtl/scan.py` | — | 🔴 |
+| QTL2-03 | Stratified permutation + X-chr split thresholds: (a) `perm_strata: np.ndarray \| None` on `run_threshold_scans` permutes within strata to preserve sex structure; (b) `get_x_covar(population)` returns a sex × genotype interaction matrix for the X-chr null model, matching qtl2's `get_x_covar(cross)`; (c) `perm_Xsp=True` produces separate autosome and X permutation thresholds. Validation: compare X-chr thresholds against qtl2 `scan1perm(perm_Xsp=TRUE)` on sparcc_cache | `qtl/permutation.py` + `utils.py` | MPP-06 | 🔴 |
+| QTL2-04 | `clean_probs(value_tol=1e-6, col_tol=0.01)` on `GenomeCache` — zero probabilities below `value_tol`, zero entire founder columns where max across all individuals is below `col_tol`, then renormalize. Mirrors qtl2 `clean_genoprob`. Prevents silent rank-deficiency at loci where a founder haplotype is locally absent. Validation: unit test with synthetic probe matrix with one near-zero founder column; verify scan_chromosome does not degenerate (check betas shape and LOD is finite) | `genotype/genomecache.py` | — | 🔴 |
+| QTL2-05 | Expose `hsq: np.ndarray \| None` on `ScanResult` — the per-chromosome array of LOCO null h² already computed during scan but currently discarded. Add as an optional field (None when kinship not used). Validation: compare per-chromosome h² against Phase 2 R `scan.h2lmm` internal h² estimates exported from port_sim_validation_p2.R | `models/records.py` + `qtl/scan.py` | Phase 2 passes | 🔴 |
+| QTL2-06 | `scan_gxe(phenotype, genomecache, intcovar, ...)` — returns additive LOD and interaction LOD columns (LOD_interaction = LOD_full − LOD_additive), matching qtl2 `scan1(intcovar=...)` semantics. Distinct from pairwise GxG (epistasis.py): intcovar is a fixed covariate (sex, treatment), not a second genotype locus. ⚠️ NEEDS VALIDATION PATH: miQTL has no GxE equivalent so no R reference exists; requires either qtl2 `scan1(intcovar=sex)` comparison on sparcc_cache or a planted GxE simulation — neither is in the current pipeline. Do not implement until validation path is defined | `qtl/gxe.py` | validation path required | 🔴 |
+
+---
+
+## DESIGN GOALS
 From: Melsted et al. 2021 (10.1038/s41587-021-00870-2), Bray et al. 2016 (10.1038/nbt.3519).
 Reproducibility standard: Peng RD (2011) Reproducible research in computational science. Science. 10.1126/science.1213847
 | ID | Description | Verification |
@@ -175,6 +193,7 @@ Reproducibility standard: Peng RD (2011) Reproducible research in computational 
 | DESIGN-05 | Derivation → pseudocode → implementation order enforced in PRs | PR template checklist item |
 | DESIGN-06 | ProvenanceRecord (git hash + seed + params) on every scan output | test_provenance_header in io tests |
 | DESIGN-07 | All results deterministic given same seed | pytest -p no:randomly; fixed seed in all scans |
+| DESIGN-10 | Convert all CLAUDE.md files to user-facing documentation: each module's CLAUDE.md (root, src/mosaiqtl/, genotype/, qtl/, io/, viz/) maps to a vignette or user guide section covering API, design decisions, and worked examples. CLAUDE.md files are Claude Code context only and invisible to users — a scientist evaluating mosaiQTL has nothing to read without this. Target: docs/vignettes/ with at minimum one end-to-end CC eQTL workflow vignette equivalent to miQTL's README example and qtl2's user guide | docs/vignettes/ | Phase 3 passes | 🔴 |
 
 ---
 
@@ -226,7 +245,7 @@ Speed and memory comparison is the meaningful metric for those tools.
 | ATAC-seq caQTL | qtl/atac.py | MED | 🔴 |
 | sQTL | qtl/sqtl.py | MED | 🔴 |
 | RNA-mod QTL (m6A) | qtl/rnamod.py | MED | 🔴 |
-| Sex GxE | qtl/gxe.py | MED | 🔴 |
+| Sex GxE / intcovar scan | qtl/gxe.py | MED | 🔴 — see QTL2-06 (validation path required) |
 | Trans-eQTL | qtl/trans_scan.py | MED | 🔴 |
 | ASE | qtl/ase.py | LOW | 🟡 scaffold |
 
@@ -272,7 +291,7 @@ Functions in the miQTL R codebase not yet ported to Python. Assessed against
 |---|---|---|---|
 | PORT-04 | `snp.null.par.bs.threshold.scan()` `snp.par.perm.threshold.scan()` `snp.perm.threshold.scan()` | `qtl/snp_scan.py` or `qtl/permutation.py` | SNP scan needs own thresholds; haplotype thresholds are anti-conservative for SNP scan |
 | PORT-05 | `pairwise.cor.snp.scan()` `extract.r2.interval()` | `qtl/snp_scan.py` | LD/r² between imputed SNPs; needed for credible-set fine-mapping |
-| PORT-06 | `straineff.mapping.matrix()` | `utils.py::straineff_mapping_matrix` | T×M diplotype→allele mapping used by MI and SNP scan; must verify Python uses correct formula |
+| PORT-06 | `straineff.mapping.matrix()` | `utils.py::straineff_mapping_matrix` | T×M diplotype→allele mapping used by MI and SNP scan; qtl2 equivalent is `geno2allele_matrix()` virtual — CC inbreds use outer-product, DO heterozygotes differ; method should live on Population (MPP-04) for cross-type dispatch |
 | PORT-07 | `lmmbygls.replicates()` | `qtl/lmm.py` | replicate-aware LMM wrapper → LMM-EXT-01 path |
 
 ### Not porting (low value or superseded)
