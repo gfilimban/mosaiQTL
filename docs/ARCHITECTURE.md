@@ -84,7 +84,7 @@ src/mosaiqtl/
 │   ├── CLAUDE.md
 │   ├── nb.py               # NB-GLMM Stage 1 and 2 (primary model, transcriptomics)
 │   ├── lmm.py              # Gaussian LMM engine (qtl2/miqtl-port)
-│   ├── scan.py             # Z-matrix n=418, MI, fixef, instability
+│   ├── scan.py             # Z-matrix n=418, MI, fixef, instability; scan_window='cis'|'genome'|'local'
 │   ├── permutation.py      # fix_h2=True, GEV thresholds
 │   ├── effects.py          # founder haplotype effect estimation
 │   ├── mediation.py        # QR-based mediation
@@ -787,6 +787,7 @@ colors — never redefine a hex string anywhere else.
 | Storey q-value not yet implemented (BH-FDR anti-conservative) | pipeline.py | HIGH |
 | No baseline benchmarks measured yet | benchmarks/ | MED |
 | `fix_h2=False` slow path in `run_threshold_scans` not reachable from any current caller — reference implementation only | permutation.py | LOW |
+| gastroc benchmark S4–S11 not yet run — pending HPC run; rsync r_data/ then run validate_gastroc.py --compare | gastroc_data/ | MED |
 
 ---
 *Last updated: see git log. Canonical source: github.com/gfilimban/mosaiqtl/docs/ARCHITECTURE.md*
