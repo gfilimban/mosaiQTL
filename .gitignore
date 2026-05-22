@@ -27,26 +27,23 @@ Thumbs.db
 # validation outputs — regenerated at runtime; .gitkeep preserves dirs
 validation/phase2/r_data/*
 validation/phase2/py_data/*
+validation/phase2/compare/*
 validation/phase2/plots/*
+validation/phase2/r_plots/*
+validation/phase2/allele_dir/
+validation/phase3/r_data/*
 validation/phase3/py_data/*
 validation/phase3/plots/*
 !validation/phase2/r_data/.gitkeep
 !validation/phase2/py_data/.gitkeep
 !validation/phase2/plots/.gitkeep
+!validation/phase3/r_data/.gitkeep
 !validation/phase3/py_data/.gitkeep
 !validation/phase3/plots/.gitkeep
 validation/phase2/logs/*
 validation/phase3/logs/*
 !validation/phase2/logs/.gitkeep
 !validation/phase3/logs/.gitkeep
-
-# phase2_sim — simulated Phase 2 outputs (independent of gastroc phase2/)
-validation/phase2_sim/r_data/*
-validation/phase2_sim/py_data/*
-validation/phase2_sim/compare/*
-validation/phase2_sim/plots/*
-validation/phase2_sim/r_plots/*
-validation/phase2_sim/allele_dir/
 
 # HPC-only SLURM scripts — generated on HPC, never committed
 validation/run_validation_slurm.sh
@@ -70,12 +67,6 @@ validation/phase1/r_data/probs/
 # slurm logs
 slurm-*.out
 
-# validation logs (keep dirs, ignore contents)
-validation/phase2/logs/*.log
-validation/phase3/logs/*.log
-!validation/phase2/logs/.gitkeep
-!validation/phase3/logs/.gitkeep
-
 # checkpoint files (safe-point markers)
 validation/phase2/py_data/*.done
 validation/phase3/py_data/*.done
@@ -94,6 +85,9 @@ validation/gastroc_data/gastroc_pheno.rds
 validation/gastroc_data/metadata.csv
 validation/gastroc_data/*.csv
 validation/gastroc_data/plots/
+validation/gastroc_data/r_data/
+validation/gastroc_data/py_data/
+validation/gastroc_data/compare/
 validation/gastroc_data/chr*/
 validation/gastroc_data/genomecache_collapsed/
 

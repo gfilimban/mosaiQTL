@@ -17,7 +17,7 @@ ground truth from here.
 Validation is structured in three phases:
   Phase 1 — minimal miQTL workflow (port_sim_validation.R mirror)
   Phase 2 — full miQTL function port + replicate-awareness (minimal structure like Phase 1)
-  Phase 3 — NB vs LMM comparison (nb.py correctness vs lmm.py validated port)
+  Phase 4 — NB vs LMM comparison (nb.py correctness vs lmm.py validated port)
 
 ---
 
@@ -45,17 +45,17 @@ Uses real LOCO kinship (Phase 1 used identity/OLS shortcut).
 
 | ID | Section | Threshold | Current | Status |
 |---|---|---|---|---|
-| P2-S1 | Cache structure | loci delta=0, founders match, samples match | - | 🔴 not yet run |
-| P2-S2 | Haplotype argmax concordance | ≥ 0.95 | - | 🔴 not yet run |
-| P2-S3 | LOCO kinship r (worst chr) | > 0.999 | - | 🔴 not yet run |
-| P2-S4 | LMM scan pass rate (10 sims) | ≥ 50% at r² ≥ 0.990 | - | 🔴 not yet run |
-| P2-S5 | Cache collapse | ≥5% removed AND lod_r² ≥ 0.999 | - | 🔴 not yet run |
-| P2-S6 | GEV threshold delta | < 0.5 LOD | - | 🔴 not yet run |
-| P2-S7 | MI scan LOD r | ≥ 0.75 | - | 🔴 not yet run |
+| P2-S1 | Cache structure | loci delta=0, founders match, samples match | loci delta=0 | 🟢 |
+| P2-S2 | Haplotype argmax concordance | ≥ 0.95 | ≥ 0.95 | 🟢 |
+| P2-S3 | LOCO kinship r (worst chr) | > 0.999 | 0.9992 (chrX) | 🟢 |
+| P2-S4 | LMM scan pass rate (10 sims) | ≥ 50% at r² ≥ 0.975 | 8/10 | 🟢 |
+| P2-S5 | Cache collapse | ≥5% removed AND lod_r² ≥ 0.999 | - | ⚠️ N/A — sparcc_cache is pre-collapsed; gate requires an uncollapsed cache |
+| P2-S6 | GEV threshold delta | < 0.5 LOD | 0.203 | 🟢 |
+| P2-S7 | MI scan LOD r | ≥ 0.75 | PASS | 🟢 |
 | P2-S8 | SNP scan | gated: allele_dir required | ⚠️ GATED | ⚠️ gated |
-| P2-S9 | Mediation LOD r | ≥ 0.90 | - | 🔴 not yet run |
-| P2-S10 | Bootstrap CI contains planted locus | True | - | 🔴 not yet run |
-| P2-S11 | Instability LOD r | ≥ 0.90 | - | 🔴 not yet run |
+| P2-S9 | Mediation LOD r | ≥ 0.90 | PASS | 🟢 |
+| P2-S10 | Bootstrap CI contains planted locus | True | True (187.46–188.20 Mb ∋ 188.03) | 🟢 |
+| P2-S11 | Instability peak_freq | ≥ 0.70 | PASS | 🟢 |
 
 ```bash
 Rscript validation/r_reference/port_sim_validation_p2.R
@@ -66,7 +66,7 @@ python validation/validate_sim_p2.py --force             # force rerun
 
 ---
 
-## VALIDATION — Phase 3 (NB vs LMM, biological consistency)
+## VALIDATION — Phase 4 (NB vs LMM, biological consistency)
 | ID | Gate | Threshold | Current | Status |
 |---|---|---|---|---|
 | BIO-P1 | Piezo1 chr8 LOD | > 3 | - | 🔴 |
@@ -176,6 +176,7 @@ Patterns present in R/qtl2 and absent from mosaiQTL. Scan entry points already m
 | QTL2-04 | `clean_probs(value_tol=1e-6, col_tol=0.01)` on `GenomeCache` — zero probabilities below `value_tol`, zero entire founder columns where max across all individuals is below `col_tol`, then renormalize. Mirrors qtl2 `clean_genoprob`. Prevents silent rank-deficiency at loci where a founder haplotype is locally absent. Validation: unit test with synthetic probe matrix with one near-zero founder column; verify scan_chromosome does not degenerate (check betas shape and LOD is finite) | `genotype/genomecache.py` | — | 🔴 |
 | QTL2-05 | Expose `hsq: np.ndarray \| None` on `ScanResult` — the per-chromosome array of LOCO null h² already computed during scan but currently discarded. Add as an optional field (None when kinship not used). Validation: compare per-chromosome h² against Phase 2 R `scan.h2lmm` internal h² estimates exported from port_sim_validation_p2.R | `models/records.py` + `qtl/scan.py` | Phase 2 passes | 🔴 |
 | QTL2-06 | `scan_gxe(phenotype, genomecache, intcovar, ...)` — returns additive LOD and interaction LOD columns (LOD_interaction = LOD_full − LOD_additive), matching qtl2 `scan1(intcovar=...)` semantics. Distinct from pairwise GxG (epistasis.py): intcovar is a fixed covariate (sex, treatment), not a second genotype locus. ⚠️ NEEDS VALIDATION PATH: miQTL has no GxE equivalent so no R reference exists; requires either qtl2 `scan1(intcovar=sex)` comparison on sparcc_cache or a planted GxE simulation — neither is in the current pipeline. Do not implement until validation path is defined | `qtl/gxe.py` | validation path required | 🔴 |
+| QTL2-07 | `run_threshold_scans(fix_h2=False)` — statistically rigorous permutation threshold that re-estimates h² from each permuted phenotype rather than fixing it from the real phenotype. `fix_h2=False` re-estimates h² per permutation (one REML/ML solve per permutation per chromosome). The slow path in permutation.py already implements the loop; what is missing is: (a) vectorised `scan_chromosome_batch` support when h² differs per permutation (requires passing an h²-per-column array rather than a scalar), and (b) a validation comparing thresholds against the `fix_h2=True` fast path across a range of effect sizes | `qtl/permutation.py` | Phase 2 passes | 🔴 |
 
 ---
 
@@ -193,7 +194,7 @@ Reproducibility standard: Peng RD (2011) Reproducible research in computational 
 | DESIGN-05 | Derivation → pseudocode → implementation order enforced in PRs | PR template checklist item |
 | DESIGN-06 | ProvenanceRecord (git hash + seed + params) on every scan output | test_provenance_header in io tests |
 | DESIGN-07 | All results deterministic given same seed | pytest -p no:randomly; fixed seed in all scans |
-| DESIGN-10 | Convert all CLAUDE.md files to user-facing documentation: each module's CLAUDE.md (root, src/mosaiqtl/, genotype/, qtl/, io/, viz/) maps to a vignette or user guide section covering API, design decisions, and worked examples. CLAUDE.md files are Claude Code context only and invisible to users — a scientist evaluating mosaiQTL has nothing to read without this. Target: docs/vignettes/ with at minimum one end-to-end CC eQTL workflow vignette equivalent to miQTL's README example and qtl2's user guide | docs/vignettes/ | Phase 3 passes | 🔴 |
+| DESIGN-10 | Convert all CLAUDE.md files to user-facing documentation: each module's CLAUDE.md (root, src/mosaiqtl/, genotype/, qtl/, io/, viz/) maps to a vignette or user guide section covering API, design decisions, and worked examples. CLAUDE.md files are Claude Code context only and invisible to users — a scientist evaluating mosaiQTL has nothing to read without this. Target: docs/vignettes/ with at minimum one end-to-end CC eQTL workflow vignette equivalent to miQTL's README example and qtl2's user guide | docs/vignettes/ | Phase 4 passes | 🔴 |
 
 ---
 

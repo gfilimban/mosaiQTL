@@ -2,7 +2,7 @@
 sim_sc — sparc phenotype → single-cell NB count simulation
 
 converts sparc strain-level continuous phenotypes into NB count data
-suitable for Phase 3 NB-GLMM validation.  high-phenotype strains get
+suitable for Phase 4 NB-GLMM validation.  high-phenotype strains get
 higher NB mean, preserving the planted QTL signal.
 
 usage (CLI):

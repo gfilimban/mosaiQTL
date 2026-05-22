@@ -4,13 +4,14 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
 
 from mosaiqtl.qtl.scan import (
     ScanResult, scan_h2lmm, scan_multi_gene,
-    grab_locus_from_scan, lod_drop_ci,
+    grab_locus_from_scan, lod_drop_ci, find_peaks,
     fixef_eqtl_scan, instability_lm_scan,
 )
 
@@ -325,3 +326,123 @@ class TestInstabilityLmScan:
             n_samples=3, seed=1,
         )
         assert ((sr.p_value >= 0) & (sr.p_value <= 1 + 1e-8)).all()
+
+
+# ── find_peaks ────────────────────────────────────────────────────────────────
+
+def _make_scan_with_peak(peak_chr='1', peak_pos=50.0, peak_lod=8.0,
+                          n_loci_per_chr=20, n_chr=2):
+    """Build a ScanResult with one clear planted peak."""
+    rng = np.random.default_rng(7)
+    n = n_loci_per_chr * n_chr
+    chrs = np.array([str(c + 1) for c in range(n_chr)
+                     for _ in range(n_loci_per_chr)])
+    pos  = np.concatenate([np.linspace(1.0, 100.0, n_loci_per_chr)
+                            for _ in range(n_chr)])
+    lod  = rng.uniform(0, 2, n)
+    # plant a clear peak on peak_chr at pos nearest to peak_pos
+    mask = chrs == peak_chr
+    idx_chr = np.where(mask)[0]
+    nearest = idx_chr[np.argmin(np.abs(pos[idx_chr] - peak_pos))]
+    lod[nearest] = peak_lod
+    lids = np.array([f'chr{chrs[i]}_L{i}' for i in range(n)])
+    return ScanResult(
+        locus_ids=lids, chromosomes=chrs, positions=pos,
+        lod=lod, p_value=np.ones(n) * 0.01,
+        betas=rng.standard_normal((n, 8)),
+        h2_null={str(c + 1): 0.3 for c in range(n_chr)},
+        phenotype_id='test_gene',
+    )
+
+
+class TestFindPeaks:
+    def test_returns_dataframe(self):
+        sr = _make_scan_with_peak()
+        df = find_peaks(sr, threshold=5.0)
+        assert isinstance(df, pd.DataFrame)
+
+    def test_required_columns(self):
+        sr = _make_scan_with_peak()
+        df = find_peaks(sr, threshold=5.0)
+        for col in ('phenotype_id', 'chr', 'locus_id', 'pos_mb',
+                    'lod', 'ci_lo_mb', 'ci_hi_mb'):
+            assert col in df.columns
+
+    def test_peak_above_threshold(self):
+        sr = _make_scan_with_peak(peak_lod=8.0)
+        df = find_peaks(sr, threshold=5.0)
+        assert len(df) >= 1
+        assert (df['lod'] >= 5.0).all()
+
+    def test_below_threshold_returns_empty(self):
+        sr = _make_scan_with_peak(peak_lod=4.0)
+        df = find_peaks(sr, threshold=5.0)
+        assert len(df) == 0
+        # columns still present even when empty
+        assert 'lod' in df.columns
+
+    def test_ci_contains_peak(self):
+        sr = _make_scan_with_peak(peak_lod=8.0)
+        df = find_peaks(sr, threshold=5.0)
+        assert len(df) >= 1
+        assert (df['ci_lo_mb'] <= df['pos_mb']).all()
+        assert (df['pos_mb'] <= df['ci_hi_mb']).all()
+
+    def test_one_per_chrom_by_default(self):
+        # two chromosomes, each with a peak above threshold
+        sr = _make_scan_with_peak(peak_chr='1', peak_lod=8.0, n_chr=2)
+        # add a second peak on chr2
+        sr2 = _make_scan_with_peak(peak_chr='2', peak_lod=8.0, n_chr=2)
+        import numpy as _np
+        sr.lod = _np.maximum(sr.lod, sr2.lod)
+        df = find_peaks(sr, threshold=5.0)
+        for chrom in df['chr'].unique():
+            assert (df['chr'] == chrom).sum() == 1
+
+    def test_phenotype_id_propagated(self):
+        sr = _make_scan_with_peak(peak_lod=8.0)
+        df = find_peaks(sr, threshold=5.0)
+        assert (df['phenotype_id'] == 'test_gene').all()
+
+    def test_planted_peak_recovered(self):
+        # plant a wide LOD bump so the CI spans across the planted position
+        rng = np.random.default_rng(7)
+        n = 50
+        pos = np.linspace(1.0, 100.0, n)
+        # Gaussian bump centred at 50 Mb, height 10, width ~15 Mb
+        lod = 10.0 * np.exp(-0.5 * ((pos - 50.0) / 15.0) ** 2)
+        lod += rng.uniform(0, 0.1, n)
+        sr = ScanResult(
+            locus_ids=np.array([f'L{i}' for i in range(n)]),
+            chromosomes=np.array(['1'] * n),
+            positions=pos, lod=lod,
+            p_value=np.ones(n) * 0.01,
+            betas=rng.standard_normal((n, 8)),
+            h2_null={'1': 0.3},
+            phenotype_id='test_gene',
+        )
+        df = find_peaks(sr, threshold=5.0)
+        assert len(df) == 1
+        row = df.iloc[0]
+        # planted peak at 50 Mb is within the 1.5-LOD-drop CI
+        assert row['ci_lo_mb'] <= 50.0 <= row['ci_hi_mb']
+
+    def test_allow_multiple_finds_secondary(self):
+        # plant two well-separated peaks on the same chromosome
+        rng = np.random.default_rng(42)
+        n = 40
+        pos = np.linspace(1.0, 200.0, n)
+        lod = rng.uniform(0, 1, n)
+        lod[5]  = 9.0   # primary   ~26 Mb
+        lod[35] = 8.0   # secondary ~180 Mb — well separated
+        sr = ScanResult(
+            locus_ids=np.array([f'L{i}' for i in range(n)]),
+            chromosomes=np.array(['1'] * n),
+            positions=pos, lod=lod,
+            p_value=np.ones(n) * 0.01,
+            betas=rng.standard_normal((n, 8)),
+            h2_null={'1': 0.3},
+            phenotype_id='multi',
+        )
+        df = find_peaks(sr, threshold=5.0, allow_multiple=True, min_lod_gap=1.5)
+        assert len(df) == 2

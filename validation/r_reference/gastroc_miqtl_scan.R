@@ -7,8 +7,9 @@
 # sections:
 #   1.  cache info              → cache_info.csv, founders.csv, sample_ids.csv
 #   2.  haplotype probs         → haplotype_probs.csv
-#   3.  LOCO kinship summary    → kinship_summary.csv
+#   3.  LOCO kinship summary    → kinship_summary.csv, kinship_chr8_elements.csv
 #                                 plots/kinship_chr8.png
+#   S1–S3 combined timing       → timing_setup.csv
 #   4.  LMM scan (ROP, LOCO)    → lod_genome.csv, allele_effects_chr8.csv
 #                                 timing_chr.csv, timing_genome.csv
 #                                 plots/lod_profile_<gene>.png
@@ -75,12 +76,53 @@ cat(sprintf('[args] sections=%s  chr=%s  scan=%s%s\n',
 
 run <- function(s) s %in% run_sections
 
+# Peak R heap during a timed section: gc(reset=TRUE) before the section resets
+# R's internal max-used counter; peak_heap_mb() after reads it back.
+# Column layout of gc() is stable: 'max used' followed immediately by '(Mb)'.
+peak_heap_mb <- function() {
+  g  <- gc(verbose = FALSE)
+  cn <- colnames(g)
+  sum(g[, which(cn == 'max used') + 1L])
+}
+
+# Current process RSS in MB (macOS/Linux).  Returns NA on error.
+get_rss_mb <- function() {
+  tryCatch({
+    line <- system(sprintf('ps -o rss= -p %d', Sys.getpid()), intern = TRUE)
+    round(as.numeric(trimws(line)) / 1024, 1)
+  }, error = function(e) NA_real_)
+}
+
+# Append one timing row to the shared list (used by S1–S3).
+record_timing <- function(lst, section, component, n_items,
+                          t_sys, heap_mb, rss_mb) {
+  lst[[section]] <- data.frame(
+    section      = section,
+    component    = component,
+    n_items      = as.integer(n_items),
+    elapsed_s    = round(as.numeric(t_sys['elapsed']),    3),
+    user_s       = round(as.numeric(t_sys['user.self']),  3),
+    sys_s        = round(as.numeric(t_sys['sys.self']),   3),
+    peak_heap_mb = round(heap_mb, 1),
+    peak_rss_mb  = rss_mb,
+    r_version    = paste(R.version$major, R.version$minor, sep = '.'),
+    miqtl_version = tryCatch(as.character(packageVersion('miqtl')),
+                             error = function(e) NA_character_),
+    git_commit   = tryCatch(trimws(system('git rev-parse --short HEAD', intern = TRUE)),
+                            error = function(e) NA_character_),
+    timestamp    = format(Sys.time(), '%Y-%m-%dT%H:%M:%S'),
+    stringsAsFactors = FALSE
+  )
+  lst
+}
+
 # ── paths ─────────────────────────────────────────────────────────────────────
 miqtl_dir_local <- file.path(path.expand('~'), 'Documents/journey/learning/graduate',
                               'lab/projects/igvf/analysis/qtl/miqtl')
 miqtl_dir_hpc   <- '/share/crsp/lab/seyedam/gfilimba/projects/igvf_8cube/short-read/data/gastroc'
 miqtl_dir       <- if (dir.exists(miqtl_dir_local)) miqtl_dir_local else miqtl_dir_hpc
-genomecache  <- file.path(miqtl_dir, 'output/genomecache')
+genomecache      <- file.path(miqtl_dir, 'output/genomecache')
+genomecache_orig <- genomecache   # always points to CRSP; staging may reassign genomecache
 kinship_path <- file.path(miqtl_dir, 'output/kinship_loco.rds')
 allele_dir   <- file.path(miqtl_dir, 'output/allele_dir')
 cat(sprintf('[paths] miqtl_dir   = %s\n', miqtl_dir))
@@ -99,7 +141,8 @@ if (hpc_mode) {
   if (!dir.exists(staged_key)) {
     cat(sprintf('[stage] copying %s across model dirs → %s\n', chr_dir, local_gc))
     t0 <- proc.time()[['elapsed']]
-    # top-level metadata files
+    dir.create(local_gc, recursive = TRUE, showWarnings = FALSE)
+    # top-level metadata files (must create local_gc first)
     system(sprintf("find '%s' -maxdepth 1 -type f | xargs -I{} cp {} '%s/' 2>/dev/null",
                    genomecache, local_gc))
     for (md in model_dirs) {
@@ -126,10 +169,12 @@ if (hpc_mode) {
 }
 
 out_dir      <- 'validation/gastroc_data'
-# HPC per-chr jobs write into a chr-specific subdirectory
-s4_out_dir   <- if (hpc_mode) file.path(out_dir, paste0('chr', chr_arg)) else out_dir
+r_data_dir   <- file.path(out_dir, 'r_data')   # all R outputs go here
+# HPC per-chr jobs write into a chr-specific subdirectory under r_data/
+s4_out_dir   <- if (hpc_mode) file.path(r_data_dir, paste0('chr', chr_arg)) else r_data_dir
 plot_dir     <- file.path(out_dir, 'plots')
 pheno_rds    <- file.path(out_dir, 'gastroc_pheno.rds')
+dir.create(r_data_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(s4_out_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(plot_dir,   recursive = TRUE, showWarnings = FALSE)
 if (hpc_mode) cat(sprintf('[hpc] chr=%s  out=%s\n', chr_arg, s4_out_dir))
@@ -228,25 +273,36 @@ cat(sprintf('[load] %d chromosomes  kinship %d×%d\n',
 # ─────────────────────────────────────────────────────────────────────────────
 # S1 — cache info
 # ─────────────────────────────────────────────────────────────────────────────
+setup_timing <- list()
+
 if (run(1)) {
   cat('\n[S1] cache info\n')
-  rd         <- DiploprobReader$new(genomecache)
-  founders   <- rd$getFounders()
-  sample_ids <- rd$getSubjects()
-  chrs       <- rd$getChromList()
+  gc(reset = TRUE, verbose = FALSE)
+  t_s1 <- system.time({
+    rd         <- DiploprobReader$new(genomecache_orig)
+    founders   <- rd$getFounders()
+    sample_ids <- rd$getSubjects()
+    chrs       <- rd$getChromList()
 
-  chr_info <- do.call(rbind, lapply(chrs, function(ch) {
-    loci <- rd$getLoci(ch)
-    mb   <- rd$getLocusStart(loci, scale = 'Mb')
-    data.frame(chr = ch, n_loci = length(loci),
-               min_mb = min(mb), max_mb = max(mb), stringsAsFactors = FALSE)
-  }))
-  write.csv(chr_info,                          file.path(out_dir, 'cache_info.csv'),  row.names = FALSE)
-  write.csv(data.frame(founder  = founders),   file.path(out_dir, 'founders.csv'),    row.names = FALSE)
-  write.csv(data.frame(genotype = sample_ids[canonical_order(sample_ids)]),
-            file.path(out_dir, 'genotype_ids.csv'), row.names = FALSE)
-  cat(sprintf('  %d chromosomes  %d founders  %d genotypes\n',
-              nrow(chr_info), length(founders), length(sample_ids)))
+    chr_info <- do.call(rbind, lapply(chrs, function(ch) {
+      loci <- rd$getLoci(ch)
+      mb   <- rd$getLocusStart(loci, scale = 'Mb')
+      data.frame(chr = ch, n_loci = length(loci),
+                 min_mb = min(mb), max_mb = max(mb), stringsAsFactors = FALSE)
+    }))
+    write.csv(chr_info,                          file.path(out_dir, 'cache_info.csv'),  row.names = FALSE)
+    write.csv(data.frame(founder  = founders),   file.path(out_dir, 'founders.csv'),    row.names = FALSE)
+    write.csv(data.frame(genotype = sample_ids[canonical_order(sample_ids)]),
+              file.path(out_dir, 'genotype_ids.csv'), row.names = FALSE)
+    cat(sprintf('  %d chromosomes  %d founders  %d genotypes\n',
+                nrow(chr_info), length(founders), length(sample_ids)))
+  })
+  heap_s1 <- peak_heap_mb()
+  rss_s1  <- get_rss_mb()
+  setup_timing <- record_timing(setup_timing, 'S1', 'cache_info',
+                                nrow(chr_info), t_s1, heap_s1, rss_s1)
+  cat(sprintf('  [timing] %.2fs  heap=%.0fMB  rss=%.0fMB\n',
+              t_s1['elapsed'], heap_s1, rss_s1))
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -254,20 +310,29 @@ if (run(1)) {
 # ─────────────────────────────────────────────────────────────────────────────
 if (run(2)) {
   cat('\n[S2] haplotype probs  chr8 (5 loci)\n')
-  rd    <- DiploprobReader$new(genomecache)
-  loci8 <- rd$getLoci('8')
-  loci8 <- loci8[round(seq(1, length(loci8), length.out = 5))]
+  gc(reset = TRUE, verbose = FALSE)
+  t_s2 <- system.time({
+    rd    <- DiploprobReader$new(genomecache_orig)
+    loci8 <- rd$getLoci('8')
+    loci8 <- loci8[round(seq(1, length(loci8), length.out = 5))]
 
-  hap_rows <- do.call(rbind, lapply(loci8, function(loc) {
-    mat <- rd$getLocusMatrix(loc, model = 'additive')   # (n_strains × 8)
-    df  <- as.data.frame(mat)
-    colnames(df) <- rd$getFounders()
-    df$locus    <- loc
-    df$genotype <- rownames(mat)
-    df[canonical_order(df$genotype), ]   # canonical strain order within each locus
-  }))
-  write.csv(hap_rows, file.path(out_dir, 'haplotype_probs.csv'), row.names = FALSE)
-  cat(sprintf('  exported %d rows\n', nrow(hap_rows)))
+    hap_rows <- do.call(rbind, lapply(loci8, function(loc) {
+      mat <- rd$getLocusMatrix(loc, model = 'additive')   # (n_strains × 8)
+      df  <- as.data.frame(mat)
+      colnames(df) <- rd$getFounders()
+      df$locus    <- loc
+      df$genotype <- rownames(mat)
+      df[canonical_order(df$genotype), ]   # canonical strain order within each locus
+    }))
+    write.csv(hap_rows, file.path(out_dir, 'haplotype_probs.csv'), row.names = FALSE)
+    cat(sprintf('  exported %d rows\n', nrow(hap_rows)))
+  })
+  heap_s2 <- peak_heap_mb()
+  rss_s2  <- get_rss_mb()
+  setup_timing <- record_timing(setup_timing, 'S2', 'haplotype_probe',
+                                nrow(hap_rows), t_s2, heap_s2, rss_s2)
+  cat(sprintf('  [timing] %.2fs  heap=%.0fMB  rss=%.0fMB\n',
+              t_s2['elapsed'], heap_s2, rss_s2))
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -275,6 +340,8 @@ if (run(2)) {
 # ─────────────────────────────────────────────────────────────────────────────
 if (run(3)) {
   cat('\n[S3] kinship summary\n')
+  gc(reset = TRUE, verbose = FALSE)
+  t_s3 <- system.time({
   k_summary <- do.call(rbind, lapply(all_chrs, function(ch) {
     K <- kinship_loco[[ch]]
     data.frame(chr          = ch,
@@ -330,7 +397,35 @@ if (run(3)) {
     plot_kinship_chr(K_c, k_chr, title,
                      sprintf('kinship_chr%s_contribution.png', k_chr))
   }
+  # ── chr8 full K matrix elements (for Python element-level scatter) ──────────
+  if ('8' %in% names(kinship_loco)) {
+    K8  <- kinship_loco[['8']]
+    ord <- canonical_order(rownames(K8))
+    K8  <- K8[ord, ord]
+    strain_names <- rownames(K8)
+    n_str <- nrow(K8)
+    elem_df <- data.frame(
+      strain_i = rep(strain_names, each  = n_str),
+      strain_j = rep(strain_names, times = n_str),
+      k_value  = as.vector(K8),
+      stringsAsFactors = FALSE
+    )
+    write.csv(elem_df, file.path(out_dir, 'kinship_chr8_elements.csv'), row.names = FALSE)
+    cat(sprintf('  kinship_chr8_elements.csv written (%d×%d = %d elements)\n',
+                n_str, n_str, nrow(elem_df)))
+  }
+
   cat(sprintf('  %d chromosomes summarised\n', nrow(k_summary)))
+  })   # end system.time S3
+  heap_s3 <- peak_heap_mb()
+  rss_s3  <- get_rss_mb()
+  setup_timing <- record_timing(setup_timing, 'S3', 'kinship_summary',
+                                nrow(k_summary), t_s3, heap_s3, rss_s3)
+  cat(sprintf('  [timing] %.2fs  heap=%.0fMB  rss=%.0fMB\n',
+              t_s3['elapsed'], heap_s3, rss_s3))
+  write.csv(do.call(rbind, setup_timing),
+            file.path(out_dir, 'timing_setup.csv'), row.names = FALSE)
+  cat(sprintf('  timing_setup.csv written (%d sections)\n', length(setup_timing)))
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -357,6 +452,7 @@ if (run(4)) {
 
   progress_every <- 25L   # print a progress line every N genes
 
+  gc(reset = TRUE, verbose = FALSE)
   chr_t <- system.time({
     for (ch in scan_chrs) {
       K_ch    <- kinship_loco[[ch]]
@@ -459,6 +555,7 @@ if (run(4)) {
   effects_df <- do.call(rbind, all_effect_rows)
 
   # ── per-chromosome timing row (one row per chr scanned by this job) ──────
+  peak_mb_s4  <- peak_heap_mb()   # R-heap peak during S4 scan
   rd_s4      <- DiploprobReader$new(genomecache)
   peak_rss_mb <- tryCatch({
     pid  <- Sys.getpid()
@@ -477,6 +574,7 @@ if (run(4)) {
     user_s        = as.numeric(chr_t['user.self']),
     sys_s         = as.numeric(chr_t['sys.self']),
     genes_per_min = round(total_genes_scanned / chr_t['elapsed'] * 60, 1),
+    peak_heap_mb  = peak_mb_s4,
     peak_rss_mb   = peak_rss_mb,
     mode          = if (hpc_mode) 'hpc_per_chr' else 'sequential',
     r_version     = paste(R.version$major, R.version$minor, sep = '.'),
@@ -509,6 +607,7 @@ if (run(4)) {
       wall_clock_s  = as.numeric(chr_t['elapsed']),
       total_cpu_s   = as.numeric(chr_t['elapsed']),
       genes_per_min = round(total_genes_scanned / chr_t['elapsed'] * 60, 1),
+      peak_heap_mb  = peak_mb_s4,
       peak_rss_mb   = peak_rss_mb,
       mode          = 'sequential',
       r_version     = paste(R.version$major, R.version$minor, sep = '.'),
@@ -646,6 +745,7 @@ top_chr  <- if (!is.null(peak_lod_df)) as.character(peak_lod_df$chr[1]) else all
 # S5 — permutation threshold: one per chromosome, using that chr's top gene
 # ─────────────────────────────────────────────────────────────────────────────
 thresholds_chr_path <- file.path(out_dir, 'thresholds_chr.csv')
+gc(reset = TRUE, verbose = FALSE)
 t_s5 <- proc.time()
 
 if (run(5)) {
@@ -747,6 +847,8 @@ if (!is.null(peak_lod_df) && file.exists(thresholds_chr_path)) {
     }, peak_lod_df$lod, peak_lod_df$chr), ]
   cat(sprintf('[sig] %d / %d genes pass per-chr threshold\n',
               nrow(sig_genes_df), nrow(peak_lod_df)))
+  write.csv(sig_genes_df, file.path(out_dir, 'egenes.csv'), row.names = FALSE)
+  cat(sprintf('[sig] egenes.csv written (%d rows)\n', nrow(sig_genes_df)))
 } else if (!is.null(peak_lod_df)) {
   sig_genes_df <- peak_lod_df   # no threshold yet — use all
 }
@@ -754,6 +856,8 @@ if (!is.null(peak_lod_df) && file.exists(thresholds_chr_path)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S6 — cache collapse (genome-wide, unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
+peak_mb_s5 <- peak_heap_mb()
+gc(reset = TRUE, verbose = FALSE)
 t_s6 <- proc.time()
 if (run(6)) {
   cat('\n[S6] cache collapse\n')
@@ -783,6 +887,8 @@ if (run(6)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S7 — MI scan: all significant genes on their peak chromosome
 # ─────────────────────────────────────────────────────────────────────────────
+peak_mb_s6 <- peak_heap_mb()
+gc(reset = TRUE, verbose = FALSE)
 t_s7 <- proc.time()
 if (run(7)) {
   stopifnot(!is.null(sig_genes_df))
@@ -815,6 +921,8 @@ if (run(7)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S8 — SNP scan: significant genes on their peak chromosome (gated)
 # ─────────────────────────────────────────────────────────────────────────────
+peak_mb_s7 <- peak_heap_mb()
+gc(reset = TRUE, verbose = FALSE)
 t_s8 <- proc.time()
 if (run(8)) {
   if (!dir.exists(allele_dir)) {
@@ -822,17 +930,29 @@ if (run(8)) {
   } else {
     stopifnot(!is.null(sig_genes_df))
     cat(sprintf('\n[S8] SNP scan — %d significant genes\n', nrow(sig_genes_df)))
+    # imputed.snp.scan.h2lmm hardcodes SUBJECT.NAME; alias column once before loop.
+    pheno_df_s8 <- pheno_df
+    pheno_df_s8$SUBJECT.NAME <- pheno_df_s8$sample_id
     snp_rows <- list()
     for (i in seq_len(nrow(sig_genes_df))) {
       gene <- sig_genes_df$gene[i]
       ch   <- as.character(sig_genes_df$chr[i])
       cat(sprintf('  [%d/%d] %s  chr%s\n', i, nrow(sig_genes_df), gene, ch))
+      # Restrict to SNPs actually in the alleles file. Lines without tabs are bare
+      # SNP_IDs (line 1 of each 4-line block); sparcc pseudomarkers like
+      # UNC6_to_UNC15185 are absent from the alleles file and not removed by
+      # imputed.snp.scan.h2lmm's ^c[X0-9]+\.loc regex, causing grep to crash.
+      allele_file_ch <- file.path(allele_dir, paste0('chr', ch, '.alleles'))
+      snp_ids_ch <- if (file.exists(allele_file_ch)) {
+        lines_ch <- readLines(allele_file_ch, warn = FALSE)
+        lines_ch[!grepl('\t', lines_ch, fixed = TRUE)]
+      } else NULL
       snp_res <- imputed.snp.scan.h2lmm(
-        genomecache = genomecache, data = pheno_df,
-        pheno.id    = 'sample_id', geno.id = 'genotype',
-        formula     = as.formula(paste(gene, '~ dataset')),
-        K           = kinship_loco[[ch]],
-        allele.dir  = allele_dir, chr = ch
+        genomecache     = genomecache, data = pheno_df_s8,
+        formula         = as.formula(paste(gene, '~ dataset')),
+        K               = kinship_loco[[ch]],
+        allele.dir      = allele_dir, chr = ch,
+        just.these.loci = snp_ids_ch
       )
       snp_rows[[length(snp_rows) + 1]] <- data.frame(
         gene   = gene, chr = ch,
@@ -851,6 +971,8 @@ if (run(8)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S9 — mediation: significant genes, all other sig genes as candidate mediators
 # ─────────────────────────────────────────────────────────────────────────────
+peak_mb_s8 <- peak_heap_mb()
+gc(reset = TRUE, verbose = FALSE)
 t_s9 <- proc.time()
 if (run(9)) {
   stopifnot(!is.null(sig_genes_df), !is.null(peak_lod_df))
@@ -908,6 +1030,8 @@ if (run(9)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S10 — bootstrap positional CI: all significant genes
 # ─────────────────────────────────────────────────────────────────────────────
+peak_mb_s9 <- peak_heap_mb()
+gc(reset = TRUE, verbose = FALSE)
 t_s10 <- proc.time()
 if (run(10)) {
   stopifnot(!is.null(sig_genes_df))
@@ -981,6 +1105,8 @@ if (run(10)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S11 — instability scan: all genes, cis (same loop structure as S4)
 # ─────────────────────────────────────────────────────────────────────────────
+peak_mb_s10 <- peak_heap_mb()
+gc(reset = TRUE, verbose = FALSE)
 t_s11 <- proc.time()
 if (run(11)) {
   cat('\n[S11] instability scan — all genes, cis\n')
@@ -1026,6 +1152,7 @@ if (run(11)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # timing summary — S4 per-chromosome + S5-S11 section wall-clock
 # ─────────────────────────────────────────────────────────────────────────────
+peak_mb_s11 <- peak_heap_mb()
 t_end <- proc.time()
 
 if (run(4) && file.exists(timing_chr_path) && file.exists(timing_genome_path)) {
@@ -1040,18 +1167,21 @@ if (run(4) && file.exists(timing_chr_path) && file.exists(timing_genome_path)) {
   cat('────────────────────────────────────────────────────────────────────\n')
 }
 
-# write per-section wall-clock (S5-S11) to timing_sections.csv
+# write per-section wall-clock + peak heap (S5-S11) to timing_sections.csv
 # t_sN is set just before each section guard regardless of whether it ran;
 # elapsed since t_sN captures the wall time of that section (0 if skipped).
+# peak_mb_sN is captured immediately after the section closes; gc(reset=TRUE)
+# before each section resets R's max-used counter so the reading is per-section.
 elapsed_s <- function(t_start, t_end) as.numeric(t_end['elapsed'] - t_start['elapsed'])
+
 sec_rows <- list(
-  data.frame(section='S5_permutation',   elapsed_s=elapsed_s(t_s5,  t_s6),  stringsAsFactors=FALSE),
-  data.frame(section='S6_cache_collapse', elapsed_s=elapsed_s(t_s6,  t_s7),  stringsAsFactors=FALSE),
-  data.frame(section='S7_mi_scan',        elapsed_s=elapsed_s(t_s7,  t_s8),  stringsAsFactors=FALSE),
-  data.frame(section='S8_snp_scan',       elapsed_s=elapsed_s(t_s8,  t_s9),  stringsAsFactors=FALSE),
-  data.frame(section='S9_mediation',      elapsed_s=elapsed_s(t_s9,  t_s10), stringsAsFactors=FALSE),
-  data.frame(section='S10_bootstrap_ci',  elapsed_s=elapsed_s(t_s10, t_s11), stringsAsFactors=FALSE),
-  data.frame(section='S11_instability',   elapsed_s=elapsed_s(t_s11, t_end), stringsAsFactors=FALSE)
+  data.frame(section='S5_permutation',   elapsed_s=elapsed_s(t_s5,  t_s6),  peak_heap_mb=peak_mb_s5,  stringsAsFactors=FALSE),
+  data.frame(section='S6_cache_collapse', elapsed_s=elapsed_s(t_s6,  t_s7),  peak_heap_mb=peak_mb_s6,  stringsAsFactors=FALSE),
+  data.frame(section='S7_mi_scan',        elapsed_s=elapsed_s(t_s7,  t_s8),  peak_heap_mb=peak_mb_s7,  stringsAsFactors=FALSE),
+  data.frame(section='S8_snp_scan',       elapsed_s=elapsed_s(t_s8,  t_s9),  peak_heap_mb=peak_mb_s8,  stringsAsFactors=FALSE),
+  data.frame(section='S9_mediation',      elapsed_s=elapsed_s(t_s9,  t_s10), peak_heap_mb=peak_mb_s9,  stringsAsFactors=FALSE),
+  data.frame(section='S10_bootstrap_ci',  elapsed_s=elapsed_s(t_s10, t_s11), peak_heap_mb=peak_mb_s10, stringsAsFactors=FALSE),
+  data.frame(section='S11_instability',   elapsed_s=elapsed_s(t_s11, t_end), peak_heap_mb=peak_mb_s11, stringsAsFactors=FALSE)
 )
 sec_df <- do.call(rbind, sec_rows)
 sec_df$chr       <- chr_arg
@@ -1062,10 +1192,39 @@ write.csv(sec_df, file.path(out_dir, 'timing_sections.csv'), row.names = FALSE)
 
 cat('\n── section timing (S5-S11) ─────────────────────────────────────────\n')
 for (i in seq_len(nrow(sec_df))) {
-  cat(sprintf('  %-24s  %6.0f s  (%s)\n',
-              sec_df$section[i], sec_df$elapsed_s[i],
+  cat(sprintf('  %-24s  %6.0f s  peak %5.0f MB  (%s)\n',
+              sec_df$section[i], sec_df$elapsed_s[i], sec_df$peak_heap_mb[i],
               if (sec_df$elapsed_s[i] > 0) 'ran' else 'skipped'))
 }
 cat('────────────────────────────────────────────────────────────────────\n')
+
+# ── final eGene / eQTL summary ───────────────────────────────────────────────
+cat('\n── FINAL SUMMARY ───────────────────────────────────────────────────────\n')
+n_total <- if (!is.null(peak_lod_df)) nrow(peak_lod_df) else NA_integer_
+n_egene <- if (!is.null(sig_genes_df) && file.exists(thresholds_chr_path))
+             nrow(sig_genes_df) else NA_integer_
+cat(sprintf('  genes with peak LOD:  %s\n', if (is.na(n_total)) 'n/a' else n_total))
+cat(sprintf('  eGenes (LOD > thr):   %s\n', if (is.na(n_egene)) 'n/a (S5 not run)' else n_egene))
+# eQTL count = eGenes here (one peak locus per gene; multi-signal scan not implemented)
+cat(sprintf('  eQTL (= eGene peaks): %s\n', if (is.na(n_egene)) 'n/a' else n_egene))
+if (!is.na(n_egene) && n_egene > 0) {
+  top5 <- head(sig_genes_df[order(-sig_genes_df$lod), ], 5)
+  cat('  top eGenes by LOD:\n')
+  for (i in seq_len(nrow(top5)))
+    cat(sprintf('    %d. %-22s chr%s  LOD=%.2f  pos=%.2f Mb\n',
+                i, top5$gene[i], top5$chr[i], top5$lod[i], top5$pos_mb[i]))
+}
+# write machine-readable summary
+write.csv(data.frame(
+  n_genes_scanned = n_total,
+  n_egenes        = n_egene,
+  n_eqtl          = n_egene,
+  scan_type       = scan_type,
+  n_chrs          = length(scan_chrs),
+  timestamp       = format(Sys.time(), '%Y-%m-%dT%H:%M:%S'),
+  stringsAsFactors = FALSE
+), file.path(out_dir, 'run_summary.csv'), row.names = FALSE)
+cat('  run_summary.csv written\n')
+cat('────────────────────────────────────────────────────────────────────────\n')
 
 cat('\ndone\n')

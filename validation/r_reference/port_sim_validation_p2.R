@@ -56,9 +56,9 @@ if (!is.primitive(crossprod) || typeof(crossprod) != 'builtin') {
 
 # ── paths ──────────────────────────────────────────────────────────────────
 genomecache <- 'validation/sparcc_cache'
-r_data      <- 'validation/phase2_sim/r_data'
-r_plots     <- 'validation/phase2_sim/r_plots'
-allele_dir  <- 'validation/phase2_sim/allele_dir'
+r_data      <- 'validation/phase2/r_data'
+r_plots     <- 'validation/phase2/r_plots'
+allele_dir  <- 'validation/phase2/allele_dir'
 dir.create(r_data,   recursive = TRUE, showWarnings = FALSE)
 dir.create(r_plots,  recursive = TRUE, showWarnings = FALSE)
 
@@ -81,7 +81,7 @@ if (!needs_setup) {
     cat('\nLoading cached setup from', setup_cache, '...\n')
     load(setup_cache)   # restores: phenotypes, rop_scan, K_loco, reader,
                         #           scan_loci, scan_chr, scan_mb, loci_by_chr,
-                        #           qtl_idx, qtl_locus, qtl_chr
+                        #           chromosomes, qtl_idx, qtl_locus, qtl_chr
     if (!exists('K_loco')) {
         cat('  [stale cache: K_loco missing] forcing recompute\n')
         needs_setup <- TRUE
@@ -111,24 +111,25 @@ if (needs_setup) {
 
     reader <- DiploprobReader$new(genomecache)
 
-    # OLS genome-wide scan — used only to get locus/position metadata.
-    # (scan.h2lmm with K=NULL → OLS; LOCO scans happen below)
-    cat('\nOLS scan for locus metadata...\n')
-    ols_scan  <- scan.h2lmm(
-        genomecache      = genomecache,
-        data             = phenotypes$data,
-        pheno.id         = 'SUBJECT.NAME.1',
-        geno.id          = 'SUBJECT.NAME.1',
-        formula          = sim.y.1 ~ 1,
-        use.multi.impute = FALSE,
-        return.allele.effects = FALSE
-    )
-    scan_loci   <- names(ols_scan$LOD)
-    scan_chr    <- setNames(ols_scan$chr,    scan_loci)
-    scan_mb     <- setNames(ols_scan$pos$Mb, scan_loci)
+    # OLS genome scan for metadata: K=NULL → fix.par=0 (pure OLS).
+    # scan.h2lmm normalises locus IDs via the same path sim.CC.data uses, so
+    # names(ols_meta$LOD) are guaranteed to match phenotypes$locus planted IDs.
+    cat('\nDeriving genomecache metadata via OLS scan...\n')
+    ols_meta    <- scan.h2lmm(
+        genomecache           = genomecache,
+        data                  = phenotypes$data,
+        pheno.id              = 'SUBJECT.NAME.1',
+        geno.id               = 'SUBJECT.NAME.1',
+        formula               = sim.y.1 ~ 1,
+        use.multi.impute      = FALSE,
+        return.allele.effects = FALSE)
+    scan_loci   <- names(ols_meta$LOD)
+    scan_chr    <- setNames(ols_meta$chr,    scan_loci)
+    scan_mb     <- setNames(ols_meta$pos$Mb, scan_loci)
     loci_by_chr <- split(scan_loci, scan_chr)
-    cat('  loci:', length(scan_loci), 'across', length(loci_by_chr), 'chromosomes\n')
-    rm(ols_scan); gc()
+    chromosomes <- names(loci_by_chr)
+    rm(ols_meta); gc()
+    cat('  loci:', length(scan_loci), 'across', length(chromosomes), 'chromosomes\n')
 
     # LOCO kinship: K_loco[[chr]] = (L_all*K_all - L_c*K_c) / (L_all - L_c)
     # Must be computed before rop_scan so that rop_scan$fit0$K is set correctly.
@@ -200,7 +201,7 @@ if (needs_setup) {
     cat('  rop_scan peak LOD:', round(max(as.numeric(rop_scan$LOD)), 3), '\n')
 
     save(phenotypes, rop_scan, K_loco, reader, scan_loci, scan_chr, scan_mb,
-         loci_by_chr, qtl_idx, qtl_locus, qtl_chr,
+         loci_by_chr, chromosomes, qtl_idx, qtl_locus, qtl_chr,
          file = setup_cache)
     cat('  setup cached to', setup_cache, '\n')
 }
@@ -352,6 +353,7 @@ if (run_section(4)) {
 cat('\nS4: LMM scan (10 phenotypes, LOCO per chromosome)...\n')
 lod_rows    <- list()
 effect_rows <- list()
+h2_rows     <- list()
 
 for (sim_i in 1:10) {
     pheno_col <- paste0('sim.y.', sim_i)
@@ -376,6 +378,11 @@ for (sim_i in 1:10) {
             pos_mb   = sc_c$pos$Mb,
             lod      = as.numeric(sc_c$LOD),
             stringsAsFactors = FALSE)
+        if (sim_i == 1 && !is.null(sc_c$fit0)) {
+            h2_val <- if ('h2' %in% names(sc_c$fit0)) as.numeric(sc_c$fit0$h2) else NA_real_
+            h2_rows[[chr_c]] <- data.frame(chr = chr_c, h2 = h2_val,
+                                            stringsAsFactors = FALSE)
+        }
         # allele effects at peak locus (only from qtl_chr scan)
         if (chr_c == qtl_chr && !is.null(sc_c$allele.effects)) {
             ae       <- sc_c$allele.effects
@@ -402,7 +409,57 @@ write.csv(do.call(rbind, lod_rows),
           file.path(r_data, 'lod_r.csv'), row.names = FALSE)
 write.csv(do.call(rbind, effect_rows),
           file.path(r_data, 'allele_effects_r.csv'), row.names = FALSE)
+if (length(h2_rows) > 0) {
+    write.csv(do.call(rbind, h2_rows),
+              file.path(r_data, 'loco_h2_r.csv'), row.names = FALSE)
+    cat('  exported loco_h2_r.csv:', length(h2_rows), 'chromosomes\n')
+}
 cat('  exported lod_r.csv:', nrow(do.call(rbind, lod_rows)), 'rows\n')
+
+# LOD-drop CI per simulation: R parallel to Python find_peaks(sc, threshold, drop=1.5)
+# Computes the 1.5-LOD support interval at the genome-wide peak for each simulation
+# and checks whether the planted QTL locus falls within the CI.
+lod_drop_ci_r <- function(lod, pos_mb, drop = 1.5) {
+    ord      <- order(pos_mb)
+    lod_s    <- lod[ord]
+    pos_s    <- pos_mb[ord]
+    peak_si  <- which.max(lod_s)
+    thresh   <- lod_s[peak_si] - drop
+    lo_cands <- which(lod_s[seq_len(peak_si)] < thresh)
+    hi_cands <- which(lod_s[peak_si:length(lod_s)] < thresh)
+    ci_lo    <- if (length(lo_cands)) pos_s[max(lo_cands)]    else pos_s[1L]
+    ci_hi    <- if (length(hi_cands)) pos_s[peak_si + hi_cands[1L] - 1L] else pos_s[length(pos_s)]
+    list(ci_lo_mb = ci_lo, ci_hi_mb = ci_hi)
+}
+ci_rows_r <- list()
+for (sim_i_ci in 1:10) {
+    df_i <- lod_rows[[sim_i_ci]]
+    if (is.null(df_i) || nrow(df_i) == 0) next
+    peak_row  <- df_i[which.max(df_i$lod), ]
+    chr_df    <- df_i[df_i$chr == peak_row$chr, ]
+    ci        <- lod_drop_ci_r(chr_df$lod, chr_df$pos_mb)
+    planted   <- phenotypes$locus[[sim_i_ci]]
+    pl_mb     <- if (!is.null(planted) && planted %in% names(scan_mb))
+                     unname(scan_mb[planted]) else NA_real_
+    ci_rows_r[[sim_i_ci]] <- data.frame(
+        sim_idx     = sim_i_ci,
+        chr         = peak_row$chr,
+        locus_id    = peak_row$locus,
+        pos_mb      = peak_row$pos_mb,
+        lod         = peak_row$lod,
+        ci_lo_mb    = ci$ci_lo_mb,
+        ci_hi_mb    = ci$ci_hi_mb,
+        planted_mb  = pl_mb,
+        ci_contains = if (!is.na(pl_mb))
+                          ci$ci_lo_mb <= pl_mb & pl_mb <= ci$ci_hi_mb else NA,
+        stringsAsFactors = FALSE)
+}
+ci_r_df <- do.call(rbind, ci_rows_r)
+write.csv(ci_r_df, file.path(r_data, 'peaks_ci_r.csv'), row.names = FALSE)
+n_ci_r_ok <- sum(as.logical(ci_r_df$ci_contains), na.rm = TRUE)
+cat('  LOD-drop CI (1.5) containment:', n_ci_r_ok, '/', nrow(ci_r_df),
+    'peaks contain planted locus\n')
+cat('  exported peaks_ci_r.csv\n')
 }  # end S4
 
 t_s5 <- proc.time()
@@ -488,7 +545,6 @@ perm_scans <- run.threshold.scans(
     genomecache          = genomecache,
     data                 = phenotypes$data,
     use.multi.impute     = FALSE,
-    chr                  = qtl_chr,
     scan.seed            = 1)
 
 perm_max_lods_r <- as.numeric(perm_scans$max.statistics$LOD)
@@ -546,31 +602,93 @@ cat('  MI peak LOD:', round(max(as.numeric(mi_scan$LOD)), 3), '\n')
 
 t_s8 <- proc.time()
 # ─────────────────────────────────────────────────────────────────────────────
-# S8 — SNP scan (gated: requires allele_dir)
+# S8 — SNP scan: build chrN.alleles from GM_fo_mm39.csv, then imputed.snp.scan.h2lmm
+#
+# Each marker block in chrN.alleles is 4 tab-separated lines:
+#   SNP_ID
+#   SNP_ID  allele1  0/1 per founder (cache order: A B C D E F G H)
+#   SNP_ID  allele2  0/1 per founder
+#   SNP_ID  NA       NA  per founder
+# imputed.snp.scan.h2lmm uses K=K_loco[[qtl_chr]] (LOCO kinship).
 # ─────────────────────────────────────────────────────────────────────────────
 if (run_section(8)) {
-cat('\nS8: SNP scan (gated)...\n')
-if (dir.exists(allele_dir)) {
-    K_s8 <- calc.kinship.from.genomecache.with.DOQTL(genomecache)
-    snp_scan <- imputed.snp.scan.h2lmm(
-        data        = phenotypes$data,
-        formula     = sim.y.1 ~ 1,
-        K           = K_s8,
-        allele.dir  = allele_dir,
-        genomecache = genomecache,
-        chr         = qtl_chr)
-    write.csv(data.frame(
-        snp    = snp_scan$SNP.ID,
-        chr    = snp_scan$chr,
-        pos_mb = snp_scan$pos$Mb,
-        lod    = as.numeric(snp_scan$LOD)),
-        file.path(r_data, 'snp_lod_r.csv'), row.names = FALSE)
-    cat('  SNP scan done; peak LOD:',
-        round(max(as.numeric(snp_scan$LOD)), 3), '\n')
+cat('\nS8: SNP scan (GM_fo_mm39.csv → chrN.alleles → imputed.snp.scan.h2lmm)...\n')
+gm_csv_s8 <- '../input/GM_fo_mm39.csv'
+if (!file.exists(gm_csv_s8)) {
+    cat('  SKIPPED: GM_fo_mm39.csv not found at', gm_csv_s8, '\n')
 } else {
-    cat('  SKIPPED: allele_dir not found at', allele_dir, '\n')
-    cat('  To enable: build allele_dir with miQTL build.allele.dir()\n')
+
+# ── build chrN.alleles for qtl_chr ──────────────────────────────────────────
+gm_s8     <- read.csv(gm_csv_s8, stringsAsFactors = FALSE, check.names = FALSE)
+h_s8      <- DiploprobReader$new(genomecache)
+founders_s8 <- h_s8$getFounders()
+loci_s8     <- loci_by_chr[[qtl_chr]]
+
+# founder column name mapping: GM abbreviated → cache single-letter codes
+gm_cols_ordered <- c(AJ='A', B6J='B', '129S1J'='C', NODJ='D',
+                     NZOJ='E', CASTJ='F', PWKJ='G', WSBJ='H')
+cache_to_gm <- setNames(names(gm_cols_ordered), gm_cols_ordered)
+gm_founder_cols <- cache_to_gm[founders_s8]   # GM col names in cache founder order
+
+gm_chr_s8 <- gm_s8[gm_s8$chr == qtl_chr & gm_s8$marker %in% loci_s8,
+                    c('marker', gm_founder_cols), drop = FALSE]
+rownames(gm_chr_s8) <- gm_chr_s8$marker
+cat('  markers matched to cache loci:', nrow(gm_chr_s8), '/', length(loci_s8), '\n')
+
+dir.create(allele_dir, recursive = TRUE, showWarnings = FALSE)
+alleles_file <- file.path(allele_dir, paste0('chr', qtl_chr, '.alleles'))
+# NA row: all-zero counts (matches build.allele.dir format — not NA strings).
+na_row_tail  <- paste(rep('0', length(founders_s8)), collapse = '\t')
+
+lines_out <- character(4L * nrow(gm_chr_s8))
+line_idx  <- 0L
+for (snp_s8 in gm_chr_s8$marker) {
+    alleles_s8 <- as.character(unlist(gm_chr_s8[snp_s8, gm_founder_cols]))
+    alleles_s8[alleles_s8 %in% c('N', '', 'NA', NA)] <- NA
+    distinct_s8 <- sort(na.omit(unique(alleles_s8)))
+    a1 <- if (length(distinct_s8) >= 1L) distinct_s8[1L] else 'A'
+    a2 <- if (length(distinct_s8) >= 2L) distinct_s8[2L] else 'T'
+    cnt1 <- ifelse(is.na(alleles_s8), '0', ifelse(alleles_s8 == a1, '1', '0'))
+    cnt2 <- ifelse(is.na(alleles_s8), '0', ifelse(alleles_s8 == a2, '1', '0'))
+    # Format: line 1 = bare SNP_ID; lines 2-4 = leading-TAB + allele + counts.
+    # Leading TAB: grep -w -A 3 only matches line 1 (returns 4 lines); the empty
+    # first split field is removed by [,-1] inside extract.imputed.design.matrix,
+    # leaving allele names in col 1 and 8 founder counts in cols 2-9.
+    line_idx <- line_idx + 1L; lines_out[line_idx] <- snp_s8
+    line_idx <- line_idx + 1L
+    lines_out[line_idx] <- paste0('\t', a1, '\t', paste(cnt1, collapse='\t'))
+    line_idx <- line_idx + 1L
+    lines_out[line_idx] <- paste0('\t', a2, '\t', paste(cnt2, collapse='\t'))
+    line_idx <- line_idx + 1L
+    lines_out[line_idx] <- paste0('\tNA\t', na_row_tail)
 }
+writeLines(lines_out[seq_len(line_idx)], alleles_file)
+cat('  chr', qtl_chr, '.alleles written:', nrow(gm_chr_s8), 'SNP blocks\n')
+
+# ── run imputed SNP scan with LOCO kinship ───────────────────────────────────
+# imputed.snp.scan.h2lmm hardcodes SUBJECT.NAME internally; alias column.
+pheno_s8 <- phenotypes$data
+pheno_s8$SUBJECT.NAME <- pheno_s8$SUBJECT.NAME.1
+snp_scan <- imputed.snp.scan.h2lmm(
+    data             = pheno_s8,
+    formula          = sim.y.1 ~ 1,
+    K                = K_loco[[qtl_chr]],
+    allele.dir       = allele_dir,
+    genomecache      = genomecache,
+    chr              = qtl_chr,
+    just.these.loci  = gm_chr_s8$marker)
+
+snp_lod_df <- data.frame(
+    snp    = snp_scan$loci,
+    chr    = snp_scan$chr,
+    pos_mb = snp_scan$pos$Mb,
+    lod    = as.numeric(snp_scan$LOD),
+    stringsAsFactors = FALSE)
+write.csv(snp_lod_df, file.path(r_data, 'snp_lod_r.csv'), row.names = FALSE)
+cat('  SNP peak LOD:', round(max(as.numeric(snp_scan$LOD)), 3), '\n')
+cat('  exported snp_lod_r.csv:', nrow(snp_lod_df), 'SNPs\n')
+
+}  # end gm_csv exists
 }  # end S8
 
 t_s9 <- proc.time()

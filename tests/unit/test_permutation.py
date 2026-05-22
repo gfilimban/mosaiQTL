@@ -127,6 +127,7 @@ class TestRunThresholdScans:
             phenotype=tiny_strain_phenotype,
             covariates=tiny_strain_covariates,
             kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
             fix_h2=True,
             use_rint=False,
         )
@@ -142,6 +143,7 @@ class TestRunThresholdScans:
             null, tiny_cache,
             phenotype=tiny_strain_phenotype,
             kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
             fix_h2=True,
             use_rint=False,
         )
@@ -157,6 +159,7 @@ class TestRunThresholdScans:
             null, tiny_cache,
             phenotype=tiny_strain_phenotype,
             kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
             chrom='1',
             fix_h2=True,
             use_rint=False,
@@ -169,10 +172,13 @@ class TestRunThresholdScans:
         kd = decomp_kinship(tiny_kinship)
         null = generate_null_outcomes(
             tiny_strain_phenotype, n_samples=3, seed=3)
+        # plain-shuffle path: phenotype not needed when fix_h2=False
         max_lods = run_threshold_scans(
             null, tiny_cache,
             kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
             fix_h2=False,
+            permutation_method='plain',
             use_rint=False,
         )
         assert max_lods.shape == (3,)
@@ -185,6 +191,7 @@ class TestRunThresholdScans:
             tiny_strain_phenotype, n_samples=2, seed=4)
         with pytest.raises(ValueError, match='phenotype required'):
             run_threshold_scans(null, tiny_cache, kinship_decomp=kd,
+                                kinship_loco=tiny_kinship,
                                 fix_h2=True, phenotype=None)
 
 
@@ -268,11 +275,13 @@ class TestParametricHelpers:
 
     def test_draw_kinship_re_singular_raises(self):
         rng = np.random.default_rng(0)
-        # rank-1 matrix: all eigenvalues near zero except one
-        v = np.ones(10) / np.sqrt(10)
-        K_singular = np.outer(v, v) * 1e-10
+        # genuinely non-PSD: shift eigenvalues negative by subtracting 0.5I
+        # min_eig ≈ -0.4 >> psd_tol (≈ max_eig * n² * eps << 1)
+        n = 10
+        A = rng.standard_normal((n, n))
+        K_bad = A @ A.T / n - 0.5 * np.eye(n)
         with pytest.raises(KinshipSingularError):
-            _draw_kinship_re(K_singular, sigma2_g=1.0, rng=rng)
+            _draw_kinship_re(K_bad, sigma2_g=1.0, rng=rng)
 
     def test_parametric_null_col_same_values(self, tiny_cache, tiny_kinship,
                                               tiny_strain_phenotype,

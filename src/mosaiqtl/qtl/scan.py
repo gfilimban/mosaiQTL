@@ -36,6 +36,7 @@ __all__ = [
     'scan_multi_gene',
     'grab_locus_from_scan',
     'lod_drop_ci',
+    'find_peaks',
     'fixef_eqtl_scan',
     'instability_lm_scan',
 ]
@@ -112,7 +113,9 @@ def _resolve_z(sample_ids, genomecache, pheno_id=None, geno_id=None):
 def scan_h2lmm(phenotype, genomecache, covariates=None,
                kinship_decomp=None, sample_ids=None,
                use_rint=True, use_reml=True, phenotype_id='unknown',
-               fixed_h2_dict=None, model='additive'):
+               fixed_h2_dict=None, model='additive',
+               scan_window='cis', gene_chr=None,
+               gene_pos_mb=None, window_mb=1.0):
     """haplotype-based genome-wide scan with LOCO LMM.
 
     supports both 1:1 (n == m) and replicated (n > m) designs.
@@ -140,11 +143,24 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
         'full'     — J*(J+1)/2 diplotype columns constructed from additive
                      probs via outer product P(fi/fj)=P(fi)*P(fj); valid
                      for CC inbred data where heterozygous probs ≈ 0.
+    scan_window     : str  'cis' | 'genome' | 'local'  (default 'cis')
+        'cis'    — scan only the chromosome carrying the gene (gene_chr
+                   required); equivalent to passing a single-chr kinship dict.
+        'genome' — scan all chromosomes present in kinship_decomp.
+        'local'  — cis scan restricted to loci within ±window_mb of the
+                   gene TSS (gene_chr and gene_pos_mb required).
+    gene_chr        : str or None  chromosome of the gene (required for cis/local)
+    gene_pos_mb     : float or None  TSS position in Mb (required for local)
+    window_mb       : float  half-window in Mb for local mode (default 1.0)
 
     returns
     -------
     ScanResult  (betas shape (L, J) for additive; (L, J*(J+1)/2) for full)
     """
+    if scan_window in ('cis', 'local') and gene_chr is None:
+        raise ValueError(f"scan_window='{scan_window}' requires gene_chr")
+    if scan_window == 'local' and gene_pos_mb is None:
+        raise ValueError("scan_window='local' requires gene_pos_mb")
     n = len(phenotype)
 
     # resolve Z mapping
@@ -194,6 +210,9 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
     # restrict to chromosomes with kinship available; avoids noisy skip messages
     # when kinship_decomp is built for a single chromosome (e.g. --chr 8)
     _chrom_list = [c for c in genomecache.chromosomes if c in kinship_decomp]
+    if scan_window in ('cis', 'local'):
+        _gene_chr = str(gene_chr)
+        _chrom_list = [c for c in _chrom_list if c == _gene_chr]
     for chrom in _chrom_list:
 
         _ev  = kinship_decomp[chrom]['values']
@@ -213,6 +232,17 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
 
         chr_res = lmm_module.scan_chromosome(
             y, genomecache, chrom, x, evals, evecs, h2, use_reml, z_sub, model)
+
+        if scan_window == 'local':
+            mask = np.abs(chr_res['positions'] - gene_pos_mb) <= window_mb
+            if not mask.any():
+                logger.debug(f'{phenotype_id}: no loci within {window_mb} Mb of '
+                             f'{gene_pos_mb:.3f} on {chrom}; skipping')
+                continue
+            chr_res = {k: (v[mask] if isinstance(v, np.ndarray) and len(v) == len(mask)
+                           else v)
+                       for k, v in chr_res.items()}
+            chr_res['locus_ids'] = np.asarray(chr_res['locus_ids'])[mask]
 
         n_loci = len(chr_res['locus_ids'])
         all_lids.append(chr_res['locus_ids'])
@@ -302,6 +332,88 @@ def lod_drop_ci(scan_result, chrom, drop=1.5):
     thresh = lod[pi] - drop
     above  = np.where(lod >= thresh)[0]
     return float(pos[above[0]]), float(pos[above[-1]]), float(pos[pi])
+
+
+def find_peaks(scan_result, threshold, drop=1.5, allow_multiple=False,
+               min_lod_gap=1.5):
+    """find significant QTL peaks in a genome-wide scan.
+
+    mirrors qtl2::find_peaks(scanone, map, threshold, drop, peakdrop).
+
+    parameters
+    ----------
+    scan_result   : ScanResult
+    threshold     : float  minimum LOD to report a peak
+    drop          : float  LOD drop for CI bounds (default 1.5)
+    allow_multiple: bool   if True, report secondary peaks per chromosome
+        that are above threshold AND at least min_lod_gap LOD below the
+        primary peak (i.e. separated local maxima).  default False returns
+        only the highest-LOD peak per chromosome.
+    min_lod_gap   : float  minimum LOD separation between multiple peaks
+        on the same chromosome (only used when allow_multiple=True)
+
+    returns
+    -------
+    pd.DataFrame  columns: phenotype_id, chr, locus_id, pos_mb, lod,
+                            ci_lo_mb, ci_hi_mb
+        one row per peak, sorted by chr then pos_mb.
+        empty DataFrame (same columns) when no locus exceeds threshold.
+    """
+    _COLS = ('phenotype_id', 'chr', 'locus_id', 'pos_mb',
+             'lod', 'ci_lo_mb', 'ci_hi_mb')
+    rows = []
+
+    for chrom in np.unique(scan_result.chromosomes):
+        mask = scan_result.chromosomes == chrom
+        lod_c  = scan_result.lod[mask]
+        pos_c  = scan_result.positions[mask]
+        lids_c = scan_result.locus_ids[mask]
+
+        if lod_c.max() < threshold:
+            continue
+
+        if not allow_multiple:
+            # single best peak per chromosome
+            pi = int(np.argmax(lod_c))
+            lo, hi, pk = lod_drop_ci(scan_result, chrom, drop)
+            rows.append((scan_result.phenotype_id, chrom,
+                         lids_c[pi], float(pos_c[pi]),
+                         float(lod_c[pi]), lo, hi))
+        else:
+            # all local maxima above threshold separated by >= min_lod_gap
+            # a point is a local max if it is >= both neighbours
+            n = len(lod_c)
+            for i in range(n):
+                if lod_c[i] < threshold:
+                    continue
+                left_ok  = (i == 0)     or (lod_c[i] >= lod_c[i - 1])
+                right_ok = (i == n - 1) or (lod_c[i] >= lod_c[i + 1])
+                if not (left_ok and right_ok):
+                    continue
+                # check separation from any already-accepted peak on this chr
+                too_close = any(
+                    abs(pos_c[i] - r[3]) < 1e-9   # same position
+                    or (lod_c[i] < r[4] - min_lod_gap)  # not sep enough
+                    for r in rows if r[1] == chrom
+                )
+                if too_close:
+                    continue
+                # build a temporary ScanResult view for this chromosome to
+                # get the CI (lod_drop_ci operates on a ScanResult)
+                _sr_c = ScanResult(
+                    locus_ids=lids_c, chromosomes=np.array([chrom] * n),
+                    positions=pos_c, lod=lod_c,
+                    p_value=scan_result.p_value[mask],
+                    betas=scan_result.betas[mask],
+                    h2_null={chrom: scan_result.h2_null.get(chrom, 0.0)},
+                    phenotype_id=scan_result.phenotype_id,
+                )
+                lo, hi, pk = lod_drop_ci(_sr_c, chrom, drop)
+                rows.append((scan_result.phenotype_id, chrom,
+                             lids_c[i], float(pos_c[i]),
+                             float(lod_c[i]), lo, hi))
+
+    return pd.DataFrame(rows, columns=list(_COLS))
 
 
 def fixef_eqtl_scan(phenotype, genomecache, covariates=None,

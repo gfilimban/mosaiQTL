@@ -2,7 +2,7 @@
 validate_sim_p2.py — Phase 2 simulated validation: all 11 miQTL functions
 
 Python mirror of validation/r_reference/port_sim_validation_p2.R.
-Self-contained: builds its own GenomeCache from phase2_sim/r_data/probs/
+Self-contained: builds its own GenomeCache from phase2/r_data/probs/
 (Phase 2 R script runs sim.CC.data() independently; cannot reuse Phase 1 cache).
 Uses real LOCO kinship throughout — R passes K=K_loco[[chr]] explicitly (scan.h2lmm
 without K= is OLS, not LOCO); Python uses kinship_decomp from calc_kinship(method='loco').
@@ -21,9 +21,9 @@ Sections:
   S11 instability              planted locus peak_freq ≥ 0.70
 
 Outputs:
-  phase2_sim/py_data/     Python outputs + checkpoint .done files
-  phase2_sim/compare/     merged py-vs-R side-by-side CSVs (no plots)
-  phase2_sim/plots/       all QC + comparison figures
+  phase2/py_data/     Python outputs + checkpoint .done files
+  phase2/compare/     merged py-vs-R side-by-side CSVs (no plots)
+  phase2/plots/       all QC + comparison figures
 
 Usage:
   python validation/validate_sim_p2.py
@@ -47,6 +47,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from scipy import stats as _scipy_stats
 from scipy.stats import genextreme as _gev
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
@@ -54,6 +55,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 from mosaiqtl.genotype.genomecache import GenomeCache, collapse_genomecache
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 from mosaiqtl.qtl.scan import (
+    find_peaks,
     instability_lm_scan,
     scan_h2lmm,
     scan_h2lmm_mi,
@@ -148,6 +150,27 @@ def _scan_to_df(scan) -> pd.DataFrame:
         'position_mb': scan.positions,
         'lod':         scan.lod,
     })
+
+
+def _correctness_stats(py_arr: np.ndarray, r_arr: np.ndarray) -> dict:
+    """Compute r, slope, intercept, max|Δ|, mean|Δ| for a Py-vs-R LOD comparison.
+
+    PASS requires all three: r ≥ threshold AND |slope−1| < 0.05 AND |intercept| < 0.1.
+    Slope and intercept catch systematic scale/offset bias that Pearson r cannot:
+    a Python implementation with LODs uniformly 2× R's would pass r=1.0 but fail slope≠1.
+    """
+    r_pearson, _ = _scipy_stats.pearsonr(py_arr, r_arr)
+    slope, intercept, *_ = _scipy_stats.linregress(r_arr, py_arr)
+    abs_diff = np.abs(py_arr - r_arr)
+    return {
+        'pearson_r':     float(r_pearson),
+        'slope':         float(slope),
+        'intercept':     float(intercept),
+        'max_abs_diff':  float(abs_diff.max()),
+        'mean_abs_diff': float(abs_diff.mean()),
+        'slope_ok':      abs(slope - 1.0) < 0.05,
+        'intercept_ok':  abs(intercept) < 0.1,
+    }
 
 
 def _scan_to_manhattan_dict(scan) -> dict:
@@ -369,8 +392,6 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
 
                 concordance = agree_count / max(total_count, 1)
                 results['P2-S2'] = _check('haplotype argmax concordance', concordance, 0.95)
-                pd.DataFrame([{'concordance': concordance, 'n_compared': total_count}]).to_csv(
-                    cmp_dir / 's2_haplotype_concordance.csv', index=False)
 
                 # haplotype prob scatter: R prob vs Python prob at all spot-check loci
                 from mosaiqtl.genotype.founders import FOUNDER_CODE as _FC2
@@ -407,6 +428,24 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 if rows_plot:
                     plot_df = pd.DataFrame(rows_plot)
                     plot_df.to_csv(cmp_dir / 's2_haplotype_probs.csv', index=False)
+                    # raw probability Pearson r (catches scale/normalisation errors
+                    # that argmax concordance misses — e.g. a constant 0.125 prior
+                    # would have 100% concordance on argmax but r≈0 on raw probs)
+                    cs2_probs = _correctness_stats(
+                        plot_df['py_prob'].values, plot_df['r_prob'].values)
+                    log.info('  raw prob r=%.5f  slope=%.3f  intercept=%.4f'
+                             '  max|Δ|=%.4f  (%d values)',
+                             cs2_probs['pearson_r'], cs2_probs['slope'],
+                             cs2_probs['intercept'], cs2_probs['max_abs_diff'],
+                             len(plot_df))
+                    pd.DataFrame([{
+                        'concordance':        concordance,
+                        'n_compared':         total_count,
+                        'raw_prob_r':         cs2_probs['pearson_r'],
+                        'raw_prob_slope':     cs2_probs['slope'],
+                        'raw_prob_intercept': cs2_probs['intercept'],
+                        'raw_prob_max_delta': cs2_probs['max_abs_diff'],
+                    }]).to_csv(cmp_dir / 's2_haplotype_concordance.csv', index=False)
                     fig, ax = plt.subplots(figsize=(4, 4), dpi=300)
                     ax.scatter(plot_df['r_prob'], plot_df['py_prob'],
                                s=0.5, alpha=0.2, color='#52A5DB', linewidths=0,
@@ -703,6 +742,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 betas_sim1_at_peak: 'np.ndarray | None' = None
                 peak_locus_sim1: str = ''
                 peak_chrom_sim1: str = ''
+                ci_rows: list = []  # find_peaks CI containment per sim
 
                 for sim_i in range(1, 11):
                     if sim_i not in sim_ys:
@@ -752,6 +792,38 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                                 betas_sim1_at_peak = sc.betas[peak_idx_arr[0]]  # (J,)
                                 peak_locus_sim1    = peak_py
                                 peak_chrom_sim1    = str(sc.chromosomes[peak_idx_arr[0]])
+                    # find_peaks CI: check if planted locus is within CI
+                    try:
+                        _thresh_fp = float(
+                            pd.read_csv(r_data / 'thresholds_r.csv')['threshold'].iloc[0]
+                        ) if (r_data / 'thresholds_r.csv').exists() else 3.0
+                        _fp_df = find_peaks(sc, _thresh_fp, drop=1.5)
+                        _planted_mb = None
+                        if planted and planted != '?':
+                            _r_row_fp = lod_r_df[
+                                (lod_r_df['sim_idx'] == sim_i) &
+                                (lod_r_df['locus'] == planted)]
+                            if len(_r_row_fp) > 0:
+                                _planted_mb = float(_r_row_fp['pos_mb'].iloc[0])
+                        for _, _pk_row in _fp_df.iterrows():
+                            _ci_lo = float(_pk_row['ci_lo_mb'])
+                            _ci_hi = float(_pk_row['ci_hi_mb'])
+                            _contains = (
+                                _planted_mb is not None and
+                                _ci_lo <= _planted_mb <= _ci_hi)
+                            ci_rows.append({
+                                'sim_idx':       sim_i,
+                                'chr':           _pk_row['chr'],
+                                'locus_id':      _pk_row['locus_id'],
+                                'pos_mb':        float(_pk_row['pos_mb']),
+                                'lod':           float(_pk_row['lod']),
+                                'ci_lo_mb':      _ci_lo,
+                                'ci_hi_mb':      _ci_hi,
+                                'planted_mb':    _planted_mb,
+                                'ci_contains':   _contains,
+                            })
+                    except Exception as _exc:
+                        log.debug('  find_peaks failed for sim.y.%d: %s', sim_i, _exc)
                     del sc
                     gc.collect()
 
@@ -766,6 +838,72 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 pass_rate = pass_count / 10.0
                 results['P2-S4'] = _check('S4 pass rate (≥50%)', pass_rate, 0.50)
                 log.info('    %d/10 phenotypes pass (r² ≥ 0.975)', pass_count)
+
+                # LOD at planted locus: for each sim, compare Python LOD at the
+                # planted QTL position against R's LOD at that exact locus.
+                # This validates signal strength, not just profile shape.
+                planted_lod_rows = []
+                for _si, _r2row in enumerate(r2_rows, 1):
+                    _planted = true_loci.get(_si, '')
+                    if not _planted:
+                        continue
+                    _r_sim = lod_r_df[lod_r_df['sim_idx'] == _si]
+                    _r_row = _r_sim[_r_sim['locus'] == _planted]
+                    if len(_r_row) == 0:
+                        continue
+                    _r_lod = float(_r_row['lod'].iloc[0])
+                    _py_df_si = all_py_df[all_py_df['sim_idx'] == _si]
+                    _py_row = _py_df_si[_py_df_si['locus'] == _planted]
+                    if len(_py_row) == 0:
+                        # fallback: nearest position
+                        _r_pos = float(_r_row['pos_mb'].iloc[0])
+                        _near = (_py_df_si['position_mb'] - _r_pos).abs().idxmin()
+                        _py_row = _py_df_si.loc[[_near]]
+                    _py_lod = float(_py_row['lod'].iloc[0]) if len(_py_row) > 0 else float('nan')
+                    planted_lod_rows.append({
+                        'sim_idx':        _si,
+                        'planted_locus':  _planted,
+                        'lod_r':          _r_lod,
+                        'lod_py':         _py_lod,
+                        'lod_delta':      abs(_py_lod - _r_lod),
+                    })
+                if planted_lod_rows:
+                    pl_df = pd.DataFrame(planted_lod_rows)
+                    pl_df.to_csv(cmp_dir / 's4_lod_at_planted.csv', index=False)
+                    log.info('  planted-locus LOD comparison: '
+                             'mean|Δ|=%.3f  max|Δ|=%.3f  n=%d sims',
+                             float(pl_df['lod_delta'].mean()),
+                             float(pl_df['lod_delta'].max()), len(pl_df))
+                    # bar chart: LOD at planted locus — R vs Python per simulation
+                    fig_pl, ax_pl = plt.subplots(figsize=(6, 3), dpi=300)
+                    x_pl = np.arange(len(pl_df))
+                    w_pl = 0.35
+                    ax_pl.bar(x_pl - w_pl/2, pl_df['lod_r'],  w_pl,
+                              color='#F4C245', edgecolor='white', lw=0.5, label='R')
+                    ax_pl.bar(x_pl + w_pl/2, pl_df['lod_py'], w_pl,
+                              color='#52A5DB', edgecolor='white', lw=0.5, label='Python')
+                    ax_pl.set_xticks(x_pl)
+                    ax_pl.set_xticklabels([f'sim.y.{r}' for r in pl_df['sim_idx']],
+                                          fontsize=7, rotation=45, ha='right')
+                    ax_pl.set_ylabel('LOD at planted locus', fontsize=8)
+                    ax_pl.set_title('LOD at planted QTL locus — R vs Python', fontsize=9)
+                    ax_pl.legend(fontsize=7)
+                    sns.despine(ax=ax_pl)
+                    fig_pl.tight_layout()
+                    fig_pl.savefig(plt_dir / 's4_lod_at_planted.png', dpi=300,
+                                   bbox_inches='tight')
+                    plt.close(fig_pl)
+                    log.info('  saved plots/s4_lod_at_planted.png')
+
+                # h² per chromosome — load from R if exported (requires R S4 to export loco_h2_r.csv)
+                h2_r_path = r_data / 'loco_h2_r.csv'
+                if h2_r_path.exists():
+                    h2_r_df = pd.read_csv(h2_r_path)
+                    h2_r_df['chr'] = h2_r_df['chr'].astype(str)
+                    log.info('  R LOCO h² per chromosome (sim.y.1):')
+                    for _, row_h2 in h2_r_df.iterrows():
+                        log.info('    chr%-3s  h²=%.4f', row_h2['chr'], float(row_h2['h2']))
+                    h2_r_df.to_csv(cmp_dir / 's4_loco_h2_r.csv', index=False)
 
                 # r² bar chart across all 10 simulations
                 if len(r2_df) > 0:
@@ -788,6 +926,50 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                                    bbox_inches='tight')
                     plt.close(fig_r2)
                     log.info('  saved plots/s4_r2_per_sim.png')
+
+                # find_peaks CI containment summary
+                if ci_rows:
+                    ci_df = pd.DataFrame(ci_rows)
+                    ci_df.to_csv(cmp_dir / 's4_peaks_ci.csv', index=False)
+                    n_ci_ok = int(ci_df['ci_contains'].sum())
+                    n_ci_tot = len(ci_df)
+                    log.info('  find_peaks CI containment: %d/%d peaks contain planted locus',
+                             n_ci_ok, n_ci_tot)
+                    # LOD profile for sim.y.1 with CI band
+                    ci_sim1 = ci_df[ci_df['sim_idx'] == 1]
+                    if len(ci_sim1) > 0:
+                        _pk1 = ci_sim1.loc[ci_sim1['lod'].idxmax()]
+                        py_sim1_scan_ci = all_py_df[
+                            (all_py_df['sim_idx'] == 1) &
+                            (all_py_df['chromosome'].astype(str) == str(_pk1['chr']))
+                        ].sort_values('position_mb').reset_index(drop=True)
+                        if len(py_sim1_scan_ci) > 0:
+                            fig_ci, ax_ci = plt.subplots(figsize=(7, 3), dpi=300)
+                            ax_ci.plot(py_sim1_scan_ci['position_mb'],
+                                       py_sim1_scan_ci['lod'],
+                                       color='#4F6EAF', linewidth=1.0)
+                            ax_ci.axhline(_pk1['lod'] - 1.5, color='#888888',
+                                          linewidth=0.6, linestyle=':',
+                                          label='peak − 1.5 LOD')
+                            ax_ci.axvspan(float(_pk1['ci_lo_mb']),
+                                          float(_pk1['ci_hi_mb']),
+                                          alpha=0.15, color='#52A5DB', label='1.5-LOD CI')
+                            if _pk1['planted_mb'] is not None:
+                                ax_ci.axvline(float(_pk1['planted_mb']),
+                                              color='#D83026', linewidth=1.0,
+                                              linestyle='--', label='planted locus')
+                            ax_ci.set_xlabel('Position (Mb)', fontsize=8)
+                            ax_ci.set_ylabel('LOD', fontsize=8)
+                            ax_ci.set_title(
+                                f'LOD profile + 1.5-LOD CI  sim.y.1  chr{_pk1["chr"]}',
+                                fontsize=9)
+                            ax_ci.legend(fontsize=7)
+                            sns.despine(ax=ax_ci)
+                            fig_ci.tight_layout()
+                            fig_ci.savefig(plt_dir / 's4_ci_profile.png', dpi=300,
+                                           bbox_inches='tight')
+                            plt.close(fig_ci)
+                            log.info('  saved plots/s4_ci_profile.png')
 
                 # allele effects comparison at peak locus (sim.y.1)
                 ae_r_path = r_data / 'allele_effects_r.csv'
@@ -843,19 +1025,36 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     on='locus', how='inner')
                 cmp1.to_csv(cmp_dir / 's4_lod_sim1.csv', index=False)
                 if len(cmp1) > 0:
-                    r2_1 = float(
-                        np.corrcoef(cmp1['lod_python'], cmp1['lod_r'])[0, 1] ** 2)
+                    cs1   = _correctness_stats(cmp1['lod_python'].values,
+                                               cmp1['lod_r'].values)
+                    r2_1  = cs1['pearson_r'] ** 2
+                    _sflg = '' if cs1['slope_ok']     else '  ⚠ slope'
+                    _iflg = '' if cs1['intercept_ok'] else '  ⚠ intercept'
+                    log.info('    sim.y.1 scatter: r=%.4f  slope=%.3f  intercept=%.3f'
+                             '  max|Δ|=%.3f%s%s',
+                             cs1['pearson_r'], cs1['slope'], cs1['intercept'],
+                             cs1['max_abs_diff'], _sflg, _iflg)
                     # LOD scatter: R vs Python
                     fig, ax = plt.subplots(figsize=(4, 4), dpi=300)
                     ax.scatter(cmp1['lod_r'], cmp1['lod_python'],
-                               s=1, alpha=0.4, color='#4F6EAF', linewidths=0)
+                               s=6, alpha=0.4, color='#4F6EAF', linewidths=0,
+                               rasterized=True)
                     lo = min(cmp1['lod_r'].min(), cmp1['lod_python'].min())
                     hi = max(cmp1['lod_r'].max(), cmp1['lod_python'].max())
-                    ax.plot([lo, hi], [lo, hi], color='#D83026',
-                            linewidth=0.8, linestyle='--')
+                    _rx = np.array([lo, hi])
+                    ax.plot(_rx, _rx, color='#D83026',
+                            linewidth=0.8, linestyle='--', label='identity')
+                    ax.plot(_rx, cs1['slope'] * _rx + cs1['intercept'],
+                            color='#55AF5B', linewidth=0.8, linestyle='-',
+                            label=f'fit slope={cs1["slope"]:.3f}')
                     ax.set_xlabel('R LOD (miQTL)', fontsize=8)
                     ax.set_ylabel('Python LOD (mosaiQTL)', fontsize=8)
-                    ax.set_title(f'LOD sim.y.1  r²={r2_1:.4f}', fontsize=9)
+                    ax.set_title(
+                        f'LOD sim.y.1  r²={r2_1:.4f}\n'
+                        f'slope={cs1["slope"]:.3f}  intercept={cs1["intercept"]:.3f}'
+                        f'  max|Δ|={cs1["max_abs_diff"]:.3f}',
+                        fontsize=8)
+                    ax.legend(fontsize=6.5)
                     sns.despine(ax=ax)
                     fig.tight_layout()
                     fig.savefig(plt_dir / 's4_lod_scatter.png', dpi=300,
@@ -1111,7 +1310,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
     _t_sec = time.perf_counter()
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
-            log.info('\nS6: permutation thresholds (n=250, chr%s)...', peak_chrom)
+            log.info('\nS6: permutation thresholds (n=250, genome-wide)...')
             if peak_chrom:
                 if rop_scan_1 is None:
                     rop_scan_1 = scan_h2lmm(
@@ -1127,7 +1326,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     c: (kinship_decomp[c]['vectors']
                         * kinship_decomp[c]['values'][None, :]
                         @ kinship_decomp[c]['vectors'].T)
-                    for c in [peak_chrom]
+                    for c in kinship_decomp
                 }
                 null_y   = generate_null_outcomes(sim_ys[1], n_samples=250,
                                                   method='permutation', seed=1)
@@ -1137,7 +1336,6 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     kinship_decomp=kinship_decomp,
                     kinship_loco=kinship_loco_s6,
                     fix_h2=True, use_rint=False,
-                    chrom=peak_chrom,
                     permutation_method='parametric',
                     seed=1,
                 )
@@ -1258,19 +1456,38 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 merged = mi_py.rename(columns={'lod': 'lod_python'}).merge(
                     r_mi[['locus', 'lod_r']], on='locus', how='inner')
                 merged.to_csv(cmp_dir / 's7_mi_lod.csv', index=False)
-                r_val = float(np.corrcoef(merged['lod_python'], merged['lod_r'])[0, 1])
-                results['P2-S7'] = _check('MI LOD r', r_val, 0.75)
+                cs7 = _correctness_stats(merged['lod_python'].values,
+                                         merged['lod_r'].values)
+                # gate raised to 0.95: old 0.75 threshold was too loose for a validated port
+                _s7_ok = (cs7['pearson_r'] >= 0.95
+                          and cs7['slope_ok'] and cs7['intercept_ok'])
+                results['P2-S7'] = _s7_ok
+                sym7 = PASS if _s7_ok else FAIL
+                log.info('  %s MI LOD r=%.4f  slope=%.3f  intercept=%.3f  '
+                         'max|Δ|=%.3f  (threshold r≥0.95, |slope-1|<0.05, |b|<0.1)',
+                         sym7, cs7['pearson_r'], cs7['slope'], cs7['intercept'],
+                         cs7['max_abs_diff'])
 
                 fig, ax = plt.subplots(figsize=(4, 4), dpi=300)
                 ax.scatter(merged['lod_r'], merged['lod_python'],
-                           s=1, alpha=0.4, color='#55AF5B', linewidths=0)
+                           s=6, alpha=0.4, color='#55AF5B', linewidths=0,
+                           rasterized=True)
                 lo = min(merged['lod_r'].min(), merged['lod_python'].min())
                 hi = max(merged['lod_r'].max(), merged['lod_python'].max())
-                ax.plot([lo, hi], [lo, hi], color='#D83026',
-                        linewidth=0.8, linestyle='--')
+                _rx7 = np.array([lo, hi])
+                ax.plot(_rx7, _rx7, color='#D83026', linewidth=0.8,
+                        linestyle='--', label='identity')
+                ax.plot(_rx7, cs7['slope'] * _rx7 + cs7['intercept'],
+                        color='#55AF5B', linewidth=0.8, linestyle='-',
+                        label=f'fit slope={cs7["slope"]:.3f}')
                 ax.set_xlabel('R LOD (MI)', fontsize=8)
                 ax.set_ylabel('Python LOD (MI)', fontsize=8)
-                ax.set_title(f'MI LOD  r={r_val:.4f}', fontsize=9)
+                ax.set_title(
+                    f'MI LOD  r={cs7["pearson_r"]:.4f}\n'
+                    f'slope={cs7["slope"]:.3f}  intercept={cs7["intercept"]:.3f}'
+                    f'  max|Δ|={cs7["max_abs_diff"]:.3f}',
+                    fontsize=8)
+                ax.legend(fontsize=6.5)
                 sns.despine(ax=ax)
                 fig.tight_layout()
                 fig.savefig(plt_dir / 's7_mi_scatter.png', dpi=300, bbox_inches='tight')
@@ -1286,30 +1503,103 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                         'note': 'n_imp=11, all chr'})
 
     # ─────────────────────────────────────────────────────────────────────────
-    # S8 — SNP scan (gated: skip if no snp_lod_r.csv or allele_dir)
+    # S8 — SNP scan (gated: requires GM_fo_mm39.csv + snp_lod_r.csv)
     # ─────────────────────────────────────────────────────────────────────────
     sec = 8
     _t_sec = time.perf_counter()
     if sec in sections:
         log.info('\nS8: SNP scan (gated)...')
-        snp_r_path = r_data / 'snp_lod_r.csv'
+        snp_r_path  = r_data / 'snp_lod_r.csv'
+        gm_csv_path = Path('../input/GM_fo_mm39.csv')
+        alleles_h5  = py_dir / 'founder_alleles.h5'
+
         if not snp_r_path.exists():
-            log.info('  %s snp_lod_r.csv not found — S8 SKIPPED (no allele_dir built)', SKIP)
+            log.info('  %s snp_lod_r.csv not found — S8 SKIPPED', SKIP)
+            results['P2-S8'] = None
+        elif not gm_csv_path.exists():
+            log.info('  %s GM_fo_mm39.csv not found at %s — S8 SKIPPED', SKIP, gm_csv_path)
+            results['P2-S8'] = None
+        elif 1 not in sim_ys:
+            log.info('  %s sim.y.1 not loaded — S8 SKIPPED', SKIP)
             results['P2-S8'] = None
         else:
-            log.info('  snp_lod_r.csv found; attempting Python SNP scan...')
             try:
-                allele_dir = Path('validation/phase2_sim/allele_dir')
-                if not allele_dir.exists():
-                    log.info('  %s allele_dir not found at %s — S8 SKIPPED', SKIP, allele_dir)
-                    results['P2-S8'] = None
+                from mosaiqtl.genotype.snp_db import build_founder_allele_db
+                from mosaiqtl.qtl.snp_scan import imputed_snp_scan_from_db
+
+                # build allele HDF5 once (or reuse if present and not --force)
+                if not alleles_h5.exists() or force:
+                    log.info('  building founder allele HDF5 from %s...', gm_csv_path)
+                    _gm_fcols = ['AJ', 'B6J', '129S1J', 'NODJ',
+                                 'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ']
+                    _summary = build_founder_allele_db(
+                        gm_csv_path, cache, alleles_h5,
+                        founder_cols=_gm_fcols,
+                        max_dist_mb=0.5,
+                    )
+                    log.info('  allele HDF5: %d SNPs written', _summary['n_written'])
                 else:
-                    # load SNP genotypes from allele_dir (minimal implementation)
-                    log.info('  SNP scan not fully implemented for Phase 2 '
-                             '(allele_dir format TBD) — S8 SKIPPED')
+                    log.info('  reusing existing founder_alleles.h5')
+
+                # founder name map: GM abbreviated → cache single-letter
+                _fcol_map = {
+                    'A': 'AJ', 'B': 'B6J', 'C': '129S1J',
+                    'D': 'NODJ', 'E': 'NZOJ', 'F': 'CASTJ',
+                    'G': 'PWKJ', 'H': 'WSBJ',
+                }
+
+                log.info('  running SNP scan on peak chromosome (%s)...', peak_chrom)
+                _s8_chrom = str(peak_chrom).lstrip('chr') if peak_chrom else peak_chrom
+                snp_lod_py = imputed_snp_scan_from_db(
+                    sim_ys[1], cache, alleles_h5,
+                    kinship_decomp=kinship_decomp,
+                    chrom=_s8_chrom,
+                    founder_col_map=_fcol_map,
+                    use_rint=False,
+                    phenotype_id='sim.y.1',
+                )
+                snp_lod_py.to_csv(py_dir / 's8_snp_lod.csv', index=False)
+
+                snp_r = pd.read_csv(snp_r_path)
+                merged_snp = snp_lod_py.rename(columns={'snp': 'snp_id',
+                                                         'lod': 'lod_py'}).merge(
+                    snp_r[['snp', 'lod']].rename(columns={'snp': 'snp_id',
+                                                            'lod': 'lod_r'}),
+                    on='snp_id', how='inner')
+                if len(merged_snp) > 1:
+                    merged_snp.to_csv(cmp_dir / 's8_snp_lod.csv', index=False)
+                    cs8 = float(
+                        np.corrcoef(merged_snp['lod_py'], merged_snp['lod_r'])[0, 1])
+                    log.info('  SNP LOD r=%.4f  n_matched=%d', cs8, len(merged_snp))
+
+                    # SNP LOD scatter: R vs Python
+                    fig_s8, ax_s8 = plt.subplots(figsize=(4, 4), dpi=300)
+                    ax_s8.scatter(merged_snp['lod_r'], merged_snp['lod_py'],
+                                  s=6, alpha=0.5, color='#683C91', linewidths=0,
+                                  rasterized=True)
+                    _lo8 = min(merged_snp['lod_r'].min(), merged_snp['lod_py'].min())
+                    _hi8 = max(merged_snp['lod_r'].max(), merged_snp['lod_py'].max())
+                    ax_s8.plot([_lo8, _hi8], [_lo8, _hi8],
+                               color='#D83026', linewidth=0.8, linestyle='--')
+                    ax_s8.set_xlabel('R SNP LOD (miQTL)', fontsize=8)
+                    ax_s8.set_ylabel('Python SNP LOD (mosaiQTL)', fontsize=8)
+                    ax_s8.set_title(
+                        f'SNP LOD  r={cs8:.4f}  chr{peak_chrom}  sim.y.1\n'
+                        f'(marginal vs diplotype model — some divergence expected)',
+                        fontsize=8)
+                    sns.despine(ax=ax_s8)
+                    fig_s8.tight_layout()
+                    fig_s8.savefig(plt_dir / 's8_snp_lod_scatter.png', dpi=300,
+                                   bbox_inches='tight')
+                    plt.close(fig_s8)
+                    log.info('  saved plots/s8_snp_lod_scatter.png')
+                    results['P2-S8'] = None  # gated: marginal vs diplotype model diff, not gradeable
+                else:
+                    log.info('  %s no overlapping SNPs — S8 SKIPPED', SKIP)
                     results['P2-S8'] = None
-            except Exception:
-                log.info('  %s S8 errored — SKIPPED', SKIP)
+
+            except Exception as _exc_s8:
+                log.info('  %s S8 errored: %s', SKIP, _exc_s8)
                 results['P2-S8'] = None
 
     timing_rows.append({'section': 'S8_snp_scan', 'elapsed_s': time.perf_counter() - _t_sec})
@@ -1343,24 +1633,38 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                         columns={'lod_mediated': 'lod_mediated_r'}),
                     on='locus', how='inner')
                 if len(merged) > 1:
-                    r_val = float(
-                        np.corrcoef(merged['lod_mediated'],
-                                    merged['lod_mediated_r'])[0, 1])
                     merged.to_csv(cmp_dir / 's9_mediation.csv', index=False)
-                    results['P2-S9'] = _check('mediation LOD r', r_val, 0.90)
+                    cs9 = _correctness_stats(merged['lod_mediated'].values,
+                                             merged['lod_mediated_r'].values)
+                    _s9_ok = (cs9['pearson_r'] >= 0.90
+                              and cs9['slope_ok'] and cs9['intercept_ok'])
+                    results['P2-S9'] = _s9_ok
+                    sym9 = PASS if _s9_ok else FAIL
+                    log.info('  %s mediation LOD r=%.4f  slope=%.3f  intercept=%.3f  '
+                             'max|Δ|=%.3f  (threshold r≥0.90, |slope-1|<0.05, |b|<0.1)',
+                             sym9, cs9['pearson_r'], cs9['slope'], cs9['intercept'],
+                             cs9['max_abs_diff'])
 
                     fig, ax = plt.subplots(figsize=(4, 4), dpi=300)
                     ax.scatter(merged['lod_mediated_r'], merged['lod_mediated'],
-                               s=3, alpha=0.5, color='#DA9CC1', linewidths=0)
-                    lo = min(merged['lod_mediated_r'].min(),
-                             merged['lod_mediated'].min())
-                    hi = max(merged['lod_mediated_r'].max(),
-                             merged['lod_mediated'].max())
-                    ax.plot([lo, hi], [lo, hi], color='#D83026',
-                            linewidth=0.8, linestyle='--')
+                               s=6, alpha=0.4, color='#DA9CC1', linewidths=0,
+                               rasterized=True)
+                    lo = min(merged['lod_mediated_r'].min(), merged['lod_mediated'].min())
+                    hi = max(merged['lod_mediated_r'].max(), merged['lod_mediated'].max())
+                    _rx9 = np.array([lo, hi])
+                    ax.plot(_rx9, _rx9, color='#D83026', linewidth=0.8,
+                            linestyle='--', label='identity')
+                    ax.plot(_rx9, cs9['slope'] * _rx9 + cs9['intercept'],
+                            color='#55AF5B', linewidth=0.8, linestyle='-',
+                            label=f'fit slope={cs9["slope"]:.3f}')
                     ax.set_xlabel('R mediated LOD', fontsize=8)
                     ax.set_ylabel('Python mediated LOD', fontsize=8)
-                    ax.set_title(f'Mediation  r={r_val:.4f}', fontsize=9)
+                    ax.set_title(
+                        f'Mediation  r={cs9["pearson_r"]:.4f}\n'
+                        f'slope={cs9["slope"]:.3f}  intercept={cs9["intercept"]:.3f}'
+                        f'  max|Δ|={cs9["max_abs_diff"]:.3f}',
+                        fontsize=8)
+                    ax.legend(fontsize=6.5)
                     sns.despine(ax=ax)
                     fig.tight_layout()
                     fig.savefig(plt_dir / 's9_mediation_scatter.png', dpi=300,
@@ -1422,21 +1726,56 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     py_dir / 's10_bootstrap_ci.csv', index=False)
 
                 ci_r = pd.read_csv(ci_r_path)
-                planted_mb = float(ci_r['planted_locus_mb'].iloc[0])
+                planted_mb    = float(ci_r['planted_locus_mb'].iloc[0])
+                ci_lo_r       = float(ci_r['ci_lo'].iloc[0])
+                ci_hi_r       = float(ci_r['ci_hi'].iloc[0])
                 planted_in_ci = (ci['ci_lo'] <= planted_mb <= ci['ci_hi'])
+                r_planted_in_r_ci = (ci_lo_r <= planted_mb <= ci_hi_r)
+                ci_width_py   = ci['ci_hi'] - ci['ci_lo']
+                ci_width_r    = ci_hi_r - ci_lo_r
+                lo_delta      = abs(ci['ci_lo'] - ci_lo_r)
+                hi_delta      = abs(ci['ci_hi'] - ci_hi_r)
                 sym = PASS if planted_in_ci else FAIL
-                log.info('  %s planted locus %.2f Mb in CI [%.2f, %.2f]: %s',
-                         sym, planted_mb, ci['ci_lo'], ci['ci_hi'], planted_in_ci)
+                log.info('  %s Python CI: [%.2f, %.2f]  width=%.2f Mb  contains planted=%s',
+                         sym, ci['ci_lo'], ci['ci_hi'], ci_width_py, planted_in_ci)
+                log.info('       R    CI: [%.2f, %.2f]  width=%.2f Mb  contains planted=%s',
+                         ci_lo_r, ci_hi_r, ci_width_r, r_planted_in_r_ci)
+                log.info('       CI bound delta: lo=%.2f Mb  hi=%.2f Mb', lo_delta, hi_delta)
 
                 pd.DataFrame([{
-                    'ci_lo_py':    ci['ci_lo'],
-                    'ci_hi_py':    ci['ci_hi'],
-                    'ci_lo_r':     float(ci_r['ci_lo'].iloc[0]),
-                    'ci_hi_r':     float(ci_r['ci_hi'].iloc[0]),
-                    'planted_mb':  planted_mb,
-                    'in_ci_py':    planted_in_ci,
+                    'ci_lo_py':          ci['ci_lo'],
+                    'ci_hi_py':          ci['ci_hi'],
+                    'width_py':          ci_width_py,
+                    'ci_lo_r':           ci_lo_r,
+                    'ci_hi_r':           ci_hi_r,
+                    'width_r':           ci_width_r,
+                    'lo_delta_mb':       lo_delta,
+                    'hi_delta_mb':       hi_delta,
+                    'planted_mb':        planted_mb,
+                    'in_ci_py':          planted_in_ci,
+                    'in_ci_r':           r_planted_in_r_ci,
                 }]).to_csv(cmp_dir / 's10_ci_summary.csv', index=False)
                 results['P2-S10'] = planted_in_ci
+
+                # overlaid CI interval visualization: Python vs R side by side
+                fig_cmp, ax_cmp = plt.subplots(figsize=(7, 2.2), dpi=300)
+                ax_cmp.barh(['Python'], [ci_width_py], left=[ci['ci_lo']],
+                            height=0.3, color='#52A5DB', alpha=0.75, label='Python CI')
+                ax_cmp.barh(['R'], [ci_width_r], left=[ci_lo_r],
+                            height=0.3, color='#F4C245', alpha=0.75, label='R CI')
+                ax_cmp.axvline(planted_mb, color='#D83026', linewidth=1.2,
+                               label=f'planted {planted_mb:.1f} Mb')
+                ax_cmp.set_xlabel('Position (Mb)', fontsize=8)
+                ax_cmp.set_title(
+                    f'95% CI comparison — Python vs R\n'
+                    f'lo Δ={lo_delta:.2f} Mb  hi Δ={hi_delta:.2f} Mb', fontsize=9)
+                ax_cmp.legend(fontsize=7)
+                sns.despine(ax=ax_cmp)
+                fig_cmp.tight_layout()
+                fig_cmp.savefig(plt_dir / 's10_ci_comparison.png', dpi=300,
+                                bbox_inches='tight')
+                plt.close(fig_cmp)
+                log.info('  saved plots/s10_ci_comparison.png')
 
                 # LOD profile + CI plot
                 _, positions_c, _ = cache.get_chromosome(peak_chrom)
@@ -1586,7 +1925,33 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                              planted_locus, py_peak_locus)
                     results['P2-S11'] = None
 
-                # LOD profile plot
+                # R-vs-Python instability profile comparison (same chromosome, same loci)
+                # R: median -log10(p) per locus.  Python: mean LOD per subsample.
+                # Different scales so normalize both to [0,1] for shape comparison.
+                r_instab = pd.read_csv(instab_r_path)
+                r_instab['chr'] = r_instab['chr'].astype(str)
+                r_instab_chr = r_instab[r_instab['chr'] == peak_chrom].copy()
+                instab_merged = instab_py[['locus', 'position_mb', 'lod']].rename(
+                    columns={'lod': 'lod_py'}).merge(
+                    r_instab_chr[['locus', 'lod']].rename(columns={'lod': 'lod_r'}),
+                    on='locus', how='inner')
+                if len(instab_merged) > 1:
+                    instab_merged.to_csv(cmp_dir / 's11_instability.csv', index=False)
+                    _py_n = instab_merged['lod_py'].values
+                    _r_n  = instab_merged['lod_r'].values
+                    _py_norm = (_py_n - _py_n.min()) / (_py_n.max() - _py_n.min() + 1e-12)
+                    _r_norm  = (_r_n  - _r_n.min())  / (_r_n.max()  - _r_n.min()  + 1e-12)
+                    r_shape = float(_scipy_stats.pearsonr(_py_norm, _r_norm)[0])
+                    _pk_py_pos = float(instab_merged.loc[
+                        instab_merged['lod_py'].idxmax(), 'position_mb'])
+                    _pk_r_pos  = float(instab_merged.loc[
+                        instab_merged['lod_r'].idxmax(),  'position_mb'])
+                    peak_offset_mb = abs(_pk_py_pos - _pk_r_pos)
+                    log.info('  instability profile shape r=%.4f  '
+                             'peak offset=%.2f Mb (Py=%.2f  R=%.2f)',
+                             r_shape, peak_offset_mb, _pk_py_pos, _pk_r_pos)
+
+                # LOD profile plot (Python only)
                 fig, ax = plt.subplots(figsize=(6, 3), dpi=300)
                 ax.plot(instab_py['position_mb'], instab_py['lod'],
                         color='#683C91', linewidth=0.8)
@@ -1607,6 +1972,30 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 fig.savefig(plt_dir / 's11_instability_scatter.png', dpi=300,
                             bbox_inches='tight')
                 plt.close(fig)
+
+                # overlaid R-vs-Python profile (normalized) with planted locus
+                if len(instab_merged) > 1:
+                    fig_ov, ax_ov = plt.subplots(figsize=(6, 3), dpi=300)
+                    ax_ov.plot(instab_merged['position_mb'], _py_norm,
+                               color='#52A5DB', linewidth=0.8, label='Python (norm)')
+                    ax_ov.plot(instab_merged['position_mb'], _r_norm,
+                               color='#F4C245', linewidth=0.8, label='R (norm)')
+                    if planted_locus and planted_locus in py_loci:
+                        ax_ov.axvline(planted_pos, color='#D83026', linewidth=1.0,
+                                      linestyle='--', label=f'planted')
+                    ax_ov.set_xlabel('Position (Mb)', fontsize=8)
+                    ax_ov.set_ylabel('Normalized instability score', fontsize=8)
+                    ax_ov.set_title(
+                        f'Instability R vs Python — chr{peak_chrom}\n'
+                        f'shape r={r_shape:.4f}  peak Δ={peak_offset_mb:.2f} Mb',
+                        fontsize=9)
+                    ax_ov.legend(fontsize=7)
+                    sns.despine(ax=ax_ov)
+                    fig_ov.tight_layout()
+                    fig_ov.savefig(plt_dir / 's11_instability_rvspy.png', dpi=300,
+                                   bbox_inches='tight')
+                    plt.close(fig_ov)
+                    log.info('  saved plots/s11_instability_rvspy.png')
                 del instab_scan
                 gc.collect()
                 _mark_done(py_dir, str(sec))
@@ -1631,17 +2020,17 @@ def _print_summary(
 ) -> None:
     """print gate summary table and write gate_summary.csv + timing_sections.csv."""
     gate_order = [
-        ('P2-S1',  'cache structure'),
-        ('P2-S2',  'haplotype concordance ≥ 0.95'),
-        ('P2-S3',  'kinship r > 0.999 (worst chr)'),
-        ('P2-S4',  'LMM scan ≥50% phenotypes r² ≥ 0.975'),
-        ('P2-S5',  'cache collapse ≥5% removed AND lod_r² ≥ 0.999'),
-        ('P2-S6',  'GEV fit delta (GEV vs empirical) < 0.5'),
-        ('P2-S7',  'MI LOD r ≥ 0.75'),
-        ('P2-S8',  'SNP scan (gated)'),
-        ('P2-S9',  'mediation LOD r ≥ 0.90'),
-        ('P2-S10', 'bootstrap CI contains planted locus'),
-        ('P2-S11', 'instability planted peak_freq ≥ 0.70'),
+        ('P2-S1',  'cache structure — loci/founders/samples match R'),
+        ('P2-S2',  'haplotype argmax concordance ≥ 0.95'),
+        ('P2-S3',  'LOCO kinship r > 0.999 (worst chr, all pairwise)'),
+        ('P2-S4',  'LMM scan: ≥50% phenotypes r² ≥ 0.975 + planted-locus LOD'),
+        ('P2-S5',  'cache collapse — N/A on sparcc_cache (pre-collapsed)'),
+        ('P2-S6',  'GEV threshold delta (Python vs R) < 0.5 LOD'),
+        ('P2-S7',  'MI LOD r ≥ 0.95 + |slope−1| < 0.05 + |intercept| < 0.1'),
+        ('P2-S8',  'SNP scan — gated, requires allele_dir (PORT-08)'),
+        ('P2-S9',  'mediation LOD r ≥ 0.90 + slope/intercept'),
+        ('P2-S10', 'bootstrap CI contains planted locus (+ R/Py CI bounds compared)'),
+        ('P2-S11', 'instability planted peak_freq ≥ 0.70 (+ R/Py profile shape)'),
     ]
     log.info('\n── Phase 2 gate summary ─────────────────────────────────────────')
     rows = []
@@ -1658,7 +2047,7 @@ def _print_summary(
             stat = 'FAIL'
         log.info('  %s %-8s %s', sym, gate, desc)
         rows.append({'gate': gate, 'description': desc, 'result': stat})
-    scored  = {k: v for k, v in results.items() if v is not None}
+    scored  = {k: v for k, v in results.items() if isinstance(v, bool)}
     n_pass  = sum(scored.values())
     n_total = len(scored)
     log.info('')
@@ -1693,9 +2082,9 @@ def main() -> None:
     """entry point."""
     ap = argparse.ArgumentParser(
         description='Phase 2 validation: all 11 miQTL functions (simulated data)')
-    ap.add_argument('--r_data', default='validation/phase2_sim/r_data',
+    ap.add_argument('--r_data', default='validation/phase2/r_data',
                     help='path to R reference CSVs from port_sim_validation_p2.R')
-    ap.add_argument('--out',    default='validation/phase2_sim',
+    ap.add_argument('--out',    default='validation/phase2',
                     help='output root — writes to out/py_data/, out/compare/, out/plots/')
     ap.add_argument('--sections', default=None,
                     help='comma-separated section numbers to run (e.g. 3,4,6); '

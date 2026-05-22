@@ -95,6 +95,11 @@ class GenomeCache:
         loads probs into RAM at call time — one chromosome in RAM during scan,
         not all chromosomes (lazy h5py Dataset or eager numpy array both handled).
 
+        positions are guaranteed sorted ascending on return.  HAPPY format
+        stores loci in R's internal order (not genomic order); sorting is
+        applied once on first access and cached so all subsequent callers
+        (kinship, scan, snp_db, CI bootstrap) see consistent ordered data.
+
         parameters
         ----------
         chrom : str
@@ -107,7 +112,20 @@ class GenomeCache:
         probs : np.ndarray (n_loci, n_subjects, n_founders)
         """
         d = self._data[chrom]
-        return d['locus_ids'], d['positions'], np.asarray(d['probs'])
+        lids  = d['locus_ids']
+        pos   = d['positions']
+        probs = np.asarray(d['probs'])
+
+        if len(pos) > 1 and not np.all(pos[:-1] <= pos[1:]):
+            ord_  = np.argsort(pos)
+            lids  = lids[ord_]
+            pos   = pos[ord_]
+            probs = probs[ord_]
+            d['locus_ids'] = lids
+            d['positions'] = pos
+            d['probs']     = probs
+
+        return lids, pos, probs
 
     def n_loci(self, chrom):
         """number of loci on a chromosome."""

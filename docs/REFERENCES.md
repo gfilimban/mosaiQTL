@@ -67,6 +67,26 @@
 
 ---
 
+## FDR / MULTIPLE TESTING
+
+| Reference | DOI | Role in mosaiQTL |
+|---|---|---|
+| Storey JD. A direct approach to false discovery rates. *JRSS-B* 2002 | 10.1111/1467-9868.00346 | Storey q-value: π₀ estimation via spline smoother; q(i)=π₀×m×p(i)/rank(p(i)); replaces BH placeholder (SWE-09) |
+| Storey JD & Tibshirani R. Statistical significance for genome-wide studies. *PNAS* 2003 | 10.1073/pnas.1530509100 | R `qvalue` package — reference implementation used as ground-truth fixture in test_fdr.py |
+| Benjamini Y & Hochberg Y. Controlling the false discovery rate. *JRSS-B* 1995 | 10.1111/j.2517-6161.1995.tb02031.x | BH-FDR (π₀=1 special case of Storey); anti-conservative when true signal present; replaced by Storey in pipeline.py |
+
+---
+
+## SNP FINE-MAPPING
+
+| Reference | DOI | Role in mosaiQTL |
+|---|---|---|
+| Keele GR et al. Determinants of QTL mapping power in the realized Collaborative Cross. *G3* 2019 | 10.1534/g3.119.400194 | `imputed.snp.scan.h2lmm()` — miQTL reference for PORT-08 haplotype-imputed SNP scan |
+| Broman KW et al. R/qtl2: Software for Mapping QTL with High-Dimensional Data. *Genetics* 2019 | 10.1534/genetics.119.302463 | `scan1snps()` + `index_snps()` — direct-join SNP↔locus design used in snp_db.py; `find_peaks()` API design |
+| Churchill GA et al. The Collaborative Cross, a community resource for genetic analysis. *Nat Genet* 2004 | 10.1038/ng1104-1133 | Founder probability weighting formula: d[strain]=Σ_f H[strain,f]×geno[f]; theoretical basis of PORT-08 imputation |
+
+---
+
 ## DESIGN PRINCIPLES
 
 | Reference | DOI | Role in mosaiQTL |

@@ -5,6 +5,7 @@ imputes biallelic snp dosages from founder haplotype probabilities,
 then runs the haplotype lmm scan restricted to the imputed dosage.
 
   imputed.snp.scan.h2lmm()   →  imputed_snp_scan_h2lmm()
+  build.allele.dir() + load  →  imputed_snp_scan_from_db()  (HDF5 path)
 """
 
 import os
@@ -49,7 +50,7 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
     -------
     pd.DataFrame  columns: snp, chr, pos_mb, lod, p_value, beta_dosage
     """
-    from . import kinship as kin_module
+    from ..genotype import kinship as kin_module
     from . import lmm as lmm_module
     from ..utils import rint as _rint
 
@@ -139,6 +140,101 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
             })
 
     return pd.DataFrame(results)
+
+
+def imputed_snp_scan_from_db(
+    phenotype: np.ndarray,
+    genomecache,
+    alleles_h5: 'str | os.PathLike',
+    covariates: 'np.ndarray | None' = None,
+    kinship_decomp: 'dict | None' = None,
+    chrom: 'str | None' = None,
+    founder_col_map: 'dict[str, str] | None' = None,
+    use_rint: bool = True,
+    use_reml: bool = True,
+    phenotype_id: str = 'unknown',
+    just_these_snps: 'list | None' = None,
+) -> pd.DataFrame:
+    """SNP scan loading founder allele calls from an HDF5 database.
+
+    Wraps imputed_snp_scan_h2lmm: loads the founder allele HDF5 built by
+    build_founder_allele_db(), converts nucleotide calls (A/T/C/G) to
+    binary 0/1 dosage (alphabetically later allele = alt = 1), then passes
+    the numeric snp_genos DataFrame to imputed_snp_scan_h2lmm.
+
+    parameters
+    ----------
+    phenotype   : np.ndarray (n,)
+    genomecache : GenomeCache
+    alleles_h5  : path to HDF5 built by build_founder_allele_db()
+    covariates  : np.ndarray (n, p) or None
+    kinship_decomp : dict or None
+    chrom       : restrict scan to this chromosome (e.g. 'chr10')
+    founder_col_map : dict mapping HDF5 founder column names to cache
+                  founder names.  e.g. {'AJ': 'A', 'B6J': 'B', ...} when
+                  GM_fo_mm39.csv was built with abbreviated founder names
+                  but the cache uses single-letter codes.  None = no rename.
+    use_rint    : bool
+    use_reml    : bool
+    phenotype_id : str
+    just_these_snps : list or None  restrict to these SNP ids
+
+    returns
+    -------
+    pd.DataFrame  columns: snp, chr, pos_mb, lod, p_value, beta_dosage
+    """
+    from ..genotype.snp_db import load_founder_alleles
+
+    alleles_df = load_founder_alleles(alleles_h5, chrom=chrom)
+    if alleles_df.empty:
+        return pd.DataFrame(
+            columns=['snp', 'chr', 'pos_mb', 'lod', 'p_value', 'beta_dosage'])
+
+    meta_cols = {'marker', 'chr', 'pos_mb', 'pos_bp', 'locus_id'}
+    hdf5_fcols = [c for c in alleles_df.columns if c not in meta_cols]
+
+    if founder_col_map is not None:
+        alleles_df = alleles_df.rename(columns=founder_col_map)
+        hdf5_fcols = [founder_col_map.get(c, c) for c in hdf5_fcols]
+
+    cache_founders = list(genomecache.founders)
+    overlap = [f for f in cache_founders if f in hdf5_fcols]
+    if len(overlap) < 2:
+        raise ValueError(
+            f'founder columns in alleles_h5 {hdf5_fcols} do not overlap with '
+            f'genomecache.founders {cache_founders}. Use founder_col_map to rename.')
+
+    # convert nucleotide calls → 0/1 dosage (alt = alphabetically later allele)
+    snp_ids, rows = [], []
+    for _, row in alleles_df.iterrows():
+        calls = {f: str(row[f]) for f in overlap}
+        distinct = sorted(
+            {v for v in calls.values() if v not in ('N', 'H', '', 'nan')})
+        if len(distinct) < 2:
+            continue  # monomorphic in the overlap founder set
+        alt = distinct[-1]
+        geno_row = {'chr': row['chr'], 'pos_mb': float(row['pos_mb'])}
+        for f in overlap:
+            geno_row[f] = 1.0 if calls[f] == alt else 0.0
+        snp_ids.append(row['marker'])
+        rows.append(geno_row)
+
+    if not rows:
+        return pd.DataFrame(
+            columns=['snp', 'chr', 'pos_mb', 'lod', 'p_value', 'beta_dosage'])
+
+    snp_genos = pd.DataFrame(rows, index=snp_ids)
+    snp_genos.index.name = None
+
+    return imputed_snp_scan_h2lmm(
+        phenotype, genomecache, snp_genos,
+        covariates=covariates,
+        kinship_decomp=kinship_decomp,
+        use_rint=use_rint,
+        use_reml=use_reml,
+        phenotype_id=phenotype_id,
+        just_these_snps=just_these_snps,
+    )
 
 
 def read_allele_dir(allele_dir, founders, chrom=None):

@@ -4,8 +4,8 @@
 #   1. woodbury V^{-1} exactness vs direct inversion at small n (local, no edgepython)
 #   2. native fit_null_sc_native vs edgepython glm_sc_fit on real data (HPC only)
 #
-# outputs to: validation/phase3/py_data/nebula_ln_comparison.csv
-#             validation/phase3/plots/
+# outputs to: validation/phase4/py_data/nebula_ln_comparison.csv
+#             validation/phase4/plots/
 #
 # usage:
 #   python validation/validate_nebula_ln.py               # property 1 only (no edgepython)
@@ -23,8 +23,8 @@ from mosaiqtl.nb import (fit_null_nb_glmm_loco, _score_stats_loco,
                            fit_null_sc_native, _wb, _build_M)
 
 PKG_DIR   = os.path.dirname(os.path.dirname(__file__))
-PY_DATA   = os.path.join(PKG_DIR, 'validation', 'phase3', 'py_data')
-PLOTS_DIR = os.path.join(PKG_DIR, 'validation', 'phase3', 'plots')
+PY_DATA   = os.path.join(PKG_DIR, 'validation', 'phase4', 'py_data')
+PLOTS_DIR = os.path.join(PKG_DIR, 'validation', 'phase4', 'plots')
 for d in (PY_DATA, PLOTS_DIR): os.makedirs(d, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')

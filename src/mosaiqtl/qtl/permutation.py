@@ -249,6 +249,7 @@ def run_threshold_scans(null_outcomes, genomecache,
                         covariates=None, kinship_decomp=None,
                         kinship_loco=None,
                         chrom=None,
+                        ref_chrom=None,
                         fix_h2=True,
                         permutation_method='parametric',
                         use_rint=True, use_reml=True,
@@ -276,6 +277,16 @@ def run_threshold_scans(null_outcomes, genomecache,
     chrom          : str or None
         if given, restrict scans to this chromosome only (validation mode).
         if None, scan all chromosomes (full-genome threshold).
+    ref_chrom      : str or None
+        chromosome whose LOCO kinship and h² are used to draw the null
+        phenotype matrix in 'parametric' mode.  all chromosomes are then
+        scanned with this single null matrix — this is correct for a
+        genome-wide FWE threshold (see notes).  if None, the first PSD
+        chromosome in `chrs` is used.  mirrors R's behaviour: miQTL's
+        `generate.sample.outcomes.matrix(scan.object)` draws all permuted
+        phenotypes using `scan.object$fit0$K`, which is the LOCO kinship
+        of the chromosome on which `scan.h2lmm` was called (typically the
+        peak chromosome).
     fix_h2         : bool  default True
         True  — estimate h² once from `phenotype` and reuse across perms.
         False — re-estimate h² for each permuted phenotype (slow).
@@ -390,25 +401,37 @@ def run_threshold_scans(null_outcomes, genomecache,
             if z_mat is not None:
                 plain_mat = (z_mat.T @ plain_mat) / r_counts[:, None]
 
+        # parametric: draw null phenotypes ONCE from the first valid chromosome's
+        # kinship then reuse across all chromosomes — mirrors R's
+        # run.threshold.scans which scans each permuted phenotype genome-wide
+        # from a single kinship draw.  per-chromosome independent draws inflate
+        # the genome-wide max-LOD by taking the max over 20 independent nulls.
+        if permutation_method == 'parametric':
+            ref_chrom = None
+            for c in chrs:
+                try:
+                    ev_r  = kinship_decomp[c]['values']
+                    evc_r = kinship_decomp[c]['vectors']
+                    null_mat_gw = _draw_parametric_batch(
+                        y0, x_scan, kinship_loco[c], evc_r, ev_r,
+                        h2_fixed[c], use_reml, n_perms, rng)
+                    ref_chrom = c
+                    break
+                except KinshipSingularError as exc:
+                    logger.warning('  chr%s  [skip for ref draw] %s', c, exc)
+            if ref_chrom is None:
+                logger.warning('  all chromosomes singular — returning zeros')
+                return max_lods
+        else:
+            null_mat_gw = plain_mat
+
         for c in chrs:
             ev  = kinship_decomp[c]['values']
             evc = kinship_decomp[c]['vectors']
             h2  = h2_fixed[c]
 
-            if permutation_method == 'parametric':
-                # chromosome-specific null draw using K_loco[c]
-                try:
-                    null_mat_c = _draw_parametric_batch(
-                        y0, x_scan, kinship_loco[c], evc, ev,
-                        h2, use_reml, n_perms, rng)
-                except KinshipSingularError as exc:
-                    logger.warning('  chr%s  [skip] %s', c, exc)
-                    continue
-            else:
-                null_mat_c = plain_mat
-
             chr_max = lmm_module.scan_chromosome_batch(
-                null_mat_c, genomecache, c, x_scan, ev, evc, h2,
+                null_mat_gw, genomecache, c, x_scan, ev, evc, h2,
                 batch_size=batch_size)
             max_lods = np.maximum(max_lods, chr_max)
             logger.info('  [batch] chr%s  max_lod=%.3f', c, float(chr_max.max()))

@@ -1,962 +1,1244 @@
-# validate_phase3.py — phase 3 novel extension validation
-#
-# four novel mosaiQTL modules validated against:
-#   (a) internal consistency / biological priors (independent QC)
-#   (b) phase 2 LMM py_data outputs for cross-model discrepancy analysis
-#
-# sections:
-#   p1. scan_nb          — NB-GLMM genome-wide scan with LOCO kinship (primary model)
-#   p2. scan_vqtl        — dispersion QTL on known candidates
-#   p3. scan_epistasis   — GxG interaction: Piezo1 × Ccdc171
-#   p4. scan_conditional — forward-stepwise multi-signal decomposition
-#
-# each section produces:
-#   independent QC plots  — model diagnostics, input data quality
-#   comparison plots      — NB vs LMM discrepancy analysis
-#   CSV outputs           — full data for downstream inspection
-#
-# usage:
-#   python validation/validate_phase3.py
-#   python validation/validate_phase3.py --cell_type type2x --n_genes 500
-#   python validation/validate_phase3.py --sections nb,vqtl
-#
-# slurm:
-#   sbatch --mem=64G --cpus-per-task=4 --time=12:00:00 \
-#          --wrap 'conda run -n bioinfo python validation/validate_phase3.py'
+"""
+validate_phase3.py — Phase 3: speed + memory benchmarking (mosaiqtl vs miQTL and R/qtl2)
 
+Builds its own GenomeCache from phase3/r_data/probs/ (exported by
+port_sim_validation_p3.R) because sim.CC.data(seed=123) selects different
+strains than Phase 2 (seed=42). The cache is saved to phase3/py_data/cache.h5
+and reused on subsequent runs.
+Loads Phase 3 phenotypes from phase3/r_data/phenotypes.csv (50 genes, seed=123,
+independent from Phase 2).
+
+Sections benchmarked: S1, S2, S3, S4, S6, S7, S8, S9, S10, S11 (no S5)
+Each section is timed with perf_counter; S3 and S4 also tracked with
+tracemalloc (Python-heap proxy — numpy C allocations not captured).
+
+Outputs: validation/phase3/
+  py_data/timing_sections.csv     wall-clock + peak tracemalloc MB per section
+  py_data/benchmark_summary.csv   Python vs R speedup per section
+  plots/s4_speedup_bar.png        speedup bar chart
+
+Gates (logged, not hard-fail on first run — establishes baselines):
+  SPEED-02  S4 scan speedup vs R  (target ≥ 5×)
+  SPEED-06  S4 genes/min          (target > 100/min)
+  MEM-02    S4 peak tracemalloc   (target < 4096 MB)
+
+Usage:
+  python validation/validate_phase3.py
+  python validation/validate_phase3.py --sections 3,4
+  python validation/validate_phase3.py --force
+"""
+
+import argparse
+import gc
+import logging
+import sys
+import time
+import tracemalloc
+from pathlib import Path
+
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
+import matplotlib
+matplotlib.use('Agg')
+matplotlib.rcParams['font.family'] = 'Carlito'
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import os, sys, argparse, logging, datetime
-from scipy import stats as sp_stats
-from statsmodels.stats.multitest import multipletests
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from mosaiqtl.genomecache import GenomeCache
-from mosaiqtl import kinship as kin_module
-from mosaiqtl import lmm as lmm_module
-from mosaiqtl.utils import rint as _rint
-
-# ── paths ─────────────────────────────────────────────────────────────────────
-HPC_BASE  = '/share/crsp/lab/seyedam/gfilimba'
-MIQTL_DIR = f'{HPC_BASE}/projects/igvf_8cube/short-read/data/gastroc'
-ADATA_PATH= f'{MIQTL_DIR}/gastroc_all_processed2.h5ad'
-PKG_DIR   = f'{HPC_BASE}/packages/mosaiqtl'
-
-_LOCAL = os.path.expanduser(
-    '~/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl')
-if not os.path.exists(HPC_BASE):
-    MIQTL_DIR  = f'{_LOCAL}/miqtl'
-    ADATA_PATH = f'{_LOCAL}/../../../data/gastroc/gastroc_all_processed2.h5ad'
-    PKG_DIR    = f'{_LOCAL}/mosaiqtl'
-
-GM_CSV      = f'{MIQTL_DIR}/input/GM_ccfo_mm39.csv'
-GM_GMAP     = f'{MIQTL_DIR}/input/GM/gmap'
-GM_PMAP     = f'{MIQTL_DIR}/input/GM/pmap'
-HAPPY_CACHE = f'{MIQTL_DIR}/output/genomecache'
-
-CC_COLS      = ['CC001','CC002','CC003','CC004','CC005','CC006','CC007','CC008',
-                'CC009','CC010','CC011','CC012','CC013','CC015','CC017','CC018',
-                'CC024','CC025','CC028','CC029','CC030','CC032','CC036','CC037',
-                'CC038','CC041','CC043','CC057','CC060','CC062','CC065','CC071','CC074']
-FOUNDER_COLS = ['AJ','B6J','129S1J','NODJ','NZOJ','CASTJ','PWKJ','WSBJ']
-F1_CROSSES   = [('B6AF1J',0,1),('B6129S1F1J',2,1),('B6NODF1J',3,1),
-                ('B6NZOF1J',4,1),('B6CASTF1J',5,1),('B6PWKF1J',6,1),
-                ('B6WSBF1J',7,1)]
-
-FOUNDER_COLORS = {
-    'AJ':'#F4C245','B6J':'#C0BFBF','129S1J':'#DA9CC1','NODJ':'#4F6EAF',
-    'NZOJ':'#52A5DB','CASTJ':'#55AF5B','PWKJ':'#D83026','WSBJ':'#683C91'}
-
-# known LMM hits — biological anchors for sanity checks
-KNOWN_HITS = {
-    'Piezo1':  {'chr':'8', 'approx_mb':122.0, 'lod_lmm':21.8},
-    'Ccdc171': {'chr':'4', 'approx_mb': 84.0, 'lod_lmm': 8.0},
-    'Pmis2':   {'chr':'7', 'approx_mb': 85.0, 'lod_lmm': 6.0},
-}
-
-# ── args ──────────────────────────────────────────────────────────────────────
-ap = argparse.ArgumentParser()
-ap.add_argument('--cell_type',     default='type2x')
-ap.add_argument('--cell_type_col', default=None)
-ap.add_argument('--strain_col',    default=None)
-ap.add_argument('--n_genes',       default=500,  type=int)
-ap.add_argument('--min_cells',     default=10,   type=int)
-ap.add_argument('--sections',      default='nb,vqtl,epistasis,conditional')
-ap.add_argument('--n_cores',       default=1,    type=int)
-args = ap.parse_args()
-_run = set(s.strip() for s in args.sections.split(','))
-
-# ── outputs ───────────────────────────────────────────────────────────────────
-PHASE2_PY = os.path.join(PKG_DIR, 'validation', 'phase2', 'py_data')   # read LMM ref
-PY_DATA   = os.path.join(PKG_DIR, 'validation', 'phase3', 'py_data')   # write phase3 outputs
-PLOTS     = os.path.join(PKG_DIR, 'validation', 'phase3', 'plots')
-LOGS      = os.path.join(PKG_DIR, 'validation', 'phase3', 'logs')
-for d in (PY_DATA, PLOTS, LOGS): os.makedirs(d, exist_ok=True)
-
-# ── checkpoints ──────────────────────────────────────────────────────────
-_ap_force = '--force' in sys.argv
-def _done_path(key): return os.path.join(PY_DATA, f'{key}.done')
-def _is_done(key):   return not _ap_force and os.path.exists(_done_path(key))
-def _mark_done(key): open(_done_path(key), 'w').close()
-
-_ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-log = logging.getLogger('phase3')
-log.setLevel(logging.DEBUG)
-_fh = logging.FileHandler(os.path.join(LOGS, f'phase3_{_ts}.log'))
-_fh.setLevel(logging.DEBUG)
-_fh.setFormatter(logging.Formatter('%(asctime)s | %(message)s'))
-log.addHandler(_fh)
-_sh = logging.StreamHandler(sys.stdout)
-_sh.setLevel(logging.INFO)
-_sh.setFormatter(logging.Formatter('%(message)s'))
-log.addHandler(_sh)
-
-def hi(msg): log.info(msg)
-
-import matplotlib; matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 import seaborn as sns
-sns.set_style('whitegrid')
-plt.rcParams.update({'font.family':'sans-serif',
-                     'font.sans-serif':['Carlito','DejaVu Sans'],
-                     'font.size':11})
+from scipy import stats
 
-_chr_sort = lambda c: int(c) if str(c).isdigit() else (20 if str(c).upper()=='X' else 99)
-CHR_PAL   = ['#4F6EAF','#888780']
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-def save_csv(df, name):
-    p = os.path.join(PY_DATA, name)
-    df.to_csv(p, index=False)
-    hi(f'  saved {name} ({len(df)} rows)')
+from mosaiqtl.genotype.genomecache import GenomeCache
+from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
+from mosaiqtl.qtl.scan import (
+    instability_lm_scan,
+    scan_h2lmm,
+    scan_h2lmm_mi,
+)
+from mosaiqtl.qtl.permutation import (
+    generate_null_outcomes,
+    get_gev_thresholds,
+    run_positional_scans,
+    run_threshold_scans,
+)
+from mosaiqtl.qtl.mediation import mediation_scan_qr
 
-def save_plot(fig, name):
-    p = os.path.join(PLOTS, name)
-    fig.savefig(p, dpi=300, bbox_inches='tight')
-    plt.close(fig)
-    hi(f'  saved {name}')
+# reuse Phase 2's CSV→GenomeCache builder (same probs format)
+sys.path.insert(0, str(Path(__file__).parent))
+from validate_sim_p2 import _load_cache_from_probs_csv  # noqa: E402
 
-def _col(df, first):
-    return df[first + [c for c in df.columns if c not in first]]
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+log = logging.getLogger('validate_phase3')
 
-def scatter_r(ax, x, y, xlabel, ylabel, title, color='#4F6EAF'):
-    '''scatter with y=x reference line and Pearson r. axes start at 0.'''
-    x, y = np.asarray(x, float), np.asarray(y, float)
-    ok   = np.isfinite(x) & np.isfinite(y)
-    x, y = x[ok], y[ok]
-    lim  = max(float(np.nanmax(np.abs(np.concatenate([x, y])))), 0.1) * 1.05
-    ax.scatter(x, y, s=4, alpha=0.7, color=color, edgecolors='none')
-    ax.plot([0, lim], [0, lim], '--', color='#D83026', lw=1)
-    r = float(np.corrcoef(x, y)[0, 1]) if len(x) > 3 else np.nan
-    ax.text(0.05, 0.95, f'$r$={r:.4f}', transform=ax.transAxes, fontsize=9, va='top')
-    ax.set(xlim=(0, lim), ylim=(0, lim), xlabel=xlabel, ylabel=ylabel, title=title)
-    sns.despine(ax=ax)
-    return r
+PASS = '✅'
+FAIL = '❌'
+SKIP = '⚠️ '
+MEAS = '📏'
 
-qc_rows = []
-def record(key, passed, detail):
-    st = 'PASS' if passed else ('NA' if passed is None else 'FAIL')
-    hi(f'  {st}: {detail}')
-    qc_rows.append({'section': key, 'pass': passed, 'detail': detail})
-    if passed: _mark_done(key)
 
-# ── load LMM reference (phase 2 py_data) ─────────────────────────────────────
-hi('\n● loading LMM reference data')
-def _load_py(name):
-    p = os.path.join(PHASE2_PY, name)
-    if not os.path.exists(p):
-        hi(f'  WARN: {name} not found — run validate_port.py first')
-        return None
-    df = pd.read_csv(p, low_memory=False)
-    if 'chr' in df.columns: df['chr'] = df['chr'].astype(str)
-    return df
+# ── timing + memory helpers ───────────────────────────────────────────────────
 
-lmm_gene_summary   = _load_py('gene_summary.csv')
-lmm_lod_comp       = _load_py('lod_comparison.csv')
-lmm_allele_effects = _load_py('allele_effects_r.csv')
+class _Timer:
+    """context manager: records wall-clock elapsed and tracemalloc peak."""
 
-# gene_id → {lod, chr} from LMM miQTL R reference
-lmm_peak = {}
-if lmm_gene_summary is not None:
-    for _, row in lmm_gene_summary.iterrows():
-        lmm_peak[row['gene_id']] = {'lod': float(row['peak_lod_r']),
-                                     'chr': str(row['chr'])}
-hi(f'  LMM genes: {len(lmm_peak)}')
+    def __init__(self) -> None:
+        self.elapsed: float = 0.0
+        self.peak_mb: float = 0.0
 
-# ── load h5ad ────────────────────────────────────────────────────────────────
-hi(f'\n● loading {ADATA_PATH}')
-if not os.path.exists(ADATA_PATH):
-    hi('  ERROR: h5ad not found'); sys.exit(1)
+    def __enter__(self) -> '_Timer':
+        gc.collect()
+        tracemalloc.start()
+        self._t0 = time.perf_counter()
+        return self
 
-import scanpy as sc
-sc.settings.verbosity = 0
-adata = sc.read_h5ad(ADATA_PATH)
-hi(f'  {adata.shape[0]} cells × {adata.shape[1]} genes')
+    def __exit__(self, *_) -> None:
+        self.elapsed = time.perf_counter() - self._t0
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        tracemalloc.clear_traces()
+        self.peak_mb = peak / 1024**2
 
-# ── detect obs columns ────────────────────────────────────────────────────────
-def _detect(candidates, cols, label):
-    for c in candidates:
-        if c in cols: return c
-    hi(f'  WARN: {label} not detected — tried {candidates}'); return None
 
-_obs    = adata.obs.columns.tolist()
-ct_col  = args.cell_type_col or _detect(
-    ['cell_type','celltype','leiden','cluster','subtype'], _obs, 'cell_type')
-str_col = args.strain_col or _detect(
-    ['strain','subject.name','subject_name','sample','mouse_id'], _obs, 'strain')
-bat_col = _detect(['batch','Batch','sequencing_batch'], _obs, 'batch')
+def _record(timing_rows: list, section: str, t: _Timer, note: str = '') -> None:
+    timing_rows.append({
+        'section':   section,
+        'elapsed_s': t.elapsed,
+        'peak_mb':   t.peak_mb,
+        'note':      note,
+    })
+    log.info('  %-24s  %7.2f s  (%5.1f min)  peak %.1f MB (Python heap)',
+             section, t.elapsed, t.elapsed / 60, t.peak_mb)
 
-if ct_col is None or str_col is None:
-    hi('  ERROR: cannot identify cell_type or strain column'); sys.exit(1)
-hi(f'  cell_type_col={ct_col}  strain_col={str_col}  batch_col={bat_col}')
 
-# ── subset + filter ───────────────────────────────────────────────────────────
-mask_ct  = adata.obs[ct_col].astype(str) == args.cell_type
-adata_ct = adata[mask_ct].copy()
-hi(f'  {args.cell_type}: {adata_ct.n_obs} cells')
-if adata_ct.n_obs < 100:
-    hi('  ERROR: <100 cells'); sys.exit(1)
+def _checkpoint(py_dir: Path, section: str, force: bool) -> bool:
+    done = py_dir / f's{section}.done'
+    if done.exists() and not force:
+        log.info('  (checkpoint — skipping S%s; use --force to rerun)', section)
+        return True
+    return False
 
-strain_counts = adata_ct.obs[str_col].value_counts()
-keep_strains  = strain_counts[strain_counts >= args.min_cells].index.tolist()
-adata_ct = adata_ct[adata_ct.obs[str_col].isin(keep_strains)].copy()
-hi(f'  strains ≥{args.min_cells} cells: {len(keep_strains)}/{len(strain_counts)}')
 
-# ── raw counts ────────────────────────────────────────────────────────────────
-if adata_ct.raw is not None:
-    X_raw = adata_ct.raw.X
-    gene_names_all = list(adata_ct.raw.var_names)
-else:
-    X_raw = adata_ct.X
-    gene_names_all = list(adata_ct.var_names)
-if hasattr(X_raw, 'toarray'): X_raw = X_raw.toarray()
-X_raw = np.array(X_raw, dtype=np.float64)   # (n_cells, n_genes_all)
-strain_ids_cells = np.array(adata_ct.obs[str_col].astype(str))
-lib_sizes_cells  = X_raw.sum(axis=1)
-hi(f'  counts: {X_raw.shape}  median lib: {np.median(lib_sizes_cells):.0f}')
+def _mark_done(py_dir: Path, section: str) -> None:
+    (py_dir / f's{section}.done').write_text('done')
 
-# ── gene selection ────────────────────────────────────────────────────────────
-cand_genes = [g for g in KNOWN_HITS if g in gene_names_all]
-if 'highly_variable' in adata_ct.var.columns:
-    hvg_genes = adata_ct.var_names[adata_ct.var['highly_variable']].tolist()
-else:
-    mean_e = X_raw.mean(axis=0); std_e = X_raw.std(axis=0)
-    cv     = np.where(mean_e > 0.1, std_e/mean_e, 0.0)
-    hvg_genes = [gene_names_all[i] for i in np.argsort(cv)[::-1] if mean_e[i] > 0.1]
-gene_set = list(cand_genes)
-for g in hvg_genes:
-    if g not in gene_set: gene_set.append(g)
-    if len(gene_set) >= args.n_genes: break
-gene_set = [g for g in gene_set if g in gene_names_all]
-gene_idx = np.array([gene_names_all.index(g) for g in gene_set])
-counts_ct = X_raw[:, gene_idx].T.copy()   # (n_genes, n_cells)
-hi(f'  gene set: {len(gene_set)}  candidates found: {cand_genes}')
 
-# ── covariates ────────────────────────────────────────────────────────────────
-cov_parts = [np.ones((adata_ct.n_obs, 1))]
-if bat_col and adata_ct.obs[bat_col].notna().any():
-    bd = pd.get_dummies(adata_ct.obs[bat_col].astype(str),
-                        prefix='batch', drop_first=True).astype(float).values
-    cov_parts.append(bd)
-if 'X_pca' in adata_ct.obsm:
-    cov_parts.append(adata_ct.obsm['X_pca'][:, :10].astype(float))
-covar_cells = np.hstack(cov_parts).astype(float)   # (n_cells, p)
+def _scan_to_df(scan) -> pd.DataFrame:
+    """ScanResult → DataFrame with locus / chromosome / position_mb / lod.
 
-# strain-level covariate matrix
-strains_sorted, inv = np.unique(strain_ids_cells, return_inverse=True)
-n_strains = len(strains_sorted)
-cov_sum   = np.zeros((n_strains, covar_cells.shape[1]))
-cnt_s     = np.zeros(n_strains)
-np.add.at(cov_sum, inv, covar_cells)
-np.add.at(cnt_s,   inv, 1)
-covar_strains = cov_sum / cnt_s[:, None]   # (n_strains, p)
-hi(f'  covariates: {covar_cells.shape[1]} cols')
+    Matches Phase 2's _scan_to_df convention: column is 'locus' (same name as
+    R's exported CSVs) so locus-name merges work without rename gymnastics.
+    """
+    return pd.DataFrame({
+        'locus':       scan.locus_ids,
+        'chromosome':  scan.chromosomes.astype(str),
+        'position_mb': scan.positions,
+        'lod':         scan.lod,
+    })
 
-# ── genome cache + kinship ────────────────────────────────────────────────────
-hi('\n● building genome cache + kinship')
-import glob, rpy2.robjects as _ro
-_mf = glob.glob(os.path.join(HAPPY_CACHE, 'additive', 'chr*', 'markers.RData'))
-if _mf:
-    _happy_markers = []
-    for mf in sorted(_mf):
-        _e = _ro.r['new.env']()
-        _ro.r['load'](mf, envir=_e)
-        _happy_markers.extend(list(_ro.r['get']('markers', envir=_e)))
-else:
-    _happy_markers = None
 
-cache_py       = GenomeCache.from_gigamuga(
-    gigamuga_path=GM_CSV, gmap_dir=GM_GMAP, pmap_dir=GM_PMAP,
-    cc_cols=CC_COLS, founder_cols=FOUNDER_COLS, f1_crosses=F1_CROSSES,
-    just_these_loci=_happy_markers)
-chr_order      = sorted(cache_py.chromosomes, key=_chr_sort)
-kinship_py     = kin_module.calc_kinship(cache_py, method='loco')
-kinship_decomp = kin_module.decomp_kinship(kinship_py)
-cache_sids     = list(cache_py.sample_ids)
-cache_sid_set  = set(cache_sids)
-hi(f'  cache: {len(chr_order)} chr | {len(cache_sids)} strains')
+# ── main ─────────────────────────────────────────────────────────────────────
 
-# ── shared helpers ────────────────────────────────────────────────────────────
-def _pb_rint(gene_name):
-    '''pseudobulk log1p sum → RINT aligned to cache_sids.'''
-    if gene_name not in gene_names_all: return None
-    gi  = gene_names_all.index(gene_name)
-    pb  = {}
-    for sid, cnt in zip(strain_ids_cells, X_raw[:, gi]):
-        pb[sid] = pb.get(sid, 0.0) + cnt
-    y = np.array([pb.get(s, np.nan) for s in cache_sids])
-    return _rint(np.log1p(y))
+def run(r_data: Path, out_dir: Path,
+        sections: 'set[int]', force: bool) -> None:
+    py_dir  = out_dir / 'py_data'
+    plt_dir = out_dir / 'plots'
+    cmp_dir = out_dir / 'compare'
+    for d in (py_dir, plt_dir, cmp_dir):
+        d.mkdir(parents=True, exist_ok=True)
 
-def _cache_cov():
-    '''strain-level covariates aligned to cache_sids.'''
-    sid_idx = {s: i for i, s in enumerate(strains_sorted)}
-    return np.array([covar_strains[sid_idx[s]] if s in sid_idx
-                     else np.zeros(covar_strains.shape[1])
-                     for s in cache_sids])
+    timing_rows: list[dict] = []
+    results: dict[str, object] = {}
+    _t0_run = time.perf_counter()
 
-# ── cis loci ─────────────────────────────────────────────────────────────────
-pmap_path = os.path.join(MIQTL_DIR, 'input', 'pmap.csv')
-if not os.path.exists(pmap_path):
-    pmap_path = os.path.join(MIQTL_DIR, 'output', 'pmap.csv')
-cis_loci_dict = None
-if os.path.exists(pmap_path):
-    pmap = pd.read_csv(pmap_path)
-    pmap.columns = [c.lower().replace('.', '_') for c in pmap.columns]
-    pmap['chr'] = pmap['chr'].astype(str)
-    _pc = _detect(['start','gene_start','chromStart'], adata.var.columns.tolist(), 'pos')
-    _cc = _detect(['chromosome','chrom','chr'],        adata.var.columns.tolist(), 'chr')
-    if _pc and _cc:
-        ginfo = adata.var[[_cc, _pc]].copy()
-        ginfo.columns = ['gene_chr', 'gene_pos_bp']
-        cis_loci_dict = {}
-        for g in gene_set:
-            if g not in ginfo.index: continue
-            gc = str(ginfo.loc[g, 'gene_chr'])
-            gp = float(ginfo.loc[g, 'gene_pos_bp']) / 1e6
-            cis = pmap[(pmap['chr']==gc) &
-                       (pmap['pos_mb'] >= gp-5) &
-                       (pmap['pos_mb'] <= gp+5)]['marker'].tolist()
-            if cis: cis_loci_dict[g] = set(cis)
-        hi(f'  cis loci: {len(cis_loci_dict)} genes')
+    # ── load Phase 3 phenotypes (50 genes × 120 samples) ─────────────────────
+    pheno_path = r_data / 'phenotypes.csv'
+    if not pheno_path.exists():
+        log.error('phenotypes.csv not found at %s — run port_sim_validation_p3.R first',
+                  pheno_path)
+        sys.exit(1)
+    pheno_df   = pd.read_csv(pheno_path)
+    sample_ids = pheno_df['SUBJECT.NAME.1'].values
+    sim_ys: dict[int, np.ndarray] = {}
+    for i in range(1, 51):
+        col = f'sim.y.{i}'
+        if col in pheno_df.columns:
+            sim_ys[i] = pheno_df[col].values.astype(float)
+    log.info('loaded %d samples, %d simulated phenotypes', len(sample_ids), len(sim_ys))
 
-# ══════════════════════════════════════════════════════════════════════════════
-# P1 — SCAN_NB
-# ══════════════════════════════════════════════════════════════════════════════
-if 'nb' in _run and not _is_done('scan_nb'):
-    hi(f'\n▶ P1 — SCAN_NB  ({len(gene_set)} genes, {args.cell_type})')
-    from mosaiqtl.nb import scan_nb, scan_nb_gene, pseudobulk_sum, fit_null_sc
+    true_loci: dict[int, str] = {}
+    tl_path = r_data / 'true_loci.csv'
+    if tl_path.exists():
+        tl = pd.read_csv(tl_path)
+        true_loci = dict(zip(tl['sim'].astype(int), tl['locus'].astype(str)))
 
-    # ── independent QC: cell count + library size per strain ─────────────────
-    s_ncells = pd.Series(strain_ids_cells).value_counts().sort_index()
-    s_medlib = {s: float(np.median(lib_sizes_cells[strain_ids_cells==s]))
-                for s in s_ncells.index}
-    cell_qc  = pd.DataFrame({'strain': s_ncells.index,
-                              'n_cells': s_ncells.values,
-                              'median_lib': [s_medlib[s] for s in s_ncells.index]})
-    save_csv(cell_qc, 'p1_cell_qc.csv')
+    # ── build or load Phase 3 GenomeCache ────────────────────────────────────
+    # Phase 3 sim.CC.data(seed=123) picks different strains than Phase 2 (seed=42)
+    # so we build a Phase 3-specific cache from phase3/r_data/probs/.
+    probs_dir = r_data / 'probs'
+    hdf5_p3   = py_dir / 'cache.h5'
+    if not force and hdf5_p3.exists():
+        log.info('loading Phase 3 GenomeCache: %s', hdf5_p3)
+        cache = GenomeCache.from_hdf5(str(hdf5_p3))
+    elif probs_dir.exists():
+        log.info('building Phase 3 GenomeCache from probs: %s', probs_dir)
+        cache = _load_cache_from_probs_csv(probs_dir, keep_strains=list(sample_ids))
+        cache.to_hdf5(str(hdf5_p3))
+        log.info('  saved to %s', hdf5_p3)
+    else:
+        log.error(
+            'probs/ not found at %s — run port_sim_validation_p3.R --force first',
+            probs_dir)
+        sys.exit(1)
+    log.info('  %d chromosomes, %d strains', len(cache.chromosomes), len(cache.sample_ids))
 
-    fig_cq, axes = plt.subplots(1, 2, figsize=(11, 4))
-    axes[0].bar(range(len(cell_qc)), cell_qc['n_cells'].values,
-                color='#4F6EAF', edgecolor='none')
-    axes[0].axhline(args.min_cells, color='#D83026', lw=1, ls='--',
-                    label=f'min={args.min_cells}')
-    axes[0].set(xlabel='strain index', ylabel='n cells',
-                title=f'cells per strain ({args.cell_type})', ylim=(0, None))
-    axes[0].legend(fontsize=8); sns.despine(ax=axes[0])
-    axes[1].bar(range(len(cell_qc)), cell_qc['median_lib'].values,
-                color='#55AF5B', edgecolor='none')
-    axes[1].set(xlabel='strain index', ylabel='median UMI',
-                title='median library size per strain', ylim=(0, None))
-    sns.despine(ax=axes[1])
-    plt.tight_layout(); save_plot(fig_cq, 'p1_cell_qc.png')
+    # ── compute LOCO kinship from scratch ────────────────────────────────────
+    # No Phase 2 cached kinship used — full build here, timed as S3.
+    kd_cache = py_dir / 'kinship_decomp_p3.npz'
+    if not force and kd_cache.exists():
+        log.info('loading cached Phase 3 kinship decomp: %s', kd_cache)
+        raw = np.load(kd_cache, allow_pickle=True)
+        kinship_decomp = {k: {'values': raw[f'{k}_vals'], 'vectors': raw[f'{k}_vecs']}
+                          for k in cache.chromosomes}
+        del raw; gc.collect()
+    else:
+        log.info('computing LOCO kinship from scratch (will also be timed as S3)...')
+        with _Timer() as _kd_timer:
+            _kinship_raw = calc_kinship(cache, method='loco')
+            kinship_decomp = decomp_kinship(_kinship_raw)
+            del _kinship_raw; gc.collect()
+        log.info('  kinship done in %.1f s', _kd_timer.elapsed)
+        # cache for reruns where S3 is skipped
+        arrays: dict[str, np.ndarray] = {}
+        for chrom, kd in kinship_decomp.items():
+            arrays[f'{chrom}_vals'] = kd['values']
+            arrays[f'{chrom}_vecs'] = kd['vectors']
+        np.savez(kd_cache, **arrays)
+        del arrays; gc.collect()
 
-    # ── run scan_nb ───────────────────────────────────────────────────────────
-    try:
-        results_nb = scan_nb(
-            counts_cells       = counts_ct,
-            genomecache       = cache_py,
-            strain_ids_cells   = strain_ids_cells,
-            gene_ids           = gene_set,
-            covariates_cells   = covar_cells,
-            covariates_strains = covar_strains,
-            kinship_loco       = kinship_py,   # LOCO kinship: PQL NB-GLMM per chr
-            norm_method        = 'TMM',
-            shrink_disp        = True,
-            cis_loci_dict      = cis_loci_dict,
-            n_cores            = args.n_cores,
-            verbose            = True,
+    # peak chromosome for S6/S7/S9/S10/S11: from planted locus of sim.y.1
+    planted_locus_1 = true_loci.get(1, '')
+    peak_chrom: str = ''
+    if planted_locus_1:
+        for chrom in cache.chromosomes:
+            lids, _, _ = cache.get_chromosome(chrom)
+            if planted_locus_1 in np.asarray(lids):
+                peak_chrom = chrom
+                break
+    if not peak_chrom:
+        # fallback: most-represented chromosome
+        peak_chrom = cache.chromosomes[len(cache.chromosomes) // 2]
+        log.info('  planted locus not found; using fallback peak_chrom=%s', peak_chrom)
+    else:
+        log.info('  peak_chrom=%s  (planted locus %s)', peak_chrom, planted_locus_1)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # S1 — cache I/O: GenomeCache.from_hdf5 + spot-check locus reads
+    # ─────────────────────────────────────────────────────────────────────────
+    sec = 1
+    if sec in sections:
+        if not _checkpoint(py_dir, str(sec), force):
+            log.info('\nS1: cache I/O (from_hdf5 + spot-check locus reads)...')
+            with _Timer() as t:
+                cache_bench = GenomeCache.from_hdf5(str(hdf5_p3))
+                rng = np.random.default_rng(1)
+                # read 50 random loci across all chromosomes
+                all_lids = np.concatenate([
+                    cache_bench.get_chromosome(c)[0] for c in cache_bench.chromosomes])
+                sample_idx = rng.choice(len(all_lids), size=min(50, len(all_lids)),
+                                        replace=False)
+                for chr_id in cache_bench.chromosomes:
+                    cache_bench.get_chromosome(chr_id)   # warm all chr blocks
+                del cache_bench
+            _record(timing_rows, 'S1_cache_info', t, '50 locus reads + full chr load')
+            _mark_done(py_dir, str(sec))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # S2 — haplotype prob access (5 random loci per chromosome)
+    # ─────────────────────────────────────────────────────────────────────────
+    sec = 2
+    if sec in sections:
+        if not _checkpoint(py_dir, str(sec), force):
+            log.info('\nS2: haplotype prob access (spot-check)...')
+            rng2 = np.random.default_rng(7)
+            spot_loci: list[tuple[str, int]] = []
+            for chrom in cache.chromosomes:
+                lids, _, _ = cache.get_chromosome(chrom)
+                n = len(lids)
+                idxs = rng2.choice(n, size=min(5, n), replace=False)
+                for idx in idxs:
+                    spot_loci.append((chrom, int(idx)))
+
+            with _Timer() as t:
+                for chrom, idx in spot_loci:
+                    _, _, probs = cache.get_chromosome(chrom)
+                    _ = probs[idx]   # (n_strains, 8)
+            _record(timing_rows, 'S2_haplotype_probs', t,
+                    f'{len(spot_loci)} spot-check loci')
+            _mark_done(py_dir, str(sec))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # S3 — LOCO kinship: full build from GenomeCache, result used in S4+
+    # ─────────────────────────────────────────────────────────────────────────
+    sec = 3
+    if sec in sections:
+        if not _checkpoint(py_dir, str(sec), force):
+            log.info('\nS3: LOCO kinship build (all chromosomes)...')
+            with _Timer() as t:
+                _kinship_raw = calc_kinship(cache, method='loco')
+                kinship_decomp = decomp_kinship(_kinship_raw)
+                del _kinship_raw; gc.collect()
+                # overwrite cache so S4+ uses the freshly-timed result
+                arrays: dict[str, np.ndarray] = {}
+                for chrom, kd in kinship_decomp.items():
+                    arrays[f'{chrom}_vals'] = kd['values']
+                    arrays[f'{chrom}_vecs'] = kd['vectors']
+                np.savez(kd_cache, **arrays)
+                del arrays; gc.collect()
+            _record(timing_rows, 'S3_kinship_loco', t, 'full build; result used for S4+')
+            results['MEM-02'] = max(float(results.get('MEM-02', 0)), t.peak_mb)
+            _mark_done(py_dir, str(sec))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # S4 — LMM genome-wide scan × 50 phenotypes
+    # ─────────────────────────────────────────────────────────────────────────
+    sec = 4
+    rop_scan_1 = None   # built here, reused by S6/S9/S10/S11
+    if sec in sections:
+        if not _checkpoint(py_dir, str(sec), force):
+            log.info('\nS4: LMM scan (50 phenotypes, genome-wide LOCO)...')
+            with _Timer() as t:
+                for sim_i in range(1, 51):
+                    if sim_i not in sim_ys:
+                        continue
+                    sc = scan_h2lmm(
+                        sim_ys[sim_i], cache,
+                        sample_ids=sample_ids,
+                        kinship_decomp=kinship_decomp,
+                        use_rint=False,
+                        phenotype_id=f'sim.y.{sim_i}',
+                    )
+                    if sim_i == 1:
+                        rop_scan_1 = sc
+                    elif sim_i % 10 == 0:
+                        peak = sc.peak_locus()
+                        log.info('    sim.y.%d  peak LOD=%.2f  chr%s',
+                                 sim_i, float(peak['lod']), peak['chromosome'])
+                    if sim_i > 1:
+                        del sc
+                        gc.collect()
+
+            n_genes = len(sim_ys)
+            genes_min = n_genes / (t.elapsed / 60)
+            log.info('  throughput: %.1f genes/min  (%.2f s/gene)',
+                     genes_min, t.elapsed / n_genes)
+            _record(timing_rows, 'S4_lmm_scan', t,
+                    f'{n_genes} genes genome-wide')
+            results['SPEED-06'] = genes_min
+            results['MEM-02']   = t.peak_mb
+            if rop_scan_1 is not None:
+                rop_scan_1.to_dataframe()[
+                    ['locus_id', 'chromosome', 'position', 'lod']
+                ].to_csv(py_dir / 's4_lod_py.csv', index=False)
+                log.info('  saved s4_lod_py.csv')
+            _mark_done(py_dir, str(sec))
+
+    # build rop_scan_1 if S4 was skipped but downstream sections need it
+    if rop_scan_1 is None and bool({6, 7, 9, 10, 11} & sections) and 1 in sim_ys:
+        log.info('\nBuilding rop_scan_1 (sim.y.1) for downstream sections...')
+        rop_scan_1 = scan_h2lmm(
+            sim_ys[1], cache,
+            sample_ids=sample_ids,
+            kinship_decomp=kinship_decomp,
+            use_rint=False,
+            phenotype_id='sim.y.1',
         )
-        hi(f'  scan_nb: {len(results_nb)} genes')
-    except Exception as e:
-        hi(f'  ERROR scan_nb: {e}'); log.exception('scan_nb'); results_nb = {}
+        peak = rop_scan_1.peak_locus()
+        log.info('  peak: %s  chr%s  LOD=%.3f',
+                 peak['locus_id'], peak['chromosome'], float(peak['lod']))
 
-    if results_nb:
-        J = cache_py.n_founders; df_chi2 = J - 1
+    # ─────────────────────────────────────────────────────────────────────────
+    # S6 — permutation thresholds (n=250, genome-wide parametric)
+    # ─────────────────────────────────────────────────────────────────────────
+    sec = 6
+    if sec in sections:
+        if not _checkpoint(py_dir, str(sec), force):
+            log.info('\nS6: permutation thresholds (n=250, genome-wide)...')
+            if rop_scan_1 is not None and 1 in sim_ys:
+                kinship_loco_s6 = {
+                    c: (kinship_decomp[c]['vectors']
+                        * kinship_decomp[c]['values'][None, :]
+                        @ kinship_decomp[c]['vectors'].T)
+                    for c in kinship_decomp
+                }
+                with _Timer() as t:
+                    null_y   = generate_null_outcomes(
+                        sim_ys[1], n_samples=250, method='permutation', seed=1)
+                    max_lods = run_threshold_scans(
+                        null_y, cache,
+                        phenotype=sim_ys[1],
+                        kinship_decomp=kinship_decomp,
+                        kinship_loco=kinship_loco_s6,
+                        fix_h2=True, use_rint=False,
+                        permutation_method='parametric',
+                        seed=1,
+                    )
+                    threshold, gev_params = get_gev_thresholds(max_lods, percentile=0.95)
+                del kinship_loco_s6; gc.collect()
+                log.info('  GEV threshold = %.3f  empirical = %.3f  delta = %.4f',
+                         threshold, gev_params['empirical_quantile'],
+                         abs(threshold - gev_params['empirical_quantile']))
+                pd.DataFrame({'perm_index': range(len(max_lods)),
+                              'max_lod': max_lods}).to_csv(
+                    py_dir / 's6_perm_max_lods.csv', index=False)
+                pd.DataFrame({'threshold': [threshold],
+                              'empirical_quantile':
+                                  [gev_params['empirical_quantile']]}).to_csv(
+                    py_dir / 's6_threshold.csv', index=False)
+                log.info('  saved s6_perm_max_lods.csv + s6_threshold.csv')
+                _record(timing_rows, 'S6_permutation', t, 'n=250 genome-wide')
+            else:
+                log.info('  %s rop_scan_1 unavailable — S6 skipped', SKIP)
+            _mark_done(py_dir, str(sec))
 
-        # ── peak summary ──────────────────────────────────────────────────────
-        peak_rows = []
-        for gid, sr in results_nb.items():
-            if not len(sr.lod): continue
-            pk = sr.peak_info()
-            peak_rows.append({'gene_id': gid, 'chr': pk['chromosome'],
-                              'locus': pk['locus_id'], 'pos_mb': pk['position'],
-                              'lod_nb': pk['lod']})
-        peak_df = (pd.DataFrame(peak_rows)
-                   .sort_values('lod_nb', ascending=False)
-                   .reset_index(drop=True))
-        peak_df['p_value'] = sp_stats.chi2.sf(
-            2*np.log(10)*peak_df['lod_nb'].values, df=df_chi2)
-        _, fdr, _, _ = multipletests(peak_df['p_value'].values, method='fdr_bh')
-        peak_df['fdr_bh']  = fdr
-        peak_df['egene']   = fdr < 0.05
-        peak_df['rank_nb'] = peak_df['lod_nb'].rank(ascending=False).astype(int)
-        n_egenes = int(peak_df['egene'].sum())
+    # ─────────────────────────────────────────────────────────────────────────
+    # S7 — MI scan (num_imp=11, peak chromosome)
+    # ─────────────────────────────────────────────────────────────────────────
+    sec = 7
+    if sec in sections:
+        if not _checkpoint(py_dir, str(sec), force):
+            log.info('\nS7: MI scan (num_imp=11, chr%s)...', peak_chrom)
+            if 1 in sim_ys and peak_chrom:
+                with _Timer() as t:
+                    mi_scan = scan_h2lmm_mi(
+                        sim_ys[1], cache,
+                        sample_ids=sample_ids,
+                        kinship_decomp=kinship_decomp,
+                        n_imp=11,
+                        use_rint=False,
+                        seed=1,
+                    )
+                log.info('  MI peak LOD = %.3f', float(mi_scan.lod.max()))
+                mi_scan.to_dataframe()[
+                    ['locus_id', 'chromosome', 'position', 'lod']
+                ].to_csv(py_dir / 's7_mi_lod.csv', index=False)
+                log.info('  saved s7_mi_lod.csv')
+                del mi_scan; gc.collect()
+                _record(timing_rows, 'S7_mi_scan', t, f'chr{peak_chrom} num_imp=11')
+            else:
+                log.info('  %s peak_chrom unknown — S7 skipped', SKIP)
+            _mark_done(py_dir, str(sec))
 
-        # ── NB vs LMM merge ───────────────────────────────────────────────────
-        nb_lmm = None
-        if lmm_gene_summary is not None:
-            lmm_sub = (lmm_gene_summary[['gene_id','chr','peak_lod_r','peak_lod_py']]
-                       .rename(columns={'chr':'chr_lmm','peak_lod_r':'lod_lmm_r',
-                                        'peak_lod_py':'lod_lmm_py'}))
-            nb_lmm = peak_df.merge(lmm_sub, on='gene_id', how='inner').copy()
-            nb_lmm['rank_lmm']       = nb_lmm['lod_lmm_r'].rank(ascending=False).astype(int)
-            nb_lmm['peak_chr_match'] = nb_lmm['chr'] == nb_lmm['chr_lmm']
-            nb_lmm['lod_ratio']      = nb_lmm['lod_nb'] / nb_lmm['lod_lmm_r'].replace(0, np.nan)
-            nb_lmm = _col(nb_lmm, ['gene_id','chr','locus','pos_mb',
-                                    'lod_nb','lod_lmm_r','lod_lmm_py',
-                                    'rank_nb','rank_lmm','peak_chr_match','lod_ratio',
-                                    'fdr_bh','egene'])
-            save_csv(nb_lmm, 'p1_nb_vs_lmm_comparison.csv')
-            pct_chr = nb_lmm['peak_chr_match'].mean()
-            rs = sp_stats.spearmanr(nb_lmm['rank_nb'], nb_lmm['rank_lmm']).statistic
-            hi(f'  NB vs LMM: n={len(nb_lmm)}  chr_match={pct_chr:.1%}  rank_rho={rs:.4f}')
+    # ─────────────────────────────────────────────────────────────────────────
+    # S8 — SNP scan (gated: GM_fo_mm39.csv required)
+    # ─────────────────────────────────────────────────────────────────────────
+    sec = 8
+    if sec in sections:
+        if not _checkpoint(py_dir, str(sec), force):
+            log.info('\nS8: SNP scan (gated)...')
+            from mosaiqtl.genotype.snp_db import build_founder_allele_db
+            from mosaiqtl.qtl.snp_scan import imputed_snp_scan_from_db
+            gm_csv_path = Path('../input/GM_fo_mm39.csv')
+            alleles_h5  = py_dir / 'founder_alleles.h5'
+            if gm_csv_path.exists() and 1 in sim_ys and peak_chrom:
+                if not alleles_h5.exists() or force:
+                    _gm_fcols = ['AJ', 'B6J', '129S1J', 'NODJ',
+                                 'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ']
+                    build_founder_allele_db(
+                        gm_csv_path, cache, alleles_h5,
+                        founder_cols=_gm_fcols, max_dist_mb=0.5)
+                _fcol_map = {
+                    'A': 'AJ', 'B': 'B6J', 'C': '129S1J',
+                    'D': 'NODJ', 'E': 'NZOJ', 'F': 'CASTJ',
+                    'G': 'PWKJ', 'H': 'WSBJ',
+                }
+                _s8_chrom = str(peak_chrom).lstrip('chr')
+                with _Timer() as t:
+                    snp_lod_py = imputed_snp_scan_from_db(
+                        sim_ys[1], cache, alleles_h5,
+                        kinship_decomp=kinship_decomp,
+                        chrom=_s8_chrom,
+                        founder_col_map=_fcol_map,
+                        use_rint=False,
+                        phenotype_id='sim.y.1',
+                    )
+                if not snp_lod_py.empty:
+                    log.info('  SNP peak LOD = %.3f  n_snps=%d',
+                             float(snp_lod_py['lod'].max()), len(snp_lod_py))
+                    snp_lod_py.to_csv(py_dir / 's8_snp_lod.csv', index=False)
+                del snp_lod_py; gc.collect()
+                _record(timing_rows, 'S8_snp_scan', t, f'chr{peak_chrom}')
+            else:
+                log.info('  %s GM_fo_mm39.csv not found at %s — S8 skipped',
+                         SKIP, gm_csv_path)
+                timing_rows.append({'section': 'S8_snp_scan', 'elapsed_s': None,
+                                    'peak_mb': None, 'note': 'SKIPPED'})
+            _mark_done(py_dir, str(sec))
 
-        save_csv(_col(peak_df, ['gene_id','chr','locus','pos_mb',
-                                'lod_nb','p_value','fdr_bh','egene','rank_nb']),
-                 'p1_nb_peak_summary.csv')
+    # ─────────────────────────────────────────────────────────────────────────
+    # S9 — mediation (outcome=sim.y.1, mediator=sim.y.2, peak chromosome)
+    # ─────────────────────────────────────────────────────────────────────────
+    sec = 9
+    if sec in sections:
+        if not _checkpoint(py_dir, str(sec), force):
+            log.info('\nS9: mediation (chr%s)...', peak_chrom)
+            if 1 in sim_ys and 2 in sim_ys and peak_chrom:
+                with _Timer() as t:
+                    med_scan = mediation_scan_qr(
+                        outcome=sim_ys[1],
+                        mediator=sim_ys[2],
+                        genomecache=cache,
+                        kinship_decomp=kinship_decomp,
+                    )
+                log.info('  mediation done; %d loci', len(med_scan))
+                med_scan.to_csv(py_dir / 's9_mediation.csv', index=False)
+                log.info('  saved s9_mediation.csv')
+                del med_scan; gc.collect()
+                _record(timing_rows, 'S9_mediation', t, f'chr{peak_chrom}')
+            else:
+                log.info('  %s peak_chrom or phenotypes unavailable — S9 skipped', SKIP)
+            _mark_done(py_dir, str(sec))
 
-        # genome-wide LOD (capped for file size)
-        lod_rows = []
-        for gid, sr in results_nb.items():
-            if not len(sr.lod): continue
-            lod_rows.append(pd.DataFrame({'gene_id':gid,'chr':sr.chromosomes,
-                                           'pos_mb':sr.positions,'lod':sr.lod}))
-        lod_df = pd.concat(lod_rows, ignore_index=True)
-        save_csv(lod_df.nlargest(50000, 'lod'), 'p1_nb_lod_top50k.csv')
+    # ─────────────────────────────────────────────────────────────────────────
+    # S10 — bootstrap CI (n=100, peak chromosome)
+    # ─────────────────────────────────────────────────────────────────────────
+    sec = 10
+    if sec in sections:
+        if not _checkpoint(py_dir, str(sec), force):
+            log.info('\nS10: bootstrap CI (n=100, chr%s)...', peak_chrom)
+            if rop_scan_1 is not None and peak_chrom and 1 in sim_ys:
+                with _Timer() as t:
+                    lids_c, pos_c, _ = cache.get_chromosome(peak_chrom)
+                    null_boot = generate_null_outcomes(
+                        sim_ys[1], n_samples=100, method='bootstrap', seed=1)
+                    ci_peaks = run_positional_scans(
+                        null_boot, cache,
+                        phenotype=sim_ys[1],
+                        kinship_decomp=kinship_decomp,
+                        peak_chrom=peak_chrom,
+                        sample_ids=sample_ids,
+                    )
+                log.info('  bootstrap CI done; %d peak positions', len(ci_peaks))
+                del null_boot, ci_peaks; gc.collect()
+                _record(timing_rows, 'S10_bootstrap_ci', t, 'n=100 chr-restricted')
+            else:
+                log.info('  %s rop_scan_1 or peak_chrom unavailable — S10 skipped', SKIP)
+            _mark_done(py_dir, str(sec))
 
-        # ── independent QC 1: chi2 QQ plot (null calibration check) ──────────
-        all_lod = lod_df['lod'].values
-        chi2_obs = np.sort(2*np.log(10)*all_lod)
-        n_s = len(chi2_obs)
-        chi2_exp = sp_stats.chi2.ppf(
-            np.linspace(1/(n_s+1), n_s/(n_s+1), n_s), df=df_chi2)
-        step = max(1, n_s//5000)
-        fig_qq, ax = plt.subplots(figsize=(5, 5))
-        ax.scatter(chi2_exp[::step], chi2_obs[::step],
-                   s=2, alpha=0.5, color='#4F6EAF', edgecolors='none',
-                   label='observed')
-        ax.plot([0, chi2_exp.max()], [0, chi2_exp.max()],
-                '--', color='#D83026', lw=1, label=r'$\chi^2$ null')
-        ax.set(xlabel=r'expected $\chi^2_{J-1}$', ylabel=r'observed $\chi^2$',
-               title=f'NB score statistic QQ  ($J-1$={df_chi2} df)',
-               xlim=(0, None), ylim=(0, None))
-        ax.legend(fontsize=8); sns.despine(ax=ax)
-        plt.tight_layout(); save_plot(fig_qq, 'p1_nb_chi2_qq.png')
+    # ─────────────────────────────────────────────────────────────────────────
+    # S11 — instability scan (n=100 subsamples, peak chromosome)
+    # ─────────────────────────────────────────────────────────────────────────
+    sec = 11
+    if sec in sections:
+        if not _checkpoint(py_dir, str(sec), force):
+            log.info('\nS11: instability scan (n=100, chr%s)...', peak_chrom)
+            if 1 in sim_ys and peak_chrom:
+                lids_c, pos_c, _ = cache.get_chromosome(peak_chrom)
+                with _Timer() as t:
+                    instab_scan = instability_lm_scan(
+                        sim_ys[1], cache,
+                        sample_ids=sample_ids,
+                        n_samples=100,
+                        seed=1,
+                        just_these_loci=set(np.asarray(lids_c).tolist()),
+                    )
+                log.info('  instability done; %d loci', len(instab_scan.lod))
+                instab_scan.to_dataframe()[
+                    ['locus_id', 'chromosome', 'position', 'lod']
+                ].to_csv(py_dir / 's11_instability.csv', index=False)
+                log.info('  saved s11_instability.csv')
+                del instab_scan; gc.collect()
+                _record(timing_rows, 'S11_instability', t, 'n=100 chr-restricted')
+            else:
+                log.info('  %s peak_chrom unavailable — S11 skipped', SKIP)
+            _mark_done(py_dir, str(sec))
 
-        # ── independent QC 2: LOD histogram + known hit markers ──────────────
-        fig_lh, ax = plt.subplots(figsize=(7, 4))
-        sns.histplot(peak_df['lod_nb'], bins=50, color='#4F6EAF',
-                     edgecolor='none', ax=ax)
-        for gname, info in KNOWN_HITS.items():
-            row = peak_df[peak_df['gene_id']==gname]
-            if row.empty: continue
-            lv = float(row['lod_nb'].iloc[0])
-            ax.axvline(lv, color=FOUNDER_COLORS.get('PWKJ','#D83026'),
-                       lw=1.5, ls='--', label=f'{gname} LOD={lv:.1f}')
-        ax.set(xlabel='peak LOD (NB)', ylabel='genes',
-               title=f'NB peak LOD distribution  {args.cell_type}',
-               xlim=(0, None), ylim=(0, None))
-        ax.legend(fontsize=8); sns.despine(ax=ax)
-        plt.tight_layout(); save_plot(fig_lh, 'p1_nb_lod_distribution.png')
+    timing_rows.append({
+        'section': 'total',
+        'elapsed_s': time.perf_counter() - _t0_run,
+        'peak_mb': None,
+        'note': '',
+    })
 
-        # ── independent QC 3: Piezo1 chr8 profile ────────────────────────────
-        if 'Piezo1' in results_nb:
-            sr_p  = results_nb['Piezo1']
-            mask8 = sr_p.chromosomes.astype(str) == '8'
-            fig_p8, ax = plt.subplots(figsize=(9, 4))
-            ax.fill_between(sr_p.positions[mask8], 0, sr_p.lod[mask8],
-                            color='#4F6EAF', alpha=0.8, step='mid')
-            pk_pos = float(sr_p.positions[mask8][np.argmax(sr_p.lod[mask8])])
-            pk_lod = float(sr_p.lod[mask8].max())
-            ax.axvline(pk_pos, color='#D83026', lw=1.2, ls='--',
-                       label=f'NB peak {pk_pos:.1f} Mb  LOD={pk_lod:.2f}')
-            ax.axvline(KNOWN_HITS['Piezo1']['approx_mb'], color='#55AF5B',
-                       lw=1.0, ls=':', label=f'LMM ref ~{KNOWN_HITS["Piezo1"]["approx_mb"]:.0f} Mb')
-            ax.set(xlabel='position chr8 (Mb)', ylabel='LOD (NB)',
-                   title='Piezo1 NB scan — chr8', xlim=(0, None), ylim=(0, None))
-            ax.legend(fontsize=8); sns.despine(ax=ax)
-            plt.tight_layout(); save_plot(fig_p8, 'p1_nb_piezo1_chr8.png')
+    # ── compare vs R timing + produce summary ─────────────────────────────────
+    _print_summary(timing_rows, results, r_data, out_dir, plt_dir)
 
-        # ── comparison 1: NB vs LMM LOD scatter + rank concordance ──────────
-        r_lod_nb_lmm = np.nan
-        if nb_lmm is not None and len(nb_lmm) > 3:
-            fig_sc, axes = plt.subplots(1, 2, figsize=(11, 4))
-            r_lod_nb_lmm = scatter_r(axes[0],
-                                     nb_lmm['lod_lmm_r'].values,
-                                     nb_lmm['lod_nb'].values,
-                                     'peak LOD (LMM miQTL R)',
-                                     'peak LOD (NB mosaiQTL)',
-                                     'NB vs LMM peak LOD')
-            rs = sp_stats.spearmanr(nb_lmm['rank_lmm'],
-                                    nb_lmm['rank_nb']).statistic
-            scatter_r(axes[1],
-                      nb_lmm['rank_lmm'].values.astype(float),
-                      nb_lmm['rank_nb'].values.astype(float),
-                      'rank (LMM)', 'rank (NB)',
-                      r'rank concordance  $\rho$=' + f'{rs:.4f}')
-            plt.tight_layout(); save_plot(fig_sc, 'p1_nb_vs_lmm_lod_scatter.png')
 
-        # ── comparison 2: dual Manhattan chr8 (NB top / LMM bottom) ─────────
-        if 'Piezo1' in results_nb and lmm_lod_comp is not None:
-            sr_p   = results_nb['Piezo1']
-            mask8  = sr_p.chromosomes.astype(str) == '8'
-            lmm_p8 = lmm_lod_comp[(lmm_lod_comp['gene_id']=='Piezo1') &
-                                    (lmm_lod_comp['chr']=='8')]
-            fig_dm, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
-            axes[0].fill_between(sr_p.positions[mask8], 0, sr_p.lod[mask8],
-                                  color='#4F6EAF', alpha=0.8, step='mid', label='NB')
-            axes[0].set(ylabel='LOD (NB)', ylim=(0, None))
-            axes[0].legend(fontsize=8); sns.despine(ax=axes[0])
-            if not lmm_p8.empty:
-                axes[1].fill_between(lmm_p8['pos_mb'], 0, lmm_p8['lod_py'],
-                                      color='#D83026', alpha=0.8, step='mid', label='LMM')
-            axes[1].set(xlabel='position chr8 (Mb)', ylabel='LOD (LMM)', ylim=(0, None))
-            axes[1].legend(fontsize=8); sns.despine(ax=axes[1])
-            plt.suptitle('Piezo1 — NB vs LMM scan (chr8)', y=1.01, fontsize=11)
-            plt.tight_layout(); save_plot(fig_dm, 'p1_piezo1_nb_vs_lmm_chr8.png')
+def _print_summary(
+    timing_rows: 'list[dict]',
+    results: dict,
+    r_data: Path,
+    out_dir: Path,
+    plt_dir: Path,
+) -> None:
+    py_dir  = out_dir / 'py_data'
+    cmp_dir = out_dir / 'compare'
+    cmp_dir.mkdir(parents=True, exist_ok=True)
+    t_df   = pd.DataFrame(timing_rows)
 
-        # ── comparison 3: top 20 eGenes NB + LMM side-by-side bar ───────────
-        top20 = peak_df.head(20).copy()
-        if nb_lmm is not None:
-            top20 = top20.merge(nb_lmm[['gene_id','lod_lmm_r']], on='gene_id', how='left')
-        fig_t, ax = plt.subplots(figsize=(8, 5))
-        ypos = np.arange(len(top20))[::-1]
-        ax.barh(ypos - 0.18, top20['lod_nb'].values, 0.35,
-                color='#4F6EAF', edgecolor='none', label='NB')
-        if 'lod_lmm_r' in top20.columns:
-            ax.barh(ypos + 0.18, top20['lod_lmm_r'].fillna(0).values, 0.35,
-                    color='#D83026', alpha=0.7, edgecolor='none', label='LMM (R)')
-        ax.set(yticks=ypos, yticklabels=top20['gene_id'].tolist(),
-               xlabel='peak LOD', title='top 20 eGenes — NB vs LMM', xlim=(0, None))
-        ax.legend(fontsize=9); sns.despine(ax=ax)
-        plt.tight_layout(); save_plot(fig_t, 'p1_top20_nb_vs_lmm.png')
+    # pipeline_from_scratch = S1 + S3 + S4: full cost a user pays on a fresh run
+    pipe_secs = ['S1_cache_info', 'S3_kinship_loco', 'S4_lmm_scan']
+    pipe_rows = t_df[t_df['section'].isin(pipe_secs)]
+    pipe_py = pipe_rows['elapsed_s'].sum() if len(pipe_rows) == len(pipe_secs) else float('nan')
+    if pd.notna(pipe_py):
+        t_df = pd.concat([t_df, pd.DataFrame([{
+            'section': 'pipeline_from_scratch',
+            'elapsed_s': pipe_py,
+            'peak_mb': None,
+            'note': 'S1+S3+S4',
+        }])], ignore_index=True)
 
-        piezo_lod = (float(peak_df.loc[peak_df['gene_id']=='Piezo1','lod_nb'].iloc[0])
-                     if 'Piezo1' in peak_df['gene_id'].values else 0.0)
-        lod_skew  = float(sp_stats.skew(peak_df['lod_nb'].values))
-        record('scan_nb', lod_skew > 0.5 and piezo_lod > 3.0,
-               f'n_egenes={n_egenes}  piezo1_lod={piezo_lod:.2f}  lod_skew={lod_skew:.2f}'
-               + (f'  nb_vs_lmm_r={r_lod_nb_lmm:.4f}' if np.isfinite(r_lod_nb_lmm) else ''))
+    r_timing_path = r_data / 'timing_sections.csv'
+    if r_timing_path.exists():
+        r_t = pd.read_csv(r_timing_path)[
+            ['section', 'elapsed_s', 'peak_heap_mb']
+        ].rename(columns={'elapsed_s': 'r_elapsed_s',
+                          'peak_heap_mb': 'r_peak_heap_mb'})
+        t_df = t_df.merge(r_t, on='section', how='left')
+        t_df['speedup'] = (
+            t_df['r_elapsed_s'] / t_df['elapsed_s'].replace(0.0, float('nan')))
     else:
-        record('scan_nb', False, 'scan_nb returned no results')
+        t_df['r_elapsed_s']    = float('nan')
+        t_df['r_peak_heap_mb'] = float('nan')
+        t_df['speedup']        = float('nan')
+        log.info('\n  (R timing not found at %s — speedup column will be NaN)', r_timing_path)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# P2 — SCAN_VQTL
-# ══════════════════════════════════════════════════════════════════════════════
-if 'vqtl' in _run and not _is_done('scan_vqtl'):
-    hi(f'\n▶ P2 — SCAN_VQTL  ({list(KNOWN_HITS.keys())})')
-    from mosaiqtl.vqtl import scan_vqtl, estimate_dispersion_per_subject
+    t_df.to_csv(py_dir / 'benchmark_summary.csv', index=False)
 
-    vqtl_rows   = []
-    phi_qc_rows = []
-    cov_cache   = _cache_cov()
-    shared_mask = np.array([s in cache_sid_set for s in strains_sorted])
-    cov_shared  = covar_strains[shared_mask]
+    log.info('\n── Phase 3 benchmark summary ───────────────────────────────────────────')
+    hdr = (f"  {'Section':<24s}  {'Py (s)':>8s}  {'R (s)':>8s}  "
+           f"{'Speedup':>8s}  {'Py MB':>8s}  {'R MB':>8s}")
+    log.info(hdr)
+    log.info('  ' + '─' * 80)
+    for _, row in t_df.iterrows():
+        py_s  = row['elapsed_s']
+        r_s   = row.get('r_elapsed_s', float('nan'))
+        sp    = row.get('speedup', float('nan'))
+        py_mb = row.get('peak_mb')
+        r_mb  = row.get('r_peak_heap_mb', float('nan'))
+        py_str  = f'{py_s:8.1f}' if pd.notna(py_s)  else '    skip'
+        r_str   = f'{r_s:8.1f}'  if pd.notna(r_s)   else '    n/a '
+        sp_str  = f'{sp:7.1f}×'  if pd.notna(sp)    else '    n/a '
+        pymb_str = f'{py_mb:8.1f}' if py_mb is not None else '     n/a'
+        rmb_str  = f'{r_mb:8.1f}'  if pd.notna(r_mb)  else '     n/a'
+        log.info('  %-24s  %s  %s  %s  %s  %s',
+                 row['section'], py_str, r_str, sp_str, pymb_str, rmb_str)
+    log.info('  ' + '─' * 80)
 
-    for gname, info in KNOWN_HITS.items():
-        if gname not in gene_names_all:
-            hi(f'  skip {gname}: not in gene list'); continue
-        gi       = gene_names_all.index(gname)
-        counts_g = X_raw[:, gi]
-        kd_g     = ({info['chr']: kinship_decomp[info['chr']]}
-                    if info['chr'] in kinship_decomp else None)
+    # gates
+    log.info('')
+    n_genes = 50
+    s4_rows = t_df[t_df['section'] == 'S4_lmm_scan']
+    if len(s4_rows) > 0 and pd.notna(s4_rows.iloc[0]['elapsed_s']):
+        s4_py   = float(s4_rows.iloc[0]['elapsed_s'])
+        s4_r    = float(s4_rows.iloc[0].get('r_elapsed_s', float('nan')))
+        s4_sp   = float(s4_rows.iloc[0].get('speedup', float('nan')))
+        g_min   = n_genes / (s4_py / 60)
 
-        try:
-            res_v = scan_vqtl(
-                counts         = counts_g,
-                subject_ids    = strain_ids_cells,
-                genomecache   = cache_py,
-                library_sizes  = lib_sizes_cells,
-                covariates     = cov_shared,
-                kinship_decomp = kd_g,
-                phi_method     = 'moments',
-                min_cells      = args.min_cells,
-                use_rint       = True,
-                gene_id        = gname,
-                also_scan_mean = True,
-            )
-        except Exception as e:
-            hi(f'  ERROR scan_vqtl({gname}): {e}'); log.exception(f'vqtl {gname}'); continue
+        ok_speed = s4_sp >= 5.0 if pd.notna(s4_sp) else None
+        ok_gpm   = g_min > 100.0
+        ok_mem   = float(results.get('MEM-02', 0)) < 4096.0
 
-        if res_v is None:
-            hi(f'  {gname}: scan_vqtl returned None'); continue
+        for label, val, unit, gate, ok in [
+            ('SPEED-02  S4 speedup', s4_sp, '×',      '≥ 5×',       ok_speed),
+            ('SPEED-06  S4 throughput', g_min, 'genes/min', '> 100/min', ok_gpm),
+            ('MEM-02    S4 peak heap', float(results.get('MEM-02', 0)), 'MB', '< 4096 MB', ok_mem),
+        ]:
+            if ok is None:
+                sym = SKIP
+            elif ok:
+                sym = PASS
+            else:
+                sym = MEAS   # first run — log value, no hard fail
+            log.info('  %s %-30s  %.1f %s  (gate %s)', sym, label, val, unit, gate)
 
-        # correct field names: scan_result, mean_scan_result, phi_estimates
-        sr_v  = res_v.scan_result
-        sr_m  = res_v.mean_scan_result
-        phi_v = res_v.phi_estimates
-        pk_v  = sr_v.peak_info()
-        hi(f'  {gname}: vQTL chr{pk_v["chromosome"]} {pk_v["position"]:.1f} Mb LOD={pk_v["lod"]:.3f}')
+    log.info('\n  benchmark_summary.csv written to: %s', py_dir / 'benchmark_summary.csv')
 
-        # per-strain phi for QC CSV
-        subj_v, phi_hat_v = estimate_dispersion_per_subject(
-            counts_g, strain_ids_cells, lib_sizes_cells,
-            method='moments', min_cells=args.min_cells)
-        pb_mean_g = {}
-        for sid, cnt in zip(strain_ids_cells, counts_g):
-            pb_mean_g.setdefault(sid, []).append(float(cnt))
-        pb_mean_g = {s: float(np.mean(v)) for s, v in pb_mean_g.items()}
-        for si, sid in enumerate(subj_v):
-            phi_qc_rows.append({'gene_id': gname, 'strain': sid,
-                                 'phi_hat': float(phi_hat_v[si]),
-                                 'log_phi': float(np.log(max(float(phi_hat_v[si]), 1e-9))),
-                                 'mean_expr': pb_mean_g.get(sid, np.nan)})
+    # ── CSV correctness comparison (Py vs R per-section outputs) ─────────────
+    _csv_pairs = [
+        ('S4 LOD (sim.y.1)',   py_dir / 's4_lod_py.csv',    r_data / 'lod_r.csv',
+         'lod',      'lod',      's4'),
+        ('S7 MI LOD',          py_dir / 's7_mi_lod.csv',    r_data / 'mi_lod_r.csv',
+         'lod',      'lod',      's7'),
+        # S8: Python scan filtered to cache-locus SNPs — same scope as R's loci_by_chr.
+        # R's allele dir only has entries for real GigaMUGA markers that are cache
+        # loci; pseudomarker loci are silently skipped. Python mirrors this by
+        # restricting just_these_snps to markers whose ID is in the cache locus set.
+        ('S8 SNP LOD',         py_dir / 's8_snp_lod.csv',   r_data / 'snp_lod_r.csv',
+         'lod',      'lod',      's8'),
+        # S9: R exports lod = mediated scan (scan.h2lmm(formula=sim.y.1~sim.y.2)).
+        # Python's lod_mediated is the equivalent column (scan with mediator covariate).
+        ('S9 mediation LOD',   py_dir / 's9_mediation.csv', r_data / 'mediation_r.csv',
+         'lod_mediated', 'lod',      's9'),
+        # S11 excluded: R uses permutation (null distribution, mean -log10(p));
+        # Python uses bootstrap subsampling (robustness, mean LOD). Different
+        # algorithms and incompatible summary statistics — not comparable via r.
+    ]
+    log.info('\n── Phase 3 CSV correctness (Py vs R) ───────────────────────────────────')
 
-        lmm_info = lmm_peak.get(gname, {})
-        vqtl_rows.append({'gene_id':       gname,
-                          'chr_vqtl':      pk_v['chromosome'],
-                          'locus_vqtl':    pk_v['locus_id'],
-                          'pos_mb_vqtl':   pk_v['position'],
-                          'lod_vqtl':      pk_v['lod'],
-                          'lod_mean_eqtl': float(sr_m.lod.max()) if sr_m else np.nan,
-                          'chr_lmm':       lmm_info.get('chr', ''),
-                          'lod_lmm':       lmm_info.get('lod', np.nan),
-                          'eqtl_approx_mb':info['approx_mb'],
-                          'colocalises':   (pk_v['chromosome'] == info['chr'] and
-                                            abs(pk_v['position'] - info['approx_mb']) < 10)})
+    def _norm_chr(s: pd.Series) -> pd.Series:
+        """Strip 'chr' prefix; keep as string; 'X'→'X'."""
+        return s.astype(str).str.replace('^chr', '', regex=True).str.strip()
 
-        # ── independent QC: vQTL profile on candidate chr ────────────────────
-        fig_vq, axes = plt.subplots(1, 2, figsize=(12, 4))
-        mask_c = sr_v.chromosomes.astype(str) == info['chr']
-        axes[0].fill_between(sr_v.positions[mask_c], 0, sr_v.lod[mask_c],
-                              color='#4F6EAF', alpha=0.8, step='mid', label='vQTL')
-        axes[0].axvline(info['approx_mb'], color='#D83026', lw=1.0, ls='--',
-                        label=f'eQTL ref ~{info["approx_mb"]:.0f} Mb')
-        axes[0].set(xlabel=f'position chr{info["chr"]} (Mb)',
-                    ylabel=r'LOD  (dispersion $\log\hat{\phi}$)',
-                    title=f'{gname} — dispersion vQTL', xlim=(0, None), ylim=(0, None))
-        axes[0].legend(fontsize=8); sns.despine(ax=axes[0])
+    def _pos_merge(py_df: pd.DataFrame, r_df: pd.DataFrame,
+                   py_val: str, r_val_col: str) -> pd.DataFrame:
+        """Merge on (chromosome, position_mb) rounded to 3 dp — locus-ID-agnostic.
 
-        # ── comparison: mean eQTL (NB pseudobulk) vs LMM on same chr ────────
-        if sr_m is not None:
-            mask_m = sr_m.chromosomes.astype(str) == info['chr']
-            axes[1].fill_between(sr_m.positions[mask_m], 0, sr_m.lod[mask_m],
-                                  color='#55AF5B', alpha=0.8, step='mid',
-                                  label='mean eQTL (NB pseudobulk)')
-        if lmm_lod_comp is not None:
-            lmm_g = lmm_lod_comp[(lmm_lod_comp['gene_id']==gname) &
-                                   (lmm_lod_comp['chr']==info['chr'])]
-            if not lmm_g.empty:
-                axes[1].plot(lmm_g['pos_mb'], lmm_g['lod_py'],
-                             color='#D83026', lw=1.2, ls='--', alpha=0.8,
-                             label='LMM (Python)')
-        axes[1].set(xlabel=f'position chr{info["chr"]} (Mb)', ylabel='LOD (mean eQTL)',
-                    title=f'{gname} — mean eQTL vs LMM', xlim=(0, None), ylim=(0, None))
-        axes[1].legend(fontsize=8); sns.despine(ax=axes[1])
-        plt.tight_layout(); save_plot(fig_vq, f'p2_vqtl_{gname.lower()}.png')
+        Handles both _scan_to_df output (position_mb) and to_dataframe() (position).
+        R columns: chr / pos_mb.
+        """
+        py_chr = 'chromosome' if 'chromosome' in py_df.columns else 'chr'
+        py_pos = ('position'    if 'position'    in py_df.columns else
+                  'position_mb' if 'position_mb' in py_df.columns else 'pos_mb')
+        r_chr  = 'chr'   if 'chr'   in r_df.columns else 'chromosome'
+        r_pos  = 'pos_mb' if 'pos_mb' in r_df.columns else 'position'
 
-    # ── independent QC: phi distribution + phi vs mean expr ─────────────────
-    if phi_qc_rows:
-        phi_df = pd.DataFrame(phi_qc_rows)
-        save_csv(phi_df, 'p2_vqtl_strain_phi.csv')
+        py = py_df[[py_chr, py_pos, py_val]].copy()
+        r  = r_df[[r_chr,  r_pos,  r_val_col]].copy()
 
-        fig_ph, axes = plt.subplots(1, 2, figsize=(11, 4))
-        for gn in phi_df['gene_id'].unique():
-            sub = phi_df[phi_df['gene_id']==gn].dropna(subset=['log_phi'])
-            sns.kdeplot(sub['log_phi'], ax=axes[0], label=gn, lw=1.5)
-        axes[0].set(xlabel=r'$\log\hat{\phi}$ (per strain)',
-                    ylabel='density', title='dispersion distribution per gene')
-        axes[0].legend(fontsize=8); sns.despine(ax=axes[0])
-        for gn in phi_df['gene_id'].unique():
-            sub = phi_df[phi_df['gene_id']==gn].dropna(subset=['log_phi','mean_expr'])
-            if len(sub) < 3: continue
-            axes[1].scatter(np.log1p(sub['mean_expr']), sub['log_phi'],
-                            s=8, alpha=0.6, label=gn, edgecolors='none')
-        axes[1].set(xlabel=r'$\log(1+$ mean expr$)$', ylabel=r'$\log\hat{\phi}$',
-                    title='mean–variance relationship per gene', xlim=(0, None))
-        axes[1].legend(fontsize=8); sns.despine(ax=axes[1])
-        plt.tight_layout(); save_plot(fig_ph, 'p2_vqtl_phi_qc.png')
+        py['_chr'] = _norm_chr(py[py_chr])
+        py['_pos'] = pd.to_numeric(py[py_pos], errors='coerce').round(3)
+        r['_chr']  = _norm_chr(r[r_chr])
+        r['_pos']  = pd.to_numeric(r[r_pos],  errors='coerce').round(3)
 
-    if vqtl_rows:
-        vqtl_df = pd.DataFrame(vqtl_rows)
-        save_csv(vqtl_df, 'p2_vqtl_summary.csv')
-        record('scan_vqtl', True,
-               f'n_genes={len(vqtl_rows)}  '
-               f'colocalise={int(vqtl_df["colocalises"].sum())}/{len(vqtl_df)}')
-    else:
-        record('scan_vqtl', False, 'no vQTL results')
+        # Deduplicate by rounded position on each side before merging to prevent
+        # many-to-many joins when two loci round to the same (chr, pos) key.
+        # Keeps the highest-LOD row per position (fallback: first).
+        py_dedup = (
+            py[['_chr', '_pos', py_val]]
+            .sort_values(py_val, ascending=False)
+            .drop_duplicates(subset=['_chr', '_pos'], keep='first')
+        )
+        r_dedup = (
+            r[['_chr', '_pos', r_val_col]]
+            .sort_values(r_val_col, ascending=False)
+            .drop_duplicates(subset=['_chr', '_pos'], keep='first')
+        )
 
-# ══════════════════════════════════════════════════════════════════════════════
-# P3 — SCAN_EPISTASIS
-# ══════════════════════════════════════════════════════════════════════════════
-if 'epistasis' in _run and not _is_done('scan_epistasis'):
-    hi('\n▶ P3 — SCAN_EPISTASIS  (Piezo1 chr8 × Ccdc171 chr4)')
-    from mosaiqtl.epistasis import scan_epistasis, test_haplotype_combinations
+        return pd.merge(
+            py_dedup.rename(columns={py_val: 'py'}),
+            r_dedup.rename(columns={r_val_col: 'r'}),
+            on=['_chr', '_pos'], how='inner',
+        ).dropna()
 
-    def _peak_locus(gname):
-        if 'results_nb' in dir() and gname in results_nb:
-            return str(results_nb[gname].peak_info()['locus_id'])
-        info = KNOWN_HITS.get(gname)
-        if info is None: return None
-        lids, pos, _ = cache_py.get_chromosome(info['chr'])
-        return str(lids[int(np.argmin(np.abs(pos - info['approx_mb'])))])
+    def _correctness_stats(py_arr: np.ndarray, r_arr: np.ndarray) -> dict:
+        """Compute r, slope, intercept, max|Δ|, mean|Δ|.
 
-    locus_a = _peak_locus('Piezo1')
-    locus_b = _peak_locus('Ccdc171')
-    hi(f'  locus_a={locus_a}  locus_b={locus_b}')
-
-    if None in (locus_a, locus_b) or 'Piezo1' not in gene_names_all:
-        record('scan_epistasis', False, 'missing loci or Piezo1 not in gene set')
-    else:
-        y_epi   = _pb_rint('Piezo1')
-        cov_epi = _cache_cov()
-
-        try:
-            epi_res = scan_epistasis(
-                phenotype      = y_epi,
-                genomecache   = cache_py,
-                locus_a        = locus_a,
-                locus_b        = locus_b,
-                covariates     = cov_epi,
-                kinship_decomp = kinship_decomp,
-                use_rint       = False,
-                phenotype_id   = 'Piezo1',
-            )
-        except Exception as e:
-            hi(f'  ERROR: {e}'); log.exception('epistasis'); epi_res = None
-
-        if epi_res is not None:
-            hi(f'  LOD_additive={epi_res["lod_additive"]:.3f}  '
-               f'LOD_epistasis={epi_res["lod_epistasis"]:.3f}')
-            save_csv(pd.DataFrame([{
-                'gene_id':'Piezo1', 'locus_a':locus_a, 'locus_b':locus_b,
-                'lod_additive':    epi_res['lod_additive'],
-                'lod_interaction': epi_res['lod_interaction'],
-                'lod_epistasis':   epi_res['lod_epistasis'],
-            }]), 'p3_epistasis_result.csv')
-
-            # ── independent QC: haplotype combination heatmap ─────────────────
-            try:
-                hap_res = test_haplotype_combinations(
-                    y_epi, cache_py, locus_a, locus_b,
-                    covariates=cov_epi, kinship_decomp=kinship_decomp,
-                    use_rint=False, phenotype_id='Piezo1')
-                if hap_res is not None and 'means' in hap_res:
-                    mat = np.array(hap_res['means'])
-                    fig_hm, ax = plt.subplots(figsize=(6.5, 5))
-                    sns.heatmap(mat, ax=ax, cmap='YlOrRd',
-                                xticklabels=FOUNDER_COLS,
-                                yticklabels=FOUNDER_COLS,
-                                cbar_kws={'label': 'mean Piezo1 (RINT)'})
-                    ax.set_title(f'Piezo1 × Ccdc171 haplotype combinations\n{locus_a} × {locus_b}', fontsize=9)
-                    ax.set_xlabel(f'Ccdc171 haplotype ({locus_b})', fontsize=9)
-                    ax.set_ylabel(f'Piezo1 haplotype ({locus_a})', fontsize=9)
-                    plt.tight_layout()
-                    save_plot(fig_hm, 'p3_epistasis_haplotype_heatmap.png')
-            except Exception as e:
-                hi(f'  haplotype heatmap skipped: {e}')
-
-            # ── comparison: NB founder effects vs LMM at Piezo1 peak ─────────
-            nb_fe_rows = []
-            try:
-                from mosaiqtl.nb import fit_null_sc, scan_nb_gene, pseudobulk_sum
-                gi_p   = gene_names_all.index('Piezo1')
-                pb_p, _, pb_strains = pseudobulk_sum(
-                    X_raw[:, gi_p:gi_p+1].T, strain_ids_cells)
-                s2idx  = {s: i for i, s in enumerate(pb_strains)}
-                pb_al  = np.array([pb_p[0, s2idx[s]] if s in s2idx else 0.0
-                                   for s in cache_sids])
-                null_f = fit_null_sc(X_raw[:, gi_p:gi_p+1].T, strain_ids_cells,
-                                     covar_cells, norm_method='TMM', shrink=True)
-                phi_g  = float(null_f['dispersion_use'][0]) if null_f['gene_mask'].any() else 1.0
-                sig_g  = float(null_f['sigma_sample'][0])   if null_f['gene_mask'].any() else 0.0
-                sid_to_row = {s: i for i, s in enumerate(strains_sorted)}
-                cov_al = np.array([covar_strains[sid_to_row[s]] if s in sid_to_row
-                                   else np.zeros(covar_strains.shape[1])
-                                   for s in cache_sids])
-                sr_nb_p = scan_nb_gene(pb_al, cache_py, np.array(cache_sids),
-                                        phi=phi_g, sigma_sample=sig_g,
-                                        covariates=cov_al, use_lrt=True,
-                                        just_these_loci={locus_a},
-                                        phenotype_id='Piezo1')
-                if sr_nb_p is not None and sr_nb_p.betas is not None and len(sr_nb_p.betas):
-                    nb_betas = sr_nb_p.betas[0]
-                    for fi, fc in enumerate(FOUNDER_COLS[:-1]):
-                        nb_fe_rows.append({'founder': fc, 'beta_nb': float(nb_betas[fi])})
-            except Exception as e:
-                hi(f'  NB founder effects skipped: {e}')
-
-            if nb_fe_rows:
-                nb_fe = pd.DataFrame(nb_fe_rows)
-                save_csv(nb_fe, 'p3_nb_founder_effects.csv')
-
-                fig_fe, ax = plt.subplots(figsize=(9, 4))
-                x  = np.arange(len(FOUNDER_COLS)-1); w = 0.35
-                cf = [FOUNDER_COLORS.get(f, '#888') for f in FOUNDER_COLS[:-1]]
-                ax.bar(x - w/2, nb_fe['beta_nb'].values, w,
-                       color=cf, edgecolor='white', lw=0.5, label='NB (mosaiQTL)')
-                # LMM effects from allele_effects_r.csv
-                if lmm_allele_effects is not None:
-                    lmm_fe = lmm_allele_effects[
-                        (lmm_allele_effects['gene_id']=='Piezo1') &
-                        (lmm_allele_effects['locus']==locus_a)]
-                    if not lmm_fe.empty:
-                        code_map = {chr(65+i): f for i, f in enumerate(FOUNDER_COLS)}
-                        r_eff = [float(lmm_fe.loc[lmm_fe['founder']==code_map.get(chr(65+i),''),'effect'].iloc[0])
-                                 if code_map.get(chr(65+i),'') in lmm_fe['founder'].values else 0.0
-                                 for i in range(len(FOUNDER_COLS)-1)]
-                        ax.bar(x + w/2, r_eff, w, color=cf, hatch='///',
-                               edgecolor='#333', lw=0.5, alpha=0.7, label='LMM (miQTL R)')
-                ax.axhline(0, color='#444', lw=0.5)
-                ax.set(xticks=x, xticklabels=FOUNDER_COLS[:-1],
-                       xlabel='founder', ylabel='effect size',
-                       title=f'Piezo1 founder effects — NB vs LMM  ({locus_a})',
-                       xlim=(-0.5, len(FOUNDER_COLS)-1.5))
-                ax.set_xticklabels(FOUNDER_COLS[:-1], rotation=45, ha='right', fontsize=10)
-                ax.legend(fontsize=9); sns.despine(ax=ax)
-                plt.tight_layout(); save_plot(fig_fe, 'p3_founder_effects_nb_vs_lmm.png')
-
-            record('scan_epistasis', epi_res['lod_additive'] > 0,
-                   f'lod_additive={epi_res["lod_additive"]:.3f}  '
-                   f'lod_epistasis={epi_res["lod_epistasis"]:.3f}')
+        PASS requires all three: r ≥ 0.99, |slope−1| < 0.05, |intercept| < 0.1.
+        Slope ≈ 1 and intercept ≈ 0 rule out systematic scale/offset bias that
+        Pearson r alone cannot detect (e.g. Python LODs uniformly 2× R passes r=1).
+        """
+        r_pearson, _ = stats.pearsonr(py_arr, r_arr)
+        slope, intercept, *_ = stats.linregress(r_arr, py_arr)
+        abs_diff = np.abs(py_arr - r_arr)
+        r_ok = r_pearson >= 0.99
+        s_ok = abs(slope - 1.0) < 0.05
+        i_ok = abs(intercept) < 0.1
+        if r_ok and s_ok and i_ok:
+            status = 'PASS'
+        elif r_pearson >= 0.90:
+            status = 'WARN'
         else:
-            record('scan_epistasis', False, 'scan_epistasis raised error')
+            status = 'FAIL'
+        return {
+            'pearson_r':    float(r_pearson),
+            'slope':        float(slope),
+            'intercept':    float(intercept),
+            'max_abs_diff': float(abs_diff.max()),
+            'mean_abs_diff': float(abs_diff.mean()),
+            'slope_ok':     s_ok,
+            'intercept_ok': i_ok,
+            'status':       status,
+        }
 
-# ══════════════════════════════════════════════════════════════════════════════
-# P4 — SCAN_CONDITIONAL_WITH_Y
-# ══════════════════════════════════════════════════════════════════════════════
-if 'conditional' in _run and not _is_done('scan_conditional'):
-    hi('\n▶ P4 — SCAN_CONDITIONAL_WITH_Y  (Piezo1)')
-    from mosaiqtl.epistasis import scan_conditional_with_y
-    from mosaiqtl.scan import scan_h2lmm
+    corr_rows: list[dict] = []
+    for label, py_csv, r_csv, py_col, r_col, slug in _csv_pairs:
+        if not py_csv.exists() or not r_csv.exists():
+            missing = [s for s, p in (('py', py_csv), ('r', r_csv)) if not p.exists()]
+            log.info('  %-22s  missing CSV(s): %s', label, ', '.join(missing))
+            corr_rows.append({'section': label, 'pearson_r': float('nan'),
+                              'n_matched': 0, 'n_py': 0, 'n_r': 0,
+                              'match_rate': float('nan'), 'max_abs_diff': float('nan'),
+                              'status': 'missing'})
+            continue
 
-    if 'Piezo1' not in gene_names_all:
-        record('scan_conditional', False, 'Piezo1 not in gene set')
-    else:
-        y_cond   = _pb_rint('Piezo1')
-        cov_cond = _cache_cov()
+        py_df = pd.read_csv(py_csv)
+        r_df  = pd.read_csv(r_csv)
+        n_py, n_r = len(py_df), len(r_df)
 
-        hi('  base LMM scan (seed for conditional)')
-        try:
-            sr_base = scan_h2lmm(y_cond, cache_py, cov_cond,
-                                  kinship_decomp, use_rint=False,
-                                  phenotype_id='Piezo1')
-        except Exception as e:
-            hi(f'  ERROR base scan: {e}'); log.exception('base'); sr_base = None
-            record('scan_conditional', False, f'base scan failed: {e}')
-
-        if sr_base is not None:
-            pk0 = sr_base.peak_info()
-            hi(f'  signal 1: chr{pk0["chromosome"]} {pk0["position"]:.1f} Mb '
-               f'LOD={pk0["lod"]:.3f}')
-            try:
-                signals = scan_conditional_with_y(
-                    phenotype          = y_cond,
-                    scan_result        = sr_base,
-                    genomecache       = cache_py,
-                    covariates         = cov_cond,
-                    kinship_decomp     = kinship_decomp,
-                    n_signals          = 3,
-                    lod_drop_threshold = 1.5,
-                    use_rint           = False,
+        if slug == 's8':
+            # S8: merge on marker ID — R scans cache-locus SNPs (sparse haplotype
+            # grid), Python scans all GigaMUGA SNPs (denser). Positions differ
+            # because R reports locus positions, Python reports actual SNP positions.
+            # Shared SNPs (~78% of R's set) are compared by marker ID.
+            _py_snp_col = 'snp' if 'snp' in py_df.columns else py_df.columns[0]
+            _r_snp_col  = 'snp' if 'snp' in r_df.columns  else r_df.columns[0]
+            merged = (
+                py_df[[_py_snp_col, py_col]]
+                .rename(columns={_py_snp_col: '_snp', py_col: 'py'})
+                .merge(
+                    r_df[[_r_snp_col, r_col]]
+                    .rename(columns={_r_snp_col: '_snp', r_col: 'r'}),
+                    on='_snp', how='inner',
                 )
-            except Exception as e:
-                hi(f'  ERROR conditional: {e}'); log.exception('conditional')
-                signals = [sr_base]
+                .dropna()
+            )
+        else:
+            merged = _pos_merge(py_df, r_df, py_col, r_col)
+        n_matched = len(merged)
+        # denominator = n_r: fraction of R's reference loci verified in Python
+        match_rate = n_matched / n_r if n_r > 0 else float('nan')
 
-            sig_rows = []
-            for si, sr in enumerate(signals):
-                pk = sr.peak_info()
-                hi(f'  signal {si+1}: chr{pk["chromosome"]} {pk["position"]:.1f} Mb '
-                   f'LOD={pk["lod"]:.3f}')
-                sig_rows.append({'signal': si+1, 'chr': pk['chromosome'],
-                                  'locus': pk['locus_id'], 'pos_mb': pk['position'],
-                                  'lod': pk['lod']})
-                # genome-wide CSV per signal
-                save_csv(pd.DataFrame({'chr': sr.chromosomes,
-                                        'pos_mb': sr.positions,
-                                        'lod': sr.lod,
-                                        'locus': sr.locus_ids}),
-                         f'p4_signal{si+1}_genome_wide.csv')
-            save_csv(pd.DataFrame(sig_rows), 'p4_conditional_signals.csv')
+        if n_matched < 3:
+            log.info('  %-22s  n_py=%d  n_r=%d  matched=%d/n_r (%.0f%%)  TOO FEW',
+                     label, n_py, n_r, n_matched, match_rate * 100)
+            corr_rows.append({'section': label, 'pearson_r': float('nan'),
+                              'n_matched': n_matched, 'n_py': n_py, 'n_r': n_r,
+                              'match_rate': match_rate, 'max_abs_diff': float('nan'),
+                              'status': 'too_few'})
+            continue
 
-            chr_plot   = pk0['chromosome']
-            colors_sig = ['#4F6EAF', '#D83026', '#55AF5B']
+        if match_rate < 0.80:
+            log.warning('  %-22s  LOW MATCH RATE %.0f%% (%d/%d R loci) — possible scope mismatch',
+                        label, match_rate * 100, n_matched, n_r)
 
-            # ── independent QC 1: signal profiles on peak chr ────────────────
-            fig_cp, ax = plt.subplots(figsize=(9, 4))
-            for si, sr in enumerate(signals):
-                mask = sr.chromosomes.astype(str) == chr_plot
-                ax.plot(sr.positions[mask], sr.lod[mask],
-                        color=colors_sig[si % len(colors_sig)], lw=1.5, alpha=0.85,
-                        label=f'signal {si+1}  LOD={sr.lod.max():.2f}')
-            ax.set(xlabel=f'position chr{chr_plot} (Mb)', ylabel='LOD',
-                   title=f'Piezo1 conditional — chr{chr_plot}',
-                   xlim=(0, None), ylim=(0, None))
-            ax.legend(fontsize=9); sns.despine(ax=ax)
-            plt.tight_layout(); save_plot(fig_cp, 'p4_conditional_chr_profile.png')
+        cs   = _correctness_stats(merged['py'].values, merged['r'].values)
+        status = cs['status']
+        slope_flag    = '' if cs['slope_ok']     else '  ⚠ slope'
+        intercept_flag = '' if cs['intercept_ok'] else '  ⚠ intercept'
 
-            # ── independent QC 2: LOD decay bar ──────────────────────────────
-            fig_ld, ax = plt.subplots(figsize=(5, 4))
-            sig_lods = [float(sr.lod.max()) for sr in signals]
-            ax.bar([f'signal {i+1}' for i in range(len(signals))],
-                   sig_lods,
-                   color=colors_sig[:len(signals)], edgecolor='none')
-            ax.set(ylabel='peak LOD', title='LOD decay across signals',
-                   ylim=(0, None))
-            sns.despine(ax=ax)
-            plt.tight_layout(); save_plot(fig_ld, 'p4_lod_decay.png')
+        log.info('  %-22s  r=%.4f  slope=%.3f  intercept=%.3f  '
+                 'max_Δ=%.3f  n=%d/%d (%.0f%%)  %s%s%s',
+                 label, cs['pearson_r'], cs['slope'], cs['intercept'],
+                 cs['max_abs_diff'], n_matched, n_r, match_rate * 100,
+                 status, slope_flag, intercept_flag)
 
-            # ── comparison: signal 1 vs LMM on peak chr ──────────────────────
-            if lmm_lod_comp is not None:
-                lmm_pc = lmm_lod_comp[(lmm_lod_comp['gene_id']=='Piezo1') &
-                                       (lmm_lod_comp['chr']==chr_plot)]
-                fig_cm, ax = plt.subplots(figsize=(9, 4))
-                sr_s1   = signals[0]
-                mask_s1 = sr_s1.chromosomes.astype(str) == chr_plot
-                ax.plot(sr_s1.positions[mask_s1], sr_s1.lod[mask_s1],
-                        color='#4F6EAF', lw=1.5, label='conditional signal 1')
-                if not lmm_pc.empty:
-                    ax.plot(lmm_pc['pos_mb'], lmm_pc['lod_py'],
-                            color='#D83026', lw=1.2, ls='--', alpha=0.8,
-                            label='LMM (Python)')
-                ax.set(xlabel=f'position chr{chr_plot} (Mb)', ylabel='LOD',
-                       title=f'Piezo1 signal 1 vs LMM  chr{chr_plot}',
-                       xlim=(0, None), ylim=(0, None))
-                ax.legend(fontsize=9); sns.despine(ax=ax)
-                plt.tight_layout(); save_plot(fig_cm, 'p4_signal1_vs_lmm.png')
+        corr_rows.append({
+            'section': label, 'n_matched': n_matched, 'n_py': n_py, 'n_r': n_r,
+            'match_rate': match_rate, **cs,
+        })
 
-            lod_drop = (float(pk0['lod']) - float(signals[-1].lod.max())
-                        if len(signals) > 1 else 0.0)
-            record('scan_conditional', float(pk0['lod']) > 0,
-                   f'n_signals={len(signals)}  signal1_lod={pk0["lod"]:.3f}  '
-                   f'lod_drop={lod_drop:.3f}')
+        # save side-by-side comparison CSV to compare/ (Phase 2 pattern)
+        merged.to_csv(cmp_dir / f'correctness_{slug}_merged.csv', index=False)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SUMMARY
-# ══════════════════════════════════════════════════════════════════════════════
-qc_df = pd.DataFrame(qc_rows)
-qc_df.to_csv(os.path.join(PY_DATA, 'phase3_qc_summary.csv'), index=False)
-hi('\n' + '='*65)
-hi(f'{"section":<28} {"status":<6} detail')
-hi('─'*65)
-for row in qc_rows:
-    st = 'PASS' if row['pass'] is True else ('NA' if row['pass'] is None else 'FAIL')
-    hi(f'  {row["section"]:<26} {st:<6} {row["detail"]}')
-hi(f'  cell_type: {args.cell_type}  n_genes: {len(gene_set)}')
-hi(f'  outputs:   {PY_DATA}/')
-hi(f'  plots:     {PLOTS}/')
-hi('='*65)
-impl   = [r for r in qc_rows if r['pass'] is not None]
-passed = [r for r in impl if r['pass'] is True]
-sys.exit(0 if not impl or len(passed)==len(impl) else 1)
+        # ── scatter plot: R LOD vs Python LOD ────────────────────────────────
+        fig_s, ax_s = plt.subplots(figsize=(4.5, 4.5), dpi=300)
+        ax_s.scatter(merged['r'].values, merged['py'].values,
+                     s=6, alpha=0.4, color='#4F6EAF', linewidths=0, rasterized=True)
+        _lo = min(float(merged['r'].min()), float(merged['py'].min())) - 0.2
+        _hi = max(float(merged['r'].max()), float(merged['py'].max())) + 0.2
+        _rx = np.array([_lo, _hi])
+        # identity line (what perfect agreement looks like)
+        ax_s.plot(_rx, _rx, color='#D83026', linewidth=1.0, linestyle='--',
+                  label='identity (y = x)')
+        # fitted regression line (reveals scale/offset bias)
+        ax_s.plot(_rx, cs['slope'] * _rx + cs['intercept'],
+                  color='#55AF5B', linewidth=1.0, linestyle='-',
+                  label=f'fit  slope={cs["slope"]:.3f}  b={cs["intercept"]:.3f}')
+        ax_s.set_xlim([_lo, _hi])
+        ax_s.set_ylim([_lo, _hi])
+        ax_s.set_xlabel('R / miQTL  LOD', fontsize=9)
+        ax_s.set_ylabel('Python / mosaiqtl  LOD', fontsize=9)
+        ax_s.set_title(
+            f'Correctness: {label}\n'
+            f'r={cs["pearson_r"]:.4f}  slope={cs["slope"]:.3f}  '
+            f'intercept={cs["intercept"]:.3f}  max|Δ|={cs["max_abs_diff"]:.3f}'
+            f'\nn={n_matched:,} / {n_r:,} R loci ({match_rate*100:.0f}%)  [{status}]',
+            fontsize=7.5,
+        )
+        ax_s.legend(fontsize=6.5)
+        sns.despine(ax=ax_s)
+        fig_s.tight_layout()
+        fig_s.savefig(plt_dir / f'correctness_{slug}_scatter.png', dpi=300,
+                      bbox_inches='tight')
+        plt.close(fig_s)
+        log.info('  saved plots/correctness_%s_scatter.png', slug)
+
+        # ── multi-line LOD profile (S4 only — full genome) ───────────────────
+        if slug == 's4':
+            def _sort_lod(df: pd.DataFrame, lod_col: str) -> pd.DataFrame:
+                df = df.copy()
+                _chr_src = ('chromosome' if 'chromosome' in df.columns else 'chr')
+                _pos_src = ('position'    if 'position'    in df.columns else
+                            'position_mb' if 'position_mb' in df.columns else 'pos_mb')
+                df['_chr_int'] = pd.to_numeric(
+                    df[_chr_src].astype(str)
+                    .str.replace('chr', '', regex=False)
+                    .str.replace('X', '99', regex=False),
+                    errors='coerce').fillna(99).astype(int)
+                df['_pos'] = pd.to_numeric(df[_pos_src], errors='coerce').fillna(0)
+                return df.sort_values(['_chr_int', '_pos']).reset_index(drop=True)
+
+            py_sorted = _sort_lod(py_df, py_col)
+            r_sorted  = _sort_lod(r_df,  r_col)
+
+            fig_l, ax_l = plt.subplots(figsize=(11, 3.5), dpi=300)
+            ax_l.plot(np.arange(len(r_sorted)),  r_sorted[r_col].values,
+                      color='#F4C245', linewidth=0.7, alpha=0.85, label='R / miQTL')
+            ax_l.plot(np.arange(len(py_sorted)), py_sorted[py_col].values,
+                      color='#52A5DB', linewidth=0.7, alpha=0.85, label='Python / mosaiqtl')
+
+            # chromosome boundary ticks on x-axis
+            chr_col_r = 'chromosome' if 'chromosome' in r_sorted.columns else 'chr'
+            _chrs = r_sorted['_chr_int'].values
+            _boundaries = np.where(np.diff(_chrs) != 0)[0] + 1
+            _centers: list[int] = []
+            _chr_labels: list[str] = []
+            prev = 0
+            for bnd in list(_boundaries) + [len(_chrs)]:
+                _centers.append((prev + bnd) // 2)
+                _chr_labels.append('X' if _chrs[prev] == 99 else str(_chrs[prev]))
+                prev = bnd
+            ax_l.set_xticks(_centers)
+            ax_l.set_xticklabels(_chr_labels, fontsize=6)
+            for bnd in _boundaries:
+                ax_l.axvline(bnd, color='#E8E8E8', linewidth=0.5, zorder=0)
+
+            ax_l.set_xlabel('Chromosome', fontsize=9)
+            ax_l.set_ylabel('LOD', fontsize=9)
+            ax_l.set_title(
+                f'S4 genome-wide LOD profile: Python vs R (sim.y.1)\nr = {cs["pearson_r"]:.4f}',
+                fontsize=9)
+            ax_l.legend(fontsize=7, loc='upper right')
+            sns.despine(ax=ax_l)
+            fig_l.tight_layout()
+            fig_l.savefig(plt_dir / 'correctness_s4_lod_profile.png',
+                          dpi=300, bbox_inches='tight')
+            plt.close(fig_l)
+            log.info('  saved plots/correctness_s4_lod_profile.png')
+
+        # ── SNP LOD profile (S8 only — peak chromosome) ──────────────────────
+        if slug == 's8':
+            py_s8 = py_df.copy()
+            r_s8  = r_df.copy()
+
+            # normalise chr and pos columns
+            _pc = 'chromosome' if 'chromosome' in py_s8.columns else 'chr'
+            _pp = ('position'    if 'position'    in py_s8.columns else
+                   'position_mb' if 'position_mb' in py_s8.columns else 'pos_mb')
+            _rc = 'chr' if 'chr' in r_s8.columns else 'chromosome'
+            _rp = 'pos_mb' if 'pos_mb' in r_s8.columns else 'position'
+
+            py_s8['_pos'] = pd.to_numeric(py_s8[_pp], errors='coerce')
+            r_s8['_pos']  = pd.to_numeric(r_s8[_rp],  errors='coerce')
+            py_s8 = py_s8.sort_values('_pos').reset_index(drop=True)
+            r_s8  = r_s8.sort_values('_pos').reset_index(drop=True)
+
+            fig_s8, ax_s8 = plt.subplots(figsize=(9, 3.5), dpi=300)
+            ax_s8.plot(r_s8['_pos'].values, r_s8[r_col].values,
+                       color='#F4C245', linewidth=0.7, alpha=0.85, label='R / miQTL')
+            ax_s8.plot(py_s8['_pos'].values, py_s8[py_col].values,
+                       color='#52A5DB', linewidth=0.7, alpha=0.85,
+                       label='Python / mosaiqtl')
+
+            ax_s8.set_xlabel('Position (Mb)', fontsize=9)
+            ax_s8.set_ylabel('LOD', fontsize=9)
+            _chr_label = str(py_s8[_pc].iloc[0]) if len(py_s8) else '?'
+            ax_s8.set_title(
+                f'S8 SNP LOD profile: Python vs R  chr{_chr_label}\n'
+                f'r={cs["pearson_r"]:.4f}  '
+                f'n_py={len(py_s8):,}  n_r={len(r_s8):,}  matched={n_matched:,}',
+                fontsize=8,
+            )
+            ax_s8.legend(fontsize=7, loc='upper right')
+            sns.despine(ax=ax_s8)
+            fig_s8.tight_layout()
+            fig_s8.savefig(plt_dir / 'correctness_s8_snp_profile.png',
+                           dpi=300, bbox_inches='tight')
+            plt.close(fig_s8)
+            log.info('  saved plots/correctness_s8_snp_profile.png')
+
+    if corr_rows:
+        pd.DataFrame(corr_rows).to_csv(py_dir / 'correctness_summary.csv', index=False)
+        log.info('  correctness_summary.csv written')
+
+    # ── plot configuration ───────────────────────────────────────────────────
+    # pipeline_from_scratch excluded — R does not report it as a standalone section
+    _SEC_ORDER = [
+        'S1_cache_info', 'S2_haplotype_probs', 'S3_kinship_loco',
+        'S4_lmm_scan', 'S6_permutation', 'S7_mi_scan', 'S8_snp_scan',
+        'S9_mediation', 'S10_bootstrap_ci', 'S11_instability',
+        'total',
+    ]
+
+    _SEC_LABELS: dict[str, str] = {
+        'S1_cache_info':      'Cache read/write (S1)',
+        'S2_haplotype_probs': 'Haplotype probabilities (S2)',
+        'S3_kinship_loco':    'LOCO kinship build (S3)',
+        'S4_lmm_scan':        'LMM genome scan — 50 genes (S4)',
+        'S6_permutation':     'Permutation threshold — 250 perms (S6)',
+        'S7_mi_scan':         'Multiple imputation scan (S7)',
+        'S8_snp_scan':        'SNP scan (S8)',
+        'S9_mediation':       'Mediation scan (S9)',
+        'S10_bootstrap_ci':   'Bootstrap confidence interval (S10)',
+        'S11_instability':    'Instability scan — 100 samples (S11)',
+        'total':              'Total — all steps combined',
+        'peak_overall':       'Peak memory — overall maximum',
+    }
+
+    def _label(sec: str) -> str:
+        return _SEC_LABELS.get(sec, sec)
+
+    def _ordered(df: pd.DataFrame, order: list[str] | None = None) -> pd.DataFrame:
+        """Return df rows in order, dropping sections not in df."""
+        ord_ = order if order is not None else _SEC_ORDER
+        present = [s for s in ord_ if s in df['section'].values]
+        return df.set_index('section').loc[present].reset_index()
+
+    def _fmt_s(v: float) -> str:
+        if v < 1.0:
+            return f'{v * 1000:.0f} ms'
+        if v < 60.0:
+            return f'{v:.1f} s'
+        return f'{v / 60:.1f} min'
+
+    # ── compute total speedup from matched-pair section sums ─────────────────
+    # 'total' row from the script's timer often includes Python-only overhead
+    # (cache build, CSV loads) that R doesn't count — so use matched sections only.
+    _core_secs = [s for s in _SEC_ORDER if s != 'total']
+    if 'r_elapsed_s' in t_df.columns:
+        _matched = t_df[
+            t_df['section'].isin(_core_secs) &
+            t_df['elapsed_s'].notna() &
+            t_df['r_elapsed_s'].notna()
+        ]
+        if len(_matched) > 0 and _matched['elapsed_s'].sum() > 0:
+            _total_spd = _matched['r_elapsed_s'].sum() / _matched['elapsed_s'].sum()
+            if 'speedup' not in t_df.columns:
+                t_df['speedup'] = float('nan')
+            if 'total' in t_df['section'].values:
+                t_df.loc[t_df['section'] == 'total', 'speedup'] = _total_spd
+                t_df.loc[t_df['section'] == 'total', 'elapsed_s'] = (
+                    _matched['elapsed_s'].sum())
+                t_df.loc[t_df['section'] == 'total', 'r_elapsed_s'] = (
+                    _matched['r_elapsed_s'].sum())
+            else:
+                _tot_row = pd.DataFrame([{
+                    'section': 'total',
+                    'elapsed_s': _matched['elapsed_s'].sum(),
+                    'r_elapsed_s': _matched['r_elapsed_s'].sum(),
+                    'speedup': _total_spd,
+                    'peak_mb': float('nan'),
+                }])
+                t_df = pd.concat([t_df, _tot_row], ignore_index=True)
+
+    # ── speedup grouped bar chart ─────────────────────────────────────────────
+    spd_df = _ordered(t_df[t_df['speedup'].notna()])
+    if len(spd_df) > 0:
+        secs   = list(spd_df['section'])
+        labels = [_label(s) for s in secs]
+        vals   = list(spd_df['speedup'].astype(float))
+        y      = np.arange(len(secs))
+        colors = ['#C0BFBF' if s == 'total' else
+                  '#55AF5B' if v >= 5.0 else
+                  '#52A5DB' if v >= 1.0 else '#D83026'
+                  for s, v in zip(secs, vals)]
+        fig, ax = plt.subplots(figsize=(8, max(3, len(secs) * 0.65 + 1.5)), dpi=300)
+        bars = ax.barh(y, vals, color=colors, height=0.55, edgecolor='none')
+        ax.axvline(1.0, color='#444444', linewidth=0.8, linestyle='--', zorder=3)
+        ax.text(1.02, len(secs) - 0.8, '1×', fontsize=6.5, color='#444444', va='top')
+        for bar, v, c in zip(bars, vals, colors):
+            ax.text(v + max(vals) * 0.01, bar.get_y() + bar.get_height() / 2,
+                    f'{v:.1f}×', va='center', ha='left', fontsize=6.5, color=c)
+        # separator above total row
+        if 'total' in secs:
+            _sep = secs.index('total') - 0.5
+            ax.axhline(_sep, color='#C0BFBF', linewidth=0.7, linestyle=':', zorder=2)
+        ax.set_yticks(y)
+        ax.set_yticklabels(labels, fontsize=8)
+        ax.invert_yaxis()
+        ax.set_xlabel('Speedup vs R / miQTL (×)', fontsize=9)
+        ax.set_title(
+            'mosaiqtl vs miQTL: speed improvement per pipeline step\n'
+            '(50 phenotypes, 40 CC strains, seed=123)\n'
+            'Note: total = weighted by R time — bottleneck steps dominate',
+            fontsize=8,
+        )
+        sns.despine(ax=ax)
+        fig.tight_layout()
+        fig.savefig(plt_dir / 'speedup_bar.png', dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        log.info('  saved plots/speedup_bar.png')
+
+    # ── timing: two-panel grouped bar chart (Python seconds | R minutes) ─────
+    _time_df = _ordered(t_df[t_df['elapsed_s'].notna()])
+    if len(_time_df) > 0:
+        secs    = list(_time_df['section'])
+        labels  = [_label(s) for s in secs]
+        py_vals = list(_time_df['elapsed_s'].astype(float))
+        _r_col  = 'r_elapsed_s'
+        r_vals  = ([float(v) if pd.notna(v) else float('nan')
+                    for v in _time_df[_r_col]]
+                   if _r_col in _time_df.columns
+                   else [float('nan')] * len(_time_df))
+        has_r = any(not np.isnan(v) for v in r_vals)
+        y     = np.arange(len(secs))
+
+        ncols = 2 if has_r else 1
+        fig, axes = plt.subplots(
+            1, ncols,
+            figsize=(5.5 * ncols, max(3, len(secs) * 0.65 + 1.8)),
+            dpi=300, sharey=True,
+        )
+        if ncols == 1:
+            axes = [axes]
+
+        # left panel: Python (seconds, linear)
+        ax_py = axes[0]
+        _py_finite = [v if not np.isnan(v) else 0.0 for v in py_vals]
+        bars_py = ax_py.barh(y, _py_finite, color='#52A5DB', height=0.55, edgecolor='none')
+        for bar, v in zip(bars_py, py_vals):
+            if np.isnan(v):
+                continue
+            lbl = f'{v * 1000:.0f} ms' if v < 1.0 else f'{v:.2f} s'
+            ax_py.text(v + max(_py_finite) * 0.01,
+                       bar.get_y() + bar.get_height() / 2,
+                       lbl, va='center', ha='left', fontsize=6.5, color='#52A5DB')
+        ax_py.set_yticks(y)
+        ax_py.set_yticklabels(labels, fontsize=8)
+        ax_py.invert_yaxis()
+        ax_py.set_xlabel('Elapsed time (seconds)', fontsize=9)
+        ax_py.set_title('Python / mosaiqtl', fontsize=9, color='#52A5DB', fontweight='bold')
+        sns.despine(ax=ax_py)
+
+        # right panel: R (minutes, linear)
+        if has_r:
+            ax_r  = axes[1]
+            r_mins = [v / 60.0 if not np.isnan(v) else 0.0 for v in r_vals]
+            bars_r = ax_r.barh(y, r_mins, color='#F4C245', height=0.55, edgecolor='none')
+            for bar, v_min, v_s in zip(bars_r, r_mins, r_vals):
+                if np.isnan(v_s):
+                    continue
+                lbl = f'{v_s:.1f} s' if v_s < 60.0 else f'{v_min:.2f} min'
+                ax_r.text(v_min + max(r_mins) * 0.01,
+                          bar.get_y() + bar.get_height() / 2,
+                          lbl, va='center', ha='left', fontsize=6.5, color='#C8960C')
+            ax_r.set_xlabel('Elapsed time (minutes)', fontsize=9)
+            ax_r.set_title('R / miQTL', fontsize=9, color='#C8960C', fontweight='bold')
+            sns.despine(ax=ax_r)
+
+        fig.suptitle(
+            'mosaiqtl vs miQTL: wall-clock time per pipeline step\n'
+            '(50 phenotypes, 40 CC strains, seed=123)',
+            fontsize=9,
+        )
+        fig.tight_layout()
+        fig.savefig(plt_dir / 'timing_comparison.png', dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        log.info('  saved plots/timing_comparison.png')
+
+    # ── memory grouped bar chart (Python tracemalloc vs R gc max-used) ───────
+    _mem_r_avail = 'r_peak_heap_mb' in t_df.columns
+    _mem_base    = t_df[~t_df['section'].isin(['total', 'peak_overall'])].copy()
+
+    # synthetic peak_overall row: maximum across all sections
+    _max_py_mem = (_mem_base['peak_mb'].max()
+                   if 'peak_mb' in _mem_base.columns else float('nan'))
+    _max_r_mem  = (_mem_base['r_peak_heap_mb'].max()
+                   if _mem_r_avail else float('nan'))
+    _peak_row: dict = {'section': 'peak_overall', 'elapsed_s': float('nan'),
+                       'peak_mb': _max_py_mem, 'speedup': float('nan')}
+    if _mem_r_avail:
+        _peak_row['r_peak_heap_mb'] = _max_r_mem
+    _mem_df_src = pd.concat(
+        [_mem_base, pd.DataFrame([_peak_row])], ignore_index=True)
+
+    _mem_sec_order = _SEC_ORDER[:-1] + ['peak_overall']
+    mem_df = _ordered(_mem_df_src[_mem_df_src['peak_mb'].notna()],
+                      order=_mem_sec_order)
+    if len(mem_df) == 0:
+        mem_df = _ordered(_mem_df_src, order=_mem_sec_order)
+
+    if len(mem_df) > 0:
+        secs   = list(mem_df['section'])
+        labels = [_label(s) for s in secs]
+        py_mem = [float(v) if pd.notna(v) else 0.0 for v in mem_df['peak_mb']]
+        r_mem  = ([float(v) if pd.notna(v) else float('nan')
+                   for v in mem_df['r_peak_heap_mb']]
+                  if _mem_r_avail else [float('nan')] * len(mem_df))
+        has_py_mem = any(v > 0 for v in py_mem)
+        has_r_mem  = _mem_r_avail and any(not np.isnan(v) for v in r_mem)
+
+        if has_py_mem or has_r_mem:
+            gap  = 0.22
+            bar_h = 0.38
+            y    = np.arange(len(secs))
+            fig2, ax2 = plt.subplots(
+                figsize=(9, max(3, len(secs) * 0.75 + 1.5)), dpi=300)
+
+            if has_py_mem:
+                bars_py2 = ax2.barh(y + gap, py_mem, height=bar_h,
+                                    color='#52A5DB', edgecolor='none',
+                                    label='Python / mosaiqtl (tracemalloc)')
+                _py_max = max(v for v in py_mem if not np.isnan(v))
+                for bar, v in zip(bars_py2, py_mem):
+                    if v == 0:
+                        continue
+                    ax2.text(v + _py_max * 0.01, bar.get_y() + bar.get_height() / 2,
+                             f'{v:.0f} MB', va='center', ha='left',
+                             fontsize=6.5, color='#52A5DB')
+
+            if has_r_mem:
+                _r_mem_plot = [v if not np.isnan(v) else 0.0 for v in r_mem]
+                bars_r2 = ax2.barh(y - gap, _r_mem_plot, height=bar_h,
+                                   color='#F4C245', edgecolor='none',
+                                   label='R / miQTL (gc max-used)')
+                _r_max = max(v for v in _r_mem_plot if v > 0) if any(v > 0 for v in _r_mem_plot) else 1.0
+                for bar, v in zip(bars_r2, r_mem):
+                    if np.isnan(v) or v == 0:
+                        continue
+                    ax2.text(v + _r_max * 0.01, bar.get_y() + bar.get_height() / 2,
+                             f'{v:.0f} MB', va='center', ha='left',
+                             fontsize=6.5, color='#C8960C')
+
+            # separator above peak_overall
+            if 'peak_overall' in secs:
+                _sep_yi = secs.index('peak_overall') - 0.5
+                ax2.axhline(_sep_yi, color='#C0BFBF', linewidth=0.7, linestyle=':')
+
+            ax2.set_yticks(y)
+            ax2.set_yticklabels(labels, fontsize=8)
+            ax2.invert_yaxis()
+            ax2.set_xlabel('Peak memory (MB)', fontsize=9)
+            ax2.set_title(
+                'mosaiqtl vs miQTL: peak memory per pipeline step\n'
+                '(50 phenotypes, 40 CC strains, seed=123)',
+                fontsize=9,
+            )
+            ax2.legend(fontsize=7)
+            sns.despine(ax=ax2)
+            fig2.tight_layout()
+            fig2.savefig(plt_dir / 'memory_comparison.png', dpi=300, bbox_inches='tight')
+            plt.close(fig2)
+            log.info('  saved plots/memory_comparison.png')
+        else:
+            log.info('  memory comparison: no non-zero peak_mb values recorded')
+
+
+def main() -> None:
+    """entry point."""
+    ap = argparse.ArgumentParser(
+        description='Phase 3 benchmark: mosaiqtl vs miQTL and R/qtl2 speed + memory')
+    ap.add_argument('--r_data',    default='validation/phase3/r_data',
+                    help='Phase 3 R reference data (phenotypes.csv, timing_sections.csv)')
+    ap.add_argument('--out',       default='validation/phase3',
+                    help='output root — writes to out/py_data/ and out/plots/')
+    ap.add_argument('--sections',  default=None,
+                    help='comma-separated section numbers (e.g. 3,4); default: all')
+    ap.add_argument('--force', action='store_true',
+                    help='rerun sections even if checkpoint .done files exist')
+    args = ap.parse_args()
+
+    sections = (
+        {int(s.strip()) for s in args.sections.split(',')}
+        if args.sections else set(range(1, 12))
+    )
+    run(
+        r_data   = Path(args.r_data),
+        out_dir  = Path(args.out),
+        sections = sections,
+        force    = args.force,
+    )
+
+
+if __name__ == '__main__':
+    main()
