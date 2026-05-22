@@ -11,7 +11,8 @@ metric; when absent the section still runs and reports Python-only statistics.
 Prerequisites (required):
   1. python validation/convert_gastroc_h5ad.py
      → writes gastroc_data/counts_lognorm.h5, metadata.csv, gene_info.csv
-  2. GENOMECACHE path below must point to miQTL output/genomecache/
+  2. Build gastroc_data/py_data/cache.h5 from the HAPPY genomecache via GenomeCache.from_rds()
+     or GenomeCache.from_gigamuga() (separate one-time step; script will error if missing)
 
 Prerequisites (optional, for R comparison gates):
   Rscript validation/r_reference/gastroc_miqtl_scan.R [sections] [chr] [scan_type]
@@ -87,13 +88,6 @@ SKIP = '⚠️ '
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 
-_MIQTL_LOCAL = (Path.home() / 'Documents/journey/learning/graduate'
-                / 'lab/projects/igvf/analysis/qtl/miqtl')
-_MIQTL_HPC   = Path('/share/crsp/lab/seyedam/gfilimba/projects'
-                    '/igvf_8cube/short-read/data/gastroc')
-MIQTL_DIR    = _MIQTL_LOCAL if _MIQTL_LOCAL.exists() else _MIQTL_HPC
-GENOMECACHE  = MIQTL_DIR / 'output' / 'genomecache'
-KINSHIP_RDS  = MIQTL_DIR / 'output' / 'kinship_loco.rds'
 ALLELE_H5    = Path('validation/gastroc_data/founder_alleles.h5')
 
 GASTROC_DATA = Path('validation/gastroc_data')
@@ -198,100 +192,10 @@ def _ensure_canonical_order(cache: GenomeCache) -> GenomeCache:
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# cache + kinship builders (rpy2 required for first run)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _build_cache_from_happy(genomecache_dir: Path) -> GenomeCache:
-    """build GenomeCache from HAPPY genomecache using one R-side loop per chr.
-
-    Uses miqtl's DiploprobReader; abind stacks all locus matrices in R before
-    transferring to Python — one rpy2 array transfer per chromosome rather than
-    one per locus.  probs are scaled 0–2 (HAPPY diploid) → divided by 2 → 0–1.
-    """
-    try:
-        import rpy2.robjects as ro
-    except ImportError:
-        raise ImportError(
-            'rpy2 required for first-run cache build. '
-            'Install with: pip install rpy2'
-        )
-
-    gc_path = str(genomecache_dir)
-    log.info('loading miqtl library and opening DiploprobReader...')
-    ro.r('library(miqtl); library(abind)')
-    ro.r(f'rd <- DiploprobReader$new("{gc_path}")')
-
-    subjects_r = list(ro.r('rd$getSubjects()'))
-    founders_r = list(ro.r('rd$getFounders()'))
-    chrs       = list(ro.r('rd$getChromList()'))
-    log.info('  %d subjects  %d founders  %d chromosomes',
-             len(subjects_r), len(founders_r), len(chrs))
-
-    data: dict = {}
-    for chrom in chrs:
-        t0 = time.perf_counter()
-        ro.r(f'loci_c <- rd$getLoci("{chrom}")')
-        ro.r(f'pos_c  <- rd$getLocusStart(loci_c, scale="Mb")')
-        # lapply over loci in R; abind stacks into (n_subjects, n_founders, n_loci)
-        ro.r('''
-        plist_c <- lapply(loci_c, function(loc)
-            rd$getLocusMatrix(loc, model="additive"))
-        parr_c  <- abind(plist_c, along=3)
-        ''')
-        lids    = np.array(list(ro.r('loci_c')))
-        pos_mb  = np.array(list(ro.r('pos_c')), dtype=np.float64)
-        probs_r = np.array(ro.r('parr_c'))   # (n_subjects, n_founders, n_loci)
-        probs   = np.transpose(probs_r, (2, 0, 1)) / 2.0  # → (n_loci, n_subjects, 8)
-        data[chrom] = {
-            'locus_ids': lids,
-            'positions': pos_mb,
-            'probs':     probs.astype(np.float64),
-        }
-        log.info('  chr%s: %d loci  %.1fs', chrom, len(lids),
-                 time.perf_counter() - t0)
-
-    return GenomeCache(
-        sample_ids=np.array(subjects_r),
-        founders=founders_r,
-        data=data,
-    )
-
-
-def _load_kinship_rds(kinship_rds: Path, cache: GenomeCache) -> dict:
-    """load kinship_loco.rds (R) → Python dict {chr: K (n_strains × n_strains)}.
-
-    Reorders rows/cols to match cache.sample_ids so downstream eigendecomp
-    produces evecs aligned with Python's canonical strain order.
-    """
-    try:
-        import rpy2.robjects as ro
-    except ImportError:
-        raise ImportError('rpy2 required for kinship load from rds')
-
-    rds_path = str(kinship_rds)
-    log.info('loading kinship_loco.rds: %s', rds_path)
-    ro.r(f'kin <- readRDS("{rds_path}")')
-    chrs_r = list(ro.r('names(kin)'))
-
-    cache_order = list(cache.sample_ids)
-    kin_dict: dict[str, np.ndarray] = {}
-
-    for ch in chrs_r:
-        ro.r(f'K_ch <- kin[["{ch}"]]')
-        rnames = list(ro.r('rownames(K_ch)'))
-        K_r = np.array(ro.r('K_ch'))   # (n_strains, n_strains)
-        idx = np.array([rnames.index(s) for s in cache_order if s in rnames])
-        if len(idx) == len(cache_order):
-            kin_dict[ch] = K_r[np.ix_(idx, idx)]
-        else:
-            log.warning('  chr%s: %d/%d strains matched — using raw order', ch,
-                        len(idx), len(cache_order))
-            kin_dict[ch] = K_r
-
-    log.info('  loaded %d LOCO kinship matrices (%d×%d)',
-             len(kin_dict), K_r.shape[0], K_r.shape[1])
-    return kin_dict
+# (rpy2-based cache/kinship builders removed — validate_gastroc.py is pure Python.
+#  Cache must be pre-built as py_data/cache.h5 via GenomeCache.from_rds() or
+#  GenomeCache.from_gigamuga() in a separate step. Kinship is always computed
+#  via calc_kinship(cache, method='loco') and cached as kinship_decomp.npz.)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1163,24 +1067,18 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     if scan_type == 'L' and 'start' not in gene_info.columns:
         log.warning('gene_info.csv has no "start" column — L scan mode will not filter loci')
 
-    # ── load or build GenomeCache ─────────────────────────────────────────────
+    # ── load GenomeCache (must be pre-built as HDF5) ──────────────────────────
     hdf5_cache = py_dir / 'cache.h5'
     if hdf5_cache.exists() and not force:
         log.info('loading GenomeCache from HDF5: %s', hdf5_cache)
         cache = GenomeCache.from_hdf5(str(hdf5_cache))
         cache = _ensure_canonical_order(cache)  # fast no-op if already canonical
-    elif GENOMECACHE.exists():
-        log.info('building GenomeCache from HAPPY dir: %s', GENOMECACHE)
-        log.info('  (one-time build ~1–2 min; cached to %s for re-runs)', hdf5_cache)
-        cache = _build_cache_from_happy(GENOMECACHE)
-        cache = _ensure_canonical_order(cache)   # reorder before saving
-        cache.to_hdf5(str(hdf5_cache))
-        log.info('  saved to %s (canonical order)', hdf5_cache)
     else:
         log.error(
-            'genomecache not found at %s\n'
-            'Run gastroc_miqtl_scan.R or check MIQTL_DIR in validate_gastroc.py',
-            GENOMECACHE)
+            'cache.h5 not found at %s\n'
+            'Build it first with GenomeCache.from_rds() or from_gigamuga() '
+            'and save to %s',
+            hdf5_cache, hdf5_cache)
         sys.exit(1)
     log.info('cache: %d chromosomes  %d strains  sample[0]=%s',
              len(cache.chromosomes), len(cache.sample_ids), cache.sample_ids[0])
@@ -1193,23 +1091,11 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         kinship_decomp = {k: {'values': raw[f'{k}_vals'], 'vectors': raw[f'{k}_vecs']}
                           for k in cache.chromosomes if f'{k}_vals' in raw}
         del raw
-    elif KINSHIP_RDS.exists():
-        log.info('loading LOCO kinship from rds: %s', KINSHIP_RDS)
-        kin_raw = _load_kinship_rds(KINSHIP_RDS, cache)
-        log.info('decomposing kinship...')
-        kinship_decomp = decomp_kinship(kin_raw)
-        save_kd: dict[str, np.ndarray] = {}
-        for ch, kd in kinship_decomp.items():
-            save_kd[f'{ch}_vals'] = kd['values']
-            save_kd[f'{ch}_vecs'] = kd['vectors']
-        np.savez(kd_npz, **save_kd)
-        del kin_raw, save_kd; gc.collect()
-        log.info('  saved to %s', kd_npz)
     else:
-        log.info('kinship_loco.rds not found — computing from Python cache...')
+        log.info('computing LOCO kinship from cache (first run — saves to %s)...', kd_npz)
         kin_raw = calc_kinship(cache, method='loco')
         kinship_decomp = decomp_kinship(kin_raw)
-        save_kd = {}
+        save_kd: dict[str, np.ndarray] = {}
         for ch, kd in kinship_decomp.items():
             save_kd[f'{ch}_vals'] = kd['values']
             save_kd[f'{ch}_vecs'] = kd['vectors']
@@ -2276,12 +2162,13 @@ def main() -> None:
     else:
         scan_chr = [c.strip() for c in args.chr.split(',')]
 
+    scan_desc = scan_type if scan_type != 'L' else f'L ±{window_mb:.1f} Mb'
     log.info('validate_gastroc.py  sections=%s  force=%s  n_genes=%s  '
-             'scan_type=%s  window_mb=%.1f  chr=%s',
-             sorted(sections), args.force, args.n_genes,
-             scan_type, window_mb, args.chr)
-    log.info('  r_data  = %s', GASTROC_DATA)
-    log.info('  out_dir = %s', OUT_DIR)
+             'scan_type=%s  chr=%s',
+             sorted(sections), args.force, args.n_genes, scan_desc, args.chr)
+    log.info('  data_dir = %s', GASTROC_DATA)
+    log.info('  r_data   = %s', GASTROC_DATA / 'r_data')
+    log.info('  out_dir  = %s', OUT_DIR)
 
     run(GASTROC_DATA, OUT_DIR, sections, args.force, args.n_genes,
         scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr)
