@@ -11,8 +11,9 @@ metric; when absent the section still runs and reports Python-only statistics.
 Prerequisites (required):
   1. python validation/convert_gastroc_h5ad.py
      → writes gastroc_data/counts_lognorm.h5, metadata.csv, gene_info.csv
-  2. Build gastroc_data/py_data/cache.h5 from the HAPPY genomecache via GenomeCache.from_rds()
-     or GenomeCache.from_gigamuga() (separate one-time step; script will error if missing)
+  2. Build py_data/cache.h5 (one-time, requires rpy2 + miqtl R package):
+       python validation/validate_gastroc.py --build-cache
+       python validation/validate_gastroc.py --build-cache --genomecache /path/to/genomecache
 
 Prerequisites (optional, for R comparison gates):
   Rscript validation/r_reference/gastroc_miqtl_scan.R [sections] [chr] [scan_type]
@@ -87,6 +88,13 @@ FAIL = '❌'
 SKIP = '⚠️ '
 
 # ── paths ─────────────────────────────────────────────────────────────────────
+
+_MIQTL_LOCAL = (Path.home() / 'Documents/journey/learning/graduate'
+                / 'lab/projects/igvf/analysis/qtl/miqtl')
+_MIQTL_HPC   = Path('/share/crsp/lab/seyedam/gfilimba/projects'
+                    '/igvf_8cube/short-read/data/gastroc')
+_MIQTL_DIR   = _MIQTL_LOCAL if _MIQTL_LOCAL.exists() else _MIQTL_HPC
+GENOMECACHE  = _MIQTL_DIR / 'output' / 'genomecache'   # default for --build-cache
 
 ALLELE_H5    = Path('validation/gastroc_data/founder_alleles.h5')
 
@@ -192,10 +200,66 @@ def _ensure_canonical_order(cache: GenomeCache) -> GenomeCache:
     )
 
 
-# (rpy2-based cache/kinship builders removed — validate_gastroc.py is pure Python.
-#  Cache must be pre-built as py_data/cache.h5 via GenomeCache.from_rds() or
-#  GenomeCache.from_gigamuga() in a separate step. Kinship is always computed
-#  via calc_kinship(cache, method='loco') and cached as kinship_decomp.npz.)
+# ─────────────────────────────────────────────────────────────────────────────
+# one-time cache builder — invoked only via --build-cache flag, never during run
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_cache_from_happy(genomecache_dir: Path, out_h5: Path) -> None:
+    """Read HAPPY genomecache via rpy2/miqtl DiploprobReader → save as HDF5.
+
+    One-time step.  Run with: python validate_gastroc.py --build-cache
+    Subsequent runs load from HDF5 without touching R.
+    """
+    try:
+        import rpy2.robjects as ro
+    except ImportError:
+        raise ImportError(
+            'rpy2 required for --build-cache.  Install with: pip install rpy2'
+        )
+
+    gc_path = str(genomecache_dir)
+    log.info('opening DiploprobReader: %s', gc_path)
+    ro.r('library(miqtl); library(abind)')
+    ro.r(f'rd <- DiploprobReader$new("{gc_path}")')
+
+    subjects_r = list(ro.r('rd$getSubjects()'))
+    founders_r = list(ro.r('rd$getFounders()'))
+    chrs       = list(ro.r('rd$getChromList()'))
+    log.info('  %d subjects  %d founders  %d chromosomes',
+             len(subjects_r), len(founders_r), len(chrs))
+
+    data: dict = {}
+    for chrom in chrs:
+        t0 = time.perf_counter()
+        ro.r(f'loci_c <- rd$getLoci("{chrom}")')
+        ro.r(f'pos_c  <- rd$getLocusStart(loci_c, scale="Mb")')
+        ro.r('''
+        plist_c <- lapply(loci_c, function(loc)
+            rd$getLocusMatrix(loc, model="additive"))
+        parr_c  <- abind(plist_c, along=3)
+        ''')
+        lids    = np.array(list(ro.r('loci_c')))
+        pos_mb  = np.array(list(ro.r('pos_c')), dtype=np.float64)
+        probs_r = np.array(ro.r('parr_c'))          # (n_subjects, n_founders, n_loci)
+        probs   = np.transpose(probs_r, (2, 0, 1)) / 2.0   # → (n_loci, n_subjects, 8)
+        data[chrom] = {
+            'locus_ids': lids,
+            'positions': pos_mb,
+            'probs':     probs.astype(np.float64),
+        }
+        log.info('  chr%s: %d loci  %.1fs', chrom, len(lids),
+                 time.perf_counter() - t0)
+
+    cache = GenomeCache(
+        sample_ids=np.array(subjects_r),
+        founders=founders_r,
+        data=data,
+    )
+    cache = _ensure_canonical_order(cache)
+    out_h5.parent.mkdir(parents=True, exist_ok=True)
+    cache.to_hdf5(str(out_h5))
+    log.info('saved cache.h5 → %s  (%d strains, canonical order)', out_h5,
+             len(cache.sample_ids))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1076,9 +1140,11 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     else:
         log.error(
             'cache.h5 not found at %s\n'
-            'Build it first with GenomeCache.from_rds() or from_gigamuga() '
-            'and save to %s',
-            hdf5_cache, hdf5_cache)
+            'Build it once with:\n'
+            '  conda run -n bioinfo python validation/validate_gastroc.py --build-cache\n'
+            'or specify the genomecache path:\n'
+            '  ... --build-cache --genomecache /path/to/genomecache',
+            hdf5_cache)
         sys.exit(1)
     log.info('cache: %d chromosomes  %d strains  sample[0]=%s',
              len(cache.chromosomes), len(cache.sample_ids), cache.sample_ids[0])
@@ -2125,6 +2191,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
 def main() -> None:
     ap = argparse.ArgumentParser(
         description='validate mosaiqtl vs miQTL on gastroc real data')
+    ap.add_argument('--build-cache', action='store_true',
+                    help='one-time: read HAPPY genomecache via rpy2 → save py_data/cache.h5, '
+                         'then exit (requires rpy2 + miqtl R package)')
+    ap.add_argument('--genomecache', default=None,
+                    help='path to HAPPY genomecache dir for --build-cache '
+                         f'(default: {GENOMECACHE})')
     ap.add_argument('--sections', default=None,
                     help='comma-separated section numbers (default: all)')
     ap.add_argument('--force',    action='store_true',
@@ -2141,6 +2213,18 @@ def main() -> None:
                     help='chromosome(s) to scan: "all" or comma-separated like "8" or '
                          '"1,8,11" (default: 8)')
     args = ap.parse_args()
+
+    # ── --build-cache: one-time rpy2 step, exits when done ────────────────────
+    if args.build_cache:
+        gc_dir  = Path(args.genomecache) if args.genomecache else GENOMECACHE
+        out_h5  = OUT_DIR / 'py_data' / 'cache.h5'
+        if not gc_dir.exists():
+            log.error('genomecache not found: %s', gc_dir)
+            sys.exit(1)
+        log.info('--build-cache  genomecache=%s  → %s', gc_dir, out_h5)
+        _build_cache_from_happy(gc_dir, out_h5)
+        log.info('done — run validate_gastroc.py without --build-cache to validate')
+        sys.exit(0)
 
     sections = (set(int(s.strip()) for s in args.sections.split(','))
                 if args.sections else set(range(1, 12)))
