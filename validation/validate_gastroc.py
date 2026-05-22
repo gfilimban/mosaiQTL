@@ -1705,13 +1705,19 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         scan_window='cis', gene_chr=peak_chr,
                     )
                     peak_locus = grab_locus_from_scan(scan_top)
-                    log.info('  peak locus: %s; running 100 permutations...', peak_locus)
+                    log.info('  peak locus: %s; running 500 permutations...', peak_locus)
 
                     kd_pc    = {peak_chr: kinship_decomp[peak_chr]}
                     null_out = generate_null_outcomes(
-                        scan_top, n_perms=100, seed=1)
+                        y_top, n_samples=500, seed=1)
                     perm_out = run_threshold_scans(
-                        null_out, cache, peak_chr, kd_pc, scan_top, n_perms=100)
+                        null_out, cache,
+                        phenotype=y_top,
+                        covariates=cov_s5,
+                        kinship_decomp=kd_pc,
+                        chrom=peak_chr,
+                        sample_ids=geno_ids_s5,
+                    )
                     py_max_lods  = perm_out['max_lods']
                     py_threshold = get_gev_thresholds(py_max_lods, percentile=0.95)
 
@@ -1964,12 +1970,16 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             phenotype_id=gene_name,
                             scan_window='cis', gene_chr=peak_chr,
                         )
-                        peak_loc = grab_locus_from_scan(scan_g)
                         boot_out = generate_null_outcomes(
-                            scan_g, n_perms=200, seed=1,
-                            model_type='alt', peak_locus=peak_loc)
+                            y_g, n_samples=200, seed=1, method='bootstrap')
                         ci_res  = run_positional_scans(
-                            boot_out, cache, peak_chr, kd_pc, scan_g)
+                            boot_out, cache,
+                            phenotype=y_g,
+                            covariates=cov_g,
+                            kinship_decomp=kd_pc,
+                            peak_chrom=peak_chr,
+                            sample_ids=geno_ids_g,
+                        )
                         peak_mb = float(scan_g.positions[scan_g.lod.argmax()])
                         ci_mbs  = ci_res.get('peak_mbs', np.array([peak_mb]))
                         ci_rows.append({
