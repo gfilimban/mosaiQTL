@@ -1133,7 +1133,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
 
     # ── load GenomeCache (must be pre-built as HDF5) ──────────────────────────
     hdf5_cache = py_dir / 'cache.h5'
-    if hdf5_cache.exists() and not force:
+    if hdf5_cache.exists():
         log.info('loading GenomeCache from HDF5: %s', hdf5_cache)
         cache = GenomeCache.from_hdf5(str(hdf5_cache))
         cache = _ensure_canonical_order(cache)  # fast no-op if already canonical
@@ -1151,7 +1151,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
 
     # ── load or compute LOCO kinship decomp ───────────────────────────────────
     kd_npz = py_dir / 'kinship_decomp.npz'
-    if kd_npz.exists() and not force:
+    if kd_npz.exists():
         log.info('loading kinship decomp: %s', kd_npz)
         raw = np.load(kd_npz, allow_pickle=True)
         kinship_decomp = {k: {'values': raw[f'{k}_vals'], 'vectors': raw[f'{k}_vecs']}
