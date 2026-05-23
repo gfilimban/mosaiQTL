@@ -1328,9 +1328,9 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                         @ kinship_decomp[c]['vectors'].T)
                     for c in kinship_decomp
                 }
-                null_y   = generate_null_outcomes(sim_ys[1], n_samples=250,
+                null_y   = generate_null_outcomes(sim_ys[1], n_perms=250,
                                                   method='permutation', seed=1)
-                max_lods = run_threshold_scans(
+                max_lods, _ = run_threshold_scans(
                     null_y, cache,
                     phenotype=sim_ys[1],
                     kinship_decomp=kinship_decomp,
@@ -1883,7 +1883,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     sim_ys[1], cache,
                     sample_ids=sample_ids,
                     use_rint=False,
-                    n_samples=100,
+                    n_subsamples=100,
                     subsample_prop=0.63,
                     seed=1,
                     phenotype_id='sim.y.1',

@@ -52,7 +52,7 @@ class KinshipSingularError(ValueError):
 # null outcome generation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def generate_null_outcomes(y, n_samples=1000, method='permutation', seed=1):
+def generate_null_outcomes(y, n_perms=1000, method='permutation', seed=1):
     """generate null phenotype columns for threshold estimation.
 
     for permutation: shuffles phenotype labels (breaks geno-pheno link).
@@ -61,25 +61,25 @@ def generate_null_outcomes(y, n_samples=1000, method='permutation', seed=1):
 
     parameters
     ----------
-    y         : np.ndarray (n,)  original phenotype (NaN-free)
-    n_samples : int              number of null columns to draw
-    method    : str              'permutation' (default) or 'bootstrap'
-    seed      : int
+    y       : np.ndarray (n,)  original phenotype (NaN-free)
+    n_perms : int              number of permuted/bootstrapped columns to draw
+    method  : str              'permutation' (default) or 'bootstrap'
+    seed    : int
 
     returns
     -------
-    np.ndarray (n, n_samples)  null phenotype matrix
+    np.ndarray (n, n_perms)  null phenotype matrix
     """
     rng = np.random.default_rng(seed)   # reproducible rng
 
     if method == 'permutation':
         # shuffle rows independently for each column
-        return np.column_stack([rng.permutation(y) for _ in range(n_samples)])
+        return np.column_stack([rng.permutation(y) for _ in range(n_perms)])
     elif method == 'bootstrap':
         y_c = y - y.mean()              # centre before resampling
         return np.column_stack([
             rng.choice(y_c, size=len(y), replace=True)
-            for _ in range(n_samples)])
+            for _ in range(n_perms)])
     else:
         raise ValueError(f'method must be permutation or bootstrap, got {method!r}')
 
@@ -272,8 +272,9 @@ def run_threshold_scans(null_outcomes, genomecache,
     kinship_decomp : dict or None  {chrom: {'values':, 'vectors':}}
         if None, computed from genomecache (loco).
     kinship_loco   : dict or None  {chrom: np.ndarray (m, m)}
-        raw LOCO kinship matrices (not decomposed).  required when
-        permutation_method='parametric'.  ignored for 'plain'.
+        raw LOCO kinship matrices (not decomposed).  used when
+        permutation_method='parametric'; if None, reconstructed from
+        kinship_decomp automatically.  ignored for 'plain'.
     chrom          : str or None
         if given, restrict scans to this chromosome only (validation mode).
         if None, scan all chromosomes (full-genome threshold).
@@ -309,7 +310,12 @@ def run_threshold_scans(null_outcomes, genomecache,
 
     returns
     -------
-    np.ndarray (n_perms,)  per-permutation genome-wide max LOD
+    max_lods       : np.ndarray (n_perms,)  per-permutation genome-wide max LOD
+    chr_null_lods  : dict {chr: np.ndarray (n_perms,)}
+        per-chromosome null max-LOD distributions — already computed during the
+        scan at no extra cost. use these to derive calibrated per-gene empirical
+        p-values: p_g = mean(chr_null_lods[gene_chr] >= peak_lod_g), which avoids
+        the conservative bias of comparing against the genome-wide maximum.
 
     notes
     -----
@@ -327,13 +333,20 @@ def run_threshold_scans(null_outcomes, genomecache,
     if permutation_method not in ('plain', 'parametric'):
         raise ValueError(
             f"permutation_method must be 'plain' or 'parametric', got {permutation_method!r}")
-    if permutation_method == 'parametric' and kinship_loco is None:
-        raise ValueError("kinship_loco is required when permutation_method='parametric'")
 
     # build kinship decomp if not supplied
     if kinship_decomp is None:
         kd = kin_module.calc_kinship(genomecache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd)
+
+    # reconstruct raw kinship matrices from eigendecomposition when not supplied
+    if permutation_method == 'parametric' and kinship_loco is None:
+        kinship_loco = {
+            c: (kinship_decomp[c]['vectors']
+                * kinship_decomp[c]['values'][None, :]
+                @ kinship_decomp[c]['vectors'].T)
+            for c in kinship_decomp
+        }
 
     # chromosomes to scan
     chrs = ([chrom] if chrom is not None
@@ -425,6 +438,7 @@ def run_threshold_scans(null_outcomes, genomecache,
         else:
             null_mat_gw = plain_mat
 
+        chr_null_lods: dict = {}
         for c in chrs:
             ev  = kinship_decomp[c]['values']
             evc = kinship_decomp[c]['vectors']
@@ -433,12 +447,14 @@ def run_threshold_scans(null_outcomes, genomecache,
             chr_max = lmm_module.scan_chromosome_batch(
                 null_mat_gw, genomecache, c, x_scan, ev, evc, h2,
                 batch_size=batch_size)
+            chr_null_lods[c] = chr_max
             max_lods = np.maximum(max_lods, chr_max)
             logger.info('  [batch] chr%s  max_lod=%.3f', c, float(chr_max.max()))
 
-        return max_lods
+        return max_lods, chr_null_lods
 
     # ── slow path: fix_h2=False ───────────────────────────────────────────────
+    chr_null_lods = {c: np.zeros(n_perms) for c in chrs}
     for p_idx in range(n_perms):
         if (p_idx + 1) % 100 == 0:
             logger.info(f'  threshold scan {p_idx+1}/{n_perms}')
@@ -450,7 +466,6 @@ def run_threshold_scans(null_outcomes, genomecache,
             evc = kinship_decomp[c]['vectors']
 
             if permutation_method == 'parametric':
-                # kinship-informed rank-permutation (miQTL sampling.processes.R:110-137)
                 h2 = h2_fixed[c] if fix_h2 else None
                 if not fix_h2:
                     h2, _ = lmm_module.estimate_h2_null(
@@ -463,7 +478,6 @@ def run_threshold_scans(null_outcomes, genomecache,
                     logger.warning(f'  chr{c}  perm {p_idx}  [skip] {exc}')
                     continue
             else:
-                # plain shuffle
                 y_p = null_outcomes[:, p_idx]
                 if use_rint:
                     y_p = _rint(y_p)
@@ -476,13 +490,15 @@ def run_threshold_scans(null_outcomes, genomecache,
                         evc.T @ y_p, evc.T @ x_scan, ev,
                         method='reml' if use_reml else 'ml')
 
-            res  = lmm_module.scan_chromosome(
+            res = lmm_module.scan_chromosome(
                 y_p, genomecache, c, x_scan, ev, evc, h2, use_reml=use_reml)
-            best = max(best, float(res['lod'].max()))
+            chr_lod = float(res['lod'].max())
+            chr_null_lods[c][p_idx] = chr_lod
+            best = max(best, chr_lod)
 
         max_lods[p_idx] = best
 
-    return max_lods
+    return max_lods, chr_null_lods
 
 
 # ─────────────────────────────────────────────────────────────────────────────

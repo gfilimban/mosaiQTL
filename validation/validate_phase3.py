@@ -372,8 +372,8 @@ def run(r_data: Path, out_dir: Path,
                 }
                 with _Timer() as t:
                     null_y   = generate_null_outcomes(
-                        sim_ys[1], n_samples=250, method='permutation', seed=1)
-                    max_lods = run_threshold_scans(
+                        sim_ys[1], n_perms=250, method='permutation', seed=1)
+                    max_lods, _ = run_threshold_scans(
                         null_y, cache,
                         phenotype=sim_ys[1],
                         kinship_decomp=kinship_decomp,
@@ -509,7 +509,7 @@ def run(r_data: Path, out_dir: Path,
                 with _Timer() as t:
                     lids_c, pos_c, _ = cache.get_chromosome(peak_chrom)
                     null_boot = generate_null_outcomes(
-                        sim_ys[1], n_samples=100, method='bootstrap', seed=1)
+                        sim_ys[1], n_perms=100, method='bootstrap', seed=1)
                     ci_peaks = run_positional_scans(
                         null_boot, cache,
                         phenotype=sim_ys[1],
@@ -537,7 +537,7 @@ def run(r_data: Path, out_dir: Path,
                     instab_scan = instability_lm_scan(
                         sim_ys[1], cache,
                         sample_ids=sample_ids,
-                        n_samples=100,
+                        n_subsamples=100,
                         seed=1,
                         just_these_loci=set(np.asarray(lids_c).tolist()),
                     )

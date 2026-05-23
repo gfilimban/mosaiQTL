@@ -79,6 +79,7 @@ from mosaiqtl.qtl.permutation import (
 )
 from mosaiqtl.qtl.mediation import mediation_scan_qr, select_cis_mediation_pairs
 from mosaiqtl.qtl.snp_scan import imputed_snp_scan_from_db
+from mosaiqtl.qtl.fdr import storey_qvalue
 from mosaiqtl.pipeline import call_egenes
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -351,6 +352,124 @@ def _pick_top_gene(df_chr: 'pd.DataFrame', peak_chr: str,
     if priority and priority in by_gene.index:
         return priority
     return by_gene.idxmax()
+
+
+def _two_way_anova_haplotype_sex(
+    y: np.ndarray,
+    hap_groups: np.ndarray,
+    sex: np.ndarray,
+) -> 'dict[str, float]':
+    """1-way haplotype ANOVA and 2-way haplotype×sex interaction at peak locus.
+
+    Parameters
+    ----------
+    y          : (n,) expression values
+    hap_groups : (n,) integer founder assignments (argmax of haplotype probs)
+    sex        : (n,) binary sex covariate (0/1)
+
+    Returns
+    -------
+    dict with keys: f_haplotype, p_haplotype, f_interaction, p_interaction
+    """
+    from scipy.stats import f as f_dist
+
+    n = len(y)
+    founders = np.unique(hap_groups)
+    n_hap = len(founders)
+
+    # 1-way haplotype F-test
+    groups_1way = [y[hap_groups == f] for f in founders if (hap_groups == f).sum() > 0]
+    groups_1way = [g for g in groups_1way if len(g) >= 1]
+    if len(groups_1way) < 2 or n < n_hap + 2:
+        return {'f_haplotype': np.nan, 'p_haplotype': np.nan,
+                'f_interaction': np.nan, 'p_interaction': np.nan}
+
+    from scipy.stats import f_oneway
+    f_hap, p_hap = f_oneway(*groups_1way)
+
+    # 2-way interaction: manual OLS via numpy
+    # encode haplotype dummies (drop one level)
+    hap_dummies = np.zeros((n, n_hap - 1))
+    for i, f in enumerate(founders[:-1]):
+        hap_dummies[:, i] = (hap_groups == f).astype(float)
+    sex_c = sex.astype(float)
+
+    # additive model: intercept + hap dummies + sex
+    X_add = np.column_stack([np.ones(n), hap_dummies, sex_c])
+    # full model: additive + hap×sex interactions
+    X_full = np.column_stack([X_add, hap_dummies * sex_c[:, None]])
+
+    def _rss(X: np.ndarray, y_: np.ndarray) -> float:
+        try:
+            beta = np.linalg.lstsq(X, y_, rcond=None)[0]
+            return float(np.sum((y_ - X @ beta) ** 2))
+        except np.linalg.LinAlgError:
+            return np.nan
+
+    rss_add  = _rss(X_add, y)
+    rss_full = _rss(X_full, y)
+    df_int  = n_hap - 1          # interaction df
+    df_res  = n - X_full.shape[1]
+
+    if df_res < 1 or np.isnan(rss_full) or np.isnan(rss_add):
+        f_int, p_int = np.nan, np.nan
+    else:
+        f_int = ((rss_add - rss_full) / df_int) / (rss_full / df_res)
+        p_int = float(1.0 - f_dist.cdf(f_int, df_int, df_res))
+
+    return {
+        'f_haplotype':   float(f_hap),
+        'p_haplotype':   float(p_hap),
+        'f_interaction': float(f_int),
+        'p_interaction': float(p_int),
+    }
+
+
+def _pxg_plot(
+    y: np.ndarray,
+    hap_groups: np.ndarray,
+    sex: np.ndarray,
+    gene_name: str,
+    peak_locus: str,
+    out_path: Path,
+    facet_sex: bool = True,
+) -> None:
+    """Phenotype × genotype (PxG) boxplot colored by founder haplotype."""
+    fig, axes = plt.subplots(
+        1, 2 if facet_sex else 1,
+        figsize=(10 if facet_sex else 5, 4),
+        sharey=True)
+    if not facet_sex:
+        axes = [axes]
+
+    for ax, s_val, s_label in zip(
+            axes,
+            [None, 0, 1] if not facet_sex else [0, 1],
+            ['All', 'Male', 'Female'] if not facet_sex else ['Male', 'Female']):
+        mask = (sex == s_val) if s_val is not None else np.ones(len(y), dtype=bool)
+        data_rows = []
+        for f_idx, fname in enumerate(FOUNDER_ORDER):
+            sel = mask & (hap_groups == f_idx)
+            for v in y[sel]:
+                data_rows.append({'founder': fname, 'expr': v})
+        if not data_rows:
+            ax.set_visible(False)
+            continue
+        df_p = pd.DataFrame(data_rows)
+        present = [f for f in FOUNDER_ORDER if f in df_p['founder'].values]
+        palette = {f: FOUNDER_COLORS[f] for f in present}
+        sns.boxplot(
+            data=df_p, x='founder', y='expr', order=present,
+            palette=palette, width=0.6, fliersize=3, ax=ax)
+        ax.set_xlabel('Founder haplotype')
+        ax.set_ylabel('Expression' if ax == axes[0] else '')
+        ax.set_title(s_label)
+        sns.despine(ax=ax)
+
+    fig.suptitle(f'{gene_name}  @  {peak_locus}', y=1.01)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
 
 
 def _make_descriptive_plots(
@@ -1781,6 +1900,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     log.info('[downstream sections] peak_chr=%s', peak_chr)
 
     egenes_df: 'pd.DataFrame | None' = None
+    chr_null_lods_s5: 'dict | None' = None
 
     # ─────────────────────────────────────────────────────────────────────────
     # S5 — permutation threshold (peak chromosome, top cis gene)
@@ -1827,7 +1947,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     kd_pc    = {peak_chr: kinship_decomp[peak_chr]}
                     null_out = generate_null_outcomes(
                         y_top, n_perms=500, seed=1)
-                    py_max_lods = run_threshold_scans(
+                    py_max_lods, chr_null_lods = run_threshold_scans(
                         null_out, cache,
                         phenotype=y_top,
                         covariates=cov_s5,
@@ -1835,6 +1955,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         chrom=peak_chr,
                         sample_ids=geno_ids_s5,
                     )
+                    chr_null_lods_s5 = chr_null_lods
                     py_threshold, _ = get_gev_thresholds(py_max_lods, percentile=0.95)
 
                     pd.DataFrame({'max_lod': py_max_lods}).to_csv(
@@ -1882,10 +2003,89 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     eff_path,
                     usecols=['gene', 'gene_id', 'chr', 'peak_locus', 'peak_mb', 'peak_lod'])
             egenes_df = call_egenes(peak_py_loaded, thr, effects_df=eff_tmp)
-            egenes_df.to_csv(py_dir / 'egenes.csv', index=False)
             log.info('[eGenes] threshold=%.3f  %d / %d genes called',
                      thr, len(egenes_df), len(peak_py_loaded))
-            # eqtl_summary: join full effects columns + R comparison
+
+            # ── per-gene empirical p-values and Storey q-values ────────────────
+            if chr_null_lods_s5 is not None:
+                # compute p for every gene in the full peak_lod table
+                null_fallback = chr_null_lods_s5[list(chr_null_lods_s5.keys())[0]]
+                p_list = []
+                for _, grow in peak_py_loaded.iterrows():
+                    gene_chr_g = peak_chr
+                    if eff_tmp is not None:
+                        hit = eff_tmp[eff_tmp['gene'] == grow['gene']]
+                        if len(hit):
+                            gene_chr_g = str(hit.iloc[0].get('chr', peak_chr))
+                    null_v = chr_null_lods_s5.get(gene_chr_g, null_fallback)
+                    lod_g  = float(grow['peak_lod_py'])
+                    p_list.append(float((null_v >= lod_g).sum()) / len(null_v))
+                p_arr = np.array(p_list, dtype=float)
+                q_arr, pi0_val = storey_qvalue(p_arr)
+                p_map = dict(zip(peak_py_loaded['gene'].values, p_arr))
+                q_map = dict(zip(peak_py_loaded['gene'].values, q_arr))
+                egenes_df['p_empirical'] = egenes_df['gene'].map(p_map)
+                egenes_df['q_storey']    = egenes_df['gene'].map(q_map)
+                egenes_df['pi0']         = pi0_val
+                log.info('[Storey] pi0=%.4f  eGenes at q<0.05: %d',
+                         pi0_val, int((egenes_df['q_storey'] < 0.05).sum()))
+            egenes_df.to_csv(py_dir / 'egenes.csv', index=False)
+
+            # ── 2-way ANOVA (haplotype × sex) at peak locus ────────────────────
+            h5_path = data_dir / 'counts_lognorm.h5'
+            anova_rows: list[dict] = []
+            pxg_dir = plt_dir / 'pxg'
+            pxg_dir.mkdir(exist_ok=True)
+            for _, erow in egenes_df.iterrows():
+                gene_n    = erow['gene']
+                gene_id_a = gene_name_to_id.get(gene_n, gene_n)
+                gene_chr_a = str(erow.get('chr', peak_chr))
+                peak_loc_a = str(erow.get('peak_locus', ''))
+                if not h5_path.exists() or not peak_loc_a:
+                    break
+                counts_a, _, sids_a = _load_expression(h5_path, [gene_id_a])
+                if counts_a.shape[0] == 0:
+                    continue
+                geno_ids_a = [meta_geno_map.get(s, s) for s in sids_a]
+                y_a   = counts_a[0].astype(float)
+                # get haplotype probabilities at peak locus
+                try:
+                    locus_ids_a, _, probs_a = cache.get_chromosome(gene_chr_a)
+                    locus_list_a = list(locus_ids_a)
+                    if peak_loc_a not in locus_list_a:
+                        continue
+                    loc_idx  = locus_list_a.index(peak_loc_a)
+                    # probs_a: (n_loci, n_strains, J) → select locus
+                    hap_probs_all = probs_a[loc_idx]   # (n_strains, J)
+                    # align samples
+                    sid_set = set(cache.sample_ids)
+                    valid_mask = [s in sid_set for s in geno_ids_a]
+                    if not any(valid_mask):
+                        continue
+                    strain_idx = [cache.sample_ids.index(geno_ids_a[i])
+                                  for i, ok in enumerate(valid_mask) if ok]
+                    y_aln  = y_a[np.array([i for i, ok in enumerate(valid_mask) if ok])]
+                    sids_aln = [sids_a[i] for i, ok in enumerate(valid_mask) if ok]
+                    hap_g  = np.argmax(hap_probs_all[strain_idx], axis=1)
+                    cov_aln = _build_covariates(meta, sids_aln)
+                    sex_a  = cov_aln[:, -1]
+                    anova_res = _two_way_anova_haplotype_sex(y_aln, hap_g, sex_a)
+                    anova_res['gene'] = gene_n
+                    anova_rows.append(anova_res)
+                    _pxg_plot(y_aln, hap_g, sex_a, gene_n, peak_loc_a,
+                              pxg_dir / f'pxg_{gene_n}.png')
+                except Exception as exc:
+                    log.debug('  ANOVA/PxG failed for %s: %s', gene_n, exc)
+
+            if anova_rows:
+                anova_df = pd.DataFrame(anova_rows)[
+                    ['gene', 'f_haplotype', 'p_haplotype',
+                     'f_interaction', 'p_interaction']]
+                egenes_df = egenes_df.merge(anova_df, on='gene', how='left')
+                log.info('[ANOVA] 2-way haplotype×sex computed for %d eGenes',
+                         len(anova_rows))
+
+            # ── eqtl_summary CSV ───────────────────────────────────────────────
             if eff_tmp is not None:
                 eqtl_sum = egenes_df.merge(
                     eff_tmp[['gene', 'gene_id', 'peak_lod']],
@@ -1896,6 +2096,15 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             if r_egenes_path.exists():
                 egenes_r = pd.read_csv(r_egenes_path)
                 eqtl_sum['in_r_egenes'] = eqtl_sum['gene'].isin(egenes_r['gene'])
+            # canonical column order
+            col_order = ['gene', 'peak_lod_py', 'chr', 'peak_locus', 'peak_mb']
+            for c in ('p_empirical', 'q_storey', 'pi0',
+                      'f_haplotype', 'p_haplotype',
+                      'f_interaction', 'p_interaction',
+                      'gene_id', 'peak_lod', 'in_r_egenes'):
+                if c in eqtl_sum.columns:
+                    col_order.append(c)
+            eqtl_sum = eqtl_sum[[c for c in col_order if c in eqtl_sum.columns]]
             eqtl_sum.to_csv(py_dir / 'eqtl_summary.csv', index=False)
             log.info('[eqtl_summary] %d eGenes → eqtl_summary.csv', len(eqtl_sum))
         else:

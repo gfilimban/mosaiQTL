@@ -343,11 +343,12 @@ def run(sparcc_cache, r_data, out_dir):
     # ─────────────────────────────────────────────────────────────────────────
     peak_chrom_for_perm = rop_scan.peak_locus()['chromosome']
     log.info('\nPermutation (n=500, seed=1, chrom=%s)...', peak_chrom_for_perm)
-    null_y   = generate_null_outcomes(y, n_samples=500, method='permutation', seed=1)
-    max_lods = run_threshold_scans(
+    null_y   = generate_null_outcomes(y, n_perms=500, method='permutation', seed=1)
+    max_lods, _ = run_threshold_scans(
         null_y, cache, phenotype=y,
         kinship_decomp=ols_kd,
         fix_h2=True, use_rint=False,
+        permutation_method='plain',
         chrom=peak_chrom_for_perm,
     )
     threshold, gev_params = get_gev_thresholds(max_lods, percentile=0.95)
@@ -550,7 +551,7 @@ def run(sparcc_cache, r_data, out_dir):
     #    single.chr.plotter.w.ci(...)
     # ─────────────────────────────────────────────────────────────────────────
     log.info('\nBootstrap positional CI (n=100, seed=1)...')
-    boot_y                = generate_null_outcomes(y, n_samples=100,
+    boot_y                = generate_null_outcomes(y, n_perms=100,
                                                    method='bootstrap', seed=1)
     boot_positions, ci    = run_positional_scans(
         boot_y, cache, phenotype=y,

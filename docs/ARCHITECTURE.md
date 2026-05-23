@@ -720,6 +720,80 @@ the X chromosome in sex-structured data).
 
 ---
 
+### Per-chromosome null distributions and Storey q-values
+
+`run_threshold_scans` always returns a second value: a `dict {chrom: np.ndarray (n_perms,)}`
+containing the per-chromosome max-LOD null distributions. These are computed as a byproduct
+of the genome-wide scan — every chromosome's per-permutation max-LOD is already available
+before the genome-wide max is taken. Returning them adds zero extra computation.
+
+**Why per-chromosome nulls matter for FDR**
+
+The genome-wide FWER threshold answers: *what is the 95th percentile of the maximum LOD
+across the entire genome under the null?* For eGene discovery at FDR rather than FWER,
+we need per-gene p-values. A gene whose peak LOD is 4.5 on chromosome 8 should be compared
+against the null LOD distribution for chromosome 8 specifically — not the genome-wide max,
+which is dominated by the chromosome with the most loci.
+
+Per-gene empirical p-value:
+
+```python
+p_g = (chr_null_lods[gene_chr] >= peak_lod_g).mean()
+```
+
+This calibrates each gene against the null for its own chromosome, avoiding the conservatism
+of genome-wide FWER thresholding.
+
+**Storey q-value (qtl/fdr.py)**
+
+Given a vector of per-gene empirical p-values, `storey_qvalue(pvalues)` applies the Storey
+(2002) q-value estimator:
+
+1. Estimate π₀ (proportion of true null genes) from the p-value distribution shape using a
+   natural cubic spline smoother over a λ grid (0.05 to 0.95).
+2. Compute q-values as BH-adjusted p-values scaled by π₀:
+   `q(i) = π₀ × m × p(i) / rank(p(i))`, with monotone enforcement.
+
+Under complete null (no eGenes), π₀ → 1 and q ≈ BH q. When real signal is present, π₀ < 1
+and q-values are less conservative than BH, recovering power lost by the BH assumption that
+all m genes are null.
+
+**eGene summary output** (`eqtl_summary.csv`)
+
+| Column | Description |
+|---|---|
+| `gene` | gene name |
+| `peak_lod_py` | peak LOD score (Python scan) |
+| `chr` | chromosome of peak locus |
+| `peak_locus` | peak locus identifier |
+| `peak_mb` | peak locus position (Mb) |
+| `p_empirical` | per-gene empirical p-value from matching chromosome null |
+| `q_storey` | Storey q-value across all tested genes |
+| `pi0` | estimated proportion of true null genes (π₀) |
+| `f_haplotype` | 1-way ANOVA F-statistic for haplotype effect at peak locus |
+| `p_haplotype` | p-value for haplotype effect |
+| `f_interaction` | 2-way ANOVA F-statistic for haplotype × sex interaction |
+| `p_interaction` | p-value for haplotype × sex interaction |
+
+**2-way ANOVA (haplotype × sex)**
+
+At each eGene's peak locus, samples are assigned to founder groups via argmax of haplotype
+probabilities. Three OLS models are fit via numpy least-squares:
+
+- **intercept only**: RSS₀
+- **additive** (haplotype dummies + sex): RSS_add
+- **full** (additive + haplotype × sex interaction terms): RSS_full
+
+```
+F_haplotype   = scipy.stats.f_oneway(*groups_per_founder)
+F_interaction = ((RSS_add - RSS_full) / (J-1)) / (RSS_full / df_res)
+```
+
+A significant interaction term (`p_interaction < 0.05`) flags sex-specific eQTLs where
+the haplotype effect magnitude or direction differs between males and females.
+
+---
+
 ## 11. MPP GENERALIZATION — POPULATION BOUNDARY
 
 The codebase is parametric on population structure. All population-specific
@@ -777,14 +851,95 @@ colors — never redefine a hex string anywhere else.
 
 ---
 
-## 12. KNOWN OPEN ISSUES
+## 12. NAMING TAXONOMY
+
+### Dimension names
+
+Every dimension that appears in array shapes, function signatures, and CLI flags
+follows a fixed vocabulary. Using the wrong name is a type error in the API contract.
+
+| Name | Meaning | Typical range | Where it appears |
+|---|---|---|---|
+| `n_cells` | individual nuclei/cells before pseudobulk aggregation | 100–10,000 per strain per cell type | `counts_cells`, AnnData `.obs` |
+| `n_samples` | individual mice — one row in `metadata.csv`; replicates included | 80–418 for gastroc | phenotype vectors, covariate matrix, `sample_ids` |
+| `n_strains` | unique CC/DO genotype labels (CC001, etc.) — what GenomeCache indexes | 40–418 | `GenomeCache.sample_ids`, haplotype prob arrays, kinship matrices |
+| `n_replicates` | mice per strain in a simulation or data generation step | 2–4 | `sim.CC.data(num.replicates=...)`, fixture builders only |
+| `n_cell_types` | distinct cell-type labels after clustering | 5–30 | pipeline-level loops, `scan_multi_gene` outer wrapper |
+| `n_founders` | haplotype founder strains (J) | 8 for CC/DO | prob array axis, `GenomeCache.n_founders`, `Population.n_founders` |
+| `n_loci` | markers in genome cache (pseudomarkers excluded from scan) | ~74k total, ~854 per chr | `GenomeCache.n_loci(chrom)`, LOD array length |
+| `n_perms` | permutation or bootstrap replicates in null distribution | 100–5000 | `generate_null_outcomes(n_perms=...)`, `run_threshold_scans` |
+| `n_subsamples` | subsampling iterations in instability scan | 100 | `instability_lm_scan(n_subsamples=...)` |
+| `n_imp` | multiple imputation draws | 11 | `scan_h2lmm_mi(n_imp=...)` |
+
+**Key distinction — `n_samples` vs `n_strains`:**
+A single CC001 mouse is one sample (`n_samples += 1`). CC001 as a genotype appears
+once in the genome cache regardless of how many mice were sequenced (`n_strains += 1`).
+All scan functions operate at the strain level via the Z-matrix
+(`n × m` mapping samples to strains). The genome cache is always indexed by `n_strains`.
+
+---
+
+### Array shape conventions
+
+All arrays follow these axis-order conventions. Deviating from them silently produces
+wrong results because numpy broadcasting treats mismatched axes identically.
+
+| Array | Shape | Convention |
+|---|---|---|
+| Haplotype probabilities | `(n_loci, n_strains, n_founders)` | loci first; founders last |
+| Kinship matrix | `(n_strains, n_strains)` | strain × strain |
+| Kinship (sample-expanded) | `(n_samples, n_samples)` | sample × sample via Z-matrix |
+| Phenotype | `(n_samples,)` or `(n_strains,)` | flat; axis=0 always the individual |
+| Covariate matrix | `(n_samples, p)` | samples × predictors |
+| LOD array | `(n_loci,)` | matches locus order in `GenomeCache` |
+| Betas (allele effects) | `(n_loci, n_founders)` | sum ≈ 0 per locus (J founders, not J-1) |
+| Null outcome matrix | `(n_strains, n_perms)` | strains × permutation columns |
+
+---
+
+### `scan_window` defaults
+
+| Function | Default | Rationale |
+|---|---|---|
+| `scan_h2lmm` | `'cis'` | discovery scan; one gene, test its own chromosome; `gene_chr` required |
+| `scan_h2lmm_mi` | `'cis'` | MI is a refinement step after finding a gene; no reason to scan genome-wide |
+| `scan_multi_gene` | `'genome'` | pipeline-level batch scan across all genes; chromosome scope resolved per call |
+| `run_threshold_scans` | all chromosomes (`chrom=None`) | calibration needs the genome-wide max-LOD distribution for FWE |
+| `instability_lm_scan` | all chromosomes | instability score covers the whole scan region |
+
+`scan_window='cis'` requires `gene_chr: str`.
+`scan_window='local'` requires both `gene_chr` and `gene_pos_mb`.
+`scan_window='genome'` requires neither — scans all chromosomes in `kinship_decomp`.
+
+---
+
+### CLI flag naming (target)
+
+When mosaiQTL CLI flags are defined, they must use the same vocabulary:
+
+```
+--n-perms       permutation count (not --n-samples, not --permutations)
+--n-imp         multiple imputation draws
+--scan-window   cis | genome | local
+--gene-chr      chromosome of the gene (required for cis/local)
+--gene-pos-mb   TSS position in Mb (required for local)
+--window-mb     half-window for local scan (default 1.0)
+```
+
+Never use `--samples` to mean permutations, and never use `--perms` to mean
+biological observations. The biological sample count is not a CLI parameter —
+it is inferred from the input data.
+
+---
+
+## 13. KNOWN OPEN ISSUES
 
 | Issue | Location | Priority |
 |---|---|---|
 | S2 needs `haplotype_vals_r.csv` rerun | port_validation.R | MED |
 | S11 chr-type bug fixed but not rerun | validate_port.py | MED |
 | S8 marginal vs diplotype model difference documented, not resolved | snp_scan.py | LOW |
-| Storey q-value not yet implemented (BH-FDR anti-conservative) | pipeline.py | HIGH |
+| Storey q-value implemented in qtl/fdr.py; integrated in validate_gastroc.py eGene summary; pipeline.py BH-FDR placeholder still needs replacing (SWE-09) | pipeline.py | MED |
 | No baseline benchmarks measured yet | benchmarks/ | MED |
 | `fix_h2=False` slow path in `run_threshold_scans` not reachable from any current caller — reference implementation only | permutation.py | LOW |
 | gastroc benchmark S4–S11 not yet run — pending HPC run; rsync r_data/ then run validate_gastroc.py --compare | gastroc_data/ | MED |
