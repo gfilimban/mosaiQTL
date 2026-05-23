@@ -14,8 +14,79 @@ import numpy as np
 import pandas as pd
 import logging
 from scipy import stats as sp_stats
+from ..utils import build_z_matrix
 
 logger = logging.getLogger('mosaiqtl')
+
+
+def select_cis_mediation_pairs(
+    egene_table: pd.DataFrame,
+    gene_info: pd.DataFrame,
+    window_mb: float = 10.0,
+    gene_col: str = 'gene',
+    chr_col: str = 'chr',
+    peak_mb_col: str = 'peak_mb',
+    info_gene_col: str = 'gene_id',
+    info_chr_col: str = 'chr',
+    info_start_col: str = 'start',
+) -> 'list[tuple[str, str, str]]':
+    """Select (outcome, mediator, chr) pairs for cis-mediation analysis.
+
+    For each eGene (outcome), candidate mediators are ALL expressed genes on the
+    same chromosome whose TSS falls within window_mb of the outcome's peak locus —
+    not limited to other eGenes. This avoids circular filtering (using significance
+    to choose who can mediate significance).
+
+    Parameters
+    ----------
+    egene_table  : DataFrame with [gene, chr, peak_mb] columns (minimum).
+        Build via pipeline.call_egenes(effects_df=...) to add chr/peak_mb.
+    gene_info    : DataFrame of all expressed genes with columns
+        [gene_id, chr, start] where start is the TSS position in base-pairs.
+        Typically loaded from gene_info.csv produced by convert_gastroc_h5ad.py.
+    window_mb    : half-window in Mb around the outcome's peak locus; any gene
+        whose TSS/start falls within [peak_mb - window_mb, peak_mb + window_mb]
+        is a candidate mediator (default 10.0 Mb).
+    gene_col     : egene_table column for gene name
+    chr_col      : egene_table column for chromosome
+    peak_mb_col  : egene_table column for peak locus position in Mb
+    info_gene_col: gene_info column for gene identifier
+    info_chr_col : gene_info column for chromosome
+    info_start_col: gene_info column for TSS / gene start (base-pairs)
+
+    Returns
+    -------
+    list of (outcome_gene, mediator_gene, chr) tuples — outcome != mediator
+    """
+    required = [chr_col, peak_mb_col]
+    missing = [c for c in required if c not in egene_table.columns]
+    if missing:
+        raise ValueError(
+            f'egene_table is missing columns {missing}; '
+            f'call pipeline.call_egenes(effects_df=...) to add them')
+
+    gi = gene_info.copy()
+    gi[info_chr_col] = gi[info_chr_col].astype(str)
+    gi['_tss_mb'] = gi[info_start_col] / 1e6
+
+    pairs: list[tuple[str, str, str]] = []
+    for _, row in egene_table.iterrows():
+        outcome = row[gene_col]
+        ch = str(row[chr_col])
+        if pd.isna(row.get(peak_mb_col)):
+            continue
+        peak = float(row[peak_mb_col])
+        lo, hi = peak - window_mb, peak + window_mb
+
+        candidates = gi[
+            (gi[info_chr_col] == ch) &
+            (gi['_tss_mb'] >= lo) &
+            (gi['_tss_mb'] <= hi) &
+            (gi[info_gene_col] != outcome)
+        ]
+        for med in candidates[info_gene_col]:
+            pairs.append((outcome, str(med), ch))
+    return pairs
 
 
 def _wls_null_rss(y_rot, x_rot, w_inv):
@@ -70,7 +141,10 @@ def _batch_lod(y_rot, x_rot, probs_chr, w_inv, n, rss0, valid):
 def mediation_scan_qr(outcome, mediator, genomecache,
                        covariates=None, kinship_decomp=None,
                        use_rint=True, use_reml=True,
-                       outcome_id='outcome', mediator_id='mediator'):
+                       outcome_id='outcome', mediator_id='mediator',
+                       sample_ids=None,
+                       scan_window='genome', gene_chr=None,
+                       gene_pos_mb=None, window_mb=1.0):
     """genome-wide mediation scan — vectorised per chromosome.
 
     tests: does the haplotype effect on outcome persist after conditioning
@@ -86,6 +160,14 @@ def mediation_scan_qr(outcome, mediator, genomecache,
     use_reml          : bool
     outcome_id        : str
     mediator_id       : str
+    sample_ids        : array-like (n,) or None
+        genotype-level strain IDs for each sample. when provided and
+        different from genomecache.sample_ids, builds a Z matrix and
+        reduces outcome/mediator/covariates to strain means before scanning.
+    scan_window       : str  'genome' | 'cis' | 'local'  (default 'genome')
+    gene_chr          : str or None  required for 'cis' and 'local'
+    gene_pos_mb       : float or None  required for 'local'
+    window_mb         : float  half-window for 'local' (default 1.0)
 
     returns
     -------
@@ -95,33 +177,60 @@ def mediation_scan_qr(outcome, mediator, genomecache,
     from . import lmm as lmm_module
     from ..utils import rint as _rint
 
+    if scan_window in ('cis', 'local') and gene_chr is None:
+        raise ValueError(f"scan_window='{scan_window}' requires gene_chr")
+
     if kinship_decomp is None:
         kd = kin_module.calc_kinship(genomecache, method='loco')
         kinship_decomp = kin_module.decomp_kinship(kd)
 
-    valid  = (~np.isnan(outcome)) & (~np.isnan(mediator))
+    # --- sample alignment via Z matrix ---
+    cache_ids = list(genomecache.sample_ids)
+    sid_list  = list(sample_ids) if sample_ids is not None else cache_ids
+    if sid_list != cache_ids:
+        z_mat, valid_sid = build_z_matrix(sid_list, cache_ids)
+    else:
+        z_mat, valid_sid = None, np.ones(len(sid_list), dtype=bool)
+
+    valid  = (~np.isnan(outcome)) & (~np.isnan(mediator)) & valid_sid
     y      = outcome[valid].copy()
     m      = mediator[valid].copy()
     if use_rint:
         y = _rint(y)
-    n  = len(y)
 
     x_base = (covariates[valid].copy() if covariates is not None
-              else np.ones((n, 1), dtype=float))
+              else np.ones((valid.sum(), 1), dtype=float))
     if not np.allclose(x_base[:, 0], 1.0):
-        x_base = np.hstack([np.ones((n, 1)), x_base])
+        x_base = np.hstack([np.ones((len(y), 1)), x_base])
+
+    # --- reduce to strain means when Z matrix present ---
+    z_sub = z_mat[valid] if z_mat is not None else None
+    if z_sub is not None:
+        r_counts = z_sub.sum(axis=0)                      # (m,)
+        y        = (z_sub.T @ y) / r_counts               # (m,)
+        m        = (z_sub.T @ m) / r_counts               # (m,)
+        x_base   = (z_sub.T @ x_base) / r_counts[:, None] # (m, p)
+        ev_valid = slice(None)       # eigenvectors and probs already at strain level
+    else:
+        ev_valid = valid             # subset sample-level arrays by NaN mask
+
+    n  = len(y)
 
     m_std = (m - m.mean()) / max(m.std(), 1e-10)
     x_med = np.hstack([m_std[:, None], x_base])   # (n, p+1)
 
+    # --- chromosome list ---
+    chroms = [c for c in genomecache.chromosomes if c in kinship_decomp]
+    if scan_window in ('cis', 'local'):
+        _gc = str(gene_chr)
+        chroms = [c for c in chroms if c == _gc]
+
     rows_base = []
 
-    for chrom in genomecache.chromosomes:
-        if chrom not in kinship_decomp:
-            continue
+    for chrom in chroms:
         ev  = kinship_decomp[chrom]['values']
         evc = kinship_decomp[chrom]['vectors']
-        ev_v = evc[valid]                            # (n, n)
+        ev_v = evc[ev_valid]                         # (n, n_eigs)
 
         # rotate + weight — sqrt(w_inv) applied for WLS formulation
 
@@ -144,8 +253,8 @@ def mediation_scan_qr(outcome, mediator, genomecache,
         lids, pos, probs = genomecache.get_chromosome(chrom)  # (L, m, J)
 
         # pre-rotate haplotype block for this chromosome
-        # H_rot[l,k,j] = (U'[valid] H[l,valid,:])_k * w_sqrt_b[k]
-        H_raw = probs[:, valid, :]                              # (L, n, J) all founders
+        # H_rot[l,k,j] = (U'[ev_valid] H[l,ev_valid,:])_k * w_sqrt_b[k]
+        H_raw = probs[:, ev_valid, :]                           # (L, n, J) all founders
         # rotate via einsum: H_rot = einsum('nk,lnj->lkj', ev_v, H_raw)
         H_rot_b = np.einsum('nk,lnj->lkj', ev_v, H_raw, optimize=True) \
                    * w_sqrt_b[None, :, None]                    # (L, n, J)

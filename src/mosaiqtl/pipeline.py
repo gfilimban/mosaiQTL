@@ -44,6 +44,42 @@ logger = logging.getLogger('mosaiqtl')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# eGene utilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+def call_egenes(
+    peak_lod_df: pd.DataFrame,
+    threshold: float,
+    effects_df: 'pd.DataFrame | None' = None,
+    gene_col: str = 'gene',
+    lod_col: str = 'peak_lod_py',
+) -> pd.DataFrame:
+    """Apply a LOD threshold and enrich the result with peak position metadata.
+
+    Parameters
+    ----------
+    peak_lod_df : DataFrame with columns [gene, peak_lod_py] (minimum)
+    threshold   : LOD threshold (e.g. from get_gev_thresholds)
+    effects_df  : optional allele-effects DataFrame with columns
+        [gene, chr, peak_locus, peak_mb, peak_lod] — when provided, adds
+        per-gene chromosome and peak position to the output
+    gene_col    : name of the gene identifier column
+    lod_col     : name of the peak LOD column
+
+    Returns
+    -------
+    DataFrame with at minimum [gene, peak_lod_py]; when effects_df is provided,
+    also includes [chr, peak_locus, peak_mb] — one row per called eGene
+    """
+    egenes = peak_lod_df[peak_lod_df[lod_col] >= threshold].copy()
+    if effects_df is not None and len(effects_df) > 0:
+        pos_cols = [c for c in ('gene', 'chr', 'peak_locus', 'peak_mb')
+                    if c in effects_df.columns]
+        egenes = egenes.merge(effects_df[pos_cols], on=gene_col, how='left')
+    return egenes.reset_index(drop=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # result containers
 # ─────────────────────────────────────────────────────────────────────────────
 
