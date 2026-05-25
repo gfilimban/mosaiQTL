@@ -1013,6 +1013,8 @@ it is inferred from the input data.
 | `run_positional_scans` previously called `scan_chromosome` sequentially per bootstrap replicate — fixed: vectorised via `scan_chromosome_batch(return_peak_positions=True)` | permutation.py | ✅ fixed |
 | `mediation_scan_qr` recomputed base scan for every (outcome, mediator) pair — fixed: `base_lod` parameter caches per-chr base LOD array; callers pass it for subsequent mediators of same outcome | mediation.py | ✅ fixed |
 | `scan_h2lmm_mi` looped n_imp × n_chr `scan_chromosome` calls + GenomeCache allocations per imputation — fixed: `scan_chromosome_mi` generates all draws at once and vectorises over the imputation axis in a single batched einsum pass | lmm.py + scan.py | ✅ fixed |
+| S11 gastroc comparison: R exports `neg_log10_p` (median −log10 F-test p across subsamples); Python exports `lod` (mean bootstrap LOD). Incompatible on linear scale — fixed: comparison switched to Spearman rank correlation (monotone with instability signal) | validate_gastroc.py | ✅ fixed |
+| S9 gastroc comparison: miQTL's `mediation.scan.qr()` may export `LOD` (uppercase) and `pos.Mb` rather than `lod`/`pos_mb` — fixed: column normalization applied after `pd.read_csv` before `_pos_merge` | validate_gastroc.py | ✅ fixed |
 | gastroc benchmark S4–S11 not yet run — pending HPC run; rsync r_data/ then run validate_gastroc.py --compare | gastroc_data/ | MED |
 
 ---

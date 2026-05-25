@@ -2177,7 +2177,15 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     log.info('  mediation complete: %d genes', len(med_rows))
                     results['S9_mediation'] = True
                     if r_med_path.exists():
-                        r_med      = pd.read_csv(r_med_path)
+                        r_med = pd.read_csv(r_med_path)
+                        # miQTL mediation.scan.qr may export 'LOD' (uppercase) and
+                        # 'pos.Mb' — normalize to lowercase snake_case for _pos_merge
+                        if 'LOD' in r_med.columns and 'lod' not in r_med.columns:
+                            r_med = r_med.rename(columns={'LOD': 'lod'})
+                        if 'pos.Mb' in r_med.columns and 'pos_mb' not in r_med.columns:
+                            r_med = r_med.rename(columns={'pos.Mb': 'pos_mb'})
+                        if 'lod_mediated' in r_med.columns and 'lod' not in r_med.columns:
+                            r_med = r_med.rename(columns={'lod_mediated': 'lod'})
                         merged_med = _pos_merge(med_df, r_med, 'lod_mediated', 'lod')
                         if len(merged_med) >= 10:
                             r_m, _ = sp_stats.pearsonr(merged_med['py'],
@@ -2337,12 +2345,18 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         merged_inst = _pos_merge(inst_df, r_inst,
                                                   'lod', 'neg_log10_p')
                         if len(merged_inst) >= 10:
-                            r_i, _ = sp_stats.pearsonr(merged_inst['py'],
-                                                        merged_inst['r'])
+                            # R exports neg_log10_p (median -log10 F-test p across subsamples)
+                            # Python exports lod (mean bootstrap LOD from fixef scan)
+                            # Both are monotone with instability signal but on different scales
+                            # — use Spearman rank correlation which is scale-invariant
+                            r_i, _ = sp_stats.spearmanr(merged_inst['py'],
+                                                          merged_inst['r'])
                             merged_inst.to_csv(cmp_dir / 's11_instability_cmp.csv',
                                                index=False)
-                            _check('instability r', abs(r_i), 0.90)
-                            log.info('  vs R: r=%.4f  n=%d', r_i, len(merged_inst))
+                            _check('instability rho', abs(r_i), 0.90)
+                            log.info('  vs R (Spearman): rho=%.4f  n=%d'
+                                     '  [py=lod, r=neg_log10_p — rank correlation]',
+                                     r_i, len(merged_inst))
                 else:
                     results['S11_instability'] = None
             _, _s11_peak = tracemalloc.get_traced_memory()
