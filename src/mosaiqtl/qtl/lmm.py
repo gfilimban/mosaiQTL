@@ -58,7 +58,7 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):
         """negative profile (RE)ML as a function of h²."""
         h2    = np.clip(h2, 1e-6, 1 - 1e-6)
         delta = h2 / (1 - h2)
-        w     = delta * eigvals + 1.0     # diagonal weights
+        w     = delta * eigvals + 1.0   # w ≥ 1 always (eigvals ≥ 0, delta ≥ 0)
         w_inv = 1.0 / w
         xw    = x_rot * w_inv[:, None]
         try:
@@ -67,6 +67,10 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):
             return 1e10
         resid = y_rot - x_rot @ beta
         wrss  = float(resid @ (resid * w_inv))
+        if wrss <= 0:
+            # degenerate phenotype (constant after rotation) — no variance to model;
+            # return large finite value so Brent's parabolic arithmetic stays finite
+            return 1e10
         logdet = float(np.sum(np.log(w)))
         if method == 'reml':
             df     = n - p

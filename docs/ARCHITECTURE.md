@@ -87,7 +87,7 @@ src/mosaiqtl/
 │   ├── scan.py             # Z-matrix n=418, MI (vectorised), fixef, instability (strain-level subsampling); scan_window='cis'|'genome'|'local'
 │   ├── permutation.py      # fix_h2=True, GEV thresholds; run_positional_scans vectorised via scan_chromosome_batch
 │   ├── effects.py          # founder haplotype effect estimation
-│   ├── mediation.py        # QR-based mediation; base_lod cache skips redundant base scan across mediators
+│   ├── mediation.py        # QR-based mediation; mediation_scan_qr_batch vectorises all mediators per outcome via Woodbury rank-1
 │   ├── epistasis.py        # pairwise GxG, conditional scanning
 │   ├── vqtl.py             # dispersion QTL, VQTLResult
 │   ├── snp_scan.py         # marginal SNP fine-mapping
@@ -294,7 +294,7 @@ mosaiQTL accepts:
       - standard errors + CIs
 
   → Optional downstream                  [qtl/mediation.py, epistasis.py, vqtl.py]
-      - QR-based mediation analysis
+      - QR-based mediation: mediation_scan_qr_batch vectorises all mediators of one outcome per chromosome via Woodbury rank-1 update (H⊥X computed once; G_inv shared; per-mediator LOD via Sherman-Morrison). h2 fixed from base model (drift ≤ 0.03 empirically). ~100–250× faster than per-mediator loop at 127k pairs.
       - pairwise epistasis scan
       - dispersion QTL (vQTL)
       - conditional multi-signal scan
@@ -1011,11 +1011,12 @@ it is inferred from the input data.
 | `fix_h2=False` slow path in `run_threshold_scans` not reachable from any current caller — reference implementation only | permutation.py | LOW |
 | `instability_lm_scan` previously subsampled at sample level (out-of-bounds when n_samples > n_strains) — fixed: now pre-reduces to strain means via Z-matrix before subsampling | scan.py | ✅ fixed |
 | `run_positional_scans` previously called `scan_chromosome` sequentially per bootstrap replicate — fixed: vectorised via `scan_chromosome_batch(return_peak_positions=True)` | permutation.py | ✅ fixed |
-| `mediation_scan_qr` recomputed base scan for every (outcome, mediator) pair — fixed: `base_lod` parameter caches per-chr base LOD array; callers pass it for subsequent mediators of same outcome | mediation.py | ✅ fixed |
+| `mediation_scan_qr` recomputed base scan for every (outcome, mediator) pair — fixed: `mediation_scan_qr_batch` processes all mediators of one outcome in a single chromosome pass using Woodbury rank-1 (h2 fixed from base model; empirical drift ≤ 0.03, r(exact,fixed) ≥ 0.9999). validate_gastroc.py S9 updated to call batch variant. | mediation.py | ✅ fixed |
 | `scan_h2lmm_mi` looped n_imp × n_chr `scan_chromosome` calls + GenomeCache allocations per imputation — fixed: `scan_chromosome_mi` generates all draws at once and vectorises over the imputation axis in a single batched einsum pass | lmm.py + scan.py | ✅ fixed |
 | S11 gastroc comparison: R exports `neg_log10_p` (median −log10 F-test p across subsamples); Python exports `lod` (mean bootstrap LOD). Incompatible on linear scale — fixed: comparison switched to Spearman rank correlation (monotone with instability signal) | validate_gastroc.py | ✅ fixed |
 | S9 gastroc comparison: miQTL's `mediation.scan.qr()` may export `LOD` (uppercase) and `pos.Mb` rather than `lod`/`pos_mb` — fixed: column normalization applied after `pd.read_csv` before `_pos_merge` | validate_gastroc.py | ✅ fixed |
 | gastroc benchmark S4–S11 not yet run — pending HPC run; rsync r_data/ then run validate_gastroc.py --compare | gastroc_data/ | MED |
+| `estimate_h2_null` emitted `RuntimeWarning: invalid value encountered in scalar subtract` from Brent's parabolic interpolation on every permutation. Root cause: degenerate permuted phenotype (constant after eigenrotation) caused `wrss ≈ 0` → `sigma2 → 0` → `log(sigma2) = -inf` → `neg_loglik` returned `-inf` → `−inf − (−inf) = NaN` in Brent's step arithmetic. Also removed dead `w <= 0` guard (w = delta*eigvals + 1 ≥ 1 always) and redundant `isfinite` check. Fixed: `if wrss <= 0: return 1e10` before the log call; large finite sentinel preserves Brent's arithmetic. Normal permutations unaffected. | lmm.py::estimate_h2_null | ✅ fixed |
 
 ---
 *Last updated: see git log. Canonical source: github.com/gfilimban/mosaiqtl/docs/ARCHITECTURE.md*
