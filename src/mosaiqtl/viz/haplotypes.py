@@ -43,13 +43,13 @@ def prob_heatmap(
     Parameters
     ----------
     hap_probs : np.ndarray
-        Shape (n_samples, J) founder probabilities at one locus.
+        Shape (n_strains, J) founder probabilities at one locus.
     founders : list[str]
         Founder names; length must equal hap_probs.shape[1].
     ax : plt.Axes, optional
         Axes to draw on; created at dpi=300 if None.
     phenotype : np.ndarray, optional
-        Shape (n_samples,) trait values; samples sorted ascending when provided.
+        Shape (n_strains,) trait values; strains sorted ascending when provided.
     phenotype_id : str
         Phenotype name used in the x-axis label.
     gene : str
@@ -67,22 +67,22 @@ def prob_heatmap(
     -------
     plt.Axes
     """
-    n_samples_in = hap_probs.shape[0]
+    n_strains_in = hap_probs.shape[0]
     if ax is None:
-        width = max(5.0, n_samples_in * 0.18)
+        width = max(5.0, n_strains_in * 0.18)
         _, ax = plt.subplots(figsize=(width, 3.5), dpi=300)
 
-    mat = np.asarray(hap_probs, dtype=float)   # (n_samples, J)
+    mat = np.asarray(hap_probs, dtype=float)   # (n_strains, J)
     pheno_sorted: Optional[np.ndarray] = None
     if phenotype is not None:
         order = np.argsort(phenotype)
         mat = mat[order]
         pheno_sorted = phenotype[order]
 
-    # founders on y-axis (rows), samples on x-axis (columns) — matches miQTL layout
-    mat = mat.T                                 # (J, n_samples)
+    # founders on y-axis (rows), strains on x-axis (columns) — matches miQTL layout
+    mat = mat.T                                 # (J, n_strains)
     J         = mat.shape[0]
-    n_samples = mat.shape[1]
+    n_strains = mat.shape[1]
 
     im = ax.imshow(mat, aspect='auto', cmap=cmap, vmin=0.0, vmax=1.0,
                    interpolation='nearest')
@@ -98,10 +98,10 @@ def prob_heatmap(
 
     # x-axis top: trait values at 5 quantile-spaced sample positions
     # — makes clear the numbers are trait values, not genomic coordinates
-    if pheno_sorted is not None and n_samples >= 5:
+    if pheno_sorted is not None and n_strains >= 5:
         ax_top = ax.twiny()
-        tick_cols = np.linspace(0, n_samples - 1, 5).astype(int)
-        ax_top.set_xlim(-0.5, n_samples - 0.5)
+        tick_cols = np.linspace(0, n_strains - 1, 5).astype(int)
+        ax_top.set_xlim(-0.5, n_strains - 0.5)
         ax_top.set_xticks(tick_cols)
         ax_top.set_xticklabels(
             [f'{pheno_sorted[i]:.2f}' for i in tick_cols], fontsize=7)
@@ -149,9 +149,9 @@ def pxg(
     Parameters
     ----------
     phenotype : np.ndarray
-        Shape (n_samples,) trait values.
+        Shape (n_strains,) trait values.
     hap_probs : np.ndarray
-        Shape (n_samples, J) founder probabilities at one locus.
+        Shape (n_strains, J) founder probabilities at one locus.
     founders : list[str]
         Founder names; length must equal hap_probs.shape[1].
     ax : plt.Axes, optional
@@ -208,6 +208,84 @@ def pxg(
     return ax
 
 
+def pxg_sex_facet(
+    phenotype: np.ndarray,
+    hap_probs: np.ndarray,
+    sex: np.ndarray,
+    founders: list[str] = FOUNDER_ORDER,
+    *,
+    phenotype_label: str = 'Phenotype',
+    chrom: str = '',
+    position_mb: Optional[float] = None,
+    jitter: float = 0.15,
+    point_size: float = 18.0,
+    alpha: float = 0.7,
+) -> plt.Figure:
+    """Sex-faceted PxG plot: two side-by-side panels (male left, female right).
+
+    Each panel calls the same layout as ``pxg`` but restricted to one sex.
+    Useful for visualising sex-differential haplotype effects at a peak locus.
+
+    Parameters
+    ----------
+    phenotype : np.ndarray
+        Shape (n_strains,) trait values.
+    hap_probs : np.ndarray
+        Shape (n_strains, J) founder probabilities at one locus.
+    sex : np.ndarray
+        Shape (n_strains,) binary sex (0 = male, 1 = female).
+    founders : list[str]
+        Founder names; length must equal hap_probs.shape[1].
+    phenotype_label : str
+        Y-axis label (left panel only).
+    chrom : str
+        Chromosome label for panel titles.
+    position_mb : float, optional
+        Locus position in Mb for panel titles.
+    jitter : float
+        Horizontal jitter spread.
+    point_size : float
+        Scatter point size.
+    alpha : float
+        Point opacity.
+
+    Returns
+    -------
+    plt.Figure
+        Figure with two Axes (male left, female right).
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), dpi=300,
+                             sharey=True, constrained_layout=True)
+
+    sex_arr    = np.asarray(sex, dtype=float)
+    sex_masks  = {0: sex_arr == 0, 1: sex_arr == 1}
+    sex_titles = {0: 'Male', 1: 'Female'}
+
+    loc_parts = []
+    if chrom:
+        loc_parts.append(f'Chr {chrom}')
+    if position_mb is not None:
+        loc_parts.append(f'{position_mb:.2f} Mb')
+    loc_str = ' · '.join(loc_parts)
+
+    for sex_val, ax in zip((0, 1), axes):
+        mask   = sex_masks[sex_val]
+        ph_sub = phenotype[mask]
+        hp_sub = np.asarray(hap_probs, dtype=float)[mask]
+
+        pxg(ph_sub, hp_sub, founders,
+            ax=ax,
+            phenotype_label=phenotype_label if sex_val == 0 else '',
+            jitter=jitter, point_size=point_size, alpha=alpha)
+
+        panel_title = sex_titles[sex_val]
+        if loc_str:
+            panel_title = f'{sex_titles[sex_val]}  —  {loc_str}'
+        ax.set_title(panel_title, fontsize=8, pad=4)
+
+    return fig
+
+
 def kinship_heatmap(
     kinship: np.ndarray,
     *,
@@ -228,11 +306,11 @@ def kinship_heatmap(
     Parameters
     ----------
     kinship : np.ndarray
-        Shape (n_samples, n_samples) symmetric kinship matrix.
+        Shape (n_strains, n_strains) symmetric kinship matrix.
     ax : plt.Axes, optional
         Axes to draw on; created at dpi=300 if None.
     sample_labels : list[str], optional
-        Tick labels; suppressed when n_samples > 40.
+        Tick labels; suppressed when n_strains > 40.
     block_boundaries : list[int], optional
         Sample indices where group blocks begin (drawn as dividing lines).
     block_labels : list[str], optional
@@ -351,5 +429,48 @@ def epistasis_heatmap(
     ax.set_ylabel('Founder (locus 1)')
 
     sns.despine(ax=ax, left=True, bottom=True)
+    _set_font(ax)
+    return ax
+
+
+def kinship_distribution(
+    K: np.ndarray,
+    *,
+    ax: Optional[plt.Axes] = None,
+    chrom: str = '',
+) -> plt.Axes:
+    """KDE of diagonal vs off-diagonal kinship values.
+
+    Parameters
+    ----------
+    K : np.ndarray
+        Square kinship matrix, shape (n, n).
+    ax : plt.Axes, optional
+        Axes to draw on; created at dpi=300 if None.
+    chrom : str
+        Chromosome label for title.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    if ax is None:
+        _, ax = plt.subplots(figsize=(6, 4), dpi=300)
+
+    n    = K.shape[0]
+    diag = np.diag(K)
+    tril = K[np.tril_indices(n, -1)]
+
+    sns.kdeplot(diag, ax=ax, label='diagonal',     color=FOUNDER_COLORS['NODJ'])
+    sns.kdeplot(tril, ax=ax, label='off-diagonal', color=FOUNDER_COLORS['129S1J'])
+
+    ax.set_xlabel('Kinship value')
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=8, frameon=False)
+    title = 'Kinship distribution'
+    if chrom:
+        title += f'  chr{chrom}'
+    ax.set_title(title, fontsize=9)
+    sns.despine(ax=ax)
     _set_font(ax)
     return ax

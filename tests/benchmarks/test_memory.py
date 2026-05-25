@@ -25,14 +25,14 @@ from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 from mosaiqtl.qtl.lmm import estimate_h2_null, scan_chromosome
 
 # ── fixture sizes (matches test_scan_speed.py) ────────────────────────────────
-N_SAMPLES  = 40
+N_STRAINS  = 40
 N_LOCI     = 500
 N_FOUNDERS = 8
 N_CHROM    = 3
 
 # per-fixture thresholds scaled from production targets
 # production: MEM-02 4 GB at (418, 74_000, 20chr); test: (40, 500, 3chr)
-# scan arrays scale as O(n_samples * n_loci * n_founders)
+# scan arrays scale as O(n_strains * n_loci * n_founders)
 # 4 GB * (40/418) * (500/74_000) * (3/20) ≈ 0.5 MB — use 32 MB as generous CI bound
 _SCAN_RAM_LIMIT_MB    = 32    # MEM-02 (scaled)
 # production: MEM-03 500 MB at (418, 74_000, 20chr)
@@ -43,13 +43,13 @@ _CACHE_RAM_LIMIT_MB   = 64    # MEM-03 (scaled)
 _KINSHIP_RAM_LIMIT_MB = 8     # MEM-04 (scaled)
 
 
-def _make_cache(n_samples=N_SAMPLES, n_loci=N_LOCI,
+def _make_cache(n_strains=N_STRAINS, n_loci=N_LOCI,
                 n_founders=N_FOUNDERS, n_chrom=N_CHROM):
     rng  = np.random.default_rng(42)
     data = {}
     for i in range(n_chrom):
         c = str(i + 1)
-        probs = rng.dirichlet(np.ones(n_founders), size=(n_loci, n_samples))
+        probs = rng.dirichlet(np.ones(n_founders), size=(n_loci, n_strains))
         data[c] = {
             'locus_ids': np.array([f'{c}_L{j:04d}' for j in range(n_loci)]),
             'positions': np.linspace(1.0, 200.0, n_loci),
@@ -57,7 +57,7 @@ def _make_cache(n_samples=N_SAMPLES, n_loci=N_LOCI,
         }
     return GenomeCache(
         data=data,
-        sample_ids=[f'CC{i:03d}' for i in range(n_samples)],
+        sample_ids=[f'CC{i:03d}' for i in range(n_strains)],
         founders=[f'F{i}' for i in range(n_founders)],
     )
 
@@ -87,8 +87,8 @@ class TestScanMemory:
         chrom = '1'
         ev    = kd[chrom]['values']
         evc   = kd[chrom]['vectors']
-        x     = np.ones((N_SAMPLES, 1))
-        y     = rng.standard_normal(N_SAMPLES)
+        x     = np.ones((N_STRAINS, 1))
+        y     = rng.standard_normal(N_STRAINS)
         h2, _ = estimate_h2_null(evc.T @ y, evc.T @ x, ev)
 
         tracemalloc.start()
@@ -107,8 +107,8 @@ class TestScanMemory:
         chrom = '1'
         ev    = kd[chrom]['values']
         evc   = kd[chrom]['vectors']
-        x     = np.ones((N_SAMPLES, 1))
-        y     = rng.standard_normal(N_SAMPLES)
+        x     = np.ones((N_STRAINS, 1))
+        y     = rng.standard_normal(N_STRAINS)
         h2, _ = estimate_h2_null(evc.T @ y, evc.T @ x, ev)
 
         result = scan_chromosome(y, cache, chrom, x, ev, evc, h2)
@@ -141,11 +141,11 @@ class TestCacheMemory:
         )
 
     def test_cache_probs_shape(self, cache):
-        """probs stored as (n_loci, n_samples, n_founders) — no silent transposition."""
+        """probs stored as (n_loci, n_strains, n_founders) — no silent transposition."""
         _, _, probs = cache.get_chromosome('1')
-        n_loci, n_samples, n_founders = probs.shape
+        n_loci, n_strains, n_founders = probs.shape
         assert n_loci    == N_LOCI
-        assert n_samples == N_SAMPLES
+        assert n_strains == N_STRAINS
         assert n_founders == N_FOUNDERS
 
 
@@ -168,8 +168,8 @@ class TestKinshipMemory:
 
     def test_kinship_shape(self, kinship_dict):
         for c, k in kinship_dict.items():
-            assert k.shape == (N_SAMPLES, N_SAMPLES), (
-                f'kinship chr{c} shape {k.shape} != ({N_SAMPLES},{N_SAMPLES})'
+            assert k.shape == (N_STRAINS, N_STRAINS), (
+                f'kinship chr{c} shape {k.shape} != ({N_STRAINS},{N_STRAINS})'
             )
 
     def test_kinship_symmetric(self, kinship_dict):
@@ -179,6 +179,6 @@ class TestKinshipMemory:
     def test_decomp_vectors_orthonormal(self, kd):
         for c, d in kd.items():
             evc = d['vectors']
-            assert np.allclose(evc.T @ evc, np.eye(N_SAMPLES), atol=1e-10), (
+            assert np.allclose(evc.T @ evc, np.eye(N_STRAINS), atol=1e-10), (
                 f'eigenvectors chr{c} not orthonormal'
             )

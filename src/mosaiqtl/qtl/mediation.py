@@ -144,7 +144,8 @@ def mediation_scan_qr(outcome, mediator, genomecache,
                        outcome_id='outcome', mediator_id='mediator',
                        sample_ids=None,
                        scan_window='genome', gene_chr=None,
-                       gene_pos_mb=None, window_mb=1.0):
+                       gene_pos_mb=None, window_mb=1.0,
+                       base_lod: 'dict[str, np.ndarray] | None' = None):
     """genome-wide mediation scan — vectorised per chromosome.
 
     tests: does the haplotype effect on outcome persist after conditioning
@@ -168,6 +169,11 @@ def mediation_scan_qr(outcome, mediator, genomecache,
     gene_chr          : str or None  required for 'cis' and 'local'
     gene_pos_mb       : float or None  required for 'local'
     window_mb         : float  half-window for 'local' (default 1.0)
+    base_lod          : dict {chrom: np.ndarray (n_loci,)} or None
+        pre-computed base LOD scores for each chromosome.  when supplied the
+        base scan is skipped entirely — only the mediated scan is run.  use
+        this when calling for multiple mediators of the same outcome to avoid
+        recomputing the identical base scan each time.
 
     returns
     -------
@@ -241,30 +247,28 @@ def mediation_scan_qr(outcome, mediator, genomecache,
             w_sqrt = np.sqrt(w_inv)
             return (ev_v.T @ y) * w_sqrt, (ev_v.T @ x_cov) * w_sqrt[:, None], w_inv, w_sqrt
 
-        h2_base, _ = lmm_module.estimate_h2_null(ev_v.T @ y, ev_v.T @ x_base, ev)
-        h2_med,  _ = lmm_module.estimate_h2_null(ev_v.T @ y, ev_v.T @ x_med,  ev)
-
-        y_rot_b, x_rot_b, w_inv_b, w_sqrt_b = _rot_wt(x_base, h2_base)
-        y_rot_m, x_rot_m, w_inv_m, w_sqrt_m = _rot_wt(x_med,  h2_med)
-
-        rss0_b, _ = _wls_null_rss(y_rot_b, x_rot_b, np.ones(n))  # already weighted
+        h2_med, _ = lmm_module.estimate_h2_null(ev_v.T @ y, ev_v.T @ x_med, ev)
+        y_rot_m, x_rot_m, w_inv_m, w_sqrt_m = _rot_wt(x_med, h2_med)
         rss0_m, _ = _wls_null_rss(y_rot_m, x_rot_m, np.ones(n))
 
-        lids, pos, probs = genomecache.get_chromosome(chrom)  # (L, m, J)
-
-        # pre-rotate haplotype block for this chromosome
-        # H_rot[l,k,j] = (U'[ev_valid] H[l,ev_valid,:])_k * w_sqrt_b[k]
-        H_raw = probs[:, ev_valid, :]                           # (L, n, J) all founders
-        # rotate via einsum: H_rot = einsum('nk,lnj->lkj', ev_v, H_raw)
-        H_rot_b = np.einsum('nk,lnj->lkj', ev_v, H_raw, optimize=True) \
-                   * w_sqrt_b[None, :, None]                    # (L, n, J)
+        lids, pos, probs = genomecache.get_chromosome(chrom)  # (L, n, J)
+        H_raw   = probs[:, ev_valid, :]                        # (L, n, J)
         H_rot_m = np.einsum('nk,lnj->lkj', ev_v, H_raw, optimize=True) \
-                   * w_sqrt_m[None, :, None]
+                  * w_sqrt_m[None, :, None]
 
-        lod_b, _, _ = _batch_lod(
-            y_rot_b, x_rot_b, H_rot_b, np.ones(n), n, rss0_b, slice(None))
         lod_m, pv, _ = _batch_lod(
             y_rot_m, x_rot_m, H_rot_m, np.ones(n), n, rss0_m, slice(None))
+
+        if base_lod is not None and chrom in base_lod:
+            lod_b = base_lod[chrom]
+        else:
+            h2_base, _ = lmm_module.estimate_h2_null(ev_v.T @ y, ev_v.T @ x_base, ev)
+            y_rot_b, x_rot_b, w_inv_b, w_sqrt_b = _rot_wt(x_base, h2_base)
+            rss0_b, _ = _wls_null_rss(y_rot_b, x_rot_b, np.ones(n))
+            H_rot_b   = np.einsum('nk,lnj->lkj', ev_v, H_raw, optimize=True) \
+                        * w_sqrt_b[None, :, None]
+            lod_b, _, _ = _batch_lod(
+                y_rot_b, x_rot_b, H_rot_b, np.ones(n), n, rss0_b, slice(None))
 
         lod_drop = np.maximum(lod_b - lod_m, 0.0)
 

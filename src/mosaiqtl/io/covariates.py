@@ -147,6 +147,36 @@ def build_covariate_matrix(
     return result
 
 
+def encode_sex(series: 'pd.Series') -> 'pd.Series':
+    """Encode a sex column to float (Male/M/0 → 0.0, Female/F/1 → 1.0).
+
+    Accepts any of: 'Male'/'Female', 'M'/'F', 'm'/'f', 0/1, 0.0/1.0.
+    Unknown values map to 0.0 (treated as male); a warning is logged.
+
+    Parameters
+    ----------
+    series : pd.Series
+        Raw sex column from sample metadata.
+
+    Returns
+    -------
+    pd.Series
+        Float64 series with same index, values in {0.0, 1.0}.
+    """
+    def _map(v: object) -> float:
+        if isinstance(v, (int, float, np.integer, np.floating)):
+            return float(v)
+        s = str(v).strip().lower()
+        if s in ('male', 'm', '0'):
+            return 0.0
+        if s in ('female', 'f', '1'):
+            return 1.0
+        logger.warning('encode_sex: unrecognised value %r — defaulting to 0.0', v)
+        return 0.0
+
+    return series.map(_map).astype(np.float64)
+
+
 # ---------------------------------------------------------------------------
 # private helpers
 # ---------------------------------------------------------------------------

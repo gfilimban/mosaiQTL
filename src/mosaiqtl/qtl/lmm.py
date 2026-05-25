@@ -306,7 +306,8 @@ def scan_chromosome_batch(
     z_mat: 'np.ndarray | None' = None,
     model: str = 'additive',
     batch_size: int = 500,
-) -> np.ndarray:
+    return_peak_positions: bool = False,
+) -> 'np.ndarray | tuple[np.ndarray, np.ndarray]':
     """scan one chromosome for a batch of permuted phenotypes.
 
     precomputes H_perp and G_pinv once (genotype-only); only the null
@@ -336,9 +337,10 @@ def scan_chromosome_batch(
 
     returns
     -------
-    np.ndarray (N_perms,)  per-permutation max LOD on this chromosome
+    np.ndarray (N_perms,)  per-permutation max LOD on this chromosome, or
+    tuple (max_lods, peak_positions) when return_peak_positions=True
     """
-    locus_ids, _, probs = genomecache.get_chromosome(chrom)
+    locus_ids, positions_c, probs = genomecache.get_chromosome(chrom)
     n_loci  = len(locus_ids)
     nf      = genomecache.n_founders
     n       = eigvals.shape[0]
@@ -373,7 +375,8 @@ def scan_chromosome_batch(
     gc.collect()
 
     # ── mini-batch loop over permutations ─────────────────────────────────────
-    max_lods = np.full(n_perms, -np.inf)
+    max_lods  = np.full(n_perms, -np.inf)
+    peak_idxs = np.zeros(n_perms, dtype=np.intp) if return_peak_positions else None
 
     for p0 in range(0, n_perms, batch_size):
         p1   = min(p0 + batch_size, n_perms)
@@ -395,9 +398,138 @@ def scan_chromosome_batch(
             0.0,
         )                                                              # (n_loci, b)
         max_lods[p0:p1] = lod_b.max(axis=0)
+        if peak_idxs is not None:
+            peak_idxs[p0:p1] = lod_b.argmax(axis=0)
         del rss_red, rss1, lod_b, e0, YT
 
     del H_perp, G_pinv
     gc.collect()
 
+    if return_peak_positions:
+        return max_lods, positions_c[peak_idxs]
     return max_lods
+
+
+def scan_chromosome_mi(
+    y: np.ndarray,
+    genomecache: 'GenomeCache',  # type: ignore[name-defined]
+    chrom: str,
+    x_covariates: np.ndarray,
+    eigvals: np.ndarray,
+    eigvecs: np.ndarray,
+    h2_null: float,
+    n_imp: int = 11,
+    rng: 'np.random.Generator | None' = None,
+    loci_batch: int = 200,
+) -> np.ndarray:
+    """scan one chromosome under multiple imputation — vectorised over imputations.
+
+    generates n_imp hard diplotype assignments from soft haplotype probs,
+    then computes LOD for all imputations in a single vectorised pass and
+    returns the per-locus mean.
+
+    savings vs calling scan_chromosome n_imp times:
+      - all n_imp one-hot draws generated once per chromosome
+      - H_perp / G / G_pinv computed in a single einsum pass over
+        the (n_imp, loci_batch, n, J) tensor
+      - eliminates n_imp GenomeCache object allocations
+      - eliminates n_imp × n_chr scan_chromosome calls
+
+    parameters
+    ----------
+    y            : (n,)     strain-mean phenotype (already rint-transformed)
+    genomecache
+    chrom        : str
+    x_covariates : (n, p)   strain-mean covariates
+    eigvals      : (n,)
+    eigvecs      : (n, n)
+    h2_null      : float    fixed h² — same for all imputations (fix_h2=True rule)
+    n_imp        : int      number of imputations (default 11)
+    rng          : Generator or None  — uses default_rng(0) when None
+    loci_batch   : int      mini-batch size over loci axis (memory control)
+
+    returns
+    -------
+    np.ndarray (n_loci,)  mean LOD across n_imp imputations
+    """
+    if rng is None:
+        rng = np.random.default_rng(0)
+
+    locus_ids, positions, probs = genomecache.get_chromosome(chrom)
+    n_loci, n_s, n_f = probs.shape
+    n = len(y)
+    p = x_covariates.shape[1]
+
+    # ── shared weight vector from h² (identical for all imputations) ────────
+    delta  = h2_null / max(1.0 - h2_null, 1e-10)
+    w_sqrt = 1.0 / np.sqrt(delta * eigvals + 1.0)   # (n,)
+
+    # ── null model (once for all imputations) ────────────────────────────────
+    yt   = (eigvecs.T @ y) * w_sqrt                         # (n,)
+    xt   = (eigvecs.T @ x_covariates) * w_sqrt[:, None]     # (n, p)
+    xtwx = xt.T @ xt                                        # (p, p)
+    try:
+        beta_null = np.linalg.solve(xtwx, xt.T @ yt)
+    except np.linalg.LinAlgError:
+        return np.zeros(n_loci)
+    e0   = yt - xt @ beta_null                              # (n,)
+    rss0 = float(e0 @ e0)
+    xt_pinv = np.linalg.solve(xtwx, xt.T)                  # (p, n)
+
+    # ── generate all n_imp one-hot draws at once ─────────────────────────────
+    # probs: (n_loci, n_s, n_f) — CDF along founder axis for each (locus, strain)
+    cum = probs.cumsum(axis=2)                              # (n_loci, n_s, n_f)
+    u   = rng.random((n_imp, n_loci, n_s, 1))              # (n_imp, n_loci, n_s, 1)
+    # argmax of CDF > u gives the sampled founder index per (imp, locus, strain)
+    idx = (u > cum[None]).sum(axis=3).clip(0, n_f - 1)     # (n_imp, n_loci, n_s)
+
+    # convert to one-hot: imp_h[i,l,s,j] = 1 iff founder j drawn for (i,l,s)
+    imp_h = np.zeros((n_imp, n_loci, n_s, n_f), dtype=np.float32)
+    _i = np.arange(n_imp)[:, None, None]
+    _l = np.arange(n_loci)[None, :, None]
+    _s = np.arange(n_s)[None, None, :]
+    imp_h[_i, _l, _s, idx] = 1.0
+    del u, idx, cum
+
+    # ── vectorised scan over loci mini-batches ───────────────────────────────
+    lod_sum = np.zeros(n_loci, dtype=np.float64)
+
+    for b0 in range(0, n_loci, loci_batch):
+        b1  = min(b0 + loci_batch, n_loci)
+        b   = b1 - b0
+        # H_b: (n_imp, b, n_s, n_f) → rotate → (n_imp, b, k, n_f)
+        # k is the eigenvector-space coordinate (size n); same as scan_chromosome 'nk,lnj->lkj'
+        H_b = imp_h[:, b0:b1, :, :].astype(np.float64)    # (n_imp, b, n_s, n_f)
+
+        # rotate: H_t[i,b,k,j] = sum_n eigvecs[n,k] * H[i,b,n,j]
+        H_t = np.einsum('nk,ibnj->ibkj', eigvecs, H_b, optimize=True)  # (n_imp, b, n, n_f)
+        H_t *= w_sqrt[None, None, :, None]
+
+        # FWL: H_perp = H_t - xt @ (xt_pinv @ H_t)
+        # xt_pinv: (p, k); H_t: (n_imp, b, k, n_f)
+        proj   = np.einsum('pk,ibkj->ibpj', xt_pinv, H_t, optimize=True)   # (n_imp, b, p, n_f)
+        H_perp = H_t - np.einsum('kp,ibpj->ibkj', xt, proj, optimize=True) # (n_imp, b, k, n_f)
+        del H_b, H_t, proj
+
+        # gram matrices — contract over k (rotated strain space)
+        G_b    = np.einsum('ibkj,ibkl->ibjl', H_perp, H_perp, optimize=True)  # (n_imp, b, n_f, n_f)
+        G_pinv = np.linalg.pinv(
+            G_b.reshape(-1, n_f, n_f), rcond=1e-10
+        ).reshape(n_imp, b, n_f, n_f)                                           # (n_imp, b, n_f, n_f)
+
+        # per-imputation LOD
+        c      = np.einsum('ibkj,k->ibj', H_perp, e0, optimize=True)           # (n_imp, b, n_f)
+        Gc     = np.einsum('ibjl,ibl->ibj', G_pinv, c, optimize=True)          # (n_imp, b, n_f)
+        rss_red = np.einsum('ibj,ibj->ib', c, Gc, optimize=True)              # (n_imp, b)
+        del H_perp, G_b, G_pinv, c, Gc
+
+        rss1  = np.maximum(rss0 - rss_red, 1e-30)                             # (n_imp, b)
+        lod_ib = np.where(rss1 < rss0,
+                          (n / 2.0) * np.log10(rss0 / rss1), 0.0)            # (n_imp, b)
+        lod_sum[b0:b1] += lod_ib.sum(axis=0)                                  # accumulate
+        del rss_red, rss1, lod_ib
+
+    del imp_h
+    gc.collect()
+
+    return lod_sum / n_imp   # (n_loci,) mean LOD

@@ -64,6 +64,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from mosaiqtl.genotype.founders import F1_COLORS, FOUNDER_COLORS, FOUNDER_ORDER
 from mosaiqtl.genotype.genomecache import GenomeCache
+from mosaiqtl.viz.genome import (
+    loci_per_chr as _viz_loci_per_chr,
+    lod_profile as _viz_lod_profile,
+    manhattan as _viz_manhattan,
+    perm_distribution as _viz_perm_distribution,
+    egene_lod_distribution as _viz_egene_lod_distribution,
+    mediation_profile as _viz_mediation_profile,
+    ci_strip as _viz_ci_strip,
+)
+from mosaiqtl.viz.haplotypes import (
+    prob_heatmap as _viz_prob_heatmap,
+    kinship_heatmap as _viz_kinship_heatmap,
+    kinship_distribution as _viz_kinship_distribution,
+)
+from mosaiqtl.viz.effects import effect_bars as _viz_effect_bars
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 from mosaiqtl.qtl.scan import (
     grab_locus_from_scan,
@@ -80,7 +95,12 @@ from mosaiqtl.qtl.permutation import (
 from mosaiqtl.qtl.mediation import mediation_scan_qr, select_cis_mediation_pairs
 from mosaiqtl.qtl.snp_scan import imputed_snp_scan_from_db
 from mosaiqtl.qtl.fdr import storey_qvalue
+from mosaiqtl.qtl.effects import qtl_gxe_lrt
+from mosaiqtl.io.covariates import encode_sex
 from mosaiqtl.pipeline import call_egenes
+from mosaiqtl.utils import build_z_matrix
+from mosaiqtl.viz.haplotypes import pxg_sex_facet
+from mosaiqtl.viz.effects import haplotype_sex_profile
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 log = logging.getLogger('validate_gastroc')
@@ -300,12 +320,14 @@ def _build_covariates(meta: pd.DataFrame,
     """build dataset one-hot covariate matrix aligned to sample_order.
 
     dataset has 5 levels: CC1, CC2, CC3, F1, Founder.
-    CC1 is the reference (alphabetically first); dummies = CC2, CC3, F1, Founder.
+    Founder is the biological reference (matches R relevel); dummies = CC1, CC2, CC3, F1.
     scan_h2lmm prepends the intercept internally, so we return 4 columns.
     """
     meta_idx = meta.set_index('sample_id')
     datasets = meta_idx.loc[sample_order, 'dataset'].values
-    dummies  = pd.get_dummies(datasets, drop_first=True).values.astype(np.float64)
+    cat      = pd.Categorical(datasets,
+                              categories=['Founder', 'CC1', 'CC2', 'CC3', 'F1'])
+    dummies  = pd.get_dummies(cat, drop_first=True).values.astype(np.float64)
     return dummies   # (n_samples, 4)
 
 
@@ -354,124 +376,6 @@ def _pick_top_gene(df_chr: 'pd.DataFrame', peak_chr: str,
     return by_gene.idxmax()
 
 
-def _two_way_anova_haplotype_sex(
-    y: np.ndarray,
-    hap_groups: np.ndarray,
-    sex: np.ndarray,
-) -> 'dict[str, float]':
-    """1-way haplotype ANOVA and 2-way haplotype×sex interaction at peak locus.
-
-    Parameters
-    ----------
-    y          : (n,) expression values
-    hap_groups : (n,) integer founder assignments (argmax of haplotype probs)
-    sex        : (n,) binary sex covariate (0/1)
-
-    Returns
-    -------
-    dict with keys: f_haplotype, p_haplotype, f_interaction, p_interaction
-    """
-    from scipy.stats import f as f_dist
-
-    n = len(y)
-    founders = np.unique(hap_groups)
-    n_hap = len(founders)
-
-    # 1-way haplotype F-test
-    groups_1way = [y[hap_groups == f] for f in founders if (hap_groups == f).sum() > 0]
-    groups_1way = [g for g in groups_1way if len(g) >= 1]
-    if len(groups_1way) < 2 or n < n_hap + 2:
-        return {'f_haplotype': np.nan, 'p_haplotype': np.nan,
-                'f_interaction': np.nan, 'p_interaction': np.nan}
-
-    from scipy.stats import f_oneway
-    f_hap, p_hap = f_oneway(*groups_1way)
-
-    # 2-way interaction: manual OLS via numpy
-    # encode haplotype dummies (drop one level)
-    hap_dummies = np.zeros((n, n_hap - 1))
-    for i, f in enumerate(founders[:-1]):
-        hap_dummies[:, i] = (hap_groups == f).astype(float)
-    sex_c = sex.astype(float)
-
-    # additive model: intercept + hap dummies + sex
-    X_add = np.column_stack([np.ones(n), hap_dummies, sex_c])
-    # full model: additive + hap×sex interactions
-    X_full = np.column_stack([X_add, hap_dummies * sex_c[:, None]])
-
-    def _rss(X: np.ndarray, y_: np.ndarray) -> float:
-        try:
-            beta = np.linalg.lstsq(X, y_, rcond=None)[0]
-            return float(np.sum((y_ - X @ beta) ** 2))
-        except np.linalg.LinAlgError:
-            return np.nan
-
-    rss_add  = _rss(X_add, y)
-    rss_full = _rss(X_full, y)
-    df_int  = n_hap - 1          # interaction df
-    df_res  = n - X_full.shape[1]
-
-    if df_res < 1 or np.isnan(rss_full) or np.isnan(rss_add):
-        f_int, p_int = np.nan, np.nan
-    else:
-        f_int = ((rss_add - rss_full) / df_int) / (rss_full / df_res)
-        p_int = float(1.0 - f_dist.cdf(f_int, df_int, df_res))
-
-    return {
-        'f_haplotype':   float(f_hap),
-        'p_haplotype':   float(p_hap),
-        'f_interaction': float(f_int),
-        'p_interaction': float(p_int),
-    }
-
-
-def _pxg_plot(
-    y: np.ndarray,
-    hap_groups: np.ndarray,
-    sex: np.ndarray,
-    gene_name: str,
-    peak_locus: str,
-    out_path: Path,
-    facet_sex: bool = True,
-) -> None:
-    """Phenotype × genotype (PxG) boxplot colored by founder haplotype."""
-    fig, axes = plt.subplots(
-        1, 2 if facet_sex else 1,
-        figsize=(10 if facet_sex else 5, 4),
-        sharey=True)
-    if not facet_sex:
-        axes = [axes]
-
-    for ax, s_val, s_label in zip(
-            axes,
-            [None, 0, 1] if not facet_sex else [0, 1],
-            ['All', 'Male', 'Female'] if not facet_sex else ['Male', 'Female']):
-        mask = (sex == s_val) if s_val is not None else np.ones(len(y), dtype=bool)
-        data_rows = []
-        for f_idx, fname in enumerate(FOUNDER_ORDER):
-            sel = mask & (hap_groups == f_idx)
-            for v in y[sel]:
-                data_rows.append({'founder': fname, 'expr': v})
-        if not data_rows:
-            ax.set_visible(False)
-            continue
-        df_p = pd.DataFrame(data_rows)
-        present = [f for f in FOUNDER_ORDER if f in df_p['founder'].values]
-        palette = {f: FOUNDER_COLORS[f] for f in present}
-        sns.boxplot(
-            data=df_p, x='founder', y='expr', order=present,
-            palette=palette, width=0.6, fliersize=3, ax=ax)
-        ax.set_xlabel('Founder haplotype')
-        ax.set_ylabel('Expression' if ax == axes[0] else '')
-        ax.set_title(s_label)
-        sns.despine(ax=ax)
-
-    fig.suptitle(f'{gene_name}  @  {peak_locus}', y=1.01)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=300, bbox_inches='tight')
-    plt.close(fig)
-
-
 def _make_descriptive_plots(
     plt_dir: Path,
     py_dir:  Path,
@@ -508,21 +412,17 @@ def _make_descriptive_plots(
         try:
             ci = pd.read_csv(s1_path)
             ci['chr'] = ci['chr'].astype(str)
-            # sort chromosomes naturally: autosomes then X
+
             def _chr_key(c):
                 try:
                     return (0, int(c))
                 except ValueError:
                     return (1, c)
             ci = ci.sort_values('chr', key=lambda s: [_chr_key(x) for x in s])
-            fig, ax = plt.subplots(figsize=(10, 3))
-            ax.bar(range(len(ci)), ci['n_loci'], color='#4F6EAF', width=0.7)
-            ax.set_xticks(range(len(ci)))
-            ax.set_xticklabels(ci['chr'].tolist(), fontsize=7)
-            ax.set_xlabel('Chromosome')
-            ax.set_ylabel('Number of loci')
-            ax.set_title(f'S1  Loci per chromosome  (total={ci["n_loci"].sum():,})')
-            sns.despine(ax=ax)
+            fig, ax = plt.subplots(figsize=(10, 3), dpi=300)
+            _viz_loci_per_chr(ci['chr'].tolist(), ci['n_loci'].values, ax=ax)
+            ax.set_title(f'S1  Loci per chromosome  (total={ci["n_loci"].sum():,})',
+                         fontsize=9)
             fig.tight_layout()
             fig.savefig(plt_dir / 's1_loci_per_chr.png', dpi=300)
             plt.close(fig)
@@ -530,137 +430,62 @@ def _make_descriptive_plots(
         except Exception as exc:
             log.warning('  s1_loci_per_chr: %s', exc)
 
-    # ── S2: haplotype prob heatmap (genotype × founder, canonical order) ───────
+    # ── S2: haplotype prob heatmap ────────────────────────────────────────────
     s2_path = py_dir / 's2_haplotype_probs.csv'
     if s2_path.exists():
         try:
-            from mosaiqtl.genotype.founders import FOUNDER_ORDER as _FO, F1_COLORS as _F1
             hp       = pd.read_csv(s2_path)
             locus0   = hp['locus'].iloc[0]
             sub      = hp[hp['locus'] == locus0].copy()
-            # enforce canonical row order from cache.sample_ids
             strain_order = list(cache.sample_ids)
             sub      = sub.set_index('genotype').reindex(strain_order).reset_index()
-            mat      = sub[founders].values  # (n_strains, 8)
-            strains  = sub['genotype'].tolist()
-
-            # group boundary indices
-            fo_set  = set(_FO)
-            f1_set  = set(_F1.keys())
-            n_fo    = sum(1 for s in strains if s in fo_set)
-            n_f1    = sum(1 for s in strains if s in f1_set)
-            bounds  = [n_fo - 0.5, n_fo + n_f1 - 0.5]
-
-            # abbreviated labels: show all if ≤60, else thin out CC strains
-            max_labels = 60
-            if len(strains) <= max_labels:
-                yticks  = list(range(len(strains)))
-                ylabels = strains
-                yfsize  = max(4, 7 - len(strains) // 15)
-            else:
-                fo_f1_n = n_fo + n_f1
-                step    = max(1, (len(strains) - fo_f1_n) // (max_labels - fo_f1_n))
-                yticks  = list(range(fo_f1_n)) + list(range(fo_f1_n, len(strains), step))
-                ylabels = [strains[i] for i in yticks]
-                yfsize  = 6
-
-            fig_h = max(5, len(yticks) * 0.18)
-            fig, ax = plt.subplots(figsize=(6, fig_h))
-            im = ax.imshow(mat, aspect='auto', vmin=0, vmax=1,
-                           cmap='YlOrRd', interpolation='nearest')
-            ax.set_xticks(range(len(founders)))
-            ax.set_xticklabels(list(founders), fontsize=7, rotation=45, ha='right')
-            ax.set_yticks(yticks)
-            ax.set_yticklabels(ylabels, fontsize=yfsize)
-            # separator lines between Founder / F1 / CC groups
-            for b in bounds:
-                if 0 < b < len(strains) - 1:
-                    ax.axhline(b, color='white', linewidth=1.5, linestyle='--')
-            # group labels on right margin
-            group_mids = {
-                'Founders': (0 + n_fo - 1) / 2 if n_fo > 0 else -1,
-                'F1s':      (n_fo + n_fo + n_f1 - 1) / 2 if n_f1 > 0 else -1,
-                'CC':       (n_fo + n_f1 + len(strains) - 1) / 2 if len(strains) > n_fo + n_f1 else -1,
-            }
-            for label, mid in group_mids.items():
-                if mid >= 0:
-                    ax.text(len(founders) + 0.1, mid, label, va='center',
-                            fontsize=6, color='#444444',
-                            transform=ax.get_yaxis_transform())
-            ax.set_xlabel('Founder')
-            ax.set_ylabel('Strain')
-            ax.set_title(f'S2  Haplotype probs  locus={locus0}  '
-                         f'(n={len(strains)} strains)')
-            fig.colorbar(im, ax=ax, label='Probability', shrink=0.5,
-                         pad=0.12)
-            sns.despine(ax=ax, left=True, bottom=True)
+            mat      = sub[founders].values  # (n_strains, J)
+            n_s      = len(strain_order)
+            fig_h    = max(3.5, n_s * 0.18)
+            fig, ax  = plt.subplots(figsize=(6, fig_h), dpi=300)
+            _viz_prob_heatmap(mat, list(founders), ax=ax,
+                              chrom=peak_chr, position_mb=None)
+            ax.set_title(f'S2  Haplotype probs  locus={locus0}  (n={n_s})',
+                         fontsize=9)
             fig.tight_layout()
             fig.savefig(plt_dir / 's2_haplotype_heatmap.png', dpi=300)
             plt.close(fig)
-            log.info('  s2_haplotype_heatmap.png  (%d strains, canonical order)',
-                     len(strains))
+            log.info('  s2_haplotype_heatmap.png  (%d strains)', n_s)
         except Exception as exc:
             log.warning('  s2_haplotype_heatmap: %s', exc)
 
-    # ── S3: kinship heatmap (panel 1) + diagonal distribution (panel 2) ─────────
+    # ── S3: kinship heatmap + distribution ───────────────────────────────────
     if peak_chr in kinship_decomp:
         try:
-            kd  = kinship_decomp[peak_chr]
-            K   = kd['vectors'] @ np.diag(kd['values']) @ kd['vectors'].T
-            n   = K.shape[0]
+            kd = kinship_decomp[peak_chr]
+            K  = kd['vectors'] @ np.diag(kd['values']) @ kd['vectors'].T
+            n  = K.shape[0]
 
             strains_k = list(cache.sample_ids)
             fo_set_k  = set(FOUNDER_ORDER)
             f1_set_k  = set(F1_COLORS.keys())
             n_fo_k    = sum(1 for s in strains_k if s in fo_set_k)
             n_f1_k    = sum(1 for s in strains_k if s in f1_set_k)
-            bounds_k  = [n_fo_k - 0.5, n_fo_k + n_f1_k - 0.5]
 
-            max_labels = 60
-            if len(strains_k) <= max_labels:
-                kticks  = list(range(len(strains_k)))
-                klabels = strains_k
-                kfsize  = max(4, 7 - len(strains_k) // 15)
-            else:
-                fo_f1_n_k = n_fo_k + n_f1_k
-                step_k    = max(1, (len(strains_k) - fo_f1_n_k) // (max_labels - fo_f1_n_k))
-                kticks    = list(range(fo_f1_n_k)) + list(range(fo_f1_n_k, len(strains_k), step_k))
-                klabels   = [strains_k[i] for i in kticks]
-                kfsize    = 5
-
-            # panel 1: heatmap
-            fig_h_k = max(5, len(kticks) * 0.18)
-            fig1, ax1 = plt.subplots(figsize=(fig_h_k, fig_h_k))
-            im = ax1.imshow(K, aspect='auto', vmin=0, vmax=K.max(),
-                            cmap='Blues', interpolation='nearest')
+            side  = max(5.0, n * 0.06)
+            fig1, ax1 = plt.subplots(figsize=(side, side), dpi=300)
+            _viz_kinship_heatmap(
+                K, ax=ax1,
+                sample_labels=strains_k,
+                block_boundaries=[n_fo_k, n_fo_k + n_f1_k],
+                block_labels=['Founders', 'F1s', 'CC'],
+                chrom=peak_chr,
+                cmap='Blues', vmin=0,
+            )
             ax1.set_title(f'S3  LOCO kinship  chr{peak_chr}  (n={n})', fontsize=9)
-            ax1.set_xlabel('Strain', fontsize=8)
-            ax1.set_ylabel('Strain', fontsize=8)
-            ax1.set_xticks(kticks)
-            ax1.set_xticklabels(klabels, fontsize=kfsize, rotation=90, ha='center')
-            ax1.set_yticks(kticks)
-            ax1.set_yticklabels(klabels, fontsize=kfsize)
-            for b in bounds_k:
-                if 0 < b < len(strains_k) - 1:
-                    ax1.axhline(b, color='white', linewidth=1.5, linestyle='--')
-                    ax1.axvline(b, color='white', linewidth=1.5, linestyle='--')
-            fig1.colorbar(im, ax=ax1, shrink=0.8)
-            sns.despine(ax=ax1, left=True, bottom=True)
             fig1.savefig(plt_dir / 's3_kinship_heatmap.png', dpi=300,
                          bbox_inches='tight')
             plt.close(fig1)
             log.info('  s3_kinship_heatmap.png  (%d strains)', n)
 
-            # panel 2: diagonal vs off-diagonal distribution
-            diag = np.diag(K)
-            tril = K[np.tril_indices(n, -1)]
-            fig2, ax2 = plt.subplots(figsize=(6, 4))
-            sns.kdeplot(diag, ax=ax2, label='diagonal', color='#4F6EAF')
-            sns.kdeplot(tril, ax=ax2, label='off-diagonal', color='#DA9CC1')
-            ax2.set_xlabel('Kinship value')
-            ax2.set_title(f'S3  Kinship distribution  chr{peak_chr}')
-            ax2.legend(fontsize=8)
-            sns.despine(ax=ax2)
+            fig2, ax2 = plt.subplots(figsize=(6, 4), dpi=300)
+            _viz_kinship_distribution(K, ax=ax2, chrom=peak_chr)
+            ax2.set_title(f'S3  Kinship distribution  chr{peak_chr}', fontsize=9)
             fig2.tight_layout()
             fig2.savefig(plt_dir / 's3_kinship_distribution.png', dpi=300)
             plt.close(fig2)
@@ -668,32 +493,26 @@ def _make_descriptive_plots(
         except Exception as exc:
             log.warning('  s3_kinship_heatmap: %s', exc)
 
-    # ── S4: LOD profile — top gene on peak_chr (qtl2: plot_scan1) ─────────────
+    # ── S4: LOD profile — top gene on peak_chr ───────────────────────────────
     s4_lod_path = py_dir / 's4_lod.csv'
     if s4_lod_path.exists():
         try:
             lod_df = pd.read_csv(s4_lod_path)
             lod_df['chr'] = lod_df['chr'].astype(str)
-            lod_pc  = lod_df[lod_df['chr'] == str(peak_chr)]
+            lod_pc = lod_df[lod_df['chr'] == str(peak_chr)]
             if len(lod_pc) > 0:
                 top_gene = _pick_top_gene(lod_pc, peak_chr)
                 lod_top  = lod_pc[lod_pc['gene'] == top_gene].sort_values('pos_mb')
-                fig, ax  = plt.subplots(figsize=(10, 3))
-                ax.plot(lod_top['pos_mb'], lod_top['lod'],
-                        color='#4F6EAF', linewidth=1.2)
-                ax.fill_between(lod_top['pos_mb'], 0, lod_top['lod'],
-                                alpha=0.15, color='#4F6EAF')
-                # threshold line if available
                 thr_path = py_dir / 's5_threshold.csv'
-                if thr_path.exists():
-                    thr = float(pd.read_csv(thr_path)['threshold'].iloc[0])
-                    ax.axhline(thr, color='#D83026', linewidth=0.8,
-                               linestyle='--', label=f'GEV 95% = {thr:.2f}')
-                    ax.legend(fontsize=8)
-                ax.set_xlabel(f'Chr{peak_chr} position (Mb)')
-                ax.set_ylabel('LOD')
-                ax.set_title(f'S4  LOD profile  {top_gene}  chr{peak_chr}')
-                sns.despine(ax=ax)
+                thr      = (float(pd.read_csv(thr_path)['threshold'].iloc[0])
+                            if thr_path.exists() else None)
+                fig, ax = plt.subplots(figsize=(10, 3), dpi=300)
+                _viz_lod_profile(
+                    lod_top['pos_mb'].values, lod_top['lod'].values,
+                    ax=ax, chrom=peak_chr, threshold=thr, fill=True,
+                )
+                ax.set_title(f'S4  LOD profile  {top_gene}  chr{peak_chr}',
+                             fontsize=9)
                 fig.tight_layout()
                 fig.savefig(plt_dir / 's4_lod_profile.png', dpi=300)
                 plt.close(fig)
@@ -701,12 +520,12 @@ def _make_descriptive_plots(
         except Exception as exc:
             log.warning('  s4_lod_profile: %s', exc)
 
-    # ── S4: founder coef bar at peak locus (qtl2: plot_coef) ──────────────────
+    # ── S4: founder coef bar at peak locus ───────────────────────────────────
     s4_eff_path = py_dir / 's4_allele_effects.csv'
     if s4_eff_path.exists():
         try:
-            eff_df  = pd.read_csv(s4_eff_path)
-            eff_pc  = eff_df[eff_df['chr'].astype(str) == str(peak_chr)]
+            eff_df = pd.read_csv(s4_eff_path)
+            eff_pc = eff_df[eff_df['chr'].astype(str) == str(peak_chr)]
             if len(eff_pc) > 0:
                 priority = PRIORITY_GENE.get(str(peak_chr))
                 if priority and priority in eff_pc['gene'].values:
@@ -714,19 +533,14 @@ def _make_descriptive_plots(
                 else:
                     top_row = eff_pc.loc[eff_pc['peak_lod'].idxmax()]
                 beta_cols = [c for c in eff_pc.columns if c.startswith('beta_')]
-                betas  = [top_row[c] for c in beta_cols]
-                fnames = [c.replace('beta_', '') for c in beta_cols]
-                colors = [FOUNDER_COLORS.get(fn, '#888888') for fn in fnames]
-                fig, ax = plt.subplots(figsize=(7, 3))
-                ax.bar(range(len(betas)), betas, color=colors, width=0.7)
-                ax.axhline(0, color='black', linewidth=0.6)
-                ax.set_xticks(range(len(fnames)))
-                ax.set_xticklabels(fnames, fontsize=7, rotation=50, ha='right')
-                ax.set_ylabel('Effect (beta)')
+                betas     = np.array([top_row[c] for c in beta_cols])
+                fnames    = [c.replace('beta_', '') for c in beta_cols]
+                fig, ax   = plt.subplots(figsize=(7, 3), dpi=300)
+                _viz_effect_bars(betas, fnames, ax=ax)
                 ax.set_title(
                     f'S4  Founder effects  {top_row["gene"]}  '
-                    f'{top_row["peak_locus"]}  LOD={top_row["peak_lod"]:.1f}')
-                sns.despine(ax=ax)
+                    f'{top_row["peak_locus"]}  LOD={top_row["peak_lod"]:.1f}',
+                    fontsize=9)
                 fig.tight_layout()
                 fig.savefig(plt_dir / 's4_founder_effects.png', dpi=300)
                 plt.close(fig)
@@ -741,9 +555,8 @@ def _make_descriptive_plots(
             pk_df   = pd.read_csv(peak_lod_path)
             lod_all = pd.read_csv(s4_lod_path)
             lod_all['chr'] = lod_all['chr'].astype(str)
-            # get peak position per gene
-            idx_peak = lod_all.groupby('gene')['lod'].idxmax()
-            peak_pos = lod_all.loc[idx_peak, ['gene', 'chr', 'pos_mb', 'lod']]
+            idx_pk   = lod_all.groupby('gene')['lod'].idxmax()
+            peak_pos = lod_all.loc[idx_pk, ['gene', 'chr', 'pos_mb', 'lod']]
             peak_pos = peak_pos.merge(pk_df[['gene']], on='gene')
 
             def _chr_key(c):
@@ -752,35 +565,17 @@ def _make_descriptive_plots(
                 except ValueError:
                     return 100
             chrs_sorted = sorted(peak_pos['chr'].unique(), key=_chr_key)
-            chr_offset  = {}
-            off = 0.0
-            for ch in chrs_sorted:
-                chr_offset[ch] = off
-                off += peak_pos[peak_pos['chr'] == ch]['pos_mb'].max() + 20
-            peak_pos['x'] = peak_pos.apply(
-                lambda r: r['pos_mb'] + chr_offset.get(r['chr'], 0), axis=1)
-
-            fig, ax = plt.subplots(figsize=(12, 3))
-            palette = ['#4F6EAF', '#52A5DB']
-            for i, ch in enumerate(chrs_sorted):
-                sub = peak_pos[peak_pos['chr'] == ch]
-                ax.scatter(sub['x'], sub['lod'],
-                           color=palette[i % 2], s=6, alpha=0.7, linewidths=0)
+            scans_dict  = {
+                ch: (peak_pos[peak_pos['chr'] == ch]['pos_mb'].values,
+                     peak_pos[peak_pos['chr'] == ch]['lod'].values)
+                for ch in chrs_sorted
+            }
             thr_path = py_dir / 's5_threshold.csv'
-            if thr_path.exists():
-                thr = float(pd.read_csv(thr_path)['threshold'].iloc[0])
-                ax.axhline(thr, color='#D83026', linewidth=0.8, linestyle='--',
-                           label=f'GEV 95% = {thr:.2f}')
-                ax.legend(fontsize=8)
-            mid = {ch: chr_offset[ch] +
-                   peak_pos[peak_pos['chr'] == ch]['pos_mb'].median()
-                   for ch in chrs_sorted}
-            ax.set_xticks(list(mid.values()))
-            ax.set_xticklabels(list(mid.keys()), fontsize=7)
-            ax.set_xlabel('Chromosome')
-            ax.set_ylabel('Peak LOD')
-            ax.set_title(f'S4  Manhattan  n={len(peak_pos)} genes')
-            sns.despine(ax=ax)
+            thr      = (float(pd.read_csv(thr_path)['threshold'].iloc[0])
+                        if thr_path.exists() else None)
+            fig, ax = plt.subplots(figsize=(12, 3), dpi=300)
+            _viz_manhattan(scans_dict, ax=ax, threshold=thr)
+            ax.set_title(f'S4  Manhattan  n={len(peak_pos)} genes', fontsize=9)
             fig.tight_layout()
             fig.savefig(plt_dir / 's4_manhattan.png', dpi=300)
             plt.close(fig)
@@ -793,25 +588,15 @@ def _make_descriptive_plots(
     s5_thr_path  = py_dir / 's5_threshold.csv'
     if s5_perm_path.exists():
         try:
-            from scipy.stats import genextreme
             max_lods = pd.read_csv(s5_perm_path)['max_lod'].values
-            max_lods = max_lods[np.isfinite(max_lods)]
-            c, loc, scale = genextreme.fit(max_lods, f0=None)
-            x_range = np.linspace(max_lods.min() - 0.5, max_lods.max() + 1, 200)
-            fig, ax = plt.subplots(figsize=(7, 4))
-            ax.hist(max_lods, bins=20, density=True, color='#52A5DB',
-                    alpha=0.6, label='Permutation max-LOD')
-            ax.plot(x_range, genextreme.pdf(x_range, c, loc, scale),
-                    color='#4F6EAF', linewidth=1.5, label='GEV fit')
-            if s5_thr_path.exists():
-                thr = float(pd.read_csv(s5_thr_path)['threshold'].iloc[0])
-                ax.axvline(thr, color='#D83026', linewidth=1.2, linestyle='--',
-                           label=f'95th pctile = {thr:.2f}')
-            ax.set_xlabel('Max LOD')
-            ax.set_ylabel('Density')
-            ax.set_title(f'S5  Permutation distribution  chr{peak_chr}  n={len(max_lods)}')
-            ax.legend(fontsize=8)
-            sns.despine(ax=ax)
+            thr      = (float(pd.read_csv(s5_thr_path)['threshold'].iloc[0])
+                        if s5_thr_path.exists() else None)
+            fig, ax  = plt.subplots(figsize=(7, 4), dpi=300)
+            _viz_perm_distribution(max_lods, ax=ax, threshold=thr, chrom=peak_chr)
+            ax.set_title(
+                f'S5  Permutation distribution  chr{peak_chr}  '
+                f'n={np.isfinite(max_lods).sum()}',
+                fontsize=9)
             fig.tight_layout()
             fig.savefig(plt_dir / 's5_perm_distribution.png', dpi=300)
             plt.close(fig)
@@ -824,30 +609,20 @@ def _make_descriptive_plots(
     peak_lod_path = py_dir / 's4_peak_lod.csv'
     if peak_lod_path.exists():
         try:
-            pk  = pd.read_csv(peak_lod_path)
-            thr: 'float | None' = None
-            thr_path = py_dir / 's5_threshold.csv'
-            if thr_path.exists():
-                thr = float(pd.read_csv(thr_path)['threshold'].iloc[0])
-            egenes_set: set[str] = set()
-            if egenes_path.exists():
-                egenes_set = set(pd.read_csv(egenes_path)['gene'])
-            lods = pk['peak_lod_py'].dropna().values
-            is_egene = pk['gene'].isin(egenes_set).values
-            fig, ax = plt.subplots(figsize=(7, 4))
-            ax.hist(lods[~is_egene], bins=40, color='#C0BFBF',
-                    alpha=0.8, label='below threshold')
-            ax.hist(lods[is_egene],  bins=40, color='#4F6EAF',
-                    alpha=0.9, label=f'eGenes (n={is_egene.sum()})')
-            if thr is not None:
-                ax.axvline(thr, color='#D83026', linewidth=1.2,
-                           linestyle='--', label=f'GEV 95% = {thr:.2f}')
-            ax.set_xlabel('Peak LOD')
-            ax.set_ylabel('Genes')
-            ax.set_title(f'S6  eGene calling  chr{peak_chr}  '
-                         f'n={len(pk)} genes')
-            ax.legend(fontsize=8)
-            sns.despine(ax=ax)
+            pk         = pd.read_csv(peak_lod_path)
+            thr_path   = py_dir / 's5_threshold.csv'
+            thr        = (float(pd.read_csv(thr_path)['threshold'].iloc[0])
+                          if thr_path.exists() else None)
+            egenes_set = (set(pd.read_csv(egenes_path)['gene'])
+                          if egenes_path.exists() else set())
+            lods       = pk['peak_lod_py'].dropna().values
+            is_egene   = pk['gene'].isin(egenes_set).values
+            fig, ax    = plt.subplots(figsize=(7, 4), dpi=300)
+            _viz_egene_lod_distribution(lods, is_egene, ax=ax,
+                                        threshold=thr, chrom=peak_chr)
+            ax.set_title(
+                f'S6  eGene calling  chr{peak_chr}  n={len(pk)} genes',
+                fontsize=9)
             fig.tight_layout()
             fig.savefig(plt_dir / 's6_egene_lod_distribution.png', dpi=300)
             plt.close(fig)
@@ -866,12 +641,17 @@ def _make_descriptive_plots(
             if len(snp_pc) > 0:
                 top_gene = _pick_top_gene(snp_pc, peak_chr)
                 snp_top  = snp_pc[snp_pc['gene'] == top_gene].sort_values('pos_mb')
-                fig, ax  = plt.subplots(figsize=(10, 3))
-                ax.scatter(snp_top['pos_mb'], snp_top['lod'],
-                           color='#DA9CC1', s=4, alpha=0.7, linewidths=0)
-                ax.set_xlabel(f'Chr{peak_chr} position (Mb)')
+                fig, ax  = plt.subplots(figsize=(10, 3), dpi=300)
+                # SNP scan: scatter style — use lod_profile with scatter overlay
+                ax.scatter(snp_top['pos_mb'].values, snp_top['lod'].values,
+                           color=FOUNDER_COLORS['129S1J'], s=4, alpha=0.7,
+                           linewidths=0)
+                ax.set_xlim(snp_top['pos_mb'].min(), snp_top['pos_mb'].max())
+                ax.set_ylim(bottom=0)
+                ax.set_xlabel(f'Chr {peak_chr} position (Mb)')
                 ax.set_ylabel('LOD (SNP)')
-                ax.set_title(f'S8  SNP scan  {top_gene}  chr{peak_chr}')
+                ax.set_title(f'S8  SNP scan  {top_gene}  chr{peak_chr}',
+                             fontsize=9)
                 sns.despine(ax=ax)
                 fig.tight_layout()
                 fig.savefig(plt_dir / 's8_snp_lod_profile.png', dpi=300)
@@ -880,21 +660,21 @@ def _make_descriptive_plots(
         except Exception as exc:
             log.warning('  s8_snp_lod_profile: %s', exc)
 
-    # ── S10: CI strip per eGene (qtl2: LOD interval bar) ─────────────────────
+    # ── S10: CI strip per eGene ───────────────────────────────────────────────
     s10_path = py_dir / 's10_ci.csv'
     if s10_path.exists():
         try:
             ci_df = pd.read_csv(s10_path).sort_values('peak_mb')
-            fig, ax = plt.subplots(figsize=(8, max(3, len(ci_df) * 0.35)))
-            for i, row in enumerate(ci_df.itertuples()):
-                ax.plot([row.ci_lo, row.ci_hi], [i, i],
-                        color='#4F6EAF', linewidth=3, solid_capstyle='round')
-                ax.scatter(row.peak_mb, i, color='#D83026', s=30, zorder=3)
-            ax.set_yticks(range(len(ci_df)))
-            ax.set_yticklabels(ci_df['gene'].tolist(), fontsize=7)
-            ax.set_xlabel(f'Chr{peak_chr} position (Mb)')
-            ax.set_title(f'S10  Bootstrap CI  {len(ci_df)} eGenes')
-            sns.despine(ax=ax)
+            fig, ax = plt.subplots(
+                figsize=(8, max(3, len(ci_df) * 0.35)), dpi=300)
+            _viz_ci_strip(
+                ci_df['gene'].tolist(),
+                ci_df['ci_lo'].values,
+                ci_df['ci_hi'].values,
+                ci_df['peak_mb'].values,
+                ax=ax, chrom=peak_chr,
+            )
+            ax.set_title(f'S10  Bootstrap CI  {len(ci_df)} eGenes', fontsize=9)
             fig.tight_layout()
             fig.savefig(plt_dir / 's10_ci_strip.png', dpi=300)
             plt.close(fig)
@@ -906,21 +686,21 @@ def _make_descriptive_plots(
     s11_path = py_dir / 's11_instability.csv'
     if s11_path.exists():
         try:
-            inst_df  = pd.read_csv(s11_path)
+            inst_df = pd.read_csv(s11_path)
             inst_df['chr'] = inst_df['chr'].astype(str)
-            inst_pc  = inst_df[inst_df['chr'] == str(peak_chr)]
+            inst_pc = inst_df[inst_df['chr'] == str(peak_chr)]
             if len(inst_pc) > 0:
-                top_gene = (inst_pc.groupby('gene')['lod'].max().idxmax())
+                top_gene = inst_pc.groupby('gene')['lod'].max().idxmax()
                 inst_top = inst_pc[inst_pc['gene'] == top_gene].sort_values('pos_mb')
-                fig, ax  = plt.subplots(figsize=(10, 3))
-                ax.plot(inst_top['pos_mb'], inst_top['lod'],
-                        color='#55AF5B', linewidth=1.2)
-                ax.fill_between(inst_top['pos_mb'], 0, inst_top['lod'],
-                                alpha=0.15, color='#55AF5B')
-                ax.set_xlabel(f'Chr{peak_chr} position (Mb)')
+                fig, ax  = plt.subplots(figsize=(10, 3), dpi=300)
+                _viz_lod_profile(
+                    inst_top['pos_mb'].values, inst_top['lod'].values,
+                    ax=ax, chrom=peak_chr, fill=True,
+                    color=FOUNDER_COLORS['CASTJ'],
+                )
                 ax.set_ylabel('Instability LOD')
-                ax.set_title(f'S11  Instability  {top_gene}  chr{peak_chr}')
-                sns.despine(ax=ax)
+                ax.set_title(f'S11  Instability  {top_gene}  chr{peak_chr}',
+                             fontsize=9)
                 fig.tight_layout()
                 fig.savefig(plt_dir / 's11_instability_profile.png', dpi=300)
                 plt.close(fig)
@@ -938,15 +718,15 @@ def _make_descriptive_plots(
             if len(mi_pc) > 0:
                 top_gene = _pick_top_gene(mi_pc, peak_chr)
                 mi_top   = mi_pc[mi_pc['gene'] == top_gene].sort_values('pos_mb')
-                fig, ax  = plt.subplots(figsize=(10, 3))
-                ax.plot(mi_top['pos_mb'], mi_top['lod'],
-                        color='#683C91', linewidth=1.2)
-                ax.fill_between(mi_top['pos_mb'], 0, mi_top['lod'],
-                                alpha=0.15, color='#683C91')
-                ax.set_xlabel(f'Chr{peak_chr} position (Mb)')
+                fig, ax  = plt.subplots(figsize=(10, 3), dpi=300)
+                _viz_lod_profile(
+                    mi_top['pos_mb'].values, mi_top['lod'].values,
+                    ax=ax, chrom=peak_chr, fill=True,
+                    color=FOUNDER_COLORS['WSBJ'],
+                )
                 ax.set_ylabel('LOD (MI)')
-                ax.set_title(f'S7  MI LOD profile  {top_gene}  chr{peak_chr}')
-                sns.despine(ax=ax)
+                ax.set_title(f'S7  MI LOD profile  {top_gene}  chr{peak_chr}',
+                             fontsize=9)
                 fig.tight_layout()
                 fig.savefig(plt_dir / 's7_mi_lod_profile.png', dpi=300)
                 plt.close(fig)
@@ -964,20 +744,15 @@ def _make_descriptive_plots(
             if len(med_pc) > 0:
                 top_gene = _pick_top_gene(med_pc, peak_chr, lod_col='lod_base')
                 med_top  = med_pc[med_pc['gene'] == top_gene].sort_values('pos_mb')
-                fig, ax  = plt.subplots(figsize=(10, 3))
-                ax.plot(med_top['pos_mb'], med_top['lod_base'],
-                        color='#4F6EAF', linewidth=1.2, label='LOD base')
-                ax.plot(med_top['pos_mb'], med_top['lod_mediated'],
-                        color='#52A5DB', linewidth=1.2, linestyle='--',
-                        label='LOD mediated')
-                ax.fill_between(med_top['pos_mb'],
-                                med_top['lod_mediated'], med_top['lod_base'],
-                                alpha=0.2, color='#D83026', label='LOD drop')
-                ax.set_xlabel(f'Chr{peak_chr} position (Mb)')
-                ax.set_ylabel('LOD')
-                ax.set_title(f'S9  Mediation  {top_gene}  chr{peak_chr}')
-                ax.legend(fontsize=8)
-                sns.despine(ax=ax)
+                fig, ax  = plt.subplots(figsize=(10, 3), dpi=300)
+                _viz_mediation_profile(
+                    med_top['pos_mb'].values,
+                    med_top['lod_base'].values,
+                    med_top['lod_mediated'].values,
+                    ax=ax, chrom=peak_chr, gene=top_gene,
+                )
+                ax.set_title(f'S9  Mediation  {top_gene}  chr{peak_chr}',
+                             fontsize=9)
                 fig.tight_layout()
                 fig.savefig(plt_dir / 's9_mediation_profile.png', dpi=300)
                 plt.close(fig)
@@ -1452,11 +1227,16 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
 
     log.info('chromosomes to scan (%d): %s', len(chrs_to_scan), chrs_to_scan)
 
-    # ── build dataset covariates ──────────────────────────────────────────────
+    # ── build dataset covariates + sex lookup ────────────────────────────────
     covariates_meta = _build_covariates(meta, sample_ids_meta)
     log.info('covariates: shape %s  columns = %s',
              covariates_meta.shape,
              list(pd.get_dummies(meta['dataset'], drop_first=True).columns))
+    _sex_by_sid: dict[str, float] = (
+        encode_sex(meta['sex']).set_axis(meta['sample_id']).to_dict()
+        if 'sex' in meta.columns else {}
+    )
+    sex_meta = np.array([float(_sex_by_sid.get(s, 0.0)) for s in sample_ids_meta])
 
     # ─────────────────────────────────────────────────────────────────────────
     # S1 — cache characterization
@@ -1735,6 +1515,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 _sw = {'C': 'cis', 'G': 'genome', 'L': 'local'}[scan_type]
 
                 t_chr = time.perf_counter()
+                sex_ch = np.array([float(_sex_by_sid.get(s, 0.0)) for s in sids_ch])
                 for gi, (gene_id, gene_name) in enumerate(zip(loaded_ids, loaded_names)):
                     if gi % 100 == 0 and gi > 0:
                         elapsed = time.perf_counter() - t_scan
@@ -1753,6 +1534,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         gene_chr=ch,
                         gene_pos_mb=tss_mb if _sw == 'local' else None,
                         window_mb=window_mb,
+                        sex=sex_ch,
                     )
                     df = _scan_to_df(scan, gene_name)
                     all_lod_rows.append(df)
@@ -1901,6 +1683,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
 
     egenes_df: 'pd.DataFrame | None' = None
     chr_null_lods_s5: 'dict | None' = None
+    perm_max_lods_s5: 'np.ndarray | None' = None
+    perm_n_s5: int = 500
 
     # ─────────────────────────────────────────────────────────────────────────
     # S5 — permutation threshold (peak chromosome, top cis gene)
@@ -1931,6 +1715,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     geno_ids_s5 = [meta_geno_map.get(s, s) for s in sids_g]
                     y_top  = counts_g[0].astype(float)
                     cov_s5 = _build_covariates(meta, sids_g)
+                    sex_s5 = np.array([float(_sex_by_sid.get(s, 0.0)) for s in sids_g])
 
                     scan_top = scan_h2lmm(
                         y_top, cache,
@@ -1940,6 +1725,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         use_rint=True,
                         phenotype_id=top_gene_name,
                         scan_window='cis', gene_chr=peak_chr,
+                        sex=sex_s5,
                     )
                     peak_locus = grab_locus_from_scan(scan_top)
                     log.info('  peak locus: %s; running 500 permutations...', peak_locus)
@@ -1954,8 +1740,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         kinship_decomp=kd_pc,
                         chrom=peak_chr,
                         sample_ids=geno_ids_s5,
+                        sex=sex_s5,
                     )
-                    chr_null_lods_s5 = chr_null_lods
+                    chr_null_lods_s5  = chr_null_lods
+                    perm_max_lods_s5  = py_max_lods
                     py_threshold, _ = get_gev_thresholds(py_max_lods, percentile=0.95)
 
                     pd.DataFrame({'max_lod': py_max_lods}).to_csv(
@@ -2006,84 +1794,150 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             log.info('[eGenes] threshold=%.3f  %d / %d genes called',
                      thr, len(egenes_df), len(peak_py_loaded))
 
-            # ── per-gene empirical p-values and Storey q-values ────────────────
-            if chr_null_lods_s5 is not None:
-                # compute p for every gene in the full peak_lod table
-                null_fallback = chr_null_lods_s5[list(chr_null_lods_s5.keys())[0]]
-                p_list = []
+            # ── reload perm nulls from CSV when running from checkpoint ─────────
+            if perm_max_lods_s5 is None:
+                _pml_path = py_dir / 's5_perm_max_lods.csv'
+                if _pml_path.exists():
+                    perm_max_lods_s5 = pd.read_csv(_pml_path)['max_lod'].values
+                    chr_null_lods_s5 = {peak_chr: perm_max_lods_s5}
+                    perm_n_s5 = len(perm_max_lods_s5)
+
+            # ── per-gene empirical p-values and Storey q-values ─────────────────
+            if perm_max_lods_s5 is not None:
+                null_chr  = chr_null_lods_s5.get(peak_chr, perm_max_lods_s5)
+                p_chr_list: list[float] = []
+                p_gnm_list: list[float] = []
                 for _, grow in peak_py_loaded.iterrows():
-                    gene_chr_g = peak_chr
-                    if eff_tmp is not None:
-                        hit = eff_tmp[eff_tmp['gene'] == grow['gene']]
-                        if len(hit):
-                            gene_chr_g = str(hit.iloc[0].get('chr', peak_chr))
-                    null_v = chr_null_lods_s5.get(gene_chr_g, null_fallback)
-                    lod_g  = float(grow['peak_lod_py'])
-                    p_list.append(float((null_v >= lod_g).sum()) / len(null_v))
-                p_arr = np.array(p_list, dtype=float)
-                q_arr, pi0_val = storey_qvalue(p_arr)
-                p_map = dict(zip(peak_py_loaded['gene'].values, p_arr))
-                q_map = dict(zip(peak_py_loaded['gene'].values, q_arr))
-                egenes_df['p_empirical'] = egenes_df['gene'].map(p_map)
-                egenes_df['q_storey']    = egenes_df['gene'].map(q_map)
-                egenes_df['pi0']         = pi0_val
+                    lod_g = float(grow['peak_lod_py'])
+                    p_chr_list.append(float((null_chr          >= lod_g).sum()) / len(null_chr))
+                    p_gnm_list.append(float((perm_max_lods_s5  >= lod_g).sum()) / len(perm_max_lods_s5))
+                p_chr_arr = np.array(p_chr_list, dtype=float)
+                p_gnm_arr = np.array(p_gnm_list, dtype=float)
+                q_arr, pi0_val = storey_qvalue(p_chr_arr)
+                genes_all = peak_py_loaded['gene'].values
+                egenes_df['p_permtest_chr']    = egenes_df['gene'].map(dict(zip(genes_all, p_chr_arr)))
+                egenes_df['p_permtest_genome'] = egenes_df['gene'].map(dict(zip(genes_all, p_gnm_arr)))
+                egenes_df['q_fdr_storey']      = egenes_df['gene'].map(dict(zip(genes_all, q_arr)))
+                egenes_df['pi0']               = pi0_val
+                egenes_df['perm_n']            = perm_n_s5
+                egenes_df['perm_chr']          = peak_chr
                 log.info('[Storey] pi0=%.4f  eGenes at q<0.05: %d',
-                         pi0_val, int((egenes_df['q_storey'] < 0.05).sum()))
+                         pi0_val, int((egenes_df['q_fdr_storey'] < 0.05).sum()))
             egenes_df.to_csv(py_dir / 'egenes.csv', index=False)
 
-            # ── 2-way ANOVA (haplotype × sex) at peak locus ────────────────────
+            # ── LMM GxE (haplotype × sex) at peak locus via qtl_gxe_lrt ────────
+            # kinship-corrected: qtl_gxe_lrt uses LOCO eigendecomp
             h5_path = data_dir / 'counts_lognorm.h5'
-            anova_rows: list[dict] = []
+            gxe_rows: list[dict] = []
             pxg_dir = plt_dir / 'pxg'
             pxg_dir.mkdir(exist_ok=True)
             for _, erow in egenes_df.iterrows():
-                gene_n    = erow['gene']
-                gene_id_a = gene_name_to_id.get(gene_n, gene_n)
+                gene_n     = erow['gene']
+                gene_id_a  = gene_name_to_id.get(gene_n, gene_n)
                 gene_chr_a = str(erow.get('chr', peak_chr))
                 peak_loc_a = str(erow.get('peak_locus', ''))
+                peak_mb_a  = float(erow.get('peak_mb', 0.0))
+                lod_add_a  = float(erow.get('peak_lod_py', 0.0))
                 if not h5_path.exists() or not peak_loc_a:
                     break
                 counts_a, _, sids_a = _load_expression(h5_path, [gene_id_a])
                 if counts_a.shape[0] == 0:
                     continue
                 geno_ids_a = [meta_geno_map.get(s, s) for s in sids_a]
-                y_a   = counts_a[0].astype(float)
-                # get haplotype probabilities at peak locus
+                y_a = counts_a[0].astype(float)
                 try:
                     locus_ids_a, _, probs_a = cache.get_chromosome(gene_chr_a)
                     locus_list_a = list(locus_ids_a)
                     if peak_loc_a not in locus_list_a:
                         continue
-                    loc_idx  = locus_list_a.index(peak_loc_a)
-                    # probs_a: (n_loci, n_strains, J) → select locus
-                    hap_probs_all = probs_a[loc_idx]   # (n_strains, J)
-                    # align samples
-                    sid_set = set(cache.sample_ids)
-                    valid_mask = [s in sid_set for s in geno_ids_a]
-                    if not any(valid_mask):
-                        continue
-                    strain_idx = [cache.sample_ids.index(geno_ids_a[i])
-                                  for i, ok in enumerate(valid_mask) if ok]
-                    y_aln  = y_a[np.array([i for i, ok in enumerate(valid_mask) if ok])]
-                    sids_aln = [sids_a[i] for i, ok in enumerate(valid_mask) if ok]
-                    hap_g  = np.argmax(hap_probs_all[strain_idx], axis=1)
-                    cov_aln = _build_covariates(meta, sids_aln)
-                    sex_a  = cov_aln[:, -1]
-                    anova_res = _two_way_anova_haplotype_sex(y_aln, hap_g, sex_a)
-                    anova_res['gene'] = gene_n
-                    anova_rows.append(anova_res)
-                    _pxg_plot(y_aln, hap_g, sex_a, gene_n, peak_loc_a,
-                              pxg_dir / f'pxg_{gene_n}.png')
-                except Exception as exc:
-                    log.debug('  ANOVA/PxG failed for %s: %s', gene_n, exc)
+                    hap_probs_all = probs_a[locus_list_a.index(peak_loc_a)]  # (n_strains, J)
 
-            if anova_rows:
-                anova_df = pd.DataFrame(anova_rows)[
-                    ['gene', 'f_haplotype', 'p_haplotype',
-                     'f_interaction', 'p_interaction']]
-                egenes_df = egenes_df.merge(anova_df, on='gene', how='left')
-                log.info('[ANOVA] 2-way haplotype×sex computed for %d eGenes',
-                         len(anova_rows))
+                    # Z-matrix strain-mean reduction (correct for replicates)
+                    z_mat_a, valid_sid_a = build_z_matrix(geno_ids_a,
+                                                          list(cache.sample_ids))
+                    valid_a = np.where(valid_sid_a)[0]
+                    if not valid_a.size:
+                        continue
+                    z_sub_a   = z_mat_a[valid_a]
+                    y_sub_a   = y_a[valid_a]
+                    sids_v_a  = [sids_a[i] for i in valid_a]
+                    cov_sub_a = _build_covariates(meta, sids_v_a)  # (n_valid, p) dataset dummies
+
+                    r_cnt_a   = z_sub_a.sum(axis=0)
+                    active_a  = r_cnt_a > 0
+                    z_act_a   = z_sub_a[:, active_a]
+                    r_act_a   = r_cnt_a[active_a]
+
+                    y_str_a   = (z_act_a.T @ y_sub_a)  / r_act_a
+                    cov_str_a = (z_act_a.T @ cov_sub_a) / r_act_a[:, None]
+
+                    sex_sub_a = np.array(
+                        [float(_sex_by_sid.get(s, 0.0)) for s in sids_v_a])
+                    sex_str_a = (z_act_a.T @ sex_sub_a) / r_act_a
+
+                    active_idx_a  = np.where(active_a)[0]
+                    h_locus_a     = hap_probs_all[active_idx_a]  # (n_act, J)
+
+                    # sex as main-effect covariate for GxE model
+                    cov_gxe_a = np.column_stack([cov_str_a, sex_str_a[:, None]])
+
+                    # subset LOCO kinship to active strains and re-eigendecomp (~40×40)
+                    ev_f  = kinship_decomp[gene_chr_a]['values']
+                    evc_f = kinship_decomp[gene_chr_a]['vectors']
+                    K_f   = evc_f @ np.diag(ev_f) @ evc_f.T
+                    K_a   = K_f[np.ix_(active_idx_a, active_idx_a)]
+                    K_a   = (K_a + K_a.T) / 2
+                    ev_a, evc_a = np.linalg.eigh(K_a)
+
+                    gxe_res = qtl_gxe_lrt(
+                        y_str_a, h_locus_a, sex_str_a, cov_gxe_a,
+                        ev_a, evc_a, lod_add_a,
+                    )
+                    gxe_res['gene'] = gene_n
+                    gxe_rows.append(gxe_res)
+
+                    # PxG sex-faceted plot (package function)
+                    try:
+                        fig_pxg = pxg_sex_facet(
+                            y_str_a, h_locus_a, sex_str_a,
+                            founders=list(cache.founders),
+                            phenotype_label='Expression',
+                            chrom=gene_chr_a, position_mb=peak_mb_a,
+                        )
+                        fig_pxg.savefig(pxg_dir / f'pxg_{gene_n}.png',
+                                        dpi=300, bbox_inches='tight')
+                        plt.close(fig_pxg)
+                    except Exception:
+                        pass
+
+                    # Haplotype × sex profile with LMM significance annotation
+                    try:
+                        fig_gxe, ax_gxe = plt.subplots(figsize=(6, 3.5), dpi=300)
+                        haplotype_sex_profile(
+                            y_str_a, h_locus_a, sex_str_a,
+                            founders=list(cache.founders),
+                            ax=ax_gxe,
+                            phenotype_label='Expression',
+                            chrom=gene_chr_a, position_mb=peak_mb_a,
+                            gxe_result=gxe_res,
+                        )
+                        fig_gxe.tight_layout()
+                        fig_gxe.savefig(pxg_dir / f'gxe_profile_{gene_n}.png',
+                                        dpi=300, bbox_inches='tight')
+                        plt.close(fig_gxe)
+                    except Exception:
+                        pass
+
+                except Exception as exc:
+                    log.debug('  GxE/PxG failed for %s: %s', gene_n, exc)
+
+            if gxe_rows:
+                gxe_df = pd.DataFrame(gxe_rows)[
+                    ['gene', 'chi2_haplotype', 'p_haplotype',
+                     'lod_gxe_sex', 'p_gxe_sex']]
+                egenes_df = egenes_df.merge(gxe_df, on='gene', how='left')
+                log.info('[GxE] LMM haplotype×sex computed for %d eGenes',
+                         len(gxe_rows))
 
             # ── eqtl_summary CSV ───────────────────────────────────────────────
             if eff_tmp is not None:
@@ -2096,14 +1950,11 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             if r_egenes_path.exists():
                 egenes_r = pd.read_csv(r_egenes_path)
                 eqtl_sum['in_r_egenes'] = eqtl_sum['gene'].isin(egenes_r['gene'])
-            # canonical column order
-            col_order = ['gene', 'peak_lod_py', 'chr', 'peak_locus', 'peak_mb']
-            for c in ('p_empirical', 'q_storey', 'pi0',
-                      'f_haplotype', 'p_haplotype',
-                      'f_interaction', 'p_interaction',
-                      'gene_id', 'peak_lod', 'in_r_egenes'):
-                if c in eqtl_sum.columns:
-                    col_order.append(c)
+            col_order = ['gene', 'peak_lod_py', 'chr', 'peak_locus', 'peak_mb',
+                         'p_permtest_chr', 'p_permtest_genome', 'q_fdr_storey',
+                         'pi0', 'perm_n', 'perm_chr',
+                         'chi2_haplotype', 'p_haplotype', 'lod_gxe_sex', 'p_gxe_sex',
+                         'gene_id', 'peak_lod', 'in_r_egenes']
             eqtl_sum = eqtl_sum[[c for c in col_order if c in eqtl_sum.columns]]
             eqtl_sum.to_csv(py_dir / 'eqtl_summary.csv', index=False)
             log.info('[eqtl_summary] %d eGenes → eqtl_summary.csv', len(eqtl_sum))
@@ -2136,6 +1987,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     geno_ids_g = [meta_geno_map.get(s, s) for s in sids_g]
                     y_g   = counts_g[0].astype(float)
                     cov_g = _build_covariates(meta, sids_g)
+                    sex_g = np.array([float(_sex_by_sid.get(s, 0.0)) for s in sids_g])
                     log.info('  MI scan: %s  chr%s', gene_id, gene_chr)
                     mi_scan = scan_h2lmm_mi(
                         y_g, cache,
@@ -2145,6 +1997,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         n_imp=11, seed=1,
                         phenotype_id=gene_name,
                         scan_window='cis', gene_chr=gene_chr,
+                        sex=sex_g,
                     )
                     mi_rows.append(_scan_to_df(mi_scan, gene_name))
 
@@ -2273,37 +2126,51 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     info_gene_col='gene_name',
                 )
                 log.info('  %d (outcome, mediator) pairs from proximity filter', len(pairs))
+                # group pairs by outcome to compute base scan once per outcome×chr
+                _pairs_by_outcome: dict[str, list[tuple[str, str]]] = {}
+                for _on, _mn, _ch in pairs:
+                    _pairs_by_outcome.setdefault(_on, []).append((_mn, _ch))
+
                 med_rows = []
-                for outcome_name, med_name, ch in pairs:
+                for outcome_name, mediators in _pairs_by_outcome.items():
                     outcome_id = gene_name_to_id.get(outcome_name, outcome_name)
-                    med_id     = gene_name_to_id.get(med_name, med_name)
                     counts_g, _, sids_g = _load_expression(h5_path, [outcome_id])
-                    counts_m, _, _      = _load_expression(h5_path, [med_id])
-                    if counts_g.shape[0] == 0 or counts_m.shape[0] == 0:
+                    if counts_g.shape[0] == 0:
                         continue
                     geno_ids_g = [meta_geno_map.get(s, s) for s in sids_g]
-                    y_g   = counts_g[0].astype(float)
-                    y_m   = counts_m[0].astype(float)
-                    cov_g = _build_covariates(meta, sids_g)
-                    log.info('  mediation: %s ~ %s  chr%s', outcome_id, med_id, ch)
-                    try:
-                        med_scan = mediation_scan_qr(
-                            y_g, y_m, cache,
-                            covariates=cov_g,
-                            kinship_decomp=kinship_decomp,
-                            sample_ids=geno_ids_g,
-                            scan_window='cis', gene_chr=ch,
-                        )
-                        med_scan['gene']     = outcome_name
-                        med_scan['mediator'] = med_name
-                        df_med = med_scan[
-                            ['gene', 'mediator', 'chr', 'locus',
-                             'pos_mb', 'lod_base', 'lod_mediated']
-                        ].copy()
-                        med_rows.append(df_med)
-                    except Exception as exc:
-                        log.warning('  mediation failed for %s~%s: %s',
-                                    outcome_id, med_id, exc)
+                    y_g    = counts_g[0].astype(float)
+                    cov_g  = _build_covariates(meta, sids_g)
+                    # base_lod_cache: {chr -> lod_base array} — populated lazily on first scan per chr
+                    base_lod_cache: dict[str, 'np.ndarray'] = {}
+                    log.info('  mediation: %s → %d mediator(s)', outcome_name, len(mediators))
+                    for med_name, ch in mediators:
+                        med_id = gene_name_to_id.get(med_name, med_name)
+                        counts_m, _, _ = _load_expression(h5_path, [med_id])
+                        if counts_m.shape[0] == 0:
+                            continue
+                        y_m = counts_m[0].astype(float)
+                        try:
+                            med_scan = mediation_scan_qr(
+                                y_g, y_m, cache,
+                                covariates=cov_g,
+                                kinship_decomp=kinship_decomp,
+                                sample_ids=geno_ids_g,
+                                scan_window='cis', gene_chr=ch,
+                                base_lod=base_lod_cache if ch in base_lod_cache else None,
+                            )
+                            # cache base lod for this chr so subsequent mediators skip recompute
+                            if ch not in base_lod_cache and 'lod_base' in med_scan.columns:
+                                base_lod_cache[ch] = med_scan['lod_base'].values
+                            med_scan['gene']     = outcome_name
+                            med_scan['mediator'] = med_name
+                            df_med = med_scan[
+                                ['gene', 'mediator', 'chr', 'locus',
+                                 'pos_mb', 'lod_base', 'lod_mediated']
+                            ].copy()
+                            med_rows.append(df_med)
+                        except Exception as exc:
+                            log.warning('  mediation failed for %s~%s: %s',
+                                        outcome_id, med_id, exc)
                 if med_rows:
                     med_df = pd.concat(med_rows, ignore_index=True)
                     med_df.to_csv(py_dir / 's9_mediation.csv', index=False)
@@ -2354,6 +2221,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     geno_ids_g = [meta_geno_map.get(s, s) for s in sids_g]
                     y_g   = counts_g[0].astype(float)
                     cov_g = _build_covariates(meta, sids_g)
+                    sex_g = np.array([float(_sex_by_sid.get(s, 0.0)) for s in sids_g])
                     log.info('  bootstrap CI: %s  chr%s', gene_id, gene_chr)
                     try:
                         kd_pc    = {gene_chr: kinship_decomp[gene_chr]}
@@ -2365,6 +2233,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             use_rint=True,
                             phenotype_id=gene_name,
                             scan_window='cis', gene_chr=gene_chr,
+                            sex=sex_g,
                         )
                         boot_out = generate_null_outcomes(
                             y_g, n_perms=200, seed=1, method='bootstrap')
@@ -2375,6 +2244,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             kinship_decomp=kd_pc,
                             peak_chrom=gene_chr,
                             sample_ids=geno_ids_g,
+                            sex=sex_g,
                         )
                         peak_mb = float(scan_g.positions[scan_g.lod.argmax()])
                         ci_rows.append({
@@ -2442,6 +2312,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     geno_ids_g = [meta_geno_map.get(s, s) for s in sids_g]
                     y_g   = counts_g[0].astype(float)
                     cov_g = _build_covariates(meta, sids_g)
+                    sex_g = np.array([float(_sex_by_sid.get(s, 0.0)) for s in sids_g])
                     log.info('  instability: %s  chr%s', gene_id, gene_chr)
                     try:
                         _lids_inst, _, _ = cache.get_chromosome(gene_chr)
@@ -2451,6 +2322,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             sample_ids=geno_ids_g,
                             n_subsamples=100, seed=1,
                             just_these_loci=set(_lids_inst),
+                            sex=sex_g,
                         )
                         inst_rows.append(_scan_to_df(inst, gene_name))
                     except Exception as exc:

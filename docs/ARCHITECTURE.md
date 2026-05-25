@@ -83,11 +83,11 @@ src/mosaiqtl/
 ├── qtl/                    # QTL scan engine — all modalities
 │   ├── CLAUDE.md
 │   ├── nb.py               # NB-GLMM Stage 1 and 2 (primary model, transcriptomics)
-│   ├── lmm.py              # Gaussian LMM engine (qtl2/miqtl-port)
-│   ├── scan.py             # Z-matrix n=418, MI, fixef, instability; scan_window='cis'|'genome'|'local'
-│   ├── permutation.py      # fix_h2=True, GEV thresholds
+│   ├── lmm.py              # Gaussian LMM engine (qtl2/miqtl-port); scan_chromosome_batch with return_peak_positions; scan_chromosome_mi vectorised over imputations
+│   ├── scan.py             # Z-matrix n=418, MI (vectorised), fixef, instability (strain-level subsampling); scan_window='cis'|'genome'|'local'
+│   ├── permutation.py      # fix_h2=True, GEV thresholds; run_positional_scans vectorised via scan_chromosome_batch
 │   ├── effects.py          # founder haplotype effect estimation
-│   ├── mediation.py        # QR-based mediation
+│   ├── mediation.py        # QR-based mediation; base_lod cache skips redundant base scan across mediators
 │   ├── epistasis.py        # pairwise GxG, conditional scanning
 │   ├── vqtl.py             # dispersion QTL, VQTLResult
 │   ├── snp_scan.py         # marginal SNP fine-mapping
@@ -97,15 +97,15 @@ src/mosaiqtl/
 │   └── config.py           # ScanConfig, PipelineConfig (Pydantic v2)
 ├── io/                     # all file I/O and covariate construction
 │   ├── CLAUDE.md
-│   ├── covariates.py       # build_covariate_matrix(); user covariate input
+│   ├── covariates.py       # build_covariate_matrix(); encode_sex() utility; user covariate input
 │   ├── anndata_io.py       # AnnData read helpers (backed=True always)
 │   ├── qtl2_io.py          # R/qtl2 format I/O (rpy2, optional extra)
 │   └── results_io.py       # result table serialisation with provenance header
 ├── viz/                    # all visualisation
 │   ├── CLAUDE.md
-│   ├── genome.py           # LOD profiles, Manhattan plots (Phase 4 + production)
+│   ├── genome.py           # lod_profile (fill=), loci_per_chr, perm_distribution, egene_lod_distribution, mediation_profile, ci_strip
 │   ├── effects.py          # founder effect bar plots (Phase 4 biological)
-│   ├── haplotypes.py       # haplotype heatmaps, epistasis grids (Phase 4)
+│   ├── haplotypes.py       # prob_heatmap, kinship_distribution, epistasis grids (Phase 4)
 │   ├── validation.py       # Phase 2 R vs Python QC plots ONLY (S1–S11)
 │   └── celltypes.py        # UMAP, dotplots (cell-type summaries)
 ├── pipeline.py             # discover, characterize, resolve
@@ -685,9 +685,57 @@ for each chromosome c:
     max_lods = np.maximum(max_lods, chr_max)   # accumulate genome-wide max
 ```
 
+`scan_chromosome_batch` also supports `return_peak_positions=True`, which returns
+`(max_lods, peak_positions_mb)` — used by `run_positional_scans` to vectorise bootstrap
+CI computation. Instead of N sequential `scan_chromosome` calls (one per bootstrap
+replicate), `run_positional_scans` builds the full `(n_strains, n_boot)` matrix once and
+calls `scan_chromosome_batch` once per chromosome, recovering both the peak LOD and its
+genomic position for all replicates in a single pass.
+
 A `fix_h2=False` slow path (re-estimate h² per permutation, loop over n_perms × n_chr)
 exists in the code as a legacy fallback but is dead code: the `fix_h2=True` rule means it
 is never reached. It is a candidate for removal.
+
+---
+
+### Multiple-imputation scan — `scan_chromosome_mi`
+
+`scan_h2lmm_mi` implements Rubin (1987) multiple imputation: sample `n_imp` hard
+diplotype assignments from the soft haplotype probability matrix, compute the
+complete-data LOD for each, and return the mean. This integrates out uncertainty in
+founder assignments at each locus, recovering power at loci with ambiguous probabilities.
+
+**Old sequential path (removed):**
+- For each of `n_imp` imputations: sample one-hot `H_imp` per chromosome, wrap in a new
+  `GenomeCache`, call `scan_chromosome` — full FWL recomputed from scratch each time.
+- Cost: `n_imp × n_chr` `scan_chromosome` calls + `n_imp × n_chr` GenomeCache allocations.
+
+**New vectorised path (`scan_chromosome_mi`):**
+- For each chromosome: generate all `n_imp` one-hot draws at once as an
+  `(n_imp, n_loci, n_strains, J)` tensor; compute H_perp, G, G_pinv in a single batched
+  einsum pass over the imputation axis in loci mini-batches; accumulate LOD sum.
+- h² is fixed from the real (soft) cache — the `fix_h2=True` rule applies here too.
+- Cost: 1 pass per chromosome; `n_imp × n_loci × J` work done in a single vectorised step.
+- Null model (e0, rss0) computed once per chromosome from the real phenotype — identical
+  across all imputations since only the genotype varies.
+
+```
+for each chromosome c:
+    draw imp_h: (n_imp, n_loci, n_s, J) one-hot from probs
+    for each loci batch b:
+        H_t  = einsum('nk,ibnj->ibkj', eigvecs, imp_h[:,b]) * w_sqrt   # rotate + weight
+        proj = einsum('pk,ibkj->ibpj', xt_pinv, H_t)                    # FWL projection
+        H_perp = H_t - einsum('kp,ibpj->ibkj', xt, proj)
+        G    = einsum('ibkj,ibkl->ibjl', H_perp, H_perp)                # (n_imp,b,J,J)
+        c    = einsum('ibkj,k->ibj', H_perp, e0)                        # (n_imp,b,J)
+        lod_sum[b] += ((n/2)*log10(rss0/(rss0 - c·G_pinv·c))).sum(axis=0)
+mean_lod = lod_sum / n_imp
+```
+
+`scan_h2lmm_mi` then calls `scan_chromosome` once per chromosome on the soft probs
+to populate the reference `p_value` and `betas` fields, and uses `mean_lod` as `.lod`.
+Verified: with `n_imp=1` and the same random draw, `scan_chromosome_mi` matches
+`scan_chromosome` on the equivalent one-hot cache to floating-point precision (≤ 1e-15).
 
 ---
 
@@ -767,30 +815,49 @@ all m genes are null.
 | `chr` | chromosome of peak locus |
 | `peak_locus` | peak locus identifier |
 | `peak_mb` | peak locus position (Mb) |
-| `p_empirical` | per-gene empirical p-value from matching chromosome null |
-| `q_storey` | Storey q-value across all tested genes |
+| `p_permtest_chr` | per-gene empirical p-value vs chromosome-specific permutation null |
+| `p_permtest_genome` | per-gene empirical p-value vs genome-wide max-LOD permutation null |
+| `q_fdr_storey` | Storey (2002) q-value across all tested genes |
 | `pi0` | estimated proportion of true null genes (π₀) |
-| `f_haplotype` | 1-way ANOVA F-statistic for haplotype effect at peak locus |
-| `p_haplotype` | p-value for haplotype effect |
-| `f_interaction` | 2-way ANOVA F-statistic for haplotype × sex interaction |
-| `p_interaction` | p-value for haplotype × sex interaction |
+| `perm_n` | number of permutations used |
+| `perm_chr` | chromosome whose null distribution was used (= peak chromosome from S5) |
+| `chi2_haplotype` | LRT χ²(J−1) for 1-way haplotype effect — derived from scan LOD at zero extra compute |
+| `p_haplotype` | p-value for 1-way haplotype effect (LMM-correct, kinship-corrected) |
+| `lod_gxe_sex` | LOD_full − LOD_additive for haplotype × sex interaction (LMM-LRT) |
+| `p_gxe_sex` | p-value for haplotype × sex interaction, χ²(J−1) (LMM-correct) |
 
-**2-way ANOVA (haplotype × sex)**
+**LMM-based GxE characterization (`qtl_gxe_lrt`)**
 
-At each eGene's peak locus, samples are assigned to founder groups via argmax of haplotype
-probabilities. Three OLS models are fit via numpy least-squares:
+At each eGene's peak locus, two statistics are computed using `qtl_gxe_lrt` from
+`qtl/effects.py`. Both are kinship-corrected via the LOCO eigendecomposition.
 
-- **intercept only**: RSS₀
-- **additive** (haplotype dummies + sex): RSS_add
-- **full** (additive + haplotype × sex interaction terms): RSS_full
-
+**1-way haplotype effect** — derived from the existing scan LOD at zero extra compute:
 ```
-F_haplotype   = scipy.stats.f_oneway(*groups_per_founder)
-F_interaction = ((RSS_add - RSS_full) / (J-1)) / (RSS_full / df_res)
+chi2_haplotype = 2 ln(10) × LOD_additive
+p_haplotype    = 1 − chi2.cdf(chi2_haplotype, df=J−1)
 ```
+This is LMM-correct because the scan LOD itself comes from the LOCO LMM.
 
-A significant interaction term (`p_interaction < 0.05`) flags sex-specific eQTLs where
-the haplotype effect magnitude or direction differs between males and females.
+**Haplotype × sex interaction** — single-locus LMM-LRT equivalent to
+`scan.h2lmm(intcovar=sex)` evaluated at one locus:
+```
+h_full    = [H, H ⊙ sex]          # 2J columns: additive + interaction
+LOD_full  = (n/2) log₁₀(RSS₀ / RSS₁)   # FWL-rotated, kinship-whitened
+lod_gxe_sex = LOD_full − LOD_additive
+chi2_gxe    = 2 ln(10) × max(lod_gxe_sex, 0)
+p_gxe_sex   = 1 − chi2.cdf(chi2_gxe, df=J−1)
+```
+Kinship correction: data rotated by LOCO eigenvectors before the LRT.
+Covariates: dataset dummies + sex as main effects (sex appears as both covariate and interaction partner).
+
+**Visualisation (`viz/effects.py::haplotype_sex_profile`)**
+
+Per-founder mean ± SEM split by sex, with `lod_gxe_sex` and `p_gxe_sex` annotated as a
+text box (LMM-corrected). The plot is descriptive (raw group means); significance comes
+from `qtl_gxe_lrt`. Companion plot: sex-faceted PxG (`viz/haplotypes.py::pxg_sex_facet`).
+
+A significant `p_gxe_sex` flags sex-specific eQTLs where the haplotype effect magnitude
+or direction differs between males and females.
 
 ---
 
@@ -942,6 +1009,10 @@ it is inferred from the input data.
 | Storey q-value implemented in qtl/fdr.py; integrated in validate_gastroc.py eGene summary; pipeline.py BH-FDR placeholder still needs replacing (SWE-09) | pipeline.py | MED |
 | No baseline benchmarks measured yet | benchmarks/ | MED |
 | `fix_h2=False` slow path in `run_threshold_scans` not reachable from any current caller — reference implementation only | permutation.py | LOW |
+| `instability_lm_scan` previously subsampled at sample level (out-of-bounds when n_samples > n_strains) — fixed: now pre-reduces to strain means via Z-matrix before subsampling | scan.py | ✅ fixed |
+| `run_positional_scans` previously called `scan_chromosome` sequentially per bootstrap replicate — fixed: vectorised via `scan_chromosome_batch(return_peak_positions=True)` | permutation.py | ✅ fixed |
+| `mediation_scan_qr` recomputed base scan for every (outcome, mediator) pair — fixed: `base_lod` parameter caches per-chr base LOD array; callers pass it for subsequent mediators of same outcome | mediation.py | ✅ fixed |
+| `scan_h2lmm_mi` looped n_imp × n_chr `scan_chromosome` calls + GenomeCache allocations per imputation — fixed: `scan_chromosome_mi` generates all draws at once and vectorises over the imputation axis in a single batched einsum pass | lmm.py + scan.py | ✅ fixed |
 | gastroc benchmark S4–S11 not yet run — pending HPC run; rsync r_data/ then run validate_gastroc.py --compare | gastroc_data/ | MED |
 
 ---

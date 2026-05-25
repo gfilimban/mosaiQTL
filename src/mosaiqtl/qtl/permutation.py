@@ -255,7 +255,8 @@ def run_threshold_scans(null_outcomes, genomecache,
                         use_rint=True, use_reml=True,
                         sample_ids=None,
                         seed=1,
-                        batch_size=500):
+                        batch_size=500,
+                        sex=None):
     """scan null phenotype columns to build the peak-LOD null distribution.
 
 
@@ -360,6 +361,9 @@ def run_threshold_scans(null_outcomes, genomecache,
         x = x.reshape(-1, 1)
     if not np.allclose(x[:, 0], 1.0):            # ensure intercept present
         x = np.hstack([np.ones((n, 1)), x])
+    if sex is not None:
+        sex_col = np.asarray(sex, dtype=float).reshape(-1, 1)
+        x = np.hstack([x, sex_col])
 
     # replicate path: reduce to strain means if sample_ids provided
     z_mat    = None
@@ -551,7 +555,8 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
                          fix_h2=True,
                          use_rint=True, use_reml=True,
                          ci_alpha=0.05,
-                         sample_ids=None):
+                         sample_ids=None,
+                         sex=None):
     """run single-chromosome scans on parametric bootstrap samples to compute
     a positional confidence interval for a QTL.
 
@@ -597,6 +602,9 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
         x = x.reshape(-1, 1)
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((n, 1)), x])
+    if sex is not None:
+        sex_col = np.asarray(sex, dtype=float).reshape(-1, 1)
+        x = np.hstack([x, sex_col])
 
     # replicate path: reduce to strain means if sample_ids provided
     z_mat    = None
@@ -622,40 +630,45 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
                 method='reml' if use_reml else 'ml')
 
     n_boot   = bootstrap_outcomes.shape[1]
-    peak_pos = np.full(n_boot, np.nan)
 
-    for b_idx in range(n_boot):
-        if (b_idx + 1) % 50 == 0:
-            logger.info(f'  bootstrap scan {b_idx+1}/{n_boot}')
+    # build the full boot matrix at strain level once — shape (n_scan, n_boot)
+    Y_boot = bootstrap_outcomes.copy().astype(float)
+    if use_rint:
+        Y_boot = np.apply_along_axis(_rint, 0, Y_boot)
+    if z_mat is not None:
+        Y_boot = (z_mat.T @ Y_boot) / r_counts[:, None]
 
-        y_b = bootstrap_outcomes[:, b_idx]
-        if use_rint:
-            y_b = _rint(y_b)
-        if z_mat is not None:
-            y_b = (z_mat.T @ y_b) / r_counts
+    # accumulate per-boot best (lod, pos) across chromosomes
+    best_lods = np.full(n_boot, -np.inf)
+    peak_pos  = np.full(n_boot, np.nan)
 
-        best_lod = -np.inf
-        best_pos = np.nan
+    for c in chrs:
+        ev  = kinship_decomp[c]['values']
+        evc = kinship_decomp[c]['vectors']
 
-        for c in chrs:
-            ev  = kinship_decomp[c]['values']
-            evc = kinship_decomp[c]['vectors']
-
-            if fix_h2:
-                h2 = h2_fixed[c]
-            else:
+        if fix_h2:
+            h2 = h2_fixed[c]
+            chr_max, chr_pos = lmm_module.scan_chromosome_batch(
+                Y_boot, genomecache, c, x_scan, ev, evc, h2,
+                return_peak_positions=True,
+            )
+            better = chr_max > best_lods
+            best_lods = np.where(better, chr_max, best_lods)
+            peak_pos  = np.where(better, chr_pos, peak_pos)
+        else:
+            # fix_h2=False: re-estimate h² per replicate (slow path, rarely used)
+            for b_idx in range(n_boot):
+                y_b = Y_boot[:, b_idx]
                 h2, _ = lmm_module.estimate_h2_null(
                     evc.T @ y_b, evc.T @ x_scan, ev,
                     method='reml' if use_reml else 'ml')
-
-            res    = lmm_module.scan_chromosome(
-                y_b, genomecache, c, x_scan, ev, evc, h2, use_reml=use_reml)
-            peak_i = int(np.argmax(res['lod']))
-            if res['lod'][peak_i] > best_lod:
-                best_lod = res['lod'][peak_i]
-                best_pos = res['positions'][peak_i]
-
-        peak_pos[b_idx] = best_pos
+                res    = lmm_module.scan_chromosome(
+                    y_b, genomecache, c, x_scan, ev, evc, h2,
+                    use_reml=use_reml)
+                peak_i = int(np.argmax(res['lod']))
+                if res['lod'][peak_i] > best_lods[b_idx]:
+                    best_lods[b_idx] = res['lod'][peak_i]
+                    peak_pos[b_idx]  = res['positions'][peak_i]
 
     valid   = peak_pos[np.isfinite(peak_pos)]
     lo      = float(np.quantile(valid, ci_alpha / 2))

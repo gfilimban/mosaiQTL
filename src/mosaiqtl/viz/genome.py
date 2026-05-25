@@ -32,6 +32,8 @@ def lod_profile(
     peak_pos: Optional[float] = None,
     color: str = FOUNDER_COLORS['NODJ'],
     linewidth: float = 1.2,
+    fill: bool = False,
+    fill_alpha: float = 0.15,
 ) -> plt.Axes:
     """Single-chromosome LOD profile.
 
@@ -53,6 +55,10 @@ def lod_profile(
         Line color; must be imported from founders.py.
     linewidth : float
         Line width.
+    fill : bool
+        Shade area under the LOD curve.
+    fill_alpha : float
+        Alpha for the fill band.
 
     Returns
     -------
@@ -64,6 +70,8 @@ def lod_profile(
     positions = positions[order]
     lod = lod[order]
     ax.plot(positions, lod, color=color, linewidth=linewidth, zorder=2)
+    if fill:
+        ax.fill_between(positions, 0, lod, alpha=fill_alpha, color=color, zorder=1)
     ax.set_xlim(float(positions[0]), float(positions[-1]))
     ax.set_ylim(0, max(float(lod.max()) * 1.15, 1.0))
     ax.set_xlabel(f'Chr {chrom} position (Mb)' if chrom else 'Position (Mb)')
@@ -663,6 +671,261 @@ def library_size_qc(
 
     ax.set_ylim(bottom=0)
     ax.set_ylabel('Total UMI')
+    sns.despine(ax=ax)
+    _set_font(ax)
+    return ax
+
+
+def loci_per_chr(
+    chr_labels: list[str],
+    n_loci: np.ndarray,
+    *,
+    ax: Optional[plt.Axes] = None,
+) -> plt.Axes:
+    """Bar chart of loci count per chromosome.
+
+    Parameters
+    ----------
+    chr_labels : list[str]
+        Chromosome names in display order.
+    n_loci : np.ndarray
+        Loci count per chromosome, same length as chr_labels.
+    ax : plt.Axes, optional
+        Axes to draw on; created at dpi=300 if None.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    if ax is None:
+        _, ax = plt.subplots(figsize=(10, 3), dpi=300)
+    x = np.arange(len(chr_labels))
+    ax.bar(x, n_loci, color=FOUNDER_COLORS['NODJ'], width=0.7)
+    ax.set_xticks(x)
+    ax.set_xticklabels(chr_labels, fontsize=7)
+    ax.set_xlabel('Chromosome')
+    ax.set_ylabel('Number of loci')
+    ax.set_ylim(bottom=0)
+    sns.despine(ax=ax)
+    _set_font(ax)
+    return ax
+
+
+def perm_distribution(
+    max_lods: np.ndarray,
+    *,
+    ax: Optional[plt.Axes] = None,
+    threshold: Optional[float] = None,
+    chrom: str = '',
+    bins: int = 30,
+) -> plt.Axes:
+    """Permutation max-LOD histogram with GEV density overlay.
+
+    Parameters
+    ----------
+    max_lods : np.ndarray
+        Per-permutation genome-wide max LOD, shape (n_perms,).
+    ax : plt.Axes, optional
+        Axes to draw on; created at dpi=300 if None.
+    threshold : float, optional
+        GEV 95th-percentile threshold; drawn as vertical line.
+    chrom : str
+        Reference chromosome label.
+    bins : int
+        Histogram bin count.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    from scipy.stats import genextreme
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(7, 4), dpi=300)
+
+    vals = max_lods[np.isfinite(max_lods)]
+    ax.hist(vals, bins=bins, density=True,
+            color=FOUNDER_COLORS['NZOJ'], alpha=0.6, label='Permutation max-LOD')
+
+    c, loc, scale = genextreme.fit(vals, f0=None)
+    xr = np.linspace(vals.min() - 0.5, vals.max() + 1.0, 200)
+    ax.plot(xr, genextreme.pdf(xr, c, loc, scale),
+            color=FOUNDER_COLORS['NODJ'], linewidth=1.5, label='GEV fit')
+
+    if threshold is not None:
+        ax.axvline(threshold, color=FOUNDER_COLORS['PWKJ'], linewidth=1.2,
+                   linestyle='--', label=f'95th pctile = {threshold:.2f}')
+
+    ax.set_xlabel('Max LOD')
+    ax.set_ylabel('Density')
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=8, frameon=False)
+    label = f'chr{chrom}  n={len(vals)}' if chrom else f'n={len(vals)}'
+    ax.set_title(f'Permutation distribution  {label}', fontsize=9)
+    sns.despine(ax=ax)
+    _set_font(ax)
+    return ax
+
+
+def egene_lod_distribution(
+    peak_lods: np.ndarray,
+    is_egene: np.ndarray,
+    *,
+    ax: Optional[plt.Axes] = None,
+    threshold: Optional[float] = None,
+    chrom: str = '',
+    bins: int = 40,
+) -> plt.Axes:
+    """Stacked peak-LOD histogram coloured by eGene status.
+
+    Parameters
+    ----------
+    peak_lods : np.ndarray
+        Per-gene peak LOD, shape (n_genes,).
+    is_egene : np.ndarray
+        Boolean mask same length as peak_lods.
+    ax : plt.Axes, optional
+        Axes to draw on; created at dpi=300 if None.
+    threshold : float, optional
+        Significance threshold — drawn as vertical line.
+    chrom : str
+        Chromosome label for title.
+    bins : int
+        Histogram bin count.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    if ax is None:
+        _, ax = plt.subplots(figsize=(7, 4), dpi=300)
+
+    below = peak_lods[~is_egene]
+    above = peak_lods[is_egene]
+    ax.hist(below, bins=bins, color=FOUNDER_COLORS['B6J'],
+            alpha=0.8, label='below threshold')
+    ax.hist(above, bins=bins, color=FOUNDER_COLORS['NODJ'],
+            alpha=0.9, label=f'eGenes (n={is_egene.sum()})')
+
+    if threshold is not None:
+        ax.axvline(threshold, color=FOUNDER_COLORS['PWKJ'], linewidth=1.2,
+                   linestyle='--', label=f'GEV 95% = {threshold:.2f}')
+
+    ax.set_xlabel('Peak LOD')
+    ax.set_ylabel('Genes')
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=8, frameon=False)
+    n_total = len(peak_lods)
+    label = f'chr{chrom}  n={n_total}' if chrom else f'n={n_total}'
+    ax.set_title(f'eGene calling  {label}', fontsize=9)
+    sns.despine(ax=ax)
+    _set_font(ax)
+    return ax
+
+
+def mediation_profile(
+    positions: np.ndarray,
+    lod_base: np.ndarray,
+    lod_mediated: np.ndarray,
+    *,
+    ax: Optional[plt.Axes] = None,
+    chrom: str = '',
+    gene: str = '',
+) -> plt.Axes:
+    """LOD profile with mediation overlay — base, mediated, and drop shading.
+
+    Parameters
+    ----------
+    positions : np.ndarray
+        Marker positions in Mb, shape (n_loci,).
+    lod_base : np.ndarray
+        Base (unmediated) LOD scores.
+    lod_mediated : np.ndarray
+        LOD after conditioning on mediator.
+    ax : plt.Axes, optional
+        Axes to draw on; created at dpi=300 if None.
+    chrom : str
+        Chromosome label for x-axis.
+    gene : str
+        Gene name for title.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    if ax is None:
+        _, ax = plt.subplots(figsize=(10, 3), dpi=300)
+
+    order = np.argsort(positions)
+    pos  = positions[order]
+    base = lod_base[order]
+    med  = lod_mediated[order]
+
+    ax.plot(pos, base, color=FOUNDER_COLORS['NODJ'], linewidth=1.2, label='LOD base')
+    ax.plot(pos, med,  color=FOUNDER_COLORS['NZOJ'], linewidth=1.2,
+            linestyle='--', label='LOD mediated')
+    ax.fill_between(pos, med, base, where=(base > med),
+                    alpha=0.20, color=FOUNDER_COLORS['PWKJ'], label='LOD drop')
+
+    ax.set_xlim(float(pos[0]), float(pos[-1]))
+    ax.set_ylim(bottom=0)
+    ax.set_xlabel(f'Chr {chrom} position (Mb)' if chrom else 'Position (Mb)')
+    ax.set_ylabel('LOD')
+    ax.legend(fontsize=8, frameon=False)
+    title = 'Mediation'
+    if gene:
+        title += f'  {gene}'
+    if chrom:
+        title += f'  chr{chrom}'
+    ax.set_title(title, fontsize=9)
+    sns.despine(ax=ax)
+    _set_font(ax)
+    return ax
+
+
+def ci_strip(
+    genes: list[str],
+    ci_lo: np.ndarray,
+    ci_hi: np.ndarray,
+    peak_mb: np.ndarray,
+    *,
+    ax: Optional[plt.Axes] = None,
+    chrom: str = '',
+) -> plt.Axes:
+    """Horizontal CI strips per gene (qtl2 lod_interval style).
+
+    Parameters
+    ----------
+    genes : list[str]
+        Gene names, one per row.
+    ci_lo : np.ndarray
+        CI lower bound in Mb, shape (n_genes,).
+    ci_hi : np.ndarray
+        CI upper bound in Mb, shape (n_genes,).
+    peak_mb : np.ndarray
+        Peak position in Mb, shape (n_genes,).
+    ax : plt.Axes, optional
+        Axes to draw on; created at dpi=300 if None.
+    chrom : str
+        Chromosome label for x-axis.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    n = len(genes)
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, max(3, n * 0.35)), dpi=300)
+
+    for i, (lo, hi, pk) in enumerate(zip(ci_lo, ci_hi, peak_mb)):
+        ax.plot([lo, hi], [i, i], color=FOUNDER_COLORS['NODJ'],
+                linewidth=3, solid_capstyle='round')
+        ax.scatter(pk, i, color=FOUNDER_COLORS['PWKJ'], s=30, zorder=3)
+
+    ax.set_yticks(range(n))
+    ax.set_yticklabels(genes, fontsize=7)
+    ax.set_xlabel(f'Chr {chrom} position (Mb)' if chrom else 'Position (Mb)')
+    ax.set_title(f'Bootstrap CI  {n} eGenes', fontsize=9)
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
