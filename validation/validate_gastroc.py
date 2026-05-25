@@ -62,7 +62,17 @@ from scipy import stats as sp_stats
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from mosaiqtl.genotype.founders import F1_COLORS, FOUNDER_COLORS, FOUNDER_ORDER
+from mosaiqtl.genotype.founders import F1_COLORS, FOUNDER_CODE, FOUNDER_COLORS, FOUNDER_ORDER
+
+_FOUNDER_CODE_INV: dict[str, str] = {v: k for k, v in FOUNDER_CODE.items()}
+
+
+def _display_founders(cache_founders: 'list[str]') -> list[str]:
+    """Map cache founder codes (A-H from HAPPY format) to FOUNDER_ORDER display names."""
+    return [_FOUNDER_CODE_INV.get(f, _FOUNDER_CODE_INV.get(f.upper(), f))
+            for f in cache_founders]
+
+
 from mosaiqtl.genotype.genomecache import GenomeCache
 from mosaiqtl.viz.genome import (
     loci_per_chr as _viz_loci_per_chr,
@@ -439,11 +449,11 @@ def _make_descriptive_plots(
             sub      = hp[hp['locus'] == locus0].copy()
             strain_order = list(cache.sample_ids)
             sub      = sub.set_index('genotype').reindex(strain_order).reset_index()
-            mat      = sub[founders].values  # (n_strains, J)
+            mat      = sub[founders].values  # (n_strains, J) — founders = cache codes
             n_s      = len(strain_order)
             fig_h    = max(3.5, n_s * 0.18)
             fig, ax  = plt.subplots(figsize=(6, fig_h), dpi=300)
-            _viz_prob_heatmap(mat, list(founders), ax=ax,
+            _viz_prob_heatmap(mat, _display_founders(founders), ax=ax,
                               chrom=peak_chr, position_mb=None)
             ax.set_title(f'S2  Haplotype probs  locus={locus0}  (n={n_s})',
                          fontsize=9)
@@ -605,7 +615,6 @@ def _make_descriptive_plots(
             log.warning('  s5_perm_distribution: %s', exc)
 
     # ── S6: eGene calling — LOD distribution + threshold ─────────────────────
-    egenes_path   = py_dir / 'egenes.csv'
     peak_lod_path = py_dir / 's4_peak_lod.csv'
     if peak_lod_path.exists():
         try:
@@ -613,8 +622,9 @@ def _make_descriptive_plots(
             thr_path   = py_dir / 's5_threshold.csv'
             thr        = (float(pd.read_csv(thr_path)['threshold'].iloc[0])
                           if thr_path.exists() else None)
-            egenes_set = (set(pd.read_csv(egenes_path)['gene'])
-                          if egenes_path.exists() else set())
+            _sum_path  = py_dir / 'eqtl_summary.csv'
+            egenes_set = (set(pd.read_csv(_sum_path)['gene'])
+                          if _sum_path.exists() else set())
             lods       = pk['peak_lod_py'].dropna().values
             is_egene   = pk['gene'].isin(egenes_set).values
             fig, ax    = plt.subplots(figsize=(7, 4), dpi=300)
@@ -806,7 +816,8 @@ def _make_comparison_plots(
     """generate all R-vs-Python comparison figures; skip silently if inputs missing."""
     from scipy.stats import genextreme as gev_dist
 
-    fcolors = [FOUNDER_COLORS.get(f, '#888888') for f in founders]
+    display_f = _display_founders(founders)  # full names for labels/colors
+    fcolors = [FOUNDER_COLORS.get(f, '#888888') for f in display_f]
 
     # ── S2: haplotype prob scatter ─────────────────────────────────────────────
     hap_path = r_data / 'haplotype_probs.csv'
@@ -1815,15 +1826,13 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 p_gnm_arr = np.array(p_gnm_list, dtype=float)
                 q_arr, pi0_val = storey_qvalue(p_chr_arr)
                 genes_all = peak_py_loaded['gene'].values
-                egenes_df['p_permtest_chr']    = egenes_df['gene'].map(dict(zip(genes_all, p_chr_arr)))
-                egenes_df['p_permtest_genome'] = egenes_df['gene'].map(dict(zip(genes_all, p_gnm_arr)))
-                egenes_df['q_fdr_storey']      = egenes_df['gene'].map(dict(zip(genes_all, q_arr)))
+                egenes_df['p_permtest_chr']  = egenes_df['gene'].map(dict(zip(genes_all, p_chr_arr)))
+                egenes_df['q_fdr_storey']    = egenes_df['gene'].map(dict(zip(genes_all, q_arr)))
                 egenes_df['pi0']               = pi0_val
                 egenes_df['perm_n']            = perm_n_s5
                 egenes_df['perm_chr']          = peak_chr
                 log.info('[Storey] pi0=%.4f  eGenes at q<0.05: %d',
                          pi0_val, int((egenes_df['q_fdr_storey'] < 0.05).sum()))
-            egenes_df.to_csv(py_dir / 'egenes.csv', index=False)
 
             # ── LMM GxE (haplotype × sex) at peak locus via qtl_gxe_lrt ────────
             # kinship-corrected: qtl_gxe_lrt uses LOCO eigendecomp
@@ -1900,7 +1909,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     try:
                         fig_pxg = pxg_sex_facet(
                             y_str_a, h_locus_a, sex_str_a,
-                            founders=list(cache.founders),
+                            founders=_display_founders(list(cache.founders)),
                             phenotype_label='Expression',
                             chrom=gene_chr_a, position_mb=peak_mb_a,
                         )
@@ -1915,7 +1924,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         fig_gxe, ax_gxe = plt.subplots(figsize=(6, 3.5), dpi=300)
                         haplotype_sex_profile(
                             y_str_a, h_locus_a, sex_str_a,
-                            founders=list(cache.founders),
+                            founders=_display_founders(list(cache.founders)),
                             ax=ax_gxe,
                             phenotype_label='Expression',
                             chrom=gene_chr_a, position_mb=peak_mb_a,
@@ -1942,7 +1951,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             # ── eqtl_summary CSV ───────────────────────────────────────────────
             if eff_tmp is not None:
                 eqtl_sum = egenes_df.merge(
-                    eff_tmp[['gene', 'gene_id', 'peak_lod']],
+                    eff_tmp[['gene', 'peak_lod']],
                     on='gene', how='left', suffixes=('', '_eff'))
             else:
                 eqtl_sum = egenes_df.copy()
@@ -1951,10 +1960,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 egenes_r = pd.read_csv(r_egenes_path)
                 eqtl_sum['in_r_egenes'] = eqtl_sum['gene'].isin(egenes_r['gene'])
             col_order = ['gene', 'peak_lod_py', 'chr', 'peak_locus', 'peak_mb',
-                         'p_permtest_chr', 'p_permtest_genome', 'q_fdr_storey',
+                         'p_permtest_chr', 'q_fdr_storey',
                          'pi0', 'perm_n', 'perm_chr',
                          'chi2_haplotype', 'p_haplotype', 'lod_gxe_sex', 'p_gxe_sex',
-                         'gene_id', 'peak_lod', 'in_r_egenes']
+                         'peak_lod', 'in_r_egenes']
             eqtl_sum = eqtl_sum[[c for c in col_order if c in eqtl_sum.columns]]
             eqtl_sum.to_csv(py_dir / 'eqtl_summary.csv', index=False)
             log.info('[eqtl_summary] %d eGenes → eqtl_summary.csv', len(eqtl_sum))
@@ -2428,7 +2437,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         _make_descriptive_plots(
             plt_dir=plt_dir, py_dir=py_dir,
             cache=cache, kinship_decomp=kinship_decomp,
-            founders=list(cache.founders), peak_chr=peak_chr,
+            founders=_display_founders(list(cache.founders)), peak_chr=peak_chr,
         )
     except Exception as exc:
         log.warning('  descriptive plots raised: %s', exc)
@@ -2441,7 +2450,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             _make_comparison_plots(
                 plt_dir=plt_dir, cmp_dir=cmp_dir, py_dir=py_dir, r_data=r_data,
                 cache=cache, kinship_decomp=kinship_decomp,
-                founders=list(cache.founders), peak_chr=peak_chr,
+                founders=_display_founders(list(cache.founders)), peak_chr=peak_chr,
             )
         except Exception as exc:
             log.warning('  comparison plots raised: %s', exc)
