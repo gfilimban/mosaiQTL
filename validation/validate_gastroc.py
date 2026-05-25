@@ -2278,9 +2278,11 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         merged_ci = ci_df.merge(r_ci, on='gene', how='inner',
                                                 suffixes=('_py', '_r'))
                         if len(merged_ci) > 0:
+                            # Python cols: ci_lo, ci_hi; R cols: ci_lo_mb, ci_hi_mb
+                            # No duplicate names → no suffix applied; reference directly
                             overlap = (
-                                (merged_ci['ci_lo_py'] <= merged_ci['ci_hi_r']) &
-                                (merged_ci['ci_hi_py'] >= merged_ci['ci_lo_r'])
+                                (merged_ci['ci_lo'] <= merged_ci['ci_hi_mb']) &
+                                (merged_ci['ci_hi'] >= merged_ci['ci_lo_mb'])
                             ).mean()
                             merged_ci.to_csv(cmp_dir / 's10_ci_cmp.csv', index=False)
                             log.info('  vs R: CI overlap=%.2f  n=%d',
