@@ -67,9 +67,8 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):
             return 1e10
         resid = y_rot - x_rot @ beta
         wrss  = float(resid @ (resid * w_inv))
-        if wrss <= 0:
-            # degenerate phenotype (constant after rotation) — no variance to model;
-            # return large finite value so Brent's parabolic arithmetic stays finite
+        if not (wrss > 0):
+            # catches wrss≤0 (degenerate phenotype) AND wrss=NaN (solve returned NaN)
             return 1e10
         logdet = float(np.sum(np.log(w)))
         if method == 'reml':
@@ -80,6 +79,10 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):
         else:
             sigma2 = wrss / n
             ll     = -0.5 * (n*(np.log(2*np.pi*sigma2)+1) + logdet)
+        if not np.isfinite(ll):
+            # slogdet returns -inf when xw.T@x_rot is near-singular (large h², large
+            # eigvals down-weight covariate rows to near zero) → ll=+inf → nll=-inf
+            return 1e10
         return -ll
 
     # ── step 1: grid search ──────────────────────────────────────────────────
