@@ -361,15 +361,36 @@ def run_threshold_scans(null_outcomes, genomecache,
     if not np.allclose(x[:, 0], 1.0):            # ensure intercept present
         x = np.hstack([np.ones((n, 1)), x])
 
-    # replicate path: reduce to strain means if sample_ids provided
-    z_mat    = None
-    r_counts = None
-    x_scan   = x
+    # replicate path: build z_mat for H expansion; keep y/x at sample level.
+    # K_n = Z K_m Z^T is computed per chromosome — same model as scan_h2lmm.
+    z_mat  = None
+    x_scan = x
+    _kd_n: dict = {}   # per-chr n-level eigendecomp cache
     if sample_ids is not None:
         from ..utils import build_z_matrix
-        z_mat, _  = build_z_matrix(list(sample_ids), list(genomecache.sample_ids))
-        r_counts  = z_mat.sum(axis=0)
-        x_scan    = (z_mat.T @ x) / r_counts[:, None]
+        z_mat, _ = build_z_matrix(list(sample_ids), list(genomecache.sample_ids))
+        # x_scan stays at sample level (n) — NOT reduced to strain means.
+        # Pre-expand K_n = Z K_m Z^T once per chromosome; cache eigendecomp.
+        for c in chrs:
+            _ev  = kinship_decomp[c]['values']
+            _evc = kinship_decomp[c]['vectors']
+            _K_m = _evc @ np.diag(_ev) @ _evc.T
+            _K_n = z_mat @ _K_m @ z_mat.T
+            _ev_n, _evc_n = np.linalg.eigh(_K_n)
+            _kd_n[c] = {'values': _ev_n, 'vectors': _evc_n, 'K_raw': _K_n}
+            del _K_m, _K_n
+
+    def _ev_evc(c: str) -> 'tuple[np.ndarray, np.ndarray]':
+        """return eigendecomp at the correct level (n if z_mat, m otherwise)."""
+        if c in _kd_n:
+            return _kd_n[c]['values'], _kd_n[c]['vectors']
+        return kinship_decomp[c]['values'], kinship_decomp[c]['vectors']
+
+    def _K_raw(c: str) -> np.ndarray:
+        """return raw kinship at the correct level for parametric draws."""
+        if c in _kd_n:
+            return _kd_n[c]['K_raw']
+        return kinship_loco[c]
 
     # pre-compute per-chrom h² from original phenotype (fix_h2=True mode)
     h2_fixed = {}
@@ -377,19 +398,15 @@ def run_threshold_scans(null_outcomes, genomecache,
         if phenotype is None:
             raise ValueError('phenotype required when fix_h2=True')
         y0 = _rint(phenotype) if use_rint else phenotype.copy()
-        if z_mat is not None:
-            y0 = (z_mat.T @ y0) / r_counts
+        # y0 stays at sample level when z_mat is set (no reduction)
         for c in chrs:
-            ev  = kinship_decomp[c]['values']
-            evc = kinship_decomp[c]['vectors']
+            ev, evc = _ev_evc(c)
             h2_fixed[c], _ = lmm_module.estimate_h2_null(
                 evc.T @ y0, evc.T @ x_scan, ev,
                 method='reml' if use_reml else 'ml')
     else:
         if phenotype is not None:
             y0 = _rint(phenotype) if use_rint else phenotype.copy()
-            if z_mat is not None:
-                y0 = (z_mat.T @ y0) / r_counts
         else:
             y0 = None
 
@@ -405,14 +422,15 @@ def run_threshold_scans(null_outcomes, genomecache,
     if fix_h2 and permutation_method in ('plain', 'parametric'):
         plain_mat = None
         if permutation_method == 'plain':
-            # same permuted matrix reused across all chromosomes
+            # same permuted matrix reused across all chromosomes; stays at
+            # sample level (n) when z_mat is set — scan_chromosome_batch
+            # receives z_mat and expands H internally.
             if use_rint:
                 plain_mat = np.column_stack([_rint(null_outcomes[:, i])
                                              for i in range(n_perms)])
             else:
                 plain_mat = null_outcomes.astype(float)
-            if z_mat is not None:
-                plain_mat = (z_mat.T @ plain_mat) / r_counts[:, None]
+            # no z-reduction: plain_mat stays at sample level
 
         # parametric: draw null phenotypes ONCE from the first valid chromosome's
         # kinship then reuse across all chromosomes — mirrors R's
@@ -423,10 +441,9 @@ def run_threshold_scans(null_outcomes, genomecache,
             ref_chrom = None
             for c in chrs:
                 try:
-                    ev_r  = kinship_decomp[c]['values']
-                    evc_r = kinship_decomp[c]['vectors']
+                    ev_r, evc_r = _ev_evc(c)
                     null_mat_gw = _draw_parametric_batch(
-                        y0, x_scan, kinship_loco[c], evc_r, ev_r,
+                        y0, x_scan, _K_raw(c), evc_r, ev_r,
                         h2_fixed[c], use_reml, n_perms, rng)
                     ref_chrom = c
                     break
@@ -440,13 +457,12 @@ def run_threshold_scans(null_outcomes, genomecache,
 
         chr_null_lods: dict = {}
         for c in chrs:
-            ev  = kinship_decomp[c]['values']
-            evc = kinship_decomp[c]['vectors']
+            ev, evc = _ev_evc(c)
             h2  = h2_fixed[c]
 
             chr_max = lmm_module.scan_chromosome_batch(
                 null_mat_gw, genomecache, c, x_scan, ev, evc, h2,
-                batch_size=batch_size)
+                z_mat=z_mat, batch_size=batch_size)
             chr_null_lods[c] = chr_max
             max_lods = np.maximum(max_lods, chr_max)
             logger.info('  [batch] chr%s  max_lod=%.3f', c, float(chr_max.max()))
@@ -462,8 +478,7 @@ def run_threshold_scans(null_outcomes, genomecache,
         best = -np.inf
 
         for c in chrs:
-            ev  = kinship_decomp[c]['values']
-            evc = kinship_decomp[c]['vectors']
+            ev, evc = _ev_evc(c)
 
             if permutation_method == 'parametric':
                 h2 = h2_fixed[c] if fix_h2 else None
@@ -473,7 +488,7 @@ def run_threshold_scans(null_outcomes, genomecache,
                         method='reml' if use_reml else 'ml')
                 try:
                     y_p = _parametric_null_col(
-                        y0, x_scan, kinship_loco[c], evc, ev, h2, use_reml, rng)
+                        y0, x_scan, _K_raw(c), evc, ev, h2, use_reml, rng)
                 except KinshipSingularError as exc:
                     logger.warning(f'  chr{c}  perm {p_idx}  [skip] {exc}')
                     continue
@@ -481,8 +496,7 @@ def run_threshold_scans(null_outcomes, genomecache,
                 y_p = null_outcomes[:, p_idx]
                 if use_rint:
                     y_p = _rint(y_p)
-                if z_mat is not None:
-                    y_p = (z_mat.T @ y_p) / r_counts
+                # no z-reduction: y_p stays at sample level
                 if fix_h2:
                     h2 = h2_fixed[c]
                 else:
@@ -491,7 +505,8 @@ def run_threshold_scans(null_outcomes, genomecache,
                         method='reml' if use_reml else 'ml')
 
             res = lmm_module.scan_chromosome(
-                y_p, genomecache, c, x_scan, ev, evc, h2, use_reml=use_reml)
+                y_p, genomecache, c, x_scan, ev, evc, h2, use_reml=use_reml,
+                z_mat=z_mat)
             chr_lod = float(res['lod'].max())
             chr_null_lods[c][p_idx] = chr_lod
             best = max(best, chr_lod)

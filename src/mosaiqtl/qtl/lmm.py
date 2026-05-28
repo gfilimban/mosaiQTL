@@ -184,6 +184,136 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
     )
 
 
+def precompute_chromosome(
+    genomecache, chrom: str, eigvals: np.ndarray, eigvecs: np.ndarray,
+    z_mat: 'np.ndarray | None' = None, model: str = 'additive',
+) -> dict:
+    """precompute the chromosome-level H rotation shared across all genes.
+
+    the H rotation (and optional Z expansion) does not depend on the gene
+    phenotype — only on the genotype cache and kinship eigenvectors.
+    calling this once per chromosome and passing the result as ``chr_data``
+    to scan_chromosome reduces per-gene cost from O(L·n·m·J) to O(L·n·J).
+
+    parameters
+    ----------
+    genomecache : GenomeCache
+    chrom       : str
+    eigvals     : np.ndarray (n,)  eigenvalues of K_n (or K_m if z_mat is None)
+    eigvecs     : np.ndarray (n, n)  corresponding eigenvectors
+    z_mat       : np.ndarray (n, m) or None
+    model       : 'additive' or 'full'
+
+    returns
+    -------
+    dict with keys: locus_ids, positions, H_t_raw (n_loci, n, J), n_founders
+    """
+    locus_ids, positions, probs = genomecache.get_chromosome(chrom)
+    nf = genomecache.n_founders
+
+    if model == 'full':
+        J = nf
+        _ii, _jj = np.triu_indices(J)
+        probs = probs[:, :, _ii] * probs[:, :, _jj]
+        nf = len(_ii)
+
+    H = probs  # (n_loci, m, J)
+    if z_mat is not None:
+        _z_rot = eigvecs.T @ z_mat                                    # (n, m)
+        H_t_raw = np.einsum('ks,lsj->lkj', _z_rot, H, optimize=True) # (n_loci, n, J)
+        del _z_rot
+    else:
+        H_t_raw = np.einsum('nk,lnj->lkj', eigvecs, H, optimize=True) # (n_loci, n, J)
+
+    return {
+        'locus_ids': locus_ids,
+        'positions': positions,
+        'H_t_raw':   H_t_raw,
+        'n_founders': nf,
+    }
+
+
+def _scan_chromosome_core(
+    y: np.ndarray,
+    H_t_raw: np.ndarray,
+    x_covariates: np.ndarray,
+    eigvals: np.ndarray,
+    eigvecs: np.ndarray,
+    h2_null: float,
+    locus_ids: 'list | np.ndarray',
+    positions: np.ndarray,
+    nf: int,
+) -> dict:
+    """inner scan kernel — takes pre-rotated (unweighted) H, applies per-gene w_sqrt.
+
+    H_t_raw is chromosome-constant; calling this function skips the O(n_loci·n·m·J)
+    rotation einsum that scan_chromosome pays on every call.  w_sqrt (O(n)) and
+    H_t = H_t_raw * w_sqrt are O(n_loci·n·J) scalar multiply — cheap per gene.
+
+    parameters
+    ----------
+    y        : np.ndarray (n,)
+    H_t_raw  : np.ndarray (n_loci, n, J)  eigvec-rotated H, NOT yet weighted
+    x_covariates : np.ndarray (n, p)
+    eigvals  : np.ndarray (n,)
+    eigvecs  : np.ndarray (n, n)
+    h2_null  : float
+    locus_ids, positions : metadata passed through to output dict
+    nf       : int  number of founder columns in H_t_raw
+
+    returns
+    -------
+    dict: locus_ids, positions, lod, p_value, betas (n_loci, nf)
+    """
+    n_loci = H_t_raw.shape[0]
+    n      = len(y)
+    p      = x_covariates.shape[1]
+
+    delta  = h2_null / max(1.0 - h2_null, 1e-10)
+    w_sqrt = 1.0 / np.sqrt(delta * eigvals + 1.0)        # (n,)
+
+    yt   = (eigvecs.T @ y) * w_sqrt
+    xt   = (eigvecs.T @ x_covariates) * w_sqrt[:, None]
+    xtwx = xt.T @ xt
+    try:
+        beta_null = np.linalg.solve(xtwx, xt.T @ yt)
+    except np.linalg.LinAlgError:
+        return {'locus_ids': locus_ids, 'positions': positions,
+                'lod': np.zeros(n_loci), 'p_value': np.ones(n_loci),
+                'betas': np.zeros((n_loci, nf))}
+    e0   = yt - xt @ beta_null
+    rss0 = float(e0 @ e0)
+
+    H_t = H_t_raw * w_sqrt[None, :, None]               # (n_loci, n, J) — new array
+
+    xt_pinv = np.linalg.solve(xtwx, xt.T)               # (p, n)
+    proj    = np.einsum('pn,lnj->lpj', xt_pinv, H_t, optimize=True)
+    H_perp  = H_t - np.einsum('np,lpj->lnj', xt, proj, optimize=True)
+
+    c_all = np.einsum('lnj,n->lj',   H_perp, e0,     optimize=True)  # (n_loci, J)
+    G_all = np.einsum('lnj,lnk->ljk', H_perp, H_perp, optimize=True) # (n_loci, J, J)
+
+    G_pinv  = np.linalg.pinv(G_all, rcond=1e-10)
+    beta_h  = (G_pinv @ c_all[..., None]).squeeze(-1)
+
+    rss_red = np.einsum('lj,lj->l', c_all, beta_h)
+    rss1    = np.maximum(rss0 - rss_red, 1e-30)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        lod_arr = np.where(rss1 < rss0, (n / 2.0) * np.log10(rss0 / rss1), 0.0)
+
+    q_eff   = np.linalg.matrix_rank(G_all)
+    df2_arr = np.maximum(n - p - q_eff, 1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        f_stat   = np.where(
+            q_eff > 0,
+            np.maximum((rss0 - rss1) / np.maximum(q_eff, 1) / (rss1 / df2_arr), 0.0),
+            0.0)
+        pval_arr = np.where(df2_arr > 0, 1.0 - stats.f.cdf(f_stat, q_eff, df2_arr), 1.0)
+
+    return {'locus_ids': locus_ids, 'positions': positions,
+            'lod': lod_arr, 'p_value': pval_arr, 'betas': beta_h}
+
+
 def scan_chromosome(y, genomecache, chrom, x_covariates,
                     eigvals, eigvecs, h2_null, use_reml=True,
                     z_mat=None, model='additive'):
@@ -224,89 +354,46 @@ def scan_chromosome(y, genomecache, chrom, x_covariates,
     -------
     dict: locus_ids, positions, lod, p_value, betas (n_loci, nf)
     """
-    locus_ids, positions, probs = genomecache.get_chromosome(chrom)
-    n_loci = len(locus_ids)
-    nf     = genomecache.n_founders   # J — all founders
-    n      = len(y)
-    p      = x_covariates.shape[1]
+    cd = precompute_chromosome(genomecache, chrom, eigvals, eigvecs, z_mat, model)
+    return _scan_chromosome_core(
+        y, cd['H_t_raw'], x_covariates, eigvals, eigvecs, h2_null,
+        cd['locus_ids'], cd['positions'], cd['n_founders'],
+    )
 
-    if model == 'full':
-        # diplotype probs: P(fi/fj) = P(fi)*P(fj) for i<=j  (CC outer-product approx)
-        J        = nf
-        _ii, _jj = np.triu_indices(J)
-        probs    = probs[:, :, _ii] * probs[:, :, _jj]   # (n_loci, n_strains, J*(J+1)/2)
-        nf       = len(_ii)
 
-    # ── shared weight vector from h² ─────────────────────────────────────────
-    delta  = h2_null / max(1.0 - h2_null, 1e-10)
-    w_sqrt = 1.0 / np.sqrt(delta * eigvals + 1.0)   # sqrt(w_inv), (n,)
+def scan_chromosome_fast(
+    y: np.ndarray,
+    chr_data: dict,
+    x_covariates: np.ndarray,
+    eigvals: np.ndarray,
+    eigvecs: np.ndarray,
+    h2_null: float,
+) -> dict:
+    """scan one chromosome using precomputed chromosome data.
 
-    # ── null wls (once for all loci) ─────────────────────────────────────────
-    yt   = (eigvecs.T @ y) * w_sqrt                  # weighted rotated pheno
-    xt   = (eigvecs.T @ x_covariates) * w_sqrt[:,None]  # weighted rotated X
-    xtwx = xt.T @ xt                                 # (p, p)
-    try:
-        beta_null = np.linalg.solve(xtwx, xt.T @ yt)
-    except np.linalg.LinAlgError:
-        return {'locus_ids': locus_ids, 'positions': positions,
-                'lod': np.zeros(n_loci), 'p_value': np.ones(n_loci),
-                'betas': np.zeros((n_loci, nf))}
-    e0   = yt - xt @ beta_null                       # null residual (n,)
-    rss0 = float(e0 @ e0)                            # scalar null rss
+    drop-in replacement for scan_chromosome when scanning many genes on the
+    same chromosome: call precompute_chromosome once, then call this function
+    once per gene.  skips the O(n_loci·n·m·J) H rotation — only the cheap
+    O(n_loci·n·J) per-gene weight application is repeated.
 
-    # ── build & rotate haplotype array (n_loci, n, J) ────────────────────────
-    H = probs                                         # (n_loci, m, J) all founders
-    if z_mat is not None:
-        # fuse Z expansion and eigvec rotation: H_t[l,k,j] = Σ_s z_rot[k,s] H[l,s,j]
-        # where z_rot = eigvecs.T @ z_mat  (n×m).
-        # avoids materialising the n-expanded H then contracting with n×n eigvecs:
-        # O(n²m) for z_rot + O(n_loci·n·m·J) vs O(n_loci·n²·J) for the two-step path.
-        _z_rot = eigvecs.T @ z_mat                                   # (n, m)
-        H_t    = np.einsum('ks,lsj->lkj', _z_rot, H, optimize=True) # (n_loci, n, J)
-        del _z_rot
-    else:
-        H_t = np.einsum('nk,lnj->lkj', eigvecs, H, optimize=True)   # (n_loci, n, J)
-    H_t *= w_sqrt[None, :, None]                     # apply sqrt weights in-place
+    parameters
+    ----------
+    y          : np.ndarray (n,)
+    chr_data   : dict from precompute_chromosome — keys: locus_ids, positions,
+                 H_t_raw (n_loci, n, J), n_founders
+    x_covariates : np.ndarray (n, p)
+    eigvals    : np.ndarray (n,)
+    eigvecs    : np.ndarray (n, n)
+    h2_null    : float
 
-    # ── residualize H on X via fwl ───────────────────────────────────────────
-    # xt_pinv = (X'X)^{-1} X', shape (p, n)
-    xt_pinv  = np.linalg.solve(xtwx, xt.T)           # (p, n)
-    # proj_coef[l,p,j] = sum_n xt_pinv[p,n] * H_t[l,n,j]
-    proj     = np.einsum('pn,lnj->lpj', xt_pinv, H_t, optimize=True)  # (n_loci, p, J)
-    H_perp   = H_t - np.einsum('np,lpj->lnj', xt, proj, optimize=True)  # (n_loci, n, J)
-
-    # ── gram matrices and rhs ────────────────────────────────────────────────
-    c_all = np.einsum('lnj,n->lj', H_perp, e0, optimize=True)       # (n_loci, J)
-    G_all = np.einsum('lnj,lnk->ljk', H_perp, H_perp, optimize=True)  # (n_loci, J, J)
-
-    # pinv (batched SVD) matches r's rank-tolerant QR: rank J-1 normally,
-    # rank J-2 at loci where a founder has near-zero probability.
-    # rcond=1e-10 relative to each matrix's largest singular value.
-    G_pinv   = np.linalg.pinv(G_all, rcond=1e-10)              # (n_loci, J, J)
-    beta_h   = (G_pinv @ c_all[..., None]).squeeze(-1)          # (n_loci, J)
-
-    # ── rss, lod, p-values ───────────────────────────────────────────────────
-    rss_red  = np.einsum('lj,lj->l', c_all, beta_h)             # (n_loci,)
-    rss1     = np.maximum(rss0 - rss_red, 1e-30)                # (n_loci,) alt rss
-    with np.errstate(divide='ignore', invalid='ignore'):
-        lod_arr = np.where(rss1 < rss0,
-                           (n / 2.0) * np.log10(rss0 / rss1), 0.0)
-
-    # per-locus effective rank — correct df for F-test / p-value
-    q_eff    = np.linalg.matrix_rank(G_all)                      # (n_loci,) int
-    df2_arr  = np.maximum(n - p - q_eff, 1)
-    with np.errstate(invalid='ignore', divide='ignore'):
-        f_stat   = np.where(
-            q_eff > 0,
-            np.maximum((rss0 - rss1) / np.maximum(q_eff, 1) / (rss1 / df2_arr), 0.0),
-            0.0)
-        pval_arr = np.where(
-            df2_arr > 0,
-            1.0 - stats.f.cdf(f_stat, q_eff, df2_arr),
-            1.0)
-
-    return {'locus_ids': locus_ids, 'positions': positions,
-            'lod': lod_arr, 'p_value': pval_arr, 'betas': beta_h}
+    returns
+    -------
+    dict: locus_ids, positions, lod, p_value, betas (n_loci, nf)
+    """
+    return _scan_chromosome_core(
+        y, chr_data['H_t_raw'], x_covariates, eigvals, eigvecs, h2_null,
+        chr_data['locus_ids'], chr_data['positions'], chr_data['n_founders'],
+    )
 
 
 def scan_chromosome_batch(
@@ -343,9 +430,12 @@ def scan_chromosome_batch(
     eigvals    : (n,)
     eigvecs    : (n, n)
     h2_null    : float  from fix_h2 pre-estimation
-    z_mat      : (n_rep, n) or None  kept for API consistency; callers that
-                 need z_mat reduction should pass already-reduced Y_mat and
-                 the strain-level x_covariates/eigvals/eigvecs
+    z_mat      : np.ndarray (n, m) or None
+                 when provided, H is expanded from strain level (m) to sample
+                 level (n) via the fused rotation z_rot = eigvecs.T @ z_mat,
+                 matching the sample-level model in scan_chromosome.
+                 Y_mat, x_covariates, eigvals, eigvecs must all be at sample
+                 level (n) when z_mat is supplied.
     model      : 'additive' or 'full'
     batch_size : int  mini-batch size over the N_perms axis (memory control)
 
@@ -374,8 +464,14 @@ def scan_chromosome_batch(
     xtwx    = xt.T @ xt                                      # (p, p)
     xt_pinv = np.linalg.solve(xtwx, xt.T)                   # (p, n)
 
-    H = probs                                                # (n_loci, n, J)
-    H_t = np.einsum('nk,lnj->lkj', eigvecs, H, optimize=True)  # (n_loci, n, J)
+    H = probs                                                # (n_loci, m, J)
+    if z_mat is not None:
+        # fuse Z expansion + eigvec rotation: same optimisation as scan_chromosome
+        _z_rot = eigvecs.T @ z_mat                                   # (n, m)
+        H_t    = np.einsum('ks,lsj->lkj', _z_rot, H, optimize=True) # (n_loci, n, J)
+        del _z_rot
+    else:
+        H_t = np.einsum('nk,lnj->lkj', eigvecs, H, optimize=True)   # (n_loci, n, J)
     H_t *= w_sqrt[None, :, None]
 
     proj   = np.einsum('pn,lnj->lpj', xt_pinv, H_t, optimize=True)   # (n_loci, p, J)

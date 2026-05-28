@@ -108,7 +108,9 @@ from mosaiqtl.qtl.scan import (
     instability_lm_scan,
     scan_h2lmm,
     scan_h2lmm_mi,
+    ScanResult,
 )
+from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome_fast
 from mosaiqtl.qtl.permutation import (
     generate_null_outcomes,
     get_gev_thresholds,
@@ -891,30 +893,35 @@ def _make_descriptive_plots(
             log.warning('  s9_mediation_profile: %s', exc)
 
     # ── timing / memory summary ───────────────────────────────────────────────
+    # Excluded from plot (no meaningful compute or memory signal):
+    #   S1 — I/O only: reads cache_info CSV + founder/genotype ID checks
+    #   S2 — I/O only: reads a probe subset of haplotype prob arrays
+    #   S3 — I/O only: reads kinship summary CSV + correlation stats
+    #   S6 — dataframe filter: applies LOD threshold, no scan work
+    # Shown sections are the compute-intensive scan steps.
+    # Peak heap (tracemalloc) is used instead of RSS delta: ru_maxrss is a
+    # process-lifetime high-water mark — once S4 allocates peak memory it stays
+    # flat for all subsequent sections regardless of their actual footprint.
+    _PLOT_SECTIONS = ['S4', 'S5', 'S7', 'S8', 'S9', 'S10', 'S11']
     scan_stats_path = py_dir / 'scan_stats.csv'
     if scan_stats_path.exists():
         try:
             ss_raw = pd.read_csv(scan_stats_path)
-            # keep only canonical S1–S11 rows (drop per-chr sub-rows like S4_chr8)
-            ss_raw = ss_raw[ss_raw['section'].isin(_SECTION_ORDER)].copy()
-            # fill missing sections (checkpointed/skipped) with 0
+            ss_raw = ss_raw[ss_raw['section'].isin(_PLOT_SECTIONS)].copy()
             existing = set(ss_raw['section'])
-            fill_rows = [{'section': s, 'elapsed_s': 0.0,
-                          'peak_heap_mb': 0.0, 'peak_rss_mb': 0.0}
-                         for s in _SECTION_ORDER if s not in existing]
+            fill_rows = [{'section': s, 'elapsed_s': 0.0, 'peak_heap_mb': 0.0}
+                         for s in _PLOT_SECTIONS if s not in existing]
             if fill_rows:
                 ss_raw = pd.concat(
                     [ss_raw, pd.DataFrame(fill_rows)], ignore_index=True)
-            # enforce S1→S11 display order (bottom = S1, top = S11 on barh)
             ss_raw['_ord'] = ss_raw['section'].map(
-                {s: i for i, s in enumerate(_SECTION_ORDER)})
+                {s: i for i, s in enumerate(_PLOT_SECTIONS)})
             ss = ss_raw.sort_values('_ord').reset_index(drop=True)
             labels = [_SECTION_LABELS.get(s, s) for s in ss['section']]
 
             if len(ss) > 0:
-                _mem_col = 'peak_rss_mb' if 'peak_rss_mb' in ss.columns else 'peak_heap_mb'
-                _mem_label = 'Peak RSS (MB)' if _mem_col == 'peak_rss_mb' else 'Peak heap (MB)'
-                has_mem = ss[_mem_col].gt(0).any() if _mem_col in ss.columns else False
+                has_mem = ('peak_heap_mb' in ss.columns
+                           and ss['peak_heap_mb'].gt(0).any())
                 fig, axes = plt.subplots(1, 2 if has_mem else 1,
                                          figsize=(9 if has_mem else 5,
                                                   max(3, len(ss) * 0.45)))
@@ -925,9 +932,10 @@ def _make_descriptive_plots(
                 ax_t.set_title('Timing per step')
                 sns.despine(ax=ax_t)
                 if has_mem:
-                    axes[1].barh(labels, ss[_mem_col].fillna(0), color='#52A5DB')
+                    axes[1].barh(labels, ss['peak_heap_mb'].fillna(0),
+                                 color='#52A5DB')
                     axes[1].invert_yaxis()
-                    axes[1].set_xlabel(_mem_label)
+                    axes[1].set_xlabel('Peak heap (MB)')
                     axes[1].set_title('Memory per step')
                     sns.despine(ax=axes[1])
                 fig.tight_layout()
@@ -1720,6 +1728,29 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 # map CLI scan_type to scan_window API
                 _sw = {'C': 'cis', 'G': 'genome', 'L': 'local'}[scan_type]
 
+                # ── precompute chromosome-constant data (cis / local only) ──────
+                # K_n, evecs_ch, and H_t_raw depend only on the genotype cache and
+                # kinship — not on the gene phenotype.  computing them once here
+                # saves O(n_loci·n·m·J) rotation work per gene in the loop below.
+                _chr_precomputed = False
+                if _sw in ('cis', 'local'):
+                    _z_ch, _vsid_ch = build_z_matrix(geno_ids_ch, list(cache.sample_ids))
+                    _z_sub_ch  = _z_ch[_vsid_ch]                                  # (n_valid, m)
+                    _cov_valid = cov_ch[_vsid_ch]                                 # (n_valid, 5)
+                    _x_sub_ch  = np.hstack(
+                        [np.ones((_z_sub_ch.shape[0], 1)), _cov_valid])           # (n_valid, 6)
+                    _ev  = kinship_decomp[ch]['values']
+                    _evc = kinship_decomp[ch]['vectors']
+                    _K_m = _evc @ np.diag(_ev) @ _evc.T
+                    _K_n = _z_sub_ch @ _K_m @ _z_sub_ch.T
+                    _evals_ch, _evecs_ch = np.linalg.eigh(_K_n)
+                    del _K_m, _K_n
+                    _chr_data_ch = precompute_chromosome(
+                        cache, ch, _evals_ch, _evecs_ch, _z_sub_ch)
+                    _chr_precomputed = True
+                    log.info('    chr%s: H precomputed (%d loci  %d samples)',
+                             ch, len(_chr_data_ch['locus_ids']), _z_sub_ch.shape[0])
+
                 log.info('  running LMM scan on chr%s ...', ch)
                 t_chr = time.perf_counter()
                 sex_ch = np.array([float(_sex_by_sid.get(s, 0.0)) for s in sids_ch])
@@ -1728,20 +1759,50 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         elapsed = time.perf_counter() - t_scan
                         log.info('    chr%s %d/%d  %.0fs elapsed',
                                  ch, gi + 1, len(loaded_ids), elapsed)
-                    y = counts_ch[gi].astype(float)
+                    y_raw  = counts_ch[gi].astype(float)
                     tss_mb = tss_lookup.get(gene_name)
-                    scan = scan_h2lmm(
-                        y, cache,
-                        covariates=cov_ch,
-                        kinship_decomp=kinship_decomp,
-                        sample_ids=geno_ids_ch,
-                        use_rint=True,
-                        phenotype_id=gene_name,
-                        scan_window=_sw,
-                        gene_chr=ch,
-                        gene_pos_mb=tss_mb if _sw == 'local' else None,
-                        window_mb=window_mb,
-                    )
+
+                    if _chr_precomputed and not np.any(np.isnan(y_raw[_vsid_ch])):
+                        # fast path: skip H rotation (already in _chr_data_ch)
+                        y_sub  = rint(y_raw[_vsid_ch])
+                        h2, _  = estimate_h2_null(
+                            _evecs_ch.T @ y_sub, _evecs_ch.T @ _x_sub_ch, _evals_ch)
+                        chr_res = scan_chromosome_fast(
+                            y_sub, _chr_data_ch, _x_sub_ch, _evals_ch, _evecs_ch, h2)
+                        if _sw == 'local' and tss_mb is not None:
+                            _mask = np.abs(chr_res['positions'] - tss_mb) <= window_mb
+                            chr_res = {
+                                k: (v[_mask] if isinstance(v, np.ndarray)
+                                    and len(v) == len(_mask) else v)
+                                for k, v in chr_res.items()
+                            }
+                            chr_res['locus_ids'] = np.asarray(chr_res['locus_ids'])[_mask]
+                        n_loci_res = len(chr_res['locus_ids'])
+                        scan = ScanResult(
+                            locus_ids   = chr_res['locus_ids'],
+                            chromosomes = np.full(n_loci_res, str(ch)),
+                            positions   = chr_res['positions'],
+                            lod         = chr_res['lod'],
+                            p_value     = chr_res['p_value'],
+                            betas       = chr_res['betas'],
+                            h2_null     = {str(ch): h2},
+                            phenotype_id = gene_name,
+                            model        = 'additive',
+                        )
+                    else:
+                        # fallback: NaN samples present or G mode — full scan_h2lmm path
+                        scan = scan_h2lmm(
+                            y_raw, cache,
+                            covariates=cov_ch,
+                            kinship_decomp=kinship_decomp,
+                            sample_ids=geno_ids_ch,
+                            use_rint=True,
+                            phenotype_id=gene_name,
+                            scan_window=_sw,
+                            gene_chr=ch,
+                            gene_pos_mb=tss_mb if _sw == 'local' else None,
+                            window_mb=window_mb,
+                        )
                     df = _scan_to_df(scan, gene_name)
                     all_lod_rows.append(df)
 
@@ -1770,7 +1831,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                          ch, len(loaded_ids), n_loci_ch, elapsed_chr, gpm_chr)
 
                 n_genes_total += len(loaded_ids)
-                del counts_ch; gc.collect()
+                del counts_ch
+                if _chr_precomputed:
+                    del _chr_data_ch, _evals_ch, _evecs_ch, _z_sub_ch, _x_sub_ch, _cov_valid
+                gc.collect()
 
             elapsed_s = time.perf_counter() - t_scan
             if all_lod_rows:
