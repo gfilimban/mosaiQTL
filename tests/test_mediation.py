@@ -11,18 +11,18 @@ _REQUIRED_COLS = {'locus', 'chr', 'pos_mb', 'lod_base', 'lod_mediated',
                   'lod_drop', 'p_value', 'outcome_id', 'mediator_id'}
 
 
-def _make_cache(n_samples=24, n_loci=10, n_founders=8, chroms=('1', '2')):
+def _make_cache(n_strains=24, n_loci=10, n_founders=8, chroms=('1', '2')):
     rng  = np.random.default_rng(11)
     data = {}
     for c in chroms:
-        probs = rng.dirichlet(np.ones(n_founders), size=(n_loci, n_samples))
+        probs = rng.dirichlet(np.ones(n_founders), size=(n_loci, n_strains))
         data[c] = {
             'locus_ids': np.array([f'{c}_L{i:02d}' for i in range(n_loci)]),
             'positions': np.linspace(1.0, 100.0, n_loci),
             'probs':     probs,
         }
     return GenomeCache(data=data,
-                       sample_ids=[f's{i}' for i in range(n_samples)],
+                       sample_ids=[f's{i}' for i in range(n_strains)],
                        founders=[f'F{i}' for i in range(n_founders)])
 
 

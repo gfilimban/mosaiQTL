@@ -13,27 +13,27 @@ class TestGenerateNullOutcomes:
         self.y   = self.rng.standard_normal(50)
 
     def test_permutation_shape(self):
-        M = generate_null_outcomes(self.y, n_samples=20, method='permutation', seed=1)
+        M = generate_null_outcomes(self.y, n_perms=20, method='permutation', seed=1)
         assert M.shape == (50, 20)
 
     def test_permutation_preserves_values(self):
         '''each permuted column is a rearrangement of y.'''
-        M = generate_null_outcomes(self.y, n_samples=5, method='permutation', seed=1)
+        M = generate_null_outcomes(self.y, n_perms=5, method='permutation', seed=1)
         for col in range(5):
             np.testing.assert_array_equal(np.sort(M[:, col]), np.sort(self.y))
 
     def test_permutation_reproducible(self):
-        M1 = generate_null_outcomes(self.y, n_samples=10, seed=7)
-        M2 = generate_null_outcomes(self.y, n_samples=10, seed=7)
+        M1 = generate_null_outcomes(self.y, n_perms=10, seed=7)
+        M2 = generate_null_outcomes(self.y, n_perms=10, seed=7)
         np.testing.assert_array_equal(M1, M2)
 
     def test_bootstrap_shape(self):
-        M = generate_null_outcomes(self.y, n_samples=20, method='bootstrap', seed=1)
+        M = generate_null_outcomes(self.y, n_perms=20, method='bootstrap', seed=1)
         assert M.shape == (50, 20)
 
     def test_bootstrap_centred(self):
         '''bootstrap resamples from centred y → column means near 0.'''
-        M = generate_null_outcomes(self.y - self.y.mean(), n_samples=200,
+        M = generate_null_outcomes(self.y - self.y.mean(), n_perms=200,
                                     method='bootstrap', seed=1)
         assert abs(M.mean()) < 0.2
 

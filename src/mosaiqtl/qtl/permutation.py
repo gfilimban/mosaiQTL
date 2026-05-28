@@ -255,8 +255,7 @@ def run_threshold_scans(null_outcomes, genomecache,
                         use_rint=True, use_reml=True,
                         sample_ids=None,
                         seed=1,
-                        batch_size=500,
-                        sex=None):
+                        batch_size=500):
     """scan null phenotype columns to build the peak-LOD null distribution.
 
 
@@ -361,9 +360,6 @@ def run_threshold_scans(null_outcomes, genomecache,
         x = x.reshape(-1, 1)
     if not np.allclose(x[:, 0], 1.0):            # ensure intercept present
         x = np.hstack([np.ones((n, 1)), x])
-    if sex is not None:
-        sex_col = np.asarray(sex, dtype=float).reshape(-1, 1)
-        x = np.hstack([x, sex_col])
 
     # replicate path: reduce to strain means if sample_ids provided
     z_mat    = None
@@ -555,8 +551,7 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
                          fix_h2=True,
                          use_rint=True, use_reml=True,
                          ci_alpha=0.05,
-                         sample_ids=None,
-                         sex=None):
+                         sample_ids=None):
     """run single-chromosome scans on parametric bootstrap samples to compute
     a positional confidence interval for a QTL.
 
@@ -602,9 +597,6 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
         x = x.reshape(-1, 1)
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((n, 1)), x])
-    if sex is not None:
-        sex_col = np.asarray(sex, dtype=float).reshape(-1, 1)
-        x = np.hstack([x, sex_col])
 
     # replicate path: reduce to strain means if sample_ids provided
     z_mat    = None

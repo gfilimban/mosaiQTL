@@ -52,30 +52,33 @@ def call_egenes(
     threshold: float,
     effects_df: 'pd.DataFrame | None' = None,
     gene_col: str = 'gene',
-    lod_col: str = 'peak_lod_py',
+    lod_col: str = 'peak_lod',
 ) -> pd.DataFrame:
-    """Apply a LOD threshold and enrich the result with peak position metadata.
+    """Apply a LOD threshold and return one row per called eGene.
 
     Parameters
     ----------
-    peak_lod_df : DataFrame with columns [gene, peak_lod_py] (minimum)
+    peak_lod_df : DataFrame with columns [gene, peak_lod, chr, peak_locus, peak_mb]
+        Positional columns (chr, peak_locus, peak_mb) should be included at scan time
+        so that GxE/effect computations downstream are not blocked by a missing effects file.
     threshold   : LOD threshold (e.g. from get_gev_thresholds)
-    effects_df  : optional allele-effects DataFrame with columns
-        [gene, chr, peak_locus, peak_mb, peak_lod] — when provided, adds
-        per-gene chromosome and peak position to the output
+    effects_df  : optional allele-effects DataFrame — used only to fill chr/peak_locus/peak_mb
+        when those columns are absent from peak_lod_df (legacy fallback)
     gene_col    : name of the gene identifier column
     lod_col     : name of the peak LOD column
 
     Returns
     -------
-    DataFrame with at minimum [gene, peak_lod_py]; when effects_df is provided,
-    also includes [chr, peak_locus, peak_mb] — one row per called eGene
+    DataFrame with columns [gene, chr, peak_locus, peak_mb, peak_lod, ...] —
+    one row per called eGene; positional columns NaN only if absent from both inputs
     """
     egenes = peak_lod_df[peak_lod_df[lod_col] >= threshold].copy()
-    if effects_df is not None and len(effects_df) > 0:
-        pos_cols = [c for c in ('gene', 'chr', 'peak_locus', 'peak_mb')
-                    if c in effects_df.columns]
-        egenes = egenes.merge(effects_df[pos_cols], on=gene_col, how='left')
+    pos_cols = ('chr', 'peak_locus', 'peak_mb')
+    missing = [c for c in pos_cols if c not in egenes.columns]
+    if missing and effects_df is not None and len(effects_df) > 0:
+        fill_cols = [c for c in (gene_col, *missing) if c in effects_df.columns]
+        if len(fill_cols) > 1:
+            egenes = egenes.merge(effects_df[fill_cols], on=gene_col, how='left')
     return egenes.reset_index(drop=True)
 
 

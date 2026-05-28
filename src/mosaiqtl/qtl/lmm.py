@@ -257,9 +257,15 @@ def scan_chromosome(y, genomecache, chrom, x_covariates,
     # ── build & rotate haplotype array (n_loci, n, J) ────────────────────────
     H = probs                                         # (n_loci, m, J) all founders
     if z_mat is not None:
-        H = np.einsum('nm,lmj->lnj', z_mat, H, optimize=True)
-    # rotate by u': H_rot[l,k,j] = sum_n eigvecs[n,k] * H[l,n,j]
-    H_t = np.einsum('nk,lnj->lkj', eigvecs, H, optimize=True)  # (n_loci, n, J)
+        # fuse Z expansion and eigvec rotation: H_t[l,k,j] = Σ_s z_rot[k,s] H[l,s,j]
+        # where z_rot = eigvecs.T @ z_mat  (n×m).
+        # avoids materialising the n-expanded H then contracting with n×n eigvecs:
+        # O(n²m) for z_rot + O(n_loci·n·m·J) vs O(n_loci·n²·J) for the two-step path.
+        _z_rot = eigvecs.T @ z_mat                                   # (n, m)
+        H_t    = np.einsum('ks,lsj->lkj', _z_rot, H, optimize=True) # (n_loci, n, J)
+        del _z_rot
+    else:
+        H_t = np.einsum('nk,lnj->lkj', eigvecs, H, optimize=True)   # (n_loci, n, J)
     H_t *= w_sqrt[None, :, None]                     # apply sqrt weights in-place
 
     # ── residualize H on X via fwl ───────────────────────────────────────────
@@ -282,8 +288,9 @@ def scan_chromosome(y, genomecache, chrom, x_covariates,
     # ── rss, lod, p-values ───────────────────────────────────────────────────
     rss_red  = np.einsum('lj,lj->l', c_all, beta_h)             # (n_loci,)
     rss1     = np.maximum(rss0 - rss_red, 1e-30)                # (n_loci,) alt rss
-    lod_arr  = np.where(rss1 < rss0,
-                        (n / 2.0) * np.log10(rss0 / rss1), 0.0)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        lod_arr = np.where(rss1 < rss0,
+                           (n / 2.0) * np.log10(rss0 / rss1), 0.0)
 
     # per-locus effective rank — correct df for F-test / p-value
     q_eff    = np.linalg.matrix_rank(G_all)                      # (n_loci,) int
@@ -399,11 +406,12 @@ def scan_chromosome_batch(
         del c, Gc
 
         rss1    = np.maximum(rss0[None, :] - rss_red, 1e-30)          # (n_loci, b)
-        lod_b   = np.where(
-            rss1 < rss0[None, :],
-            (n / 2.0) * np.log10(rss0[None, :] / rss1),
-            0.0,
-        )                                                              # (n_loci, b)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            lod_b = np.where(
+                rss1 < rss0[None, :],
+                (n / 2.0) * np.log10(rss0[None, :] / rss1),
+                0.0,
+            )                                                          # (n_loci, b)
         max_lods[p0:p1] = lod_b.max(axis=0)
         if peak_idxs is not None:
             peak_idxs[p0:p1] = lod_b.argmax(axis=0)
@@ -531,8 +539,9 @@ def scan_chromosome_mi(
         del H_perp, G_b, G_pinv, c, Gc
 
         rss1  = np.maximum(rss0 - rss_red, 1e-30)                             # (n_imp, b)
-        lod_ib = np.where(rss1 < rss0,
-                          (n / 2.0) * np.log10(rss0 / rss1), 0.0)            # (n_imp, b)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            lod_ib = np.where(rss1 < rss0,
+                              (n / 2.0) * np.log10(rss0 / rss1), 0.0)        # (n_imp, b)
         lod_sum[b0:b1] += lod_ib.sum(axis=0)                                  # accumulate
         del rss_red, rss1, lod_ib
 

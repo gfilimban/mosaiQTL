@@ -380,7 +380,8 @@ def scan_conditional_with_y(phenotype, scan_result, genomecache,
         # rescan residuals
         sr_next = scan_h2lmm(y_res, genomecache, x,
                               kinship_decomp, use_rint=False,
-                              phenotype_id=f'{scan_result.phenotype_id}_s{sig_i+1}')
+                              phenotype_id=f'{scan_result.phenotype_id}_s{sig_i+1}',
+                              scan_window='genome')
         if sr_next.lod.max() < lod_drop_threshold:
             break
         signals.append(sr_next)

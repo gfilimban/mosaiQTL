@@ -8,16 +8,16 @@ from mosaiqtl.genotype.genomecache import GenomeCache
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 
 
-def _make_cache(n_samples=20, n_loci=10, n_founders=8, chroms=('1', '2', '3')):
+def _make_cache(n_strains=20, n_loci=10, n_founders=8, chroms=('1', '2', '3')):
     rng  = np.random.default_rng(1)
     data = {}
     for c in chroms:
-        probs = rng.dirichlet(np.ones(n_founders), size=(n_loci, n_samples))
+        probs = rng.dirichlet(np.ones(n_founders), size=(n_loci, n_strains))
         data[c] = {'locus_ids': np.array([f'{c}_{i}' for i in range(n_loci)]),
                    'positions': np.linspace(1.0, 100.0, n_loci),
                    'probs': probs}
     return GenomeCache(data=data,
-                       sample_ids=[f's{i}' for i in range(n_samples)],
+                       sample_ids=[f's{i}' for i in range(n_strains)],
                        founders=[f'F{i}' for i in range(n_founders)])
 
 

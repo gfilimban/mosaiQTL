@@ -52,7 +52,7 @@ Uses real LOCO kinship (Phase 1 used identity/OLS shortcut).
 | P2-S5 | Cache collapse | ≥5% removed AND lod_r² ≥ 0.999 | - | ⚠️ N/A — sparcc_cache is pre-collapsed; gate requires an uncollapsed cache |
 | P2-S6 | GEV threshold delta | < 0.5 LOD | 0.203 | 🟢 |
 | P2-S7 | MI scan LOD r | ≥ 0.75 | PASS | 🟢 |
-| P2-S8 | SNP scan | gated: allele_dir required | ⚠️ GATED | ⚠️ gated |
+| P2-S8 | SNP scan | gated: founder_alleles.h5 required | PASS (PORT-08 ported; h5 built in phase2/phase3) | 🟢 |
 | P2-S9 | Mediation LOD r | ≥ 0.90 | PASS | 🟢 |
 | P2-S10 | Bootstrap CI contains planted locus | True | True (187.46–188.20 Mb ∋ 188.03) | 🟢 |
 | P2-S11 | Instability peak_freq | ≥ 0.70 | PASS | 🟢 |
@@ -142,6 +142,7 @@ and Taschuk & Wilson 2017 (10.1371/journal.pcbi.1005412).
 | SWE-07 | CI pipeline active on main | green | 🟢 | .github/workflows/ci.yml — lint+test+security+mypy(warn) |
 | SWE-08 | io/base.py BioFileParser ABC: shared read/validate/stream contract for all format parsers | implement when second I/O format parser is added (post-Phase-2); premature before ≥2 concrete parsers exist | 🔴 |
 | SWE-09 | Replace BH-FDR placeholder in pipeline.py with Storey q-value (Storey 2002, 10.1111/1467-9868.00346). BH assumes π₀=1 (all genes null); Storey estimates π₀ from the p-value distribution shape and calibrates FDR against the true null proportion — recovering power lost by BH when real signal is present. This directly determines which genes are called eGenes. The BH line in pipeline.py with `# Storey q-value planned` is a placeholder that has been present since initial scaffolding and should not reach production. Validation: BIO-A5 (observed FDR ≤ 0.05 on sim_cc48_n200qtl) must use Storey q-value, not BH | `pipeline.py` | Phase 2 passes | 🔴 |
+| SWE-10 | Extended gastroc covariates: (1) add `body_weight_g`, `tissue_weight_mg` to `gastroc_data/metadata.csv` and incorporate into `_build_covariates`; (2) add expression PCs (top k, default k=5, computed from log-normalised count matrix before scan) as optional scan covariates. Both scripts currently use only `~ sex + dataset` — neither includes expression PCs or physical measurements. R formula must be updated in lockstep with Python (`~ sex + dataset + body_weight_g + tissue_weight_mg + expr_pc1 + ...`). Expression PCs are the highest-impact addition. Prerequisite: gastroc validation run completes (Phase 2 gastroc gates pass). | `validate_gastroc.py` + `gastroc_miqtl_scan.R` + `metadata.csv` | gastroc validation passes | 🔴 |
 
 ---
 
@@ -284,10 +285,10 @@ Functions in the miQTL R codebase not yet ported to Python. Assessed against
 | PORT-02 | `scan.h2lmm(model='full')` | `qtl/scan.py::scan_h2lmm` + `qtl/lmm.py::scan_chromosome` | 🟢 ported — outer-product diplotype probs; valid for CC inbred data |
 | PORT-03 | `get.allele.effects.from.ranef()` + `get.allele.effects.from.fixef()` | `qtl/effects.py::get_allele_effects` | 🟢 ported — FWL gram + pseudoinverse (fixef) / ridge BLUP (ranef) |
 
-### Not yet ported — HIGH priority
-| ID | miQTL R function(s) | Target Python location | Why needed |
+### Already ported — HIGH priority (added)
+| ID | miQTL R function(s) | Python location | Notes |
 |---|---|---|---|
-| PORT-08 | `build.allele.dir()` (miQTL reads chrN.alleles flat format; no R equivalent in miqtl namespace — must be built from GigaMUGA founder genotype data) | `genotype/snp_db.py::build_founder_allele_db(gm_csv, out_h5)` + `load_founder_alleles(h5)` | S8 validation requires founder allele calls per SNP. Current snp_scan.py has three overlapping formats (per-SNP .RData via rpy2; flat chrN.alleles text; Sanger MGP VCF via pysam); the rpy2 path writes ~74k .RData files and has the same scaling bottleneck as miQTL R. Correct design: single `founder_alleles.h5` HDF5 database built from GM_ccfo_mm39.csv (already available in miqtl dir); `imputed_snp_scan_h2lmm` loads via `load_founder_alleles`. Deprecate rpy2-dependent `build_allele_dir()` and `read_allele_dir()` in snp_scan.py. Standalone `validation/build_allele_dir.py` script also has hardcoded paths and cannot be integrated as-is — delete once PORT-08 ships. Unblocks P2-S8 validation: GigaMUGA markers are genome-wide and phenotype-independent; the same `founder_alleles.h5` is used by Phase 2 sim S8 and gastroc S8 alike |
+| PORT-08 | `build.allele.dir()` | `genotype/snp_db.py::build_founder_allele_db` + `load_founder_alleles` | 🟢 ported — single HDF5 from GM_ccfo_mm39.csv; `founder_alleles.h5` built in phase2/phase3 py_data/; gastroc S8 falls back to phase2 copy |
 
 ### Not yet ported — MEDIUM priority
 | ID | miQTL R function(s) | Target Python location | Why needed |

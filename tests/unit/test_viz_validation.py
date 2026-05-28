@@ -128,6 +128,7 @@ class TestPlotFounderEffects:
         scan_result = scan_h2lmm(
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd, use_rint=False,
+            scan_window='genome',
         )
         fig, ax = plot_founder_effects(scan_result, tiny_cache)
         assert isinstance(fig, plt.Figure)
@@ -140,6 +141,7 @@ class TestPlotFounderEffects:
         scan_result = scan_h2lmm(
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd, use_rint=False,
+            scan_window='genome',
         )
         fig, ax = plot_founder_effects(
             scan_result, tiny_cache, peak_chrom='1', peak_idx=0,
@@ -238,6 +240,7 @@ class TestPlotFounderEffectsComparison:
         sr = scan_h2lmm(
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd, use_rint=False,
+            scan_window='genome',
         )
         r_csv = str(tmp_path / 'nonexistent.csv')  # file doesn't exist
         fig, ax = plot_founder_effects_comparison(sr, tiny_cache, r_csv)
@@ -253,6 +256,7 @@ class TestPlotFounderEffectsComparison:
         sr = scan_h2lmm(
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd, use_rint=False,
+            scan_window='genome',
         )
         peak = sr.peak_locus()
         r_df = pd.DataFrame({
@@ -277,6 +281,7 @@ class TestPlotValidationPanel:
         sr = scan_h2lmm(
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd, use_rint=False,
+            scan_window='genome',
         )
         K = tiny_kinship['1']
         save_dir = str(tmp_path / 'val_plots')
@@ -291,6 +296,7 @@ class TestPlotValidationPanel:
         sr = scan_h2lmm(
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd, use_rint=False,
+            scan_window='genome',
         )
         K = tiny_kinship['1']
         rng = np.random.default_rng(0)

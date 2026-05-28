@@ -247,6 +247,36 @@ mosaiQTL accepts:
       plus any user-supplied covariates (age, body_weight_g, etc.)
   (D) Genome cache (HDF5) — haplotype probs
 
+**Expression loading is the caller's responsibility — no HDF5 inside engine functions.**
+
+All scan functions (`scan_h2lmm`, `scan_h2lmm_mi`, `mediation_scan_qr_batch`,
+`instability_lm_scan`, `imputed_snp_scan_h2lmm`, etc.) accept pre-loaded `np.ndarray`
+inputs. They perform no file I/O. The caller must load gene expression vectors before
+invoking any engine function.
+
+**Antipattern — per-gene HDF5 open/scan/close inside a loop:**
+```python
+for gene in egenes:
+    y, sids, _ = _load_expression(h5_path, [gene_id])  # ← BAD
+    scan_h2lmm(y, ...)
+```
+At gastroc scale (43,650 genes × 415 samples, chunks=(1000, 50)), each call opens the
+file, reads all gene ID strings, and decompresses ~9 column chunks to read one row.
+With 50+ outcomes × 90 mediators, this adds 10+ minutes of I/O overhead (measured).
+
+**Canonical pattern — single batch preload before the loop:**
+```python
+all_ids = [gene_name_to_id.get(g, g) for g in needed_genes]
+counts, loaded_ids, sids = _load_expression(h5_path, all_ids)  # ← ONE call
+expr = {gid: counts[i] for i, gid in enumerate(loaded_ids)}
+for gene in egenes:
+    y = expr[gene_id].astype(float)
+    scan_h2lmm(y, ...)
+```
+`sids` (the sample list) is identical for all genes — the HDF5 sample axis is fixed.
+Memory cost: (n_needed_genes × n_samples) × 4 bytes — typically < 1 MB for per-section
+subsets of eGenes. See `validate_gastroc.py` S7–S11 for the reference implementation.
+
   → Covariate matrix construction        [io/covariates.py]
       - mandatory: sample_id, sex, batch
       - user-supplied: any numeric/categorical column from sample metadata
@@ -811,20 +841,19 @@ all m genes are null.
 | Column | Description |
 |---|---|
 | `gene` | gene name |
-| `peak_lod_py` | peak LOD score (Python scan) |
 | `chr` | chromosome of peak locus |
 | `peak_locus` | peak locus identifier |
 | `peak_mb` | peak locus position (Mb) |
+| `peak_lod` | peak LOD score (Python scan) |
 | `p_permtest_chr` | per-gene empirical p-value vs chromosome-specific permutation null |
-| `p_permtest_genome` | per-gene empirical p-value vs genome-wide max-LOD permutation null |
 | `q_fdr_storey` | Storey (2002) q-value across all tested genes |
 | `pi0` | estimated proportion of true null genes (π₀) |
 | `perm_n` | number of permutations used |
-| `perm_chr` | chromosome whose null distribution was used (= peak chromosome from S5) |
 | `chi2_haplotype` | LRT χ²(J−1) for 1-way haplotype effect — derived from scan LOD at zero extra compute |
 | `p_haplotype` | p-value for 1-way haplotype effect (LMM-correct, kinship-corrected) |
 | `lod_gxe_sex` | LOD_full − LOD_additive for haplotype × sex interaction (LMM-LRT) |
 | `p_gxe_sex` | p-value for haplotype × sex interaction, χ²(J−1) (LMM-correct) |
+| `in_r_egenes` | whether gene appears in R miQTL eGene list (when `r_data/egenes.csv` present) |
 
 **LMM-based GxE characterization (`qtl_gxe_lrt`)**
 
@@ -1017,6 +1046,8 @@ it is inferred from the input data.
 | S9 gastroc comparison: miQTL's `mediation.scan.qr()` may export `LOD` (uppercase) and `pos.Mb` rather than `lod`/`pos_mb` — fixed: column normalization applied after `pd.read_csv` before `_pos_merge` | validate_gastroc.py | ✅ fixed |
 | gastroc benchmark S4–S11 not yet run — pending HPC run; rsync r_data/ then run validate_gastroc.py --compare | gastroc_data/ | MED |
 | `estimate_h2_null` emitted `RuntimeWarning: invalid value encountered in scalar subtract` from Brent's parabolic interpolation on every permutation. Root cause: degenerate permuted phenotype (constant after eigenrotation) caused `wrss ≈ 0` → `sigma2 → 0` → `log(sigma2) = -inf` → `neg_loglik` returned `-inf` → `−inf − (−inf) = NaN` in Brent's step arithmetic. Also removed dead `w <= 0` guard (w = delta*eigvals + 1 ≥ 1 always) and redundant `isfinite` check. Fixed: `if wrss <= 0: return 1e10` before the log call; large finite sentinel preserves Brent's arithmetic. Normal permutations unaffected. | lmm.py::estimate_h2_null | ✅ fixed |
+| `scan_h2lmm` and `scan_h2lmm_mi` applied RINT **after** Z-matrix reduction (RINT of strain means), diverging from miQTL's canonical behaviour. miQTL's `scan.h2lmm` applies RINT to all n sample-level values in `pheno_df` first, then reduces to strain means internally (`mean(RINT(samples))` per strain). The wrong order inflated LOD for sparse genes: a gene with one high-expressing replicate in strain S gets `RINT(mean) ≈ Φ⁻¹(rank_S / m)` (extreme), whereas the correct order gives `mean(RINT) = RINT(high_val) / r_S` (diluted by within-strain averaging). For `Insl3` in the gastroc benchmark this produced LOD 64.75 (wrong) vs the expected ~3.5. Fixed: RINT moved before Z-matrix reduction in both functions. Averaging RINT values preserves normality (CLT); the reduced variance ~1/r is absorbed by σ² estimation in the LMM. | scan.py::scan_h2lmm, scan_h2lmm_mi | ✅ fixed |
+| `scan_h2lmm` reduced replicated data to strain means before scanning, implementing an m-dimensional model (m×m kinship, LOD = (m/2)·log₁₀(RSS₀/RSS₁)). miQTL's canonical replicated design uses `pheno.id='sample_id'`, which expands kinship to K_n = Z K_m Zᵀ (n×n) and scans in n-dimensional space — giving LODs on the n-sample scale. The strain-mean shortcut is statistically valid only for n_reps=1 (Phase 1/2 simulated data) but underestimates power for replicated data: within-strain variance is absorbed by the residual σ²_e I_n rather than averaged away. Fixed: `scan_h2lmm` now retains y and x at sample level; per-chromosome loop reconstructs K_m from its eigendecomp, expands to K_n = Z K_m Zᵀ, and eigendecomposes K_n (O(n³), n≤416, negligible). `scan_chromosome` already accepted `z_mat` for H expansion; the two-step expand-then-rotate (`Z H` then `U'(ZH)`) is fused to `(U'Z)H` via precomputed z_rot = eigvecs.T @ z_mat (n×m), reducing per-call cost from O(n_loci·n²·J) to O(n²·m + n_loci·n·m·J) — approximately 1.5–2× the m-dimensional cost rather than 75×. R's S5 permutation was also fixed: the miQTL helper functions (`generate.simple.permutation.index.matrix`, `run.simple.permutation.threshold.scans`) crash when `fit0$K` is the n×n expanded matrix; replaced with a direct loop over `scan.h2lmm` calls at sample level (`pheno.id='sample_id'`, `formula = gene ~ sex + dataset`), which is exactly what the helpers do internally — bypassing the cached-K bug. | scan.py, lmm.py, gastroc_miqtl_scan.R | ✅ fixed |
 
 ---
 *Last updated: see git log. Canonical source: github.com/gfilimban/mosaiqtl/docs/ARCHITECTURE.md*

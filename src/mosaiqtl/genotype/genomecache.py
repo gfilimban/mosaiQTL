@@ -557,7 +557,7 @@ class GenomeCache:
                 probs_chr[si, pi1, :] = 0.5
                 probs_chr[si, pi2, :] = 0.5
 
-            # store as (n_loci, n_samples, n_founders) — mosaiqtl convention
+            # store as (n_loci, n_strains, n_founders) — mosaiqtl convention
             data[str(chrom)] = {
                 'locus_ids': aug_locus_ids,
                 'positions': aug_pmap_pos,
@@ -670,10 +670,10 @@ class GenomeCache:
             locus_ids = np.array(chr_pmap['locus'].tolist())
             positions = np.array(chr_pmap['pos_mb'].tolist(), dtype=float)
 
-            # extract array from R — qtl2 stores as (n_samples, n_founders, n_loci)
+            # extract array from R — qtl2 stores as (n_strains, n_founders, n_loci)
             arr_r = np.array(ro.r(f'probs_merged[["{chrom}"]]'))
             if arr_r.ndim == 3:
-                # transpose to mosaiqtl convention: (n_loci, n_samples, n_founders)
+                # transpose to mosaiqtl convention: (n_loci, n_strains, n_founders)
                 arr = np.transpose(arr_r, (2, 0, 1))
             else:
                 logger.warning(f'chr{chrom}: unexpected array shape {arr_r.shape}')
@@ -1019,7 +1019,7 @@ def _save_group_probs(cache, sample_list, filepath):
     -----------
     /founders           str array  8 founder names
     /sample_ids         str array  sample names in this group
-    /chr{c}/probs       float32    (n_samples, n_founders, n_loci) — qtl2 dim order
+    /chr{c}/probs       float32    (n_strains, n_founders, n_loci) — qtl2 dim order
     /chr{c}/locus_ids   str array  marker names
     /chr{c}/positions   float64    physical positions (Mb)
 
@@ -1067,7 +1067,7 @@ def _save_kinship(kinship_dict, sample_ids, filepath):
     HDF5 layout
     -----------
     /sample_ids   str array   sample names
-    /chr{c}       float64     (n_samples, n_samples) LOCO kinship matrix
+    /chr{c}       float64     (n_strains, n_strains) LOCO kinship matrix
 
     Parameters
     ----------

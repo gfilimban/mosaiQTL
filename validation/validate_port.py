@@ -1232,7 +1232,7 @@ if section(11, 'INSTABILITY SCAN'):
             loci_r  = set(r_fx[(r_fx['gene_id']==fx_gene) &
                                (r_fx['chr'].astype(str)==fx_chr)]['locus'].tolist())
             if not loci_r: continue
-            inst_py = _inst(y_fx, cache_py, covar_base, n_samples=100, seed=1,
+            inst_py = _inst(y_fx, cache_py, covar_base, n_subsamples=100, seed=1,
                             phenotype_id=fx_gene, just_these_loci=loci_r)
             py_inst = pd.DataFrame({'locus': inst_py.locus_ids,
                                     'lod_py': inst_py.lod,

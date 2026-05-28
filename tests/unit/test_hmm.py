@@ -70,10 +70,10 @@ class TestDiplotypeToAlleleProbs:
 
     def test_batch_shape(self):
         rng = np.random.default_rng(0)
-        n_loci, n_samples = 5, 3
-        dipl = rng.dirichlet(np.ones(N_STATES), size=(n_loci, n_samples))
+        n_loci, n_strains = 5, 3
+        dipl = rng.dirichlet(np.ones(N_STATES), size=(n_loci, n_strains))
         allele = diplotype_to_allele_probs(dipl, N_FOUNDERS)
-        assert allele.shape == (n_loci, n_samples, N_FOUNDERS)
+        assert allele.shape == (n_loci, n_strains, N_FOUNDERS)
 
     def test_sum_to_one(self):
         rng = np.random.default_rng(1)

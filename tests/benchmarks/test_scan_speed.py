@@ -20,19 +20,19 @@ from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 from mosaiqtl.qtl.lmm import estimate_h2_null, scan_chromosome
 
 # ── fixture sizes ──────────────────────────────────────────────────────────────
-N_SAMPLES  = 40      # matches sparc_cc40 strain count
+N_STRAINS  = 40      # matches sparc_cc40 strain count
 N_LOCI     = 500     # ~7x reduction from 3700/chr — CI-friendly
 N_FOUNDERS = 8
 N_CHROM    = 3       # 3 representative chromosomes
 
 
-def _make_cache(n_samples=N_SAMPLES, n_loci=N_LOCI,
+def _make_cache(n_strains=N_STRAINS, n_loci=N_LOCI,
                 n_founders=N_FOUNDERS, n_chrom=N_CHROM):
     rng  = np.random.default_rng(42)
     data = {}
     for i in range(n_chrom):
         c = str(i + 1)
-        probs = rng.dirichlet(np.ones(n_founders), size=(n_loci, n_samples))
+        probs = rng.dirichlet(np.ones(n_founders), size=(n_loci, n_strains))
         data[c] = {
             'locus_ids': np.array([f'{c}_L{j:04d}' for j in range(n_loci)]),
             'positions': np.linspace(1.0, 200.0, n_loci),
@@ -40,7 +40,7 @@ def _make_cache(n_samples=N_SAMPLES, n_loci=N_LOCI,
         }
     return GenomeCache(
         data=data,
-        sample_ids=[f'CC{i:03d}' for i in range(n_samples)],
+        sample_ids=[f'CC{i:03d}' for i in range(n_strains)],
         founders=[f'F{i}' for i in range(n_founders)],
     )
 

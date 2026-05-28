@@ -49,6 +49,9 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
     returns
     -------
     pd.DataFrame  columns: snp, chr, pos_mb, lod, p_value, beta_dosage
+        NOT a ScanResult — SNP scan output is per-SNP dosage effects, not
+        per-founder haplotype effects.  Do not pass to _scan_to_df or any
+        ScanResult consumer.
     """
     from ..genotype import kinship as kin_module
     from . import lmm as lmm_module
@@ -154,6 +157,7 @@ def imputed_snp_scan_from_db(
     use_reml: bool = True,
     phenotype_id: str = 'unknown',
     just_these_snps: 'list | None' = None,
+    sample_ids: 'list | None' = None,
 ) -> pd.DataFrame:
     """SNP scan loading founder allele calls from an HDF5 database.
 
@@ -164,7 +168,7 @@ def imputed_snp_scan_from_db(
 
     parameters
     ----------
-    phenotype   : np.ndarray (n,)
+    phenotype   : np.ndarray (n,) — sample-level if sample_ids provided, else strain-level
     genomecache : GenomeCache
     alleles_h5  : path to HDF5 built by build_founder_allele_db()
     covariates  : np.ndarray (n, p) or None
@@ -178,10 +182,16 @@ def imputed_snp_scan_from_db(
     use_reml    : bool
     phenotype_id : str
     just_these_snps : list or None  restrict to these SNP ids
+    sample_ids  : list of genotype IDs (one per row of phenotype/covariates);
+                  when provided, reduces to strain means via Z-matrix before
+                  calling imputed_snp_scan_h2lmm.  Pass geno_ids (cache strain
+                  names), not raw sample labels.
 
     returns
     -------
     pd.DataFrame  columns: snp, chr, pos_mb, lod, p_value, beta_dosage
+        NOT a ScanResult — use the DataFrame directly; do not pass to
+        _scan_to_df or any ScanResult consumer.
     """
     from ..genotype.snp_db import load_founder_alleles
 
@@ -225,6 +235,28 @@ def imputed_snp_scan_from_db(
 
     snp_genos = pd.DataFrame(rows, index=snp_ids)
     snp_genos.index.name = None
+
+    # reduce sample-level inputs to strain means when sample_ids are provided
+    if sample_ids is not None:
+        from ..utils import build_z_matrix
+        z_mat, valid_mask = build_z_matrix(sample_ids, list(genomecache.sample_ids))
+        valid_idx = np.where(valid_mask)[0]
+        z_sub = z_mat[valid_idx]
+        r_cnt = z_sub.sum(axis=0)
+        active = r_cnt > 0
+        z_act = z_sub[:, active]
+        r_act = r_cnt[active]
+        active_idx = np.where(active)[0]
+        n_strains = len(genomecache.sample_ids)
+
+        y_str = np.full(n_strains, np.nan)
+        y_str[active_idx] = (z_act.T @ phenotype[valid_idx]) / r_act
+        phenotype = y_str
+
+        if covariates is not None:
+            cov_str = np.full((n_strains, covariates.shape[1]), np.nan)
+            cov_str[active_idx] = (z_act.T @ covariates[valid_idx]) / r_act[:, None]
+            covariates = cov_str
 
     return imputed_snp_scan_h2lmm(
         phenotype, genomecache, snp_genos,

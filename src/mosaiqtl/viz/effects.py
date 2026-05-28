@@ -9,7 +9,8 @@ import numpy as np
 import seaborn as sns
 
 from ..genotype.founders import (
-    COLOR_NEUTRAL_DARK, COLOR_CC_FALLBACK, FOUNDER_COLORS, FOUNDER_ORDER,
+    COLOR_NEUTRAL_DARK, COLOR_NEUTRAL_LIGHT, COLOR_CC_FALLBACK,
+    FOUNDER_COLORS, FOUNDER_ORDER,
 )
 
 _CHR_ORDER: list[str] = [str(i) for i in range(1, 20)] + ['X']
@@ -39,6 +40,7 @@ def coef_profile(
     alpha: float = 0.85,
     show_legend: bool = True,
     ylim: Optional[float] = None,
+    ylabel: str = 'Founder effect (RINT SD)',
 ) -> plt.Axes:
     """Founder coefficient profiles along a chromosome.
 
@@ -66,6 +68,8 @@ def coef_profile(
     ylim : float, optional
         Symmetric y-axis limit ±ylim. Clips blown-up betas at near-zero-prob
         loci (rare founders → huge coefficients). Recommended: 3× phenotype SD.
+    ylabel : str
+        Y-axis label. Default assumes RINT-transformed phenotype.
 
     Returns
     -------
@@ -95,7 +99,7 @@ def coef_profile(
     if ylim is not None:
         ax.set_ylim(-ylim, ylim)
     ax.set_xlabel(f'Chr {chrom} position (Mb)' if chrom else 'Position (Mb)')
-    ax.set_ylabel('Founder effect')
+    ax.set_ylabel(ylabel)
     if show_legend:
         ax.legend(fontsize=6, ncol=4, frameon=False, loc='upper right',
                   handlelength=1.2)
@@ -111,6 +115,7 @@ def coef_profile_genome(
     figsize: tuple[float, float] = (14, 3),
     linewidth: float = 0.8,
     alpha: float = 0.75,
+    ylabel: str = 'Founder effect (RINT SD)',
 ) -> plt.Figure:
     """Genome-wide founder coefficient profiles across all chromosomes.
 
@@ -156,7 +161,7 @@ def coef_profile_genome(
 
     ax.axhline(0, color=COLOR_NEUTRAL_DARK, linewidth=0.4, zorder=1)
     ax.set_xlim(0, offset)
-    ax.set_ylabel('Founder effect')
+    ax.set_ylabel(ylabel)
     ax.set_xticks(xticks)
     ax.set_xticklabels(xlabels, fontsize=7)
     ax.tick_params(axis='x', length=2)
@@ -173,6 +178,7 @@ def effect_bars(
     *,
     ax: Optional[plt.Axes] = None,
     se: Optional[np.ndarray] = None,
+    ylabel: str = 'Founder effect (RINT SD)',
 ) -> plt.Axes:
     """Per-founder effect bar chart at a single locus.
 
@@ -189,6 +195,8 @@ def effect_bars(
         Axes to draw on; created at dpi=300 if None.
     se : np.ndarray, optional
         Standard errors same shape as betas_locus; drawn as error bars.
+    ylabel : str
+        Y-axis label. Default assumes RINT-transformed phenotype.
 
     Returns
     -------
@@ -213,7 +221,7 @@ def effect_bars(
     ax.axhline(0, color=COLOR_NEUTRAL_DARK, linewidth=0.6, zorder=0)
     ax.set_xticks(x)
     ax.set_xticklabels(founders, rotation=45, ha='right', fontsize=8)
-    ax.set_ylabel('Effect (β)')
+    ax.set_ylabel(ylabel)
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
@@ -227,6 +235,7 @@ def effect_caterpillar(
     ci_wide: Optional[np.ndarray] = None,
     ci_narrow: Optional[np.ndarray] = None,
     connect: bool = True,
+    xlabel: str = 'Founder effect (RINT SD)',
 ) -> plt.Axes:
     """Caterpillar plot of founder effects at a single locus with confidence intervals.
 
@@ -247,6 +256,8 @@ def effect_caterpillar(
         Shape (J, 2) [lower, upper] 75% CI per founder.
     connect : bool
         Draw a connecting line through founder midpoints.
+    xlabel : str
+        X-axis label. Default assumes RINT-transformed phenotype.
 
     Returns
     -------
@@ -281,7 +292,7 @@ def effect_caterpillar(
     ax.axvline(0, color=COLOR_NEUTRAL_DARK, linewidth=0.6, zorder=0)
     ax.set_yticks(y)
     ax.set_yticklabels(founders, fontsize=8)
-    ax.set_xlabel('Effect (β)')
+    ax.set_xlabel(xlabel)
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
@@ -329,7 +340,134 @@ def dispersion_distribution(
     ax.set_xlim(left=float(x.min()))
     ax.set_ylim(bottom=0)
     ax.set_xlabel(xlabel)
-    ax.set_ylabel('Genes')
+    ax.set_ylabel('Number of genes')
+    sns.despine(ax=ax)
+    _set_font(ax)
+    return ax
+
+
+def haplotype_sex_profile(
+    phenotype: np.ndarray,
+    hap_probs: np.ndarray,
+    sex: np.ndarray,
+    founders: list[str] = FOUNDER_ORDER,
+    *,
+    ax: Optional[plt.Axes] = None,
+    phenotype_label: str = 'Phenotype',
+    chrom: str = '',
+    position_mb: Optional[float] = None,
+    gxe_result: Optional[dict] = None,
+) -> plt.Axes:
+    """Per-founder mean ± SEM phenotype split by sex — descriptive haplotype × sex profile.
+
+    Visualises the interaction pattern identified by ``qtl_gxe_lrt``.  Each founder
+    group is assigned by argmax of haplotype probabilities; two lines (male/female)
+    show how the haplotype effect magnitude or direction differs between sexes.
+    When ``gxe_result`` is provided (the dict returned by ``qtl_gxe_lrt``), the
+    LMM-corrected overall significance is annotated on the plot.
+
+    Parameters
+    ----------
+    phenotype : np.ndarray
+        Shape (n_strains,) trait values.
+    hap_probs : np.ndarray
+        Shape (n_strains, J) founder probabilities at one locus.
+    sex : np.ndarray
+        Shape (n_strains,) binary sex (0 = male, 1 = female).
+    founders : list[str]
+        Founder names; length must equal hap_probs.shape[1].
+    ax : plt.Axes, optional
+        Axes to draw on; created at dpi=300 if None.
+    phenotype_label : str
+        Y-axis label.
+    chrom : str
+        Chromosome label for title annotation.
+    position_mb : float, optional
+        Locus position in Mb for title annotation.
+    gxe_result : dict, optional
+        Return value of ``qtl_gxe_lrt`` — must contain keys ``lod_gxe_sex`` and
+        ``p_gxe_sex``.  These are LMM-based (kinship-corrected) and annotated as
+        a text box in the lower-right corner.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    if ax is None:
+        _, ax = plt.subplots(figsize=(6, 3.5), dpi=300)
+
+    mat      = np.asarray(hap_probs, dtype=float)
+    assigned = np.argmax(mat, axis=1)
+    sex_arr  = (np.asarray(sex, dtype=float) >= 0.5).astype(int)
+
+    sex_labels    = {0: 'Male', 1: 'Female'}
+    sex_markers   = {0: 'o', 1: 's'}
+    sex_linestyle = {0: '-', 1: '--'}
+
+    for sex_val in (0, 1):
+        means: list[float] = []
+        sems:  list[float] = []
+        x_pos: list[int]   = []
+
+        for fi in range(len(founders)):
+            mask = (assigned == fi) & (sex_arr == sex_val)
+            if mask.sum() < 2:
+                means.append(float('nan'))
+                sems.append(0.0)
+            else:
+                vals = phenotype[mask].astype(float)
+                means.append(float(np.mean(vals)))
+                sems.append(float(np.std(vals, ddof=1) / np.sqrt(len(vals))))
+            x_pos.append(fi)
+
+        means_arr = np.array(means, dtype=float)
+        sems_arr  = np.array(sems,  dtype=float)
+        valid     = np.isfinite(means_arr)
+
+        color = COLOR_NEUTRAL_DARK if sex_val == 0 else COLOR_CC_FALLBACK
+        ax.errorbar(
+            np.array(x_pos)[valid],
+            means_arr[valid],
+            yerr=sems_arr[valid],
+            color=color,
+            marker=sex_markers[sex_val],
+            linestyle=sex_linestyle[sex_val],
+            linewidth=1.0,
+            markersize=5,
+            capsize=3,
+            label=sex_labels[sex_val],
+            zorder=3,
+        )
+
+    for fi, fname in enumerate(founders):
+        color = FOUNDER_COLORS.get(fname, COLOR_CC_FALLBACK)
+        ax.axvspan(fi - 0.4, fi + 0.4, alpha=0.08, color=color, zorder=0)
+
+    ax.set_xticks(np.arange(len(founders)))
+    ax.set_xticklabels(founders, rotation=45, ha='right', fontsize=8)
+    ax.set_xlim(-0.6, len(founders) - 0.4)
+    ax.set_ylim(bottom=0)
+    ax.set_ylabel(phenotype_label)
+    ax.legend(fontsize=8, frameon=False, loc='upper right')
+
+    if gxe_result is not None:
+        lod = gxe_result.get('lod_gxe_sex', float('nan'))
+        p   = gxe_result.get('p_gxe_sex',   float('nan'))
+        p_str = f'{p:.2e}' if (not np.isnan(p) and p < 0.001) else f'{p:.3f}'
+        ann = f'LOD$_{{gxe}}$ = {lod:.2f}\np$_{{gxe}}$ = {p_str} (LMM)'
+        ax.text(0.98, 0.04, ann, transform=ax.transAxes,
+                ha='right', va='bottom', fontsize=7,
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                          edgecolor=COLOR_NEUTRAL_LIGHT, alpha=0.9))
+
+    title_parts = []
+    if chrom:
+        title_parts.append(f'Chr {chrom}')
+    if position_mb is not None:
+        title_parts.append(f'{position_mb:.2f} Mb')
+    if title_parts:
+        ax.set_title(' · '.join(title_parts), fontsize=8, pad=4)
+
     sns.despine(ax=ax)
     _set_font(ax)
     return ax

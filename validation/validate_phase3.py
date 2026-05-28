@@ -31,6 +31,7 @@ Usage:
 import argparse
 import gc
 import logging
+import resource
 import sys
 import time
 import tracemalloc
@@ -78,15 +79,25 @@ MEAS = '📏'
 
 # ── timing + memory helpers ───────────────────────────────────────────────────
 
+def _get_rss_mb() -> float:
+    """Current process RSS in MB (macOS returns bytes; Linux returns kilobytes)."""
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    if sys.platform == 'darwin':
+        return usage.ru_maxrss / 1024**2
+    return usage.ru_maxrss / 1024
+
+
 class _Timer:
-    """context manager: records wall-clock elapsed and tracemalloc peak."""
+    """context manager: records wall-clock elapsed, tracemalloc peak, and RSS delta."""
 
     def __init__(self) -> None:
         self.elapsed: float = 0.0
         self.peak_mb: float = 0.0
+        self.peak_rss_mb: float = 0.0
 
     def __enter__(self) -> '_Timer':
         gc.collect()
+        self._rss_start = _get_rss_mb()
         tracemalloc.start()
         self._t0 = time.perf_counter()
         return self
@@ -97,17 +108,20 @@ class _Timer:
         tracemalloc.stop()
         tracemalloc.clear_traces()
         self.peak_mb = peak / 1024**2
+        # ru_maxrss is a high-water mark; delta captures allocations made in this block
+        self.peak_rss_mb = max(0.0, _get_rss_mb() - self._rss_start)
 
 
 def _record(timing_rows: list, section: str, t: _Timer, note: str = '') -> None:
     timing_rows.append({
-        'section':   section,
-        'elapsed_s': t.elapsed,
-        'peak_mb':   t.peak_mb,
-        'note':      note,
+        'section':     section,
+        'elapsed_s':   t.elapsed,
+        'peak_mb':     t.peak_mb,
+        'peak_rss_mb': t.peak_rss_mb,
+        'note':        note,
     })
-    log.info('  %-24s  %7.2f s  (%5.1f min)  peak %.1f MB (Python heap)',
-             section, t.elapsed, t.elapsed / 60, t.peak_mb)
+    log.info('  %-24s  %7.2f s  (%5.1f min)  RSS +%.1f MB  heap %.1f MB',
+             section, t.elapsed, t.elapsed / 60, t.peak_rss_mb, t.peak_mb)
 
 
 def _checkpoint(py_dir: Path, section: str, force: bool) -> bool:
@@ -295,7 +309,7 @@ def run(r_data: Path, out_dir: Path,
                 np.savez(kd_cache, **arrays)
                 del arrays; gc.collect()
             _record(timing_rows, 'S3_kinship_loco', t, 'full build; result used for S4+')
-            results['MEM-02'] = max(float(results.get('MEM-02', 0)), t.peak_mb)
+            results['MEM-02'] = max(float(results.get('MEM-02', 0)), t.peak_rss_mb)
             _mark_done(py_dir, str(sec))
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -316,6 +330,7 @@ def run(r_data: Path, out_dir: Path,
                         kinship_decomp=kinship_decomp,
                         use_rint=False,
                         phenotype_id=f'sim.y.{sim_i}',
+                        scan_window='genome',
                     )
                     if sim_i == 1:
                         rop_scan_1 = sc
@@ -334,7 +349,7 @@ def run(r_data: Path, out_dir: Path,
             _record(timing_rows, 'S4_lmm_scan', t,
                     f'{n_genes} genes genome-wide')
             results['SPEED-06'] = genes_min
-            results['MEM-02']   = t.peak_mb
+            results['MEM-02']   = t.peak_rss_mb
             if rop_scan_1 is not None:
                 rop_scan_1.to_dataframe()[
                     ['locus_id', 'chromosome', 'position', 'lod']
@@ -351,6 +366,7 @@ def run(r_data: Path, out_dir: Path,
             kinship_decomp=kinship_decomp,
             use_rint=False,
             phenotype_id='sim.y.1',
+            scan_window='genome',
         )
         peak = rop_scan_1.peak_locus()
         log.info('  peak: %s  chr%s  LOD=%.3f',
@@ -416,6 +432,7 @@ def run(r_data: Path, out_dir: Path,
                         n_imp=11,
                         use_rint=False,
                         seed=1,
+                        scan_window='genome',
                     )
                 log.info('  MI peak LOD = %.3f', float(mi_scan.lod.max()))
                 mi_scan.to_dataframe()[
@@ -471,7 +488,8 @@ def run(r_data: Path, out_dir: Path,
                 log.info('  %s GM_fo_mm39.csv not found at %s — S8 skipped',
                          SKIP, gm_csv_path)
                 timing_rows.append({'section': 'S8_snp_scan', 'elapsed_s': None,
-                                    'peak_mb': None, 'note': 'SKIPPED'})
+                                    'peak_mb': None, 'peak_rss_mb': None,
+                                    'note': 'SKIPPED'})
             _mark_done(py_dir, str(sec))
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -537,7 +555,7 @@ def run(r_data: Path, out_dir: Path,
                     instab_scan = instability_lm_scan(
                         sim_ys[1], cache,
                         sample_ids=sample_ids,
-                        n_subsamples=100,
+                        n_subsamples=250,
                         seed=1,
                         just_these_loci=set(np.asarray(lids_c).tolist()),
                     )
@@ -547,16 +565,17 @@ def run(r_data: Path, out_dir: Path,
                 ].to_csv(py_dir / 's11_instability.csv', index=False)
                 log.info('  saved s11_instability.csv')
                 del instab_scan; gc.collect()
-                _record(timing_rows, 'S11_instability', t, 'n=100 chr-restricted')
+                _record(timing_rows, 'S11_instability', t, 'n=250 chr-restricted')
             else:
                 log.info('  %s peak_chrom unavailable — S11 skipped', SKIP)
             _mark_done(py_dir, str(sec))
 
     timing_rows.append({
-        'section': 'total',
-        'elapsed_s': time.perf_counter() - _t0_run,
-        'peak_mb': None,
-        'note': '',
+        'section':     'total',
+        'elapsed_s':   time.perf_counter() - _t0_run,
+        'peak_mb':     None,
+        'peak_rss_mb': None,
+        'note':        '',
     })
 
     # ── compare vs R timing + produce summary ─────────────────────────────────
@@ -581,10 +600,11 @@ def _print_summary(
     pipe_py = pipe_rows['elapsed_s'].sum() if len(pipe_rows) == len(pipe_secs) else float('nan')
     if pd.notna(pipe_py):
         t_df = pd.concat([t_df, pd.DataFrame([{
-            'section': 'pipeline_from_scratch',
-            'elapsed_s': pipe_py,
-            'peak_mb': None,
-            'note': 'S1+S3+S4',
+            'section':     'pipeline_from_scratch',
+            'elapsed_s':   pipe_py,
+            'peak_mb':     None,
+            'peak_rss_mb': None,
+            'note':        'S1+S3+S4',
         }])], ignore_index=True)
 
     r_timing_path = r_data / 'timing_sections.csv'
@@ -606,22 +626,22 @@ def _print_summary(
 
     log.info('\n── Phase 3 benchmark summary ───────────────────────────────────────────')
     hdr = (f"  {'Section':<24s}  {'Py (s)':>8s}  {'R (s)':>8s}  "
-           f"{'Speedup':>8s}  {'Py MB':>8s}  {'R MB':>8s}")
+           f"{'Speedup':>8s}  {'RSS MB':>8s}  {'R MB':>8s}")
     log.info(hdr)
     log.info('  ' + '─' * 80)
     for _, row in t_df.iterrows():
-        py_s  = row['elapsed_s']
-        r_s   = row.get('r_elapsed_s', float('nan'))
-        sp    = row.get('speedup', float('nan'))
-        py_mb = row.get('peak_mb')
-        r_mb  = row.get('r_peak_heap_mb', float('nan'))
-        py_str  = f'{py_s:8.1f}' if pd.notna(py_s)  else '    skip'
-        r_str   = f'{r_s:8.1f}'  if pd.notna(r_s)   else '    n/a '
-        sp_str  = f'{sp:7.1f}×'  if pd.notna(sp)    else '    n/a '
-        pymb_str = f'{py_mb:8.1f}' if py_mb is not None else '     n/a'
-        rmb_str  = f'{r_mb:8.1f}'  if pd.notna(r_mb)  else '     n/a'
+        py_s    = row['elapsed_s']
+        r_s     = row.get('r_elapsed_s', float('nan'))
+        sp      = row.get('speedup', float('nan'))
+        rss_mb  = row.get('peak_rss_mb')
+        r_mb    = row.get('r_peak_heap_mb', float('nan'))
+        py_str   = f'{py_s:8.1f}' if pd.notna(py_s)   else '    skip'
+        r_str    = f'{r_s:8.1f}'  if pd.notna(r_s)    else '    n/a '
+        sp_str   = f'{sp:7.1f}×'  if pd.notna(sp)     else '    n/a '
+        rssmb_str = f'{rss_mb:8.1f}' if rss_mb is not None else '     n/a'
+        rmb_str   = f'{r_mb:8.1f}'   if pd.notna(r_mb)     else '     n/a'
         log.info('  %-24s  %s  %s  %s  %s  %s',
-                 row['section'], py_str, r_str, sp_str, pymb_str, rmb_str)
+                 row['section'], py_str, r_str, sp_str, rssmb_str, rmb_str)
     log.info('  ' + '─' * 80)
 
     # gates
@@ -641,7 +661,7 @@ def _print_summary(
         for label, val, unit, gate, ok in [
             ('SPEED-02  S4 speedup', s4_sp, '×',      '≥ 5×',       ok_speed),
             ('SPEED-06  S4 throughput', g_min, 'genes/min', '> 100/min', ok_gpm),
-            ('MEM-02    S4 peak heap', float(results.get('MEM-02', 0)), 'MB', '< 4096 MB', ok_mem),
+            ('MEM-02    S4 peak RSS',  float(results.get('MEM-02', 0)), 'MB', '< 4096 MB', ok_mem),
         ]:
             if ok is None:
                 sym = SKIP
@@ -1013,11 +1033,12 @@ def _print_summary(
                     _matched['r_elapsed_s'].sum())
             else:
                 _tot_row = pd.DataFrame([{
-                    'section': 'total',
-                    'elapsed_s': _matched['elapsed_s'].sum(),
+                    'section':     'total',
+                    'elapsed_s':   _matched['elapsed_s'].sum(),
                     'r_elapsed_s': _matched['r_elapsed_s'].sum(),
-                    'speedup': _total_spd,
-                    'peak_mb': float('nan'),
+                    'speedup':     _total_spd,
+                    'peak_mb':     float('nan'),
+                    'peak_rss_mb': float('nan'),
                 }])
                 t_df = pd.concat([t_df, _tot_row], ignore_index=True)
 
@@ -1126,32 +1147,39 @@ def _print_summary(
         plt.close(fig)
         log.info('  saved plots/timing_comparison.png')
 
-    # ── memory grouped bar chart (Python tracemalloc vs R gc max-used) ───────
+    # ── memory grouped bar chart (Python RSS delta vs R gc max-used) ──────────
     _mem_r_avail = 'r_peak_heap_mb' in t_df.columns
     _mem_base    = t_df[~t_df['section'].isin(['total', 'peak_overall'])].copy()
 
     # synthetic peak_overall row: maximum across all sections
-    _max_py_mem = (_mem_base['peak_mb'].max()
-                   if 'peak_mb' in _mem_base.columns else float('nan'))
+    _rss_col = 'peak_rss_mb'
+    _max_py_mem = (_mem_base[_rss_col].max()
+                   if _rss_col in _mem_base.columns else float('nan'))
     _max_r_mem  = (_mem_base['r_peak_heap_mb'].max()
                    if _mem_r_avail else float('nan'))
     _peak_row: dict = {'section': 'peak_overall', 'elapsed_s': float('nan'),
-                       'peak_mb': _max_py_mem, 'speedup': float('nan')}
+                       _rss_col: _max_py_mem, 'peak_mb': float('nan'),
+                       'speedup': float('nan')}
     if _mem_r_avail:
         _peak_row['r_peak_heap_mb'] = _max_r_mem
     _mem_df_src = pd.concat(
         [_mem_base, pd.DataFrame([_peak_row])], ignore_index=True)
 
     _mem_sec_order = _SEC_ORDER[:-1] + ['peak_overall']
-    mem_df = _ordered(_mem_df_src[_mem_df_src['peak_mb'].notna()],
-                      order=_mem_sec_order)
+    mem_df = _ordered(
+        _mem_df_src[_mem_df_src[_rss_col].notna()] if _rss_col in _mem_df_src.columns
+        else _mem_df_src[_mem_df_src['peak_mb'].notna()],
+        order=_mem_sec_order)
     if len(mem_df) == 0:
         mem_df = _ordered(_mem_df_src, order=_mem_sec_order)
 
     if len(mem_df) > 0:
         secs   = list(mem_df['section'])
         labels = [_label(s) for s in secs]
-        py_mem = [float(v) if pd.notna(v) else 0.0 for v in mem_df['peak_mb']]
+        # RSS delta is primary (captures numpy C allocations missed by tracemalloc)
+        py_mem = ([float(v) if pd.notna(v) else 0.0
+                   for v in mem_df[_rss_col]]
+                  if _rss_col in mem_df.columns else [0.0] * len(mem_df))
         r_mem  = ([float(v) if pd.notna(v) else float('nan')
                    for v in mem_df['r_peak_heap_mb']]
                   if _mem_r_avail else [float('nan')] * len(mem_df))
@@ -1168,7 +1196,7 @@ def _print_summary(
             if has_py_mem:
                 bars_py2 = ax2.barh(y + gap, py_mem, height=bar_h,
                                     color='#52A5DB', edgecolor='none',
-                                    label='Python / mosaiqtl (tracemalloc)')
+                                    label='Python / mosaiqtl (RSS delta)')
                 _py_max = max(v for v in py_mem if not np.isnan(v))
                 for bar, v in zip(bars_py2, py_mem):
                     if v == 0:
@@ -1211,7 +1239,7 @@ def _print_summary(
             plt.close(fig2)
             log.info('  saved plots/memory_comparison.png')
         else:
-            log.info('  memory comparison: no non-zero peak_mb values recorded')
+            log.info('  memory comparison: no non-zero peak_rss_mb values recorded')
 
 
 def main() -> None:

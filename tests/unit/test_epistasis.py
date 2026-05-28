@@ -163,6 +163,7 @@ class TestScanConditional:
         base_scan = scan_h2lmm(
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd, use_rint=False,
+            scan_window='genome',
         )
         signals = scan_conditional(
             base_scan, tiny_cache,
@@ -180,6 +181,7 @@ class TestScanConditional:
         base_scan = scan_h2lmm(
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd, use_rint=False,
+            scan_window='genome',
         )
         signals = scan_conditional(
             base_scan, tiny_cache,
@@ -201,6 +203,7 @@ class TestScanConditionalWithY:
         base_scan = scan_h2lmm(
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd, use_rint=False,
+            scan_window='genome',
         )
         signals = scan_conditional_with_y(
             tiny_strain_phenotype, base_scan, tiny_cache,

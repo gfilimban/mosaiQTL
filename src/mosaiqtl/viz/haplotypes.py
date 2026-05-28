@@ -94,7 +94,7 @@ def prob_heatmap(
 
     # x-axis bottom: samples label; no individual ticks
     ax.set_xticks([])
-    ax.set_xlabel('Samples (sorted ascending)', fontsize=8)
+    ax.set_xlabel('Strains (sorted by haplotype probability)', fontsize=8)
 
     # x-axis top: trait values at 5 quantile-spaced sample positions
     # — makes clear the numbers are trait values, not genomic coordinates
@@ -257,8 +257,8 @@ def pxg_sex_facet(
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), dpi=300,
                              sharey=True, constrained_layout=True)
 
-    sex_arr    = np.asarray(sex, dtype=float)
-    sex_masks  = {0: sex_arr == 0, 1: sex_arr == 1}
+    sex_arr   = np.asarray(sex, dtype=float)
+    sex_masks = {0: sex_arr < 0.5, 1: sex_arr >= 0.5}
     sex_titles = {0: 'Male', 1: 'Female'}
 
     loc_parts = []
@@ -465,6 +465,7 @@ def kinship_distribution(
     sns.kdeplot(tril, ax=ax, label='off-diagonal', color=FOUNDER_COLORS['129S1J'])
 
     ax.set_xlabel('Kinship value')
+    ax.set_ylabel('Density')
     ax.set_ylim(bottom=0)
     ax.legend(fontsize=8, frameon=False)
     title = 'Kinship distribution'

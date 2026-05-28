@@ -19,6 +19,7 @@ to the 1:1 case.
 
 """
 
+import time
 import numpy as np
 import pandas as pd
 import logging
@@ -115,8 +116,7 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
                use_rint=True, use_reml=True, phenotype_id='unknown',
                fixed_h2_dict=None, model='additive',
                scan_window='cis', gene_chr=None,
-               gene_pos_mb=None, window_mb=1.0,
-               sex=None):
+               gene_pos_mb=None, window_mb=1.0):
     """haplotype-based genome-wide scan with LOCO LMM.
 
     supports both 1:1 (n == m) and replicated (n > m) designs.
@@ -178,8 +178,6 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
                     f'{(~valid_sid).sum()} missing geno)')
 
     y = phenotype[valid].copy()
-    if use_rint:
-        y = rint(y)
 
     # covariates
     if covariates is not None:
@@ -189,20 +187,16 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
     else:
         x = np.ones((len(y), 1))
 
-    # sex appended after intercept/covariates (X-linked dosage + hormone effects)
-    if sex is not None:
-        sex_col = np.asarray(sex, dtype=float)[valid].reshape(-1, 1)
-        x = np.hstack([x, sex_col])
-
     # Z matrix for this valid subset
     z_sub = z_mat[valid] if z_mat is not None else None
 
-    # replicate-aware: compute strain means once; scan and h² operate at m-strain level.
-    if z_sub is not None:
-        r_counts = z_sub.sum(axis=0)             # (m,) replicates per strain
-        y        = (z_sub.T @ y) / r_counts      # strain-mean phenotype (m,)
-        x        = (z_sub.T @ x) / r_counts[:, None]  # strain-mean covariates (m, p)
-        z_sub    = None                           # H stays at m level in scan_chromosome
+    # RINT at sample level — matches miQTL's canonical replicated design: scan.h2lmm
+    # applies RINT to all n samples before any reduction. z_sub is retained and passed
+    # to scan_chromosome, which expands H from m→n via Z and fuses with eigvec rotation.
+    # The kinship is expanded to K_n = Z K_m Z^T per chromosome in the loop below,
+    # giving LODs on the same n-sample scale as miQTL's sample-level scan.
+    if use_rint:
+        y = rint(y)
 
     # kinship
     if kinship_decomp is None:
@@ -224,7 +218,15 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
         _ev  = kinship_decomp[chrom]['values']
         _evc = kinship_decomp[chrom]['vectors']
 
-        evals, evecs = _ev, _evc[valid] if _evc.shape[0] > len(y) else _evc
+        if z_sub is not None:
+            # expand LOCO kinship to sample level: K_n = Z K_m Z^T.
+            # eigendecomp is O(n³) but n≤416 — negligible; shared across all loci.
+            _K_m = _evc @ np.diag(_ev) @ _evc.T
+            _K_n = z_sub @ _K_m @ z_sub.T
+            evals, evecs = np.linalg.eigh(_K_n)
+            del _K_m, _K_n
+        else:
+            evals, evecs = _ev, (_evc[valid] if _evc.shape[0] > len(y) else _evc)
 
         y_rot = evecs.T @ y
         x_rot = evecs.T @ x
@@ -298,13 +300,17 @@ def scan_multi_gene(phenotype_matrix, gene_ids, genomecache,
         kinship_decomp = kin_module.decomp_kinship(kd_raw)
 
     results = {}
+    n_genes = len(gene_ids)
     if n_cores == 1:
         for gi, gid in enumerate(gene_ids):
-            logger.info(f'scanning {gi+1}/{len(gene_ids)}: {gid}')
+            logger.info('[%d/%d] scanning: %s', gi + 1, n_genes, gid)
+            _t0 = time.perf_counter()
             results[gid] = scan_h2lmm(
                 phenotype_matrix[:, gi], genomecache, covariates,
                 kinship_decomp, sample_ids, use_rint, phenotype_id=gid,
                 scan_window=scan_window)
+            logger.info('[%d/%d] done in %.1fs: %s', gi + 1, n_genes,
+                        time.perf_counter() - _t0, gid)
     else:
         from multiprocessing import Pool
 
@@ -428,8 +434,7 @@ def find_peaks(scan_result, threshold, drop=1.5, allow_multiple=False,
 
 def fixef_eqtl_scan(phenotype, genomecache, covariates=None,
                     sample_ids=None, use_rint=True,
-                    phenotype_id='unknown', just_these_loci=None,
-                    sex=None):
+                    phenotype_id='unknown', just_these_loci=None):
     """fixed-effect eQTL scan — OLS, no kinship.
 
 
@@ -463,9 +468,6 @@ def fixef_eqtl_scan(phenotype, genomecache, covariates=None,
          else np.ones((n, 1), dtype=float))
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((n, 1)), x])
-    if sex is not None:
-        sex_col = np.asarray(sex, dtype=float)[valid].reshape(-1, 1)
-        x = np.hstack([x, sex_col])
     p     = x.shape[1]
     e0    = y - x @ np.linalg.lstsq(x, y, rcond=None)[0]
     rss0  = float(e0 @ e0)
@@ -521,7 +523,7 @@ def instability_lm_scan(phenotype, genomecache, covariates=None,
                         sample_ids=None, use_rint=True,
                         n_subsamples=100, subsample_prop=0.63,
                         seed=1, phenotype_id='unknown',
-                        just_these_loci=None, sex=None):
+                        just_these_loci=None):
     """bootstrap instability scan — fixed-effect only.
 
     subsamples strains b times, runs fixef_eqtl_scan() on each subsample,
@@ -553,19 +555,31 @@ def instability_lm_scan(phenotype, genomecache, covariates=None,
     if sample_ids is not None:
         _z, _vs = _resolve_z(list(sample_ids), genomecache)
         _valid  = (~np.isnan(phenotype)) & _vs
-        _z_v    = _z[_valid]; _r = _z_v.sum(axis=0)
-        y_scan  = (_z_v.T @ phenotype[_valid]) / _r
-        cov_scan = ((_z_v.T @ covariates[_valid]) / _r[:, None]
-                    if covariates is not None else None)
-        sex_scan = ((_z_v.T @ np.asarray(sex, dtype=float)[_valid]) / _r
-                    if sex is not None else None)
+        if _z is not None:
+            _z_v    = _z[_valid]; _r = _z_v.sum(axis=0)
+            y_scan  = (_z_v.T @ phenotype[_valid]) / _r
+            cov_scan = ((_z_v.T @ covariates[_valid]) / _r[:, None]
+                        if covariates is not None else None)
+        else:
+            y_scan   = phenotype[_valid]
+            cov_scan = (covariates[_valid] if covariates is not None else None)
     else:
         y_scan   = phenotype
         cov_scan = covariates
-        sex_scan = (np.asarray(sex, dtype=float) if sex is not None else None)
 
     n = len(y_scan)
     k = max(int(n * subsample_prop), 2)
+
+    # derive which chromosomes contain the requested loci — avoids loading all
+    # 20 chromosomes per subsample when just_these_loci restricts to one chr
+    if just_these_loci:
+        _loci_set = set(just_these_loci)
+        _active_chroms = [
+            c for c in genomecache.chromosomes
+            if any(lid in _loci_set for lid in genomecache.get_chromosome(c)[0])
+        ]
+    else:
+        _active_chroms = list(genomecache.chromosomes)
 
     class _SubCache:
         """Genome cache view restricted to a subset of strain indices."""
@@ -573,7 +587,7 @@ def instability_lm_scan(phenotype, genomecache, covariates=None,
         def __init__(self, cache, idx):
             """Wrap cache, storing the index subset for subsetting probs."""
             self._c = cache; self._idx = idx
-            self.chromosomes = cache.chromosomes
+            self.chromosomes = _active_chroms
             self.n_founders  = cache.n_founders
             self.sample_ids  = [cache.sample_ids[i] for i in idx]
 
@@ -582,31 +596,90 @@ def instability_lm_scan(phenotype, genomecache, covariates=None,
             lids, pos, probs = self._c.get_chromosome(chrom)
             return lids, pos, probs[:, self._idx, :]
 
-    lod_sum  = None; peak_cnt = None; meta = None
+    # Load all loci probs once — avoids n_subsamples × n_loci HDF5 reads
+    _loci_set = set(just_these_loci) if just_these_loci else None
+    _lids_chunks, _chrs_chunks, _pos_chunks, _prob_chunks = [], [], [], []
+    for chrom in _active_chroms:
+        lids_c, pos_c, probs_c = genomecache.get_chromosome(chrom)
+        if _loci_set:
+            sel = [i for i, lid in enumerate(lids_c) if lid in _loci_set]
+            if not sel:
+                continue
+            lids_c  = np.asarray(lids_c)[sel]
+            pos_c   = pos_c[sel]
+            probs_c = probs_c[sel]
+        _lids_chunks.append(np.asarray(lids_c))
+        _chrs_chunks.append(np.full(len(lids_c), chrom))
+        _pos_chunks.append(pos_c)
+        _prob_chunks.append(probs_c)
 
-    for _ in range(n_subsamples):
-        idx   = rng.choice(n, size=k, replace=False)
-        sub   = _SubCache(genomecache, idx)
-        y_b   = y_scan[idx]
-        cov_b = cov_scan[idx] if cov_scan is not None else None
-        sex_b = sex_scan[idx] if sex_scan is not None else None
+    probs_all = np.concatenate(_prob_chunks, axis=0)   # (L, n_strains, J)
+    lids_all  = np.concatenate(_lids_chunks)
+    chrs_all  = np.concatenate(_chrs_chunks)
+    pos_all   = np.concatenate(_pos_chunks)
+    L = len(lids_all)
+    J = genomecache.n_founders
 
-        res = fixef_eqtl_scan(y_b, sub, cov_b, None, use_rint,
-                               phenotype_id, just_these_loci, sex=sex_b)
-        if lod_sum is None:
-            lod_sum  = np.zeros(len(res.lod))
-            peak_cnt = np.zeros(len(res.lod))
-            meta     = (res.locus_ids, res.chromosomes,
-                        res.positions, res.betas)
-        lod_sum += res.lod
-        peak_cnt[np.argmax(res.lod)] += 1
+    lod_sum   = np.zeros(L)
+    peak_cnt  = np.zeros(L, dtype=int)
+    betas_0   = None
+    _t_inst   = time.perf_counter()
 
-    lids, chrs, pos, betas = meta
+    for _si in range(n_subsamples):
+        idx = rng.choice(n, size=k, replace=False)
+        y_b = y_scan[idx]
+        if use_rint:
+            y_b = rint(y_b)
+
+        # build covariate matrix for this subsample
+        if cov_scan is not None:
+            x_b = cov_scan[idx].copy()
+        else:
+            x_b = np.ones((k, 1), dtype=float)
+        if not np.allclose(x_b[:, 0], 1.0):
+            x_b = np.hstack([np.ones((k, 1)), x_b])
+
+        # FWL: residualise y against x_b once
+        e0_b  = y_b - x_b @ np.linalg.lstsq(x_b, y_b, rcond=None)[0]
+        rss0_b = float(e0_b @ e0_b)
+
+        # subsampled haplotype probs: (L, k, J)
+        H_b = probs_all[:, idx, :]
+
+        # project out covariates from H: H_perp = M_X H
+        Xp_b   = np.linalg.pinv(x_b)                              # (p, k)
+        proj   = np.einsum('pn,lnj->lpj', Xp_b, H_b)            # (L, p, J)
+        H_perp = H_b - np.einsum('np,lpj->lnj', x_b, proj)      # (L, k, J)
+        del H_b, proj
+
+        G      = np.einsum('lni,lnj->lij', H_perp, H_perp)      # (L, J, J)
+        c      = np.einsum('lnj,n->lj', H_perp, e0_b)           # (L, J)
+        G_pinv = np.linalg.pinv(G, rcond=1e-10)                  # (L, J, J)
+        rss_red = np.einsum('li,lij,lj->l', c, G_pinv, c)       # (L,)
+
+        rss1 = np.maximum(rss0_b - rss_red, 1e-30)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            lod_b = np.where(rss1 < rss0_b,
+                             (k / 2.0) * np.log10(rss0_b / rss1), 0.0)
+
+        lod_sum  += lod_b
+        peak_cnt[np.argmax(lod_b)] += 1
+        if betas_0 is None:
+            betas_0 = np.einsum('lij,lj->li', G_pinv, c)        # (L, J)
+
+        if (_si + 1) % 10 == 0 or _si == n_subsamples - 1:
+            logger.debug('%s instability: %d/%d subsamples  %.1fs elapsed',
+                         phenotype_id, _si + 1, n_subsamples,
+                         time.perf_counter() - _t_inst)
+
     return ScanResult(
-        locus_ids   = lids, chromosomes = chrs, positions = pos,
-        lod         = lod_sum / n_subsamples,
-        p_value     = 1.0 - peak_cnt / n_subsamples,
-        betas       = betas, h2_null = {},
+        locus_ids    = lids_all,
+        chromosomes  = chrs_all,
+        positions    = pos_all,
+        lod          = lod_sum / n_subsamples,
+        p_value      = 1.0 - peak_cnt / n_subsamples,
+        betas        = betas_0 if betas_0 is not None else np.empty((0, J)),
+        h2_null      = {},
         phenotype_id = phenotype_id,
     )
 
@@ -616,8 +689,7 @@ def scan_h2lmm_mi(phenotype, genomecache, covariates=None,
                   n_imp=11, seed=1, use_rint=True,
                   use_reml=True, phenotype_id='unknown',
                   scan_window='cis', gene_chr=None,
-                  gene_pos_mb=None, window_mb=1.0,
-                  sex=None):
+                  gene_pos_mb=None, window_mb=1.0):
     """multiple-imputation haplotype scan.
 
     samples n_imp diplotype states per locus and averages LOD scores.
@@ -666,17 +738,14 @@ def scan_h2lmm_mi(phenotype, genomecache, covariates=None,
     _z_mi, _vs = _resolve_z(_sid_mi, genomecache)
     valid_mi   = (~np.isnan(phenotype)) & _vs
     y_base     = phenotype[valid_mi].copy()
-    if use_rint:
-        from ..utils import rint as _rint_mi
-        y_base = _rint_mi(y_base)
     x_base = (covariates[valid_mi].copy() if covariates is not None
               else np.ones((valid_mi.sum(), 1), dtype=float))
     if not np.allclose(x_base[:, 0], 1.0):
         x_base = np.hstack([np.ones((len(x_base), 1)), x_base])
-    if sex is not None:
-        sex_col_mi = np.asarray(sex, dtype=float)[valid_mi].reshape(-1, 1)
-        x_base = np.hstack([x_base, sex_col_mi])
     _zsub_mi = _z_mi[valid_mi] if _z_mi is not None else None
+    if use_rint:
+        from ..utils import rint as _rint_mi
+        y_base = _rint_mi(y_base)
     if _zsub_mi is not None:
         _r_mi  = _zsub_mi.sum(axis=0)
         y_base = (_zsub_mi.T @ y_base) / _r_mi

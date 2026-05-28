@@ -85,6 +85,7 @@ class TestScanH2Lmm:
             kinship_decomp=kd,
             use_rint=False,
             phenotype_id='test',
+            scan_window='genome',
         )
         assert isinstance(result, ScanResult)
 
@@ -96,6 +97,7 @@ class TestScanH2Lmm:
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd,
             use_rint=False,
+            scan_window='genome',
         )
         total_loci = sum(tiny_cache.n_loci(c) for c in tiny_cache.chromosomes)
         assert result.lod.shape == (total_loci,)
@@ -107,6 +109,7 @@ class TestScanH2Lmm:
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd,
             use_rint=False,
+            scan_window='genome',
         )
         assert np.all(np.isfinite(result.lod))
 
@@ -117,6 +120,7 @@ class TestScanH2Lmm:
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd,
             use_rint=False,
+            scan_window='genome',
         )
         assert np.all(result.lod >= -1e-8)
 
@@ -128,6 +132,7 @@ class TestScanH2Lmm:
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd,
             use_rint=False,
+            scan_window='genome',
         )
         assert np.all(result.p_value >= 0.0)
         assert np.all(result.p_value <= 1.0 + 1e-8)
@@ -139,6 +144,7 @@ class TestScanH2Lmm:
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd,
             use_rint=False,
+            scan_window='genome',
         )
         for c in tiny_cache.chromosomes:
             assert c in result.h2_null
@@ -153,6 +159,7 @@ class TestScanH2Lmm:
             kinship_decomp=kd,
             use_rint=False,
             phenotype_id='my_gene',
+            scan_window='genome',
         )
         assert result.phenotype_id == 'my_gene'
 
@@ -168,10 +175,12 @@ class TestScanH2Lmm:
             rng.standard_normal(len(tiny_strain_phenotype)),
         ])
         r_no_cov   = scan_h2lmm(tiny_strain_phenotype, tiny_cache,
-                                  kinship_decomp=kd, use_rint=False)
+                                  kinship_decomp=kd, use_rint=False,
+                                  scan_window='genome')
         r_with_cov = scan_h2lmm(tiny_strain_phenotype, tiny_cache,
                                   covariates=x_extra,
-                                  kinship_decomp=kd, use_rint=False)
+                                  kinship_decomp=kd, use_rint=False,
+                                  scan_window='genome')
         # LOD profiles differ when informative covariates are included
         assert not np.allclose(r_no_cov.lod, r_with_cov.lod)
 
@@ -182,6 +191,7 @@ class TestScanH2Lmm:
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=kd,
             use_rint=False,
+            scan_window='genome',
         )
         total_loci = sum(tiny_cache.n_loci(c) for c in tiny_cache.chromosomes)
         assert result.betas.shape == (total_loci, tiny_cache.n_founders)
@@ -192,6 +202,7 @@ class TestScanH2Lmm:
             tiny_strain_phenotype, tiny_cache,
             kinship_decomp=None,
             use_rint=False,
+            scan_window='genome',
         )
         assert isinstance(result, ScanResult)
 
@@ -200,9 +211,11 @@ class TestScanH2Lmm:
         from mosaiqtl.genotype.kinship import decomp_kinship
         kd = decomp_kinship(tiny_kinship)
         r_no_rint   = scan_h2lmm(tiny_strain_phenotype, tiny_cache,
-                                   kinship_decomp=kd, use_rint=False)
+                                   kinship_decomp=kd, use_rint=False,
+                                   scan_window='genome')
         r_with_rint = scan_h2lmm(tiny_strain_phenotype, tiny_cache,
-                                   kinship_decomp=kd, use_rint=True)
+                                   kinship_decomp=kd, use_rint=True,
+                                   scan_window='genome')
         assert not np.allclose(r_no_rint.lod, r_with_rint.lod)
 
 
@@ -223,7 +236,8 @@ class TestLodDropCi:
         from mosaiqtl.genotype.kinship import decomp_kinship
         kd = decomp_kinship(tiny_kinship)
         sr = scan_h2lmm(tiny_strain_phenotype, tiny_cache,
-                         kinship_decomp=kd, use_rint=False)
+                         kinship_decomp=kd, use_rint=False,
+                         scan_window='genome')
         lo, hi, pk = lod_drop_ci(sr, chrom='1', drop=1.5)
         assert np.isfinite(lo) and np.isfinite(hi) and np.isfinite(pk)
 
@@ -232,7 +246,8 @@ class TestLodDropCi:
         from mosaiqtl.genotype.kinship import decomp_kinship
         kd = decomp_kinship(tiny_kinship)
         sr = scan_h2lmm(tiny_strain_phenotype, tiny_cache,
-                         kinship_decomp=kd, use_rint=False)
+                         kinship_decomp=kd, use_rint=False,
+                         scan_window='genome')
         lo, hi, pk = lod_drop_ci(sr, chrom='1', drop=1.5)
         assert lo <= pk <= hi
 
@@ -308,14 +323,14 @@ class TestInstabilityLmScan:
     def test_returns_scan_result(self, tiny_cache, tiny_strain_phenotype):
         sr = instability_lm_scan(
             tiny_strain_phenotype, tiny_cache, use_rint=False,
-            n_samples=5, seed=0,
+            n_subsamples=5, seed=0,
         )
         assert isinstance(sr, ScanResult)
 
     def test_lod_shape(self, tiny_cache, tiny_strain_phenotype):
         sr = instability_lm_scan(
             tiny_strain_phenotype, tiny_cache, use_rint=False,
-            n_samples=3, seed=0,
+            n_subsamples=3, seed=0,
         )
         total_loci = sum(tiny_cache.n_loci(c) for c in tiny_cache.chromosomes)
         assert sr.lod.shape[0] == total_loci
@@ -323,7 +338,7 @@ class TestInstabilityLmScan:
     def test_p_value_in_unit_interval(self, tiny_cache, tiny_strain_phenotype):
         sr = instability_lm_scan(
             tiny_strain_phenotype, tiny_cache, use_rint=False,
-            n_samples=3, seed=1,
+            n_subsamples=3, seed=1,
         )
         assert ((sr.p_value >= 0) & (sr.p_value <= 1 + 1e-8)).all()
 

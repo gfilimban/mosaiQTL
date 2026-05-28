@@ -1,7 +1,7 @@
 """
-effects — allele haplotype effect estimation at a QTL locus
+effects — allele haplotype effect estimation and locus characterization
 
-two estimation methods:
+two estimation methods for haplotype effects:
 
   fixef: γ̂ = G⁺ c   (pseudoinverse; identical to genome scan betas at that locus)
   ranef: γ̂ = (G + λI)⁻¹ c   (ridge/BLUP; λ = σ²_e / σ²_a from empirical Bayes)
@@ -26,6 +26,8 @@ if TYPE_CHECKING:
     from ..genotype.genomecache import GenomeCache
 
 logger = logging.getLogger('mosaiqtl')
+
+__all__ = ['get_allele_effects', 'qtl_gxe_lrt']
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -212,3 +214,91 @@ def get_allele_effects(
             ci_lo=b - 1.96 * s, ci_hi=b + 1.96 * s,
         ))
     return effects
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# locus characterization
+# ─────────────────────────────────────────────────────────────────────────────
+
+def qtl_gxe_lrt(
+    y: np.ndarray,
+    h_locus: np.ndarray,
+    sex: np.ndarray,
+    covariates: np.ndarray,
+    eigvals: np.ndarray,
+    eigvecs: np.ndarray,
+    lod_additive: float,
+    h2: float | None = None,
+) -> dict[str, float]:
+    """Single-locus LMM likelihood-ratio test for haplotype × sex interaction.
+
+    Computes LOD_gxe = LOD_full − LOD_additive at the peak locus, where
+    LOD_full adds J interaction columns [H ⊙ sex] to the test matrix.
+    Equivalent to miQTL ``scan.h2lmm(intcovar=sex)`` evaluated at one locus
+    instead of genome-wide — same statistical model, lower compute.
+
+    The 1-way haplotype effect (``chi2_haplotype``, ``p_haplotype``) is
+    derived at zero cost from the existing scan LOD via the LRT identity:
+    ``chi2 = 2 ln(10) × LOD``, ``p ~ χ²(J−1)``.
+
+    parameters
+    ----------
+    y            : np.ndarray (n,)    strain-level phenotype
+    h_locus      : np.ndarray (n, J)  haplotype probabilities at peak locus
+    sex          : np.ndarray (n,)    binary sex covariate (0 = male, 1 = female)
+    covariates   : np.ndarray (n, p)  covariate matrix including intercept
+    eigvals      : np.ndarray (n,)    LOCO kinship eigenvalues (peak chromosome)
+    eigvecs      : np.ndarray (n, n)  LOCO kinship eigenvectors
+    lod_additive : float              peak LOD from the additive scan
+    h2           : float or None      null h²; re-estimated if None
+
+    returns
+    -------
+    dict with keys:
+        chi2_haplotype  — LRT χ²(J−1) for 1-way haplotype effect (from scan LOD)
+        p_haplotype     — corresponding p-value
+        lod_gxe_sex     — LOD_full − LOD_additive at peak locus
+        p_gxe_sex       — p-value for interaction, χ²(J−1)
+    """
+    from scipy.stats import chi2 as chi2_dist
+
+    n = len(y)
+    J = h_locus.shape[1]
+    nan_result: dict[str, float] = {
+        'chi2_haplotype': np.nan, 'p_haplotype': np.nan,
+        'lod_gxe_sex': np.nan,   'p_gxe_sex':   np.nan,
+    }
+
+    # 1-way haplotype test: derived from scan LOD at zero cost
+    chi2_hap = 2.0 * np.log(10) * max(lod_additive, 0.0)
+    p_hap    = float(1.0 - chi2_dist.cdf(chi2_hap, df=J - 1))
+
+    # estimate h² from null model if not provided
+    if h2 is None:
+        x_rot = (eigvecs.T @ covariates)
+        y_rot = eigvecs.T @ y
+        h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, eigvals)
+
+    # build interaction matrix: [H, H ⊙ sex] — adds J interaction columns
+    sex_c  = sex.astype(float)
+    h_full = np.column_stack([h_locus, h_locus * sex_c[:, None]])
+
+    try:
+        c, G, rss0 = _locus_fwl(y, covariates, h_full, eigvals, eigvecs, h2)
+        rss1 = rss0 - float(c @ np.linalg.pinv(G, rcond=1e-10) @ c)
+        rss1 = max(rss1, rss0 * 1e-12)
+        lod_full = float(n) / 2.0 * np.log10(rss0 / rss1)
+    except (np.linalg.LinAlgError, ValueError):
+        return {'chi2_haplotype': chi2_hap, 'p_haplotype': p_hap,
+                'lod_gxe_sex': np.nan, 'p_gxe_sex': np.nan}
+
+    lod_gxe  = lod_full - lod_additive
+    chi2_gxe = 2.0 * np.log(10) * max(lod_gxe, 0.0)
+    p_gxe    = float(1.0 - chi2_dist.cdf(chi2_gxe, df=J - 1))
+
+    return {
+        'chi2_haplotype': float(chi2_hap),
+        'p_haplotype':    float(p_hap),
+        'lod_gxe_sex':    float(lod_gxe),
+        'p_gxe_sex':      float(p_gxe),
+    }

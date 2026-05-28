@@ -53,7 +53,7 @@ def diplotype_to_allele_probs(diplotype_probs, n_founders=8):
     containing f, weighted by 0.5 for heterozygous states.
 
     args:
-        diplotype_probs : (n_states,) or (n_loci, n_samples, n_states)
+        diplotype_probs : (n_states,) or (n_loci, n_strains, n_states)
     returns:
         allele_probs : same leading dims, last dim = n_founders
     """

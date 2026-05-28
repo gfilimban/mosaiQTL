@@ -7,17 +7,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from mosaiqtl.genotype.genomecache import GenomeCache
 
 
-def _make_cache(n_samples=20, n_loci=10, n_founders=8, chroms=('1', '2')):
+def _make_cache(n_strains=20, n_loci=10, n_founders=8, chroms=('1', '2')):
     '''build minimal in-memory GenomeCache without disk I/O.'''
     rng = np.random.default_rng(0)
     data = {}
     for c in chroms:
         lids  = np.array([f'{c}_L{i}' for i in range(n_loci)])
         pos   = np.linspace(1.0, 100.0, n_loci)
-        probs = rng.dirichlet(np.ones(n_founders), size=(n_loci, n_samples))
+        probs = rng.dirichlet(np.ones(n_founders), size=(n_loci, n_strains))
         data[c] = {'locus_ids': lids, 'positions': pos, 'probs': probs}
     founders   = [f'F{i}' for i in range(n_founders)]
-    sample_ids = [f's{i}' for i in range(n_samples)]
+    sample_ids = [f's{i}' for i in range(n_strains)]
     return GenomeCache(data=data, sample_ids=sample_ids, founders=founders)
 
 
@@ -27,7 +27,7 @@ class TestGenomeCacheAttributes:
         assert c.chromosomes == ['1', '2']
 
     def test_sample_ids_length(self):
-        c = _make_cache(n_samples=30)
+        c = _make_cache(n_strains=30)
         assert len(c.sample_ids) == 30
 
     def test_n_loci(self):
@@ -37,7 +37,7 @@ class TestGenomeCacheAttributes:
 
 class TestGenomeCacheGetChromosome:
     def setup_method(self):
-        self.c = _make_cache(n_samples=20, n_loci=10, n_founders=8)
+        self.c = _make_cache(n_strains=20, n_loci=10, n_founders=8)
 
     def test_shapes(self):
         lids, pos, probs = self.c.get_chromosome('1')
@@ -64,7 +64,7 @@ class TestGenomeCacheGetChromosome:
 
 class TestGenomeCacheGetLocus:
     def setup_method(self):
-        self.c = _make_cache(n_samples=20, n_loci=10, n_founders=8)
+        self.c = _make_cache(n_strains=20, n_loci=10, n_founders=8)
 
     def test_shape(self):
         h = self.c.get_locus('1', 0)

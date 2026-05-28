@@ -755,6 +755,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                         kinship_decomp=kinship_decomp,
                         use_rint=False,
                         phenotype_id=f'sim.y.{sim_i}',
+                        scan_window='genome',
                     )
                     sc_df = _scan_to_df(sc)
                     sc_df['sim_idx'] = sim_i
@@ -1089,6 +1090,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                         use_rint=False,
                         phenotype_id='sim.y.1.full',
                         model='full',
+                        scan_window='genome',
                     )
                     py_add_sim1 = all_py_df[all_py_df['sim_idx'] == 1]
                     full_lod_df = pd.DataFrame({
@@ -1210,6 +1212,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
             kinship_decomp=kinship_decomp,
             use_rint=False,
             phenotype_id='sim.y.1',
+            scan_window='genome',
         )
         peak = rop_scan_1.peak_locus()
         peak_chrom    = str(peak['chromosome'])
@@ -1284,7 +1287,8 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                             sim_ys[1], cache_coll,
                             sample_ids=sample_ids,
                             kinship_decomp=kinship_decomp,
-                            use_rint=False, phenotype_id='sim.y.1')
+                            use_rint=False, phenotype_id='sim.y.1',
+                            scan_window='genome')
                         lod_coll_r = pd.read_csv(lod_coll_r_path)
                         lod_coll_r['chr'] = lod_coll_r['chr'].astype(str)
                         py_df = pd.DataFrame({'locus': sc5.locus_ids, 'lod_py': sc5.lod})
@@ -1317,7 +1321,8 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                         sim_ys[1], cache,
                         sample_ids=sample_ids,
                         kinship_decomp=kinship_decomp,
-                        use_rint=False, phenotype_id='sim.y.1')
+                        use_rint=False, phenotype_id='sim.y.1',
+                        scan_window='genome')
 
                 # parametric permutation — matches miQTL generate.sample.outcomes.matrix
                 # method='permutation' which draws u~N(0,K*tau2) then rank-permutes y.
@@ -1446,6 +1451,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     kinship_decomp=kinship_decomp,
                     use_rint=False, n_imp=11, seed=1,
                     phenotype_id='sim.y.1',
+                    scan_window='genome',
                 )
                 mi_py = _scan_to_df(mi_scan)
                 mi_py.to_csv(py_dir / 's7_mi_lod.csv', index=False)

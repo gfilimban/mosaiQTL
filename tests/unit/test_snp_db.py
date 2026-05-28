@@ -26,7 +26,7 @@ _POP4 = Population(
 )
 
 
-def _make_cache(chroms=('1',), n_loci=5, n_samples=5, founders=None):
+def _make_cache(chroms=('1',), n_loci=5, n_strains=5, founders=None):
     """Minimal GenomeCache for snp_db tests (probs unused — pass dummy).
 
     n_loci=5 → positions [10, 30, 50, 70, 90] Mb so test SNPs at round Mb
@@ -38,9 +38,9 @@ def _make_cache(chroms=('1',), n_loci=5, n_samples=5, founders=None):
     for c in chroms:
         lids = np.array([f'rs{c}_{i:03d}' for i in range(n_loci)])
         pos  = np.linspace(10.0, 90.0, n_loci)   # Mb: [10, 30, 50, 70, 90]
-        probs = np.ones((n_loci, n_samples, n_f)) / n_f
+        probs = np.ones((n_loci, n_strains, n_f)) / n_f
         data[c] = {'locus_ids': lids, 'positions': pos, 'probs': probs}
-    sample_ids = np.array([f'S{i}' for i in range(n_samples)])
+    sample_ids = np.array([f'S{i}' for i in range(n_strains)])
     return GenomeCache(sample_ids, founders, data)
 
 

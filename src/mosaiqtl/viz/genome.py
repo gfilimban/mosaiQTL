@@ -140,6 +140,7 @@ def manhattan(
     ax.set_xlim(0, offset)
     ax.set_ylim(0, None)
     ax.set_ylabel('LOD')
+    ax.set_xlabel('Chromosome')
     ax.set_xticks(xticks)
     ax.set_xticklabels(xlabels, fontsize=7)
     ax.tick_params(axis='x', length=2)
@@ -457,7 +458,7 @@ def lod_histogram(
     ax.set_xlim(left=0)
     ax.set_ylim(bottom=0)
     ax.set_xlabel('LOD')
-    ax.set_ylabel('Loci')
+    ax.set_ylabel('Number of loci')
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
@@ -574,7 +575,7 @@ def cis_distance_histogram(
 
     ax.set_ylim(bottom=0)
     ax.set_xlabel('Peak − TSS (Mb)')
-    ax.set_ylabel('eGenes')
+    ax.set_ylabel('Number of eGenes')
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
@@ -812,7 +813,7 @@ def egene_lod_distribution(
                    linestyle='--', label=f'GEV 95% = {threshold:.2f}')
 
     ax.set_xlabel('Peak LOD')
-    ax.set_ylabel('Genes')
+    ax.set_ylabel('Number of eGenes')
     ax.set_ylim(bottom=0)
     ax.legend(fontsize=8, frameon=False)
     n_total = len(peak_lods)
@@ -870,7 +871,7 @@ def mediation_profile(
     ax.set_xlim(float(pos[0]), float(pos[-1]))
     ax.set_ylim(bottom=0)
     ax.set_xlabel(f'Chr {chrom} position (Mb)' if chrom else 'Position (Mb)')
-    ax.set_ylabel('LOD')
+    ax.set_ylabel('Mediation LOD')
     ax.legend(fontsize=8, frameon=False)
     title = 'Mediation'
     if gene:
