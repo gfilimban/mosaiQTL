@@ -361,35 +361,25 @@ def run_threshold_scans(null_outcomes, genomecache,
     if not np.allclose(x[:, 0], 1.0):            # ensure intercept present
         x = np.hstack([np.ones((n, 1)), x])
 
-    # replicate path: build z_mat for H expansion; keep y/x at sample level.
-    # K_n = Z K_m Z^T is computed per chromosome — same model as scan_h2lmm.
-    z_mat  = None
+    # replicate path: reduce y/x to strain means; scan and parametric draws at m-level.
+    # K_n = Z K_m Z^T has n-m zero eigenvalues (within-strain directions) that inflate
+    # sigma2_e in _null_fit_params → null draws dominated by noise → LOD ≈ 0.
+    # Fix: reduce to strain means; use K_m (m×m, full rank) throughout.
+    _z_red: 'np.ndarray | None' = None
+    _r_counts: 'np.ndarray | None' = None
     x_scan = x
-    _kd_n: dict = {}   # per-chr n-level eigendecomp cache
     if sample_ids is not None:
         from ..utils import build_z_matrix
-        z_mat, _ = build_z_matrix(list(sample_ids), list(genomecache.sample_ids))
-        # x_scan stays at sample level (n) — NOT reduced to strain means.
-        # Pre-expand K_n = Z K_m Z^T once per chromosome; cache eigendecomp.
-        for c in chrs:
-            _ev  = kinship_decomp[c]['values']
-            _evc = kinship_decomp[c]['vectors']
-            _K_m = _evc @ np.diag(_ev) @ _evc.T
-            _K_n = z_mat @ _K_m @ z_mat.T
-            _ev_n, _evc_n = np.linalg.eigh(_K_n)
-            _kd_n[c] = {'values': _ev_n, 'vectors': _evc_n, 'K_raw': _K_n}
-            del _K_m, _K_n
+        _z_red, _ = build_z_matrix(list(sample_ids), list(genomecache.sample_ids))
+        _r_counts = _z_red.sum(axis=0)                   # (m,) replicates per strain
+        x_scan = (_z_red.T @ x) / _r_counts[:, None]     # (m, p) strain-mean covariates
 
     def _ev_evc(c: str) -> 'tuple[np.ndarray, np.ndarray]':
-        """return eigendecomp at the correct level (n if z_mat, m otherwise)."""
-        if c in _kd_n:
-            return _kd_n[c]['values'], _kd_n[c]['vectors']
+        """return m-level eigendecomp from kinship_decomp."""
         return kinship_decomp[c]['values'], kinship_decomp[c]['vectors']
 
     def _K_raw(c: str) -> np.ndarray:
-        """return raw kinship at the correct level for parametric draws."""
-        if c in _kd_n:
-            return _kd_n[c]['K_raw']
+        """return m×m raw kinship for parametric draws."""
         return kinship_loco[c]
 
     # pre-compute per-chrom h² from original phenotype (fix_h2=True mode)
@@ -398,7 +388,8 @@ def run_threshold_scans(null_outcomes, genomecache,
         if phenotype is None:
             raise ValueError('phenotype required when fix_h2=True')
         y0 = _rint(phenotype) if use_rint else phenotype.copy()
-        # y0 stays at sample level when z_mat is set (no reduction)
+        if _r_counts is not None:
+            y0 = (_z_red.T @ y0) / _r_counts   # strain means (RINT already applied above)
         for c in chrs:
             ev, evc = _ev_evc(c)
             h2_fixed[c], _ = lmm_module.estimate_h2_null(
@@ -407,6 +398,8 @@ def run_threshold_scans(null_outcomes, genomecache,
     else:
         if phenotype is not None:
             y0 = _rint(phenotype) if use_rint else phenotype.copy()
+            if _r_counts is not None:
+                y0 = (_z_red.T @ y0) / _r_counts
         else:
             y0 = None
 
@@ -422,15 +415,13 @@ def run_threshold_scans(null_outcomes, genomecache,
     if fix_h2 and permutation_method in ('plain', 'parametric'):
         plain_mat = None
         if permutation_method == 'plain':
-            # same permuted matrix reused across all chromosomes; stays at
-            # sample level (n) when z_mat is set — scan_chromosome_batch
-            # receives z_mat and expands H internally.
             if use_rint:
                 plain_mat = np.column_stack([_rint(null_outcomes[:, i])
                                              for i in range(n_perms)])
             else:
                 plain_mat = null_outcomes.astype(float)
-            # no z-reduction: plain_mat stays at sample level
+            if _r_counts is not None:
+                plain_mat = (_z_red.T @ plain_mat) / _r_counts[:, None]  # (m, n_perms)
 
         # parametric: draw null phenotypes ONCE from the first valid chromosome's
         # kinship then reuse across all chromosomes — mirrors R's
@@ -462,7 +453,7 @@ def run_threshold_scans(null_outcomes, genomecache,
 
             chr_max = lmm_module.scan_chromosome_batch(
                 null_mat_gw, genomecache, c, x_scan, ev, evc, h2,
-                z_mat=z_mat, batch_size=batch_size)
+                z_mat=None, batch_size=batch_size)
             chr_null_lods[c] = chr_max
             max_lods = np.maximum(max_lods, chr_max)
             logger.info('  [batch] chr%s  max_lod=%.3f', c, float(chr_max.max()))
@@ -470,6 +461,9 @@ def run_threshold_scans(null_outcomes, genomecache,
         return max_lods, chr_null_lods
 
     # ── slow path: fix_h2=False ───────────────────────────────────────────────
+    # precompute H rotation once per chromosome; only phenotype varies per perm
+    _chr_data_cache = {c: lmm_module.precompute_chromosome(genomecache, c, *_ev_evc(c))
+                       for c in chrs}
     chr_null_lods = {c: np.zeros(n_perms) for c in chrs}
     for p_idx in range(n_perms):
         if (p_idx + 1) % 100 == 0:
@@ -496,7 +490,8 @@ def run_threshold_scans(null_outcomes, genomecache,
                 y_p = null_outcomes[:, p_idx]
                 if use_rint:
                     y_p = _rint(y_p)
-                # no z-reduction: y_p stays at sample level
+                if _r_counts is not None:
+                    y_p = (_z_red.T @ y_p) / _r_counts
                 if fix_h2:
                     h2 = h2_fixed[c]
                 else:
@@ -504,9 +499,7 @@ def run_threshold_scans(null_outcomes, genomecache,
                         evc.T @ y_p, evc.T @ x_scan, ev,
                         method='reml' if use_reml else 'ml')
 
-            res = lmm_module.scan_chromosome(
-                y_p, genomecache, c, x_scan, ev, evc, h2, use_reml=use_reml,
-                z_mat=z_mat)
+            res = lmm_module.scan_chromosome(y_p, _chr_data_cache[c], x_scan, ev, evc, h2)
             chr_lod = float(res['lod'].max())
             chr_null_lods[c][p_idx] = chr_lod
             best = max(best, chr_lod)
@@ -669,9 +662,8 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
                 h2, _ = lmm_module.estimate_h2_null(
                     evc.T @ y_b, evc.T @ x_scan, ev,
                     method='reml' if use_reml else 'ml')
-                res    = lmm_module.scan_chromosome(
-                    y_b, genomecache, c, x_scan, ev, evc, h2,
-                    use_reml=use_reml)
+                cd_b   = lmm_module.precompute_chromosome(genomecache, c, ev, evc)
+                res    = lmm_module.scan_chromosome(y_b, cd_b, x_scan, ev, evc, h2)
                 peak_i = int(np.argmax(res['lod']))
                 if res['lod'][peak_i] > best_lods[b_idx]:
                     best_lods[b_idx] = res['lod'][peak_i]

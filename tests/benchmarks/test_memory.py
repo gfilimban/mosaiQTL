@@ -22,7 +22,7 @@ import pytest
 
 from mosaiqtl.genotype.genomecache import GenomeCache
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
-from mosaiqtl.qtl.lmm import estimate_h2_null, scan_chromosome
+from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome
 
 # ── fixture sizes (matches test_scan_speed.py) ────────────────────────────────
 N_STRAINS  = 40
@@ -91,8 +91,9 @@ class TestScanMemory:
         y     = rng.standard_normal(N_STRAINS)
         h2, _ = estimate_h2_null(evc.T @ y, evc.T @ x, ev)
 
+        cd = precompute_chromosome(cache, chrom, ev, evc)
         tracemalloc.start()
-        scan_chromosome(y, cache, chrom, x, ev, evc, h2)
+        scan_chromosome(y, cd, x, ev, evc, h2)
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
 
@@ -111,7 +112,8 @@ class TestScanMemory:
         y     = rng.standard_normal(N_STRAINS)
         h2, _ = estimate_h2_null(evc.T @ y, evc.T @ x, ev)
 
-        result = scan_chromosome(y, cache, chrom, x, ev, evc, h2)
+        cd     = precompute_chromosome(cache, chrom, ev, evc)
+        result = scan_chromosome(y, cd, x, ev, evc, h2)
 
         # result is a flat per-chr dict, not a 2-D (n_genes × n_loci) array
         assert isinstance(result, dict), 'scan_chromosome must return a dict'

@@ -110,7 +110,7 @@ from mosaiqtl.qtl.scan import (
     scan_h2lmm_mi,
     ScanResult,
 )
-from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome_fast
+from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome
 from mosaiqtl.qtl.permutation import (
     generate_null_outcomes,
     get_gev_thresholds,
@@ -1735,21 +1735,20 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 _chr_precomputed = False
                 if _sw in ('cis', 'local'):
                     _z_ch, _vsid_ch = build_z_matrix(geno_ids_ch, list(cache.sample_ids))
-                    _z_sub_ch  = _z_ch[_vsid_ch]                                  # (n_valid, m)
-                    _cov_valid = cov_ch[_vsid_ch]                                 # (n_valid, 5)
-                    _x_sub_ch  = np.hstack(
-                        [np.ones((_z_sub_ch.shape[0], 1)), _cov_valid])           # (n_valid, 6)
-                    _ev  = kinship_decomp[ch]['values']
-                    _evc = kinship_decomp[ch]['vectors']
-                    _K_m = _evc @ np.diag(_ev) @ _evc.T
-                    _K_n = _z_sub_ch @ _K_m @ _z_sub_ch.T
-                    _evals_ch, _evecs_ch = np.linalg.eigh(_K_n)
-                    del _K_m, _K_n
+                    _z_sub_ch    = _z_ch[_vsid_ch]                                # (n_valid, m)
+                    _r_counts_ch = _z_sub_ch.sum(axis=0)                          # (m,)
+                    _cov_valid   = cov_ch[_vsid_ch]                               # (n_valid, p)
+                    _x_full_ch   = np.hstack(
+                        [np.ones((_z_sub_ch.shape[0], 1)), _cov_valid])
+                    # reduce covariates to strain means; scan at m-level with K_m directly
+                    _x_sub_ch  = (_z_sub_ch.T @ _x_full_ch) / _r_counts_ch[:, None]
+                    _evals_ch  = kinship_decomp[ch]['values']
+                    _evecs_ch  = kinship_decomp[ch]['vectors']
                     _chr_data_ch = precompute_chromosome(
-                        cache, ch, _evals_ch, _evecs_ch, _z_sub_ch)
+                        cache, ch, _evals_ch, _evecs_ch, z_mat=None)
                     _chr_precomputed = True
-                    log.info('    chr%s: H precomputed (%d loci  %d samples)',
-                             ch, len(_chr_data_ch['locus_ids']), _z_sub_ch.shape[0])
+                    log.info('    chr%s: H precomputed (%d loci  %d strains)',
+                             ch, len(_chr_data_ch['locus_ids']), len(_r_counts_ch))
 
                 log.info('  running LMM scan on chr%s ...', ch)
                 t_chr = time.perf_counter()
@@ -1763,11 +1762,11 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     tss_mb = tss_lookup.get(gene_name)
 
                     if _chr_precomputed and not np.any(np.isnan(y_raw[_vsid_ch])):
-                        # fast path: skip H rotation (already in _chr_data_ch)
-                        y_sub  = rint(y_raw[_vsid_ch])
+                        # precomputed path: RINT at sample level, then reduce to strain means
+                        y_sub  = (_z_sub_ch.T @ rint(y_raw[_vsid_ch])) / _r_counts_ch
                         h2, _  = estimate_h2_null(
                             _evecs_ch.T @ y_sub, _evecs_ch.T @ _x_sub_ch, _evals_ch)
-                        chr_res = scan_chromosome_fast(
+                        chr_res = scan_chromosome(
                             y_sub, _chr_data_ch, _x_sub_ch, _evals_ch, _evecs_ch, h2)
                         if _sw == 'local' and tss_mb is not None:
                             _mask = np.abs(chr_res['positions'] - tss_mb) <= window_mb
@@ -2003,12 +2002,11 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
 
                     _gids = [meta_geno_map.get(s, s) for s in _sids]
                     _y    = _cts[0].astype(float)
-                    _cov  = _build_covariates(meta, _sids)
                     _null = generate_null_outcomes(_y, n_perms=250, seed=1)
                     _ch_max, _ch_nulls = run_threshold_scans(
                         _null, cache,
                         phenotype=_y,
-                        covariates=_cov,
+                        covariates=None,
                         kinship_decomp={_ch: kinship_decomp[_ch]},
                         chrom=_ch,
                         sample_ids=_gids,

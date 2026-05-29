@@ -17,7 +17,7 @@ import pytest
 
 from mosaiqtl.genotype.genomecache import GenomeCache
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
-from mosaiqtl.qtl.lmm import estimate_h2_null, scan_chromosome
+from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome
 
 # ── fixture sizes ──────────────────────────────────────────────────────────────
 N_STRAINS  = 40      # matches sparc_cc40 strain count
@@ -63,21 +63,22 @@ def scan_inputs(cache, kinship_decomp):
     chrom = '1'
     ev    = kinship_decomp[chrom]['values']
     evc   = kinship_decomp[chrom]['vectors']
-    x     = np.ones((N_SAMPLES, 1))
-    y     = rng.standard_normal(N_SAMPLES)
+    x     = np.ones((N_STRAINS, 1))
+    y     = rng.standard_normal(N_STRAINS)
     h2, _ = estimate_h2_null(evc.T @ y, evc.T @ x, ev)
-    return {'y': y, 'x': x, 'ev': ev, 'evc': evc, 'h2': h2, 'chrom': chrom}
+    cd    = precompute_chromosome(cache, chrom, ev, evc)
+    return {'y': y, 'x': x, 'ev': ev, 'evc': evc, 'h2': h2, 'chrom': chrom, 'cd': cd}
 
 
 # ── benchmarks ─────────────────────────────────────────────────────────────────
 
 def test_bench_calc_kinship_loco(benchmark, cache):
-    """LOCO kinship over N_CHROM chromosomes × N_LOCI loci × N_SAMPLES samples."""
+    """LOCO kinship over N_CHROM chromosomes × N_LOCI loci × N_STRAINS samples."""
     benchmark(calc_kinship, cache, method='loco')
 
 
 def test_bench_decomp_kinship(benchmark, cache):
-    """eigendecomposition of LOCO kinship dict (N_CHROM matrices, N_SAMPLES×N_SAMPLES)."""
+    """eigendecomposition of LOCO kinship dict (N_CHROM matrices, N_STRAINS×N_STRAINS)."""
     kd = calc_kinship(cache, method='loco')
     benchmark(decomp_kinship, kd)
 
@@ -91,11 +92,11 @@ def test_bench_estimate_h2_null(benchmark, scan_inputs):
     benchmark(estimate_h2_null, evc.T @ y, evc.T @ x, ev)
 
 
-def test_bench_scan_chromosome(benchmark, cache, scan_inputs):
+def test_bench_scan_chromosome(benchmark, scan_inputs):
     """vectorised FWL scan over N_LOCI loci — the primary hot path."""
     benchmark(
         scan_chromosome,
-        scan_inputs['y'], cache, scan_inputs['chrom'],
+        scan_inputs['y'], scan_inputs['cd'],
         scan_inputs['x'], scan_inputs['ev'], scan_inputs['evc'],
         scan_inputs['h2'],
     )

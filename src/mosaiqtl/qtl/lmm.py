@@ -314,54 +314,7 @@ def _scan_chromosome_core(
             'lod': lod_arr, 'p_value': pval_arr, 'betas': beta_h}
 
 
-def scan_chromosome(y, genomecache, chrom, x_covariates,
-                    eigvals, eigvecs, h2_null, use_reml=True,
-                    z_mat=None, model='additive'):
-    """scan all loci on one chromosome — vectorized batch WLS.
-
-    replaces the per-locus python loop with a single tensor computation
-    via the frisch-waugh-lovell (fwl) theorem. all loci share the same
-    weight vector w and null model, so:
-        rss_alt[l] = rss_null - c[l]' G[l]+ c[l]
-    where H_perp[l] = M_X H_t[l] (weighted H residualized on X),
-    c[l] = H_perp[l]' e0, G[l]+ = Moore-Penrose pseudoinverse of G[l].
-
-    using all J founders (not J-1): the sum-to-one constraint makes the
-    J×J gram matrix rank J-1 at regular loci. at loci where one founder
-    has near-zero probability the rank is J-2. pinv handles both cases,
-    matching r's rank-tolerant qr decomposition in lm.fit() exactly.
-
-    model='additive' (default): betas shape (n_loci, J), sum ≈ 0 per locus.
-    model='full': constructs diplotype probs via outer product P(fi/fj)=P(fi)*P(fj)
-        for i≤j.  valid for CC inbred data; betas shape (n_loci, J*(J+1)/2).
-
-    equivalent to qtl2::scan_pg_onechr (rcpp), now in numpy.
-
-    parameters
-    ----------
-    y            : np.ndarray (n,)
-    genomecache : GenomeCache
-    chrom        : str
-    x_covariates : np.ndarray (n, p)
-    eigvals      : np.ndarray (n,)     eigenvalues of n×n kinship
-    eigvecs      : np.ndarray (n, n)   eigenvectors
-    h2_null      : float
-    use_reml     : bool                (unused for lod; kept for api compat)
-    z_mat        : np.ndarray (n, m) or None
-    model        : str                 'additive' (default) or 'full'
-
-    returns
-    -------
-    dict: locus_ids, positions, lod, p_value, betas (n_loci, nf)
-    """
-    cd = precompute_chromosome(genomecache, chrom, eigvals, eigvecs, z_mat, model)
-    return _scan_chromosome_core(
-        y, cd['H_t_raw'], x_covariates, eigvals, eigvecs, h2_null,
-        cd['locus_ids'], cd['positions'], cd['n_founders'],
-    )
-
-
-def scan_chromosome_fast(
+def scan_chromosome(
     y: np.ndarray,
     chr_data: dict,
     x_covariates: np.ndarray,
@@ -371,20 +324,19 @@ def scan_chromosome_fast(
 ) -> dict:
     """scan one chromosome using precomputed chromosome data.
 
-    drop-in replacement for scan_chromosome when scanning many genes on the
-    same chromosome: call precompute_chromosome once, then call this function
-    once per gene.  skips the O(n_loci·n·m·J) H rotation — only the cheap
-    O(n_loci·n·J) per-gene weight application is repeated.
+    call precompute_chromosome once per chromosome, then call this once per
+    gene.  the O(n_loci·n·m·J) H rotation is paid once; only the cheap
+    O(n_loci·n·J) per-gene weight scaling is repeated.
 
     parameters
     ----------
-    y          : np.ndarray (n,)
-    chr_data   : dict from precompute_chromosome — keys: locus_ids, positions,
-                 H_t_raw (n_loci, n, J), n_founders
+    y            : np.ndarray (n,)
+    chr_data     : dict from precompute_chromosome — keys: locus_ids,
+                   positions, H_t_raw (n_loci, n, J), n_founders
     x_covariates : np.ndarray (n, p)
-    eigvals    : np.ndarray (n,)
-    eigvecs    : np.ndarray (n, n)
-    h2_null    : float
+    eigvals      : np.ndarray (n,)
+    eigvecs      : np.ndarray (n, n)
+    h2_null      : float
 
     returns
     -------

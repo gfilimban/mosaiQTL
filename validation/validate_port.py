@@ -863,8 +863,9 @@ if section(5, 'CACHE COLLAPSE'):
                     _h2,_ = lmm_module.estimate_h2_null(_evc.T@_rint(_y),
                                                          _evc.T@covar_base,_ev)
                     for _ca,_ls in [(cache_py,lf),(cache_coll,lc)]:
+                        _cd = lmm_module.precompute_chromosome(_ca,_chrom,_ev,_evc)
                         _cr = lmm_module.scan_chromosome(
-                            _rint(_y),_ca,_chrom,covar_base,_ev,_evc,_h2)
+                            _rint(_y),_cd,covar_base,_ev,_evc,_h2)
                         _ls.append(pd.DataFrame({'locus':_cr['locus_ids'],
                                                   'lod':_cr['lod'],'gene_id':_gene}))
             r_fc = np.nan
@@ -928,7 +929,8 @@ if section(6, 'PERMUTATION THRESHOLDS'):
             ml  = []; _chr_detail = []
             for _ in range(_np):
                 yp  = rng.permutation(y_v)
-                cr  = lmm_module.scan_chromosome(yp,cache_py,_tchr,x_v,ev,evc_v,h2)
+                _cd = lmm_module.precompute_chromosome(cache_py,_tchr,ev,evc_v)
+                cr  = lmm_module.scan_chromosome(yp,_cd,x_v,ev,evc_v,h2)
                 _lod = cr['lod']
                 _pos = cr.get('positions', np.zeros(len(_lod)))
                 if _cis:

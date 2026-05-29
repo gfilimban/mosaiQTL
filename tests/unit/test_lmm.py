@@ -8,7 +8,7 @@ import pytest  # noqa: F401
 
 sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
 
-from mosaiqtl.qtl.lmm import estimate_h2_null, scan_chromosome
+from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome
 from mosaiqtl.qtl.scan import scan_h2lmm
 
 
@@ -45,9 +45,9 @@ class TestScanChromosome:
             eigvecs.T @ tiny_strain_covariates,
             eigvals,
         )
+        cd = precompute_chromosome(tiny_cache, chrom, eigvals, eigvecs)
         result = scan_chromosome(
-            tiny_strain_phenotype, tiny_cache, chrom, tiny_strain_covariates,
-            eigvals, eigvecs, h2,
+            tiny_strain_phenotype, cd, tiny_strain_covariates, eigvals, eigvecs, h2,
         )
         for key in ('locus_ids', 'positions', 'lod', 'p_value', 'betas'):
             assert key in result
@@ -62,9 +62,9 @@ class TestScanChromosome:
             eigvecs.T @ tiny_strain_covariates,
             eigvals,
         )
+        cd = precompute_chromosome(tiny_cache, chrom, eigvals, eigvecs)
         result = scan_chromosome(
-            tiny_strain_phenotype, tiny_cache, chrom, tiny_strain_covariates,
-            eigvals, eigvecs, h2,
+            tiny_strain_phenotype, cd, tiny_strain_covariates, eigvals, eigvecs, h2,
         )
         n_loci = len(tiny_cache._data[chrom]['locus_ids'])
         assert result['lod'].shape == (n_loci,)
@@ -79,9 +79,9 @@ class TestScanChromosome:
             eigvecs.T @ tiny_strain_covariates,
             eigvals,
         )
+        cd = precompute_chromosome(tiny_cache, chrom, eigvals, eigvecs)
         result = scan_chromosome(
-            tiny_strain_phenotype, tiny_cache, chrom, tiny_strain_covariates,
-            eigvals, eigvecs, h2,
+            tiny_strain_phenotype, cd, tiny_strain_covariates, eigvals, eigvecs, h2,
         )
         assert np.all(result['lod'] >= -1e-8)
 
@@ -96,9 +96,9 @@ class TestScanChromosome:
             eigvecs.T @ tiny_strain_covariates,
             eigvals,
         )
+        cd = precompute_chromosome(tiny_cache, chrom, eigvals, eigvecs)
         result = scan_chromosome(
-            tiny_strain_phenotype, tiny_cache, chrom, tiny_strain_covariates,
-            eigvals, eigvecs, h2,
+            tiny_strain_phenotype, cd, tiny_strain_covariates, eigvals, eigvecs, h2,
         )
         assert np.all(np.isfinite(result['lod']))
 
@@ -112,9 +112,9 @@ class TestScanChromosome:
             eigvecs.T @ tiny_strain_covariates,
             eigvals,
         )
+        cd = precompute_chromosome(tiny_cache, chrom, eigvals, eigvecs)
         result = scan_chromosome(
-            tiny_strain_phenotype, tiny_cache, chrom, tiny_strain_covariates,
-            eigvals, eigvecs, h2,
+            tiny_strain_phenotype, cd, tiny_strain_covariates, eigvals, eigvecs, h2,
         )
         pv = result['p_value']
         assert np.all(pv >= 0.0) and np.all(pv <= 1.0 + 1e-8)
@@ -131,9 +131,9 @@ class TestScanChromosomeFull:
             eigvecs.T @ tiny_strain_covariates,
             eigvals,
         )
+        cd = precompute_chromosome(tiny_cache, chrom, eigvals, eigvecs, model='full')
         result = scan_chromosome(
-            tiny_strain_phenotype, tiny_cache, chrom, tiny_strain_covariates,
-            eigvals, eigvecs, h2, model='full',
+            tiny_strain_phenotype, cd, tiny_strain_covariates, eigvals, eigvecs, h2,
         )
         n_loci = len(tiny_cache._data[chrom]['locus_ids'])
         J = tiny_cache.n_founders
@@ -150,9 +150,9 @@ class TestScanChromosomeFull:
             eigvecs.T @ tiny_strain_covariates,
             eigvals,
         )
+        cd = precompute_chromosome(tiny_cache, chrom, eigvals, eigvecs, model='full')
         result = scan_chromosome(
-            tiny_strain_phenotype, tiny_cache, chrom, tiny_strain_covariates,
-            eigvals, eigvecs, h2, model='full',
+            tiny_strain_phenotype, cd, tiny_strain_covariates, eigvals, eigvecs, h2,
         )
         assert np.all(result['lod'] >= -1e-8)
 
@@ -166,9 +166,9 @@ class TestScanChromosomeFull:
             eigvecs.T @ tiny_strain_covariates,
             eigvals,
         )
+        cd = precompute_chromosome(tiny_cache, chrom, eigvals, eigvecs, model='full')
         result = scan_chromosome(
-            tiny_strain_phenotype, tiny_cache, chrom, tiny_strain_covariates,
-            eigvals, eigvecs, h2, model='full',
+            tiny_strain_phenotype, cd, tiny_strain_covariates, eigvals, eigvecs, h2,
         )
         assert np.all(np.isfinite(result['lod']))
 

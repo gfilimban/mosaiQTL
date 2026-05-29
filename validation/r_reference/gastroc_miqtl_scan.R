@@ -803,14 +803,12 @@ if (run(5)) {
       n_obs <- sum(!is.na(pheno_df[[cand_gene]]))
       if (n_obs < 20L) next   # too few observations for a stable null fit
 
-      # Permutation at sample level using scan.h2lmm directly.
-      # scan.h2lmm with pheno.id='sample_id' expands K to Z K Z^T (n×n) internally,
-      # so permutation LODs are on the same n=415 scale as the S4 scan — correctly
-      # calibrated. miQTL's helper functions (generate.simple.permutation.index.matrix,
-      # run.simple.permutation.threshold.scans) store fit0$K (now n×n) and pass it
-      # back to scan.h2lmm, causing chol() failures; we bypass them with a direct loop.
+      # Permutation at strain-mean level using scan.h2lmm with pheno.id='genotype'.
+      # miQTL scans at m=48 strain-mean resolution; LODs on m-scale match the S4
+      # scan which also uses K (m×m) with strain-mean phenotype internally.
+      # miQTL's helper functions crash when passed the expanded K; direct loop used.
       K_ch <- kinship_loco[[ch]]
-      # PSD guard on m×m K_ch (scan.h2lmm expands to n×n internally)
+      # PSD guard on m×m K_ch
       K_eigs    <- eigen(K_ch, symmetric = TRUE, only.values = TRUE)$values
       K_min_eig <- min(K_eigs)
       K_psd_tol <- max(abs(K_eigs)) * nrow(K_ch)^2 * .Machine$double.eps
@@ -822,17 +820,17 @@ if (run(5)) {
 
       n_perm_s5      <- 250L
       perm_max_lods_ <- numeric(n_perm_s5)
-      y_gene         <- pheno_df[[cand_gene]]   # RINT already applied at sample level
+      y_gene         <- strain_means[[cand_gene]]   # RINT(mean(raw)) — strain-level
       set.seed(1)
       for (pi in seq_len(n_perm_s5)) {
-        pheno_perm              <- pheno_df
+        pheno_perm              <- strain_means
         pheno_perm[[cand_gene]] <- sample(y_gene)
         scan_perm <- scan.h2lmm(
           genomecache           = genomecache,
           data                  = pheno_perm,
-          pheno.id              = 'sample_id',
+          pheno.id              = 'genotype',
           geno.id               = 'genotype',
-          formula               = as.formula(paste(cand_gene, '~ sex + dataset')),
+          formula               = as.formula(paste(cand_gene, '~ 1')),
           K                     = K_ch,
           use.multi.impute      = FALSE,
           return.allele.effects = FALSE,

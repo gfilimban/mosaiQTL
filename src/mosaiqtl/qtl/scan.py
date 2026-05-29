@@ -238,8 +238,8 @@ def scan_h2lmm(phenotype, genomecache, covariates=None,
                                                  method='reml' if use_reml else 'ml')
         h2_null_dict[chrom] = h2
 
-        chr_res = lmm_module.scan_chromosome(
-            y, genomecache, chrom, x, evals, evecs, h2, use_reml, z_sub, model)
+        cd = lmm_module.precompute_chromosome(genomecache, chrom, evals, evecs, z_sub, model)
+        chr_res = lmm_module.scan_chromosome(y, cd, x, evals, evecs, h2)
 
         if scan_window == 'local':
             mask = np.abs(chr_res['positions'] - gene_pos_mb) <= window_mb
@@ -785,9 +785,8 @@ def scan_h2lmm_mi(phenotype, genomecache, covariates=None,
             n_imp=n_imp, rng=rng,
         )
         # reference scan on soft probs — for p_value/betas fields only
-        ref = lmm_module.scan_chromosome(
-            y_base, genomecache, chrom, x_base, ev, evc, fixed_h2[chrom],
-        )
+        cd_ref = lmm_module.precompute_chromosome(genomecache, chrom, ev, evc)
+        ref = lmm_module.scan_chromosome(y_base, cd_ref, x_base, ev, evc, fixed_h2[chrom])
         n_loci = len(ref['locus_ids'])
         all_lids.append(ref['locus_ids'])
         all_chrs.append(np.full(n_loci, chrom))

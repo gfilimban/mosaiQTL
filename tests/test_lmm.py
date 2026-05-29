@@ -4,7 +4,7 @@ import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from mosaiqtl.qtl.lmm import fit_lmm_at_locus, estimate_h2_null, scan_chromosome
+from mosaiqtl.qtl.lmm import fit_lmm_at_locus, estimate_h2_null, precompute_chromosome, scan_chromosome
 from mosaiqtl.models.records import LMMResult
 from mosaiqtl.genotype.genomecache import GenomeCache
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
@@ -115,27 +115,24 @@ class TestScanChromosome:
         self.y   = rng.standard_normal(n)
         self.h2, _ = estimate_h2_null(self.evc.T @ self.y,
                                        self.evc.T @ self.x, self.ev)
+        self.cd  = precompute_chromosome(self.cache, self.chrom, self.ev, self.evc)
 
     def test_output_keys(self):
-        res = scan_chromosome(self.y, self.cache, self.chrom,
-                               self.x, self.ev, self.evc, self.h2)
+        res = scan_chromosome(self.y, self.cd, self.x, self.ev, self.evc, self.h2)
         assert set(res.keys()) >= {'locus_ids', 'positions', 'lod', 'p_value', 'betas'}
 
     def test_lod_shape(self):
-        res = scan_chromosome(self.y, self.cache, self.chrom,
-                               self.x, self.ev, self.evc, self.h2)
+        res = scan_chromosome(self.y, self.cd, self.x, self.ev, self.evc, self.h2)
         n_loci = self.cache.n_loci(self.chrom)
         assert res['lod'].shape == (n_loci,)
 
     def test_lod_nonneg(self):
-        res = scan_chromosome(self.y, self.cache, self.chrom,
-                               self.x, self.ev, self.evc, self.h2)
+        res = scan_chromosome(self.y, self.cd, self.x, self.ev, self.evc, self.h2)
         assert np.all(res['lod'] >= 0.0)
 
     def test_fwl_matches_per_locus(self):
         '''vectorised scan must equal per-locus fit_lmm_at_locus within 1e-6.'''
-        res = scan_chromosome(self.y, self.cache, self.chrom,
-                               self.x, self.ev, self.evc, self.h2)
+        res = scan_chromosome(self.y, self.cd, self.x, self.ev, self.evc, self.h2)
         _, _, probs = self.cache.get_chromosome(self.chrom)
         nf1 = self.cache.n_founders - 1
         y_rot = self.evc.T @ self.y
@@ -154,6 +151,5 @@ class TestScanChromosome:
         y_signal = 4.0 * probs[j_signal, :, 0] + 0.1 * rng.standard_normal(20)
         h2, _ = estimate_h2_null(self.evc.T @ y_signal,
                                   self.evc.T @ self.x, self.ev)
-        res = scan_chromosome(y_signal, self.cache, self.chrom,
-                               self.x, self.ev, self.evc, h2)
+        res = scan_chromosome(y_signal, self.cd, self.x, self.ev, self.evc, h2)
         assert int(np.argmax(res['lod'])) == j_signal
