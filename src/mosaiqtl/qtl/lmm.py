@@ -32,10 +32,16 @@ logger = logging.getLogger('mosaiqtl')
 __all__: list[str] = []   # internal engine — no public symbols; import via scan.py
 
 
-def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):
+def estimate_h2_null(y_rot, x_rot, eigvals, method='ml'):
     """estimate heritability under the null model (no QTL effect).
 
-    algorithm (      1. evaluate profile (RE)ML on a 20-point h² grid [0.01, 0.99]
+    Uses ML (not REML) by default. The LOD score is a likelihood ratio test between
+    null (no QTL) and alternative (+ haplotype H) — models with different fixed effects.
+    REML likelihoods are not comparable across different fixed-effect structures, so
+    the LRT is only valid under ML. This matches R miQTL's use.par='h2' (ML) default.
+    REML is available as method='reml' for variance component estimation outside LRT.
+
+    algorithm: 1. evaluate profile ML on a 20-point h² grid [0.01, 0.99]
       2. refine around the best grid point with Brent's method
       3. brute check: compare against h²=0 — take whichever has
          higher log-likelihood (brute-force safeguard)
@@ -45,7 +51,7 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):
     y_rot   : np.ndarray (n,)    U'y — rotated phenotype
     x_rot   : np.ndarray (n, p)  U'X — rotated covariates
     eigvals : np.ndarray (n,)    eigenvalues of kinship matrix
-    method  : str  'reml' (default,
+    method  : str  'ml' (default) or 'reml'
     returns
     -------
     h2      : float   optimal h² ∈ (0, 1)
