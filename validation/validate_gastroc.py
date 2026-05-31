@@ -730,6 +730,15 @@ def _make_descriptive_plots(
                 ax.scatter(snp_top['pos_mb'].values, snp_top['lod'].values,
                            color=FOUNDER_COLORS['129S1J'], s=4, alpha=0.7,
                            linewidths=0)
+                _top_row = snp_top.loc[snp_top['lod'].idxmax()]
+                ax.annotate(
+                    str(_top_row['snp']),
+                    xy=(_top_row['pos_mb'], _top_row['lod']),
+                    xytext=(6, 4), textcoords='offset points',
+                    fontsize=6, color=FOUNDER_COLORS['PWKJ'],
+                    arrowprops=dict(arrowstyle='-', color=FOUNDER_COLORS['PWKJ'],
+                                   lw=0.6),
+                )
                 ax.set_xlim(snp_top['pos_mb'].min(), snp_top['pos_mb'].max())
                 ax.set_ylim(bottom=0)
                 ax.set_xlabel(f'Chr {peak_chr} position (Mb)')
@@ -748,6 +757,15 @@ def _make_descriptive_plots(
                     ax_p1.scatter(snp_p1['pos_mb'].values, snp_p1['lod'].values,
                                   color=FOUNDER_COLORS['129S1J'], s=4, alpha=0.7,
                                   linewidths=0)
+                    _top_row_p1 = snp_p1.loc[snp_p1['lod'].idxmax()]
+                    ax_p1.annotate(
+                        str(_top_row_p1['snp']),
+                        xy=(_top_row_p1['pos_mb'], _top_row_p1['lod']),
+                        xytext=(6, 4), textcoords='offset points',
+                        fontsize=6, color=FOUNDER_COLORS['PWKJ'],
+                        arrowprops=dict(arrowstyle='-', color=FOUNDER_COLORS['PWKJ'],
+                                        lw=0.6),
+                    )
                     ax_p1.set_xlim(snp_p1['pos_mb'].min(), snp_p1['pos_mb'].max())
                     ax_p1.set_ylim(bottom=0)
                     ax_p1.set_xlabel(f'Chr {peak_chr} position (Mb)')
@@ -1241,13 +1259,23 @@ def _make_comparison_plots(
         try:
             py_perm = pd.read_csv(py_perm_path)['max_lod'].dropna().values
             r_perm  = pd.read_csv(r_perm_path)['max_lod'].dropna().values
+            # derive canonical R n_perms from timing_sections.csv; fall back to CSV row count
+            r_n_perms = len(r_perm)
+            _r_timing_sec = r_data / 'timing_sections.csv'
+            if _r_timing_sec.exists():
+                _ts = pd.read_csv(_r_timing_sec)
+                _s5_row = _ts[_ts['section'] == 'S5_permutation']
+                if len(_s5_row) > 0 and pd.notna(_s5_row['n_perms'].iloc[0]):
+                    r_n_perms = int(_s5_row['n_perms'].iloc[0])
             fig, ax = plt.subplots(figsize=(5, 4))
-            for vals, label, color in [(py_perm, 'Python', '#4F6EAF'),
-                                        (r_perm,  'R',      '#D83026')]:
+            for vals, label, color, n_p in [
+                (py_perm, 'Python', '#4F6EAF', len(py_perm)),
+                (r_perm,  'R',      '#D83026', r_n_perms),
+            ]:
                 if len(vals) < 5:
                     continue
                 ax.hist(vals, bins=30, alpha=0.35, color=color,
-                        density=True, label=f'{label} n={len(vals)}')
+                        density=True, label=f'{label} n={n_p}')
                 try:
                     c, loc, scale = gev_dist.fit(vals)
                     xg = np.linspace(vals.min(), vals.max(), 200)
@@ -1740,15 +1768,19 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _cov_valid   = cov_ch[_vsid_ch]                               # (n_valid, p)
                     _x_full_ch   = np.hstack(
                         [np.ones((_z_sub_ch.shape[0], 1)), _cov_valid])
-                    # reduce covariates to strain means; scan at m-level with K_m directly
-                    _x_sub_ch  = (_z_sub_ch.T @ _x_full_ch) / _r_counts_ch[:, None]
-                    _evals_ch  = kinship_decomp[ch]['values']
-                    _evecs_ch  = kinship_decomp[ch]['vectors']
+                    # expand K_n = Z K_m Z^T (n×n, rank m); scan at sample level to match R
+                    _ev_m  = kinship_decomp[ch]['values']
+                    _evc_m = kinship_decomp[ch]['vectors']
+                    _K_m   = (_evc_m * _ev_m) @ _evc_m.T
+                    _K_n   = _z_sub_ch @ _K_m @ _z_sub_ch.T
+                    del _K_m
+                    _evals_ch, _evecs_ch = np.linalg.eigh(_K_n)
+                    del _K_n
                     _chr_data_ch = precompute_chromosome(
-                        cache, ch, _evals_ch, _evecs_ch, z_mat=None)
+                        cache, ch, _evals_ch, _evecs_ch, z_mat=_z_sub_ch)
                     _chr_precomputed = True
-                    log.info('    chr%s: H precomputed (%d loci  %d strains)',
-                             ch, len(_chr_data_ch['locus_ids']), len(_r_counts_ch))
+                    log.info('    chr%s: H precomputed (%d loci  %d samples)',
+                             ch, len(_chr_data_ch['locus_ids']), _z_sub_ch.shape[0])
 
                 log.info('  running LMM scan on chr%s ...', ch)
                 t_chr = time.perf_counter()
@@ -1762,12 +1794,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     tss_mb = tss_lookup.get(gene_name)
 
                     if _chr_precomputed and not np.any(np.isnan(y_raw[_vsid_ch])):
-                        # precomputed path: RINT at sample level, then reduce to strain means
-                        y_sub  = (_z_sub_ch.T @ rint(y_raw[_vsid_ch])) / _r_counts_ch
+                        # precomputed path: sample-level K_n scan (matches R's K_n = Z K_m Z^T)
+                        y_sub  = rint(y_raw[_vsid_ch])                          # (n,) sample-level
                         h2, _  = estimate_h2_null(
-                            _evecs_ch.T @ y_sub, _evecs_ch.T @ _x_sub_ch, _evals_ch)
+                            _evecs_ch.T @ y_sub, _evecs_ch.T @ _x_full_ch, _evals_ch)
                         chr_res = scan_chromosome(
-                            y_sub, _chr_data_ch, _x_sub_ch, _evals_ch, _evecs_ch, h2)
+                            y_sub, _chr_data_ch, _x_full_ch, _evals_ch, _evecs_ch, h2)
                         if _sw == 'local' and tss_mb is not None:
                             _mask = np.abs(chr_res['positions'] - tss_mb) <= window_mb
                             chr_res = {
@@ -1832,7 +1864,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 n_genes_total += len(loaded_ids)
                 del counts_ch
                 if _chr_precomputed:
-                    del _chr_data_ch, _evals_ch, _evecs_ch, _z_sub_ch, _x_sub_ch, _cov_valid
+                    del _chr_data_ch, _evals_ch, _evecs_ch, _z_sub_ch, _r_counts_ch, _cov_valid
                 gc.collect()
 
             elapsed_s = time.perf_counter() - t_scan
@@ -1960,7 +1992,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     egenes_df: 'pd.DataFrame | None' = None
     chr_null_lods_s5: 'dict | None' = None
     perm_max_lods_s5: 'np.ndarray | None' = None
-    perm_n_s5: int = 500
+    perm_n_s5: int = 0
 
     # ─────────────────────────────────────────────────────────────────────────
     # S5 — permutation threshold: one per chromosome, top-LOD gene per chr
@@ -2027,6 +2059,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     # also save peak_chr null as the canonical file for R comparison
                     if str(_ch) == str(peak_chr):
                         perm_max_lods_s5 = _ch_max
+                        perm_n_s5 = int(np.isfinite(_ch_max).sum())
                         pd.DataFrame({'max_lod': _ch_max}).to_csv(
                             py_dir / 's5_perm_max_lods.csv', index=False)
                         if r_perm_lod_path.exists():
@@ -2261,6 +2294,36 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             if r_egenes_path.exists():
                 egenes_r = pd.read_csv(r_egenes_path)
                 eqtl_sum['in_r_egenes'] = eqtl_sum['gene'].isin(egenes_r['gene'])
+                # ── R vs Python eGene LOD comparison ──────────────────────────
+                _cmp = egenes_r.merge(
+                    eqtl_sum[['gene', 'peak_lod']].rename(columns={'peak_lod': 'lod_py'}),
+                    on='gene', how='inner',
+                ).rename(columns={'lod': 'lod_r'})
+                if len(_cmp) > 0:
+                    _ratio       = _cmp['lod_r'] / _cmp['lod_py'].replace(0, np.nan)
+                    _med_ratio   = float(_ratio.median())
+                    _thr3        = (_ratio > 3).sum()
+                    _thr2        = (_ratio > 2).sum()
+                    _thr_half    = (_ratio < 0.5).sum()
+                    _n_shared    = len(_cmp)
+                    _n_only_r    = len(egenes_r) - _n_shared
+                    _n_only_py   = len(eqtl_sum) - _n_shared
+                    log.info(
+                        '[eGene R/Py]  shared=%d  R-only=%d  Py-only=%d',
+                        _n_shared, _n_only_r, _n_only_py,
+                    )
+                    log.info(
+                        '[eGene R/Py]  median LOD ratio R/Py=%.3f  '
+                        'outliers(>3×)=%d  elevated(>2×)=%d  suppressed(<0.5×)=%d',
+                        _med_ratio, _thr3, _thr2, _thr_half,
+                    )
+                    _out = _cmp[_ratio > 3].sort_values('lod_r', ascending=False)
+                    for _, _row in _out.iterrows():
+                        log.info(
+                            '[eGene R/Py]    outlier  %s  R=%.2f  Py=%.2f  ratio=%.1f×',
+                            _row['gene'], _row['lod_r'], _row['lod_py'],
+                            _row['lod_r'] / _row['lod_py'],
+                        )
             col_order = ['gene', 'chr', 'peak_locus', 'peak_mb', 'peak_lod',
                          'p_permtest_chr', 'q_fdr_storey',
                          'pi0', 'perm_n',

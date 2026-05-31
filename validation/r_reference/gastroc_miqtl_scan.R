@@ -1245,7 +1245,7 @@ user_s_fn  <- function(t0, t1) as.numeric(t1['user.self'] - t0['user.self'])
 sys_s_fn   <- function(t0, t1) as.numeric(t1['sys.self']  - t0['sys.self'])
 
 sec_rows <- list(
-  data.frame(section='S5_permutation',    elapsed_s=elapsed_s(t_s5,  t_s6),  user_s=user_s_fn(t_s5,  t_s6),  sys_s=sys_s_fn(t_s5,  t_s6),  peak_heap_mb=peak_mb_s5,  peak_rss_mb=rss_mb_s5,  n_genes=n_genes_s5,  n_loci=n_loci_s5,  n_perms=500L,         stringsAsFactors=FALSE),
+  data.frame(section='S5_permutation',    elapsed_s=elapsed_s(t_s5,  t_s6),  user_s=user_s_fn(t_s5,  t_s6),  sys_s=sys_s_fn(t_s5,  t_s6),  peak_heap_mb=peak_mb_s5,  peak_rss_mb=rss_mb_s5,  n_genes=n_genes_s5,  n_loci=n_loci_s5,  n_perms=if(exists('n_perm_s5')) n_perm_s5 else NA_integer_,  stringsAsFactors=FALSE),
   data.frame(section='S6_cache_collapse', elapsed_s=elapsed_s(t_s6,  t_s7),  user_s=user_s_fn(t_s6,  t_s7),  sys_s=sys_s_fn(t_s6,  t_s7),  peak_heap_mb=peak_mb_s6,  peak_rss_mb=rss_mb_s6,  n_genes=n_genes_s6,  n_loci=n_loci_s6,  n_perms=NA_integer_,  stringsAsFactors=FALSE),
   data.frame(section='S7_mi_scan',        elapsed_s=elapsed_s(t_s7,  t_s8),  user_s=user_s_fn(t_s7,  t_s8),  sys_s=sys_s_fn(t_s7,  t_s8),  peak_heap_mb=peak_mb_s7,  peak_rss_mb=rss_mb_s7,  n_genes=n_genes_s7,  n_loci=n_loci_s7,  n_perms=NA_integer_,  stringsAsFactors=FALSE),
   data.frame(section='S8_snp_scan',       elapsed_s=elapsed_s(t_s8,  t_s9),  user_s=user_s_fn(t_s8,  t_s9),  sys_s=sys_s_fn(t_s8,  t_s9),  peak_heap_mb=peak_mb_s8,  peak_rss_mb=rss_mb_s8,  n_genes=n_genes_s8,  n_loci=n_loci_s8,  n_perms=NA_integer_,  stringsAsFactors=FALSE),

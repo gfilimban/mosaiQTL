@@ -57,8 +57,7 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method='reml'):
     def neg_loglik(h2):
         """negative profile (RE)ML as a function of h²."""
         h2    = np.clip(h2, 1e-6, 1 - 1e-6)
-        delta = h2 / (1 - h2)
-        w     = delta * eigvals + 1.0   # w ≥ 1 always (eigvals ≥ 0, delta ≥ 0)
+        w     = h2 * eigvals + (1.0 - h2)   # eigenvalues of V = h²K + (1-h²)I; > 0 always
         w_inv = 1.0 / w
         xw    = x_rot * w_inv[:, None]
         try:
@@ -132,8 +131,7 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
     q = h_rot.shape[1]
     p = x_rot.shape[1]
 
-    delta = h2_null / max(1 - h2_null, 1e-10)
-    w     = delta * eigvals + 1.0
+    w     = h2_null * eigvals + (1.0 - h2_null)
     w_inv = 1.0 / w
 
     # null model: y* = X* α
@@ -269,8 +267,7 @@ def _scan_chromosome_core(
     n      = len(y)
     p      = x_covariates.shape[1]
 
-    delta  = h2_null / max(1.0 - h2_null, 1e-10)
-    w_sqrt = 1.0 / np.sqrt(delta * eigvals + 1.0)        # (n,)
+    w_sqrt = 1.0 / np.sqrt(h2_null * eigvals + (1.0 - h2_null))  # (n,)
 
     yt   = (eigvecs.T @ y) * w_sqrt
     xt   = (eigvecs.T @ x_covariates) * w_sqrt[:, None]
@@ -409,8 +406,7 @@ def scan_chromosome_batch(
         nf = len(_ii)
 
     # ── genotype-only precomputation (same for every permutation) ─────────────
-    delta  = h2_null / max(1.0 - h2_null, 1e-10)
-    w_sqrt = 1.0 / np.sqrt(delta * eigvals + 1.0)          # (n,)
+    w_sqrt = 1.0 / np.sqrt(h2_null * eigvals + (1.0 - h2_null))  # (n,)
 
     xt      = (eigvecs.T @ x_covariates) * w_sqrt[:, None]  # (n, p)
     xtwx    = xt.T @ xt                                      # (p, p)
@@ -524,8 +520,7 @@ def scan_chromosome_mi(
     p = x_covariates.shape[1]
 
     # ── shared weight vector from h² (identical for all imputations) ────────
-    delta  = h2_null / max(1.0 - h2_null, 1e-10)
-    w_sqrt = 1.0 / np.sqrt(delta * eigvals + 1.0)   # (n,)
+    w_sqrt = 1.0 / np.sqrt(h2_null * eigvals + (1.0 - h2_null))  # (n,)
 
     # ── null model (once for all imputations) ────────────────────────────────
     yt   = (eigvecs.T @ y) * w_sqrt                         # (n,)
