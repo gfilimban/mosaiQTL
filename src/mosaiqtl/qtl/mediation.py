@@ -216,7 +216,7 @@ def mediation_scan_qr(outcome, mediator, genomecache,
         r_counts = z_sub.sum(axis=0)                      # (m,)
         y        = (z_sub.T @ y) / r_counts               # (m,)
         m        = (z_sub.T @ m) / r_counts               # (m,)
-        x_base   = (z_sub.T @ x_base) / r_counts[:, None] # (m, p)
+        x_base   = (z_sub.T @ x_base) / r_counts[:, None]  # (m, p)
         ev_valid = slice(None)       # eigenvectors and probs already at strain level
     else:
         ev_valid = valid             # subset sample-level arrays by NaN mask

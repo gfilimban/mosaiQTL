@@ -1,0 +1,39 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+jobs:
+jobs:
+  claude-review:
+    name: Claude Code automated review
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Post inline PR comments for findings; fail on FAIL-level issues
+          direct_prompt: |
+            Review this pull request for:
+            1. Correctness bugs — wrong math, off-by-one, shape mismatches
+            2. Violations of CLAUDE.md inviolable rules (chr .astype(str), no bare except,
+               no shell=True, no hardcoded hex colors, no full LOD matrix materialised,
+               adata.raw.X not adata.X, logging not print)
+            3. Regressions against the validated R/miQTL port (lmm.py, scan.py,
+               permutation.py) — any change to LOD formula, h2 parameterisation,
+               or FWL projection warrants extra scrutiny
+            4. Memory architecture violations — per-gene HDF5 open inside a loop,
+               full genome-wide array allocation
+            Report as PASS / WARN / FAIL with file:line references.
+            Post findings as inline PR comments.

@@ -61,8 +61,8 @@ def storey_qvalue(
 
     # ── π₀ estimation via natural cubic spline (Storey 2002 §2.4) ────────────
     pi0_hat = np.array([
-        (pv_fin > l).sum() / (m * (1.0 - l))
-        for l in lam
+        (pv_fin > lv).sum() / (m * (1.0 - lv))
+        for lv in lam
     ])
 
     # keep only λ values where the estimate is finite and positive

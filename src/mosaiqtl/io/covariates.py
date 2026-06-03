@@ -164,6 +164,7 @@ def encode_sex(series: 'pd.Series') -> 'pd.Series':
         Float64 series with same index, values in {0.0, 1.0}.
     """
     def _map(v: object) -> float:
+        """Map a sex value (string label or numeric) to 0.0 (male) or 1.0 (female)."""
         if isinstance(v, (int, float, np.integer, np.floating)):
             return float(v)
         s = str(v).strip().lower()
