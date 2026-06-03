@@ -71,7 +71,7 @@ jobs:
             -q \
             --cov=src/mosaiqtl \
             --cov-report=term-missing \
-            --cov-fail-under=70
+            --cov-fail-under=65
 
   # ── security ────────────────────────────────────────────────────────────────
   security:

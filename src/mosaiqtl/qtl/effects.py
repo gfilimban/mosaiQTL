@@ -264,11 +264,6 @@ def qtl_gxe_lrt(
 
     n = len(y)
     J = h_locus.shape[1]
-    nan_result: dict[str, float] = {
-        'chi2_haplotype': np.nan, 'p_haplotype': np.nan,
-        'lod_gxe_sex': np.nan,   'p_gxe_sex':   np.nan,
-    }
-
     # 1-way haplotype test: derived from scan LOD at zero cost
     chi2_hap = 2.0 * np.log(10) * max(lod_additive, 0.0)
     p_hap    = float(1.0 - chi2_dist.cdf(chi2_hap, df=J - 1))

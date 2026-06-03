@@ -90,21 +90,26 @@ class TestP1MIScan:
 
     def test_lod_shape_matches_rop(self, tiny_strain_phenotype, tiny_cache):
         rop = scan_h2lmm(tiny_strain_phenotype, tiny_cache, scan_window='genome')
-        mi  = scan_h2lmm_mi(tiny_strain_phenotype, tiny_cache, n_imp=3, seed=1, scan_window='genome')
+        mi  = scan_h2lmm_mi(
+            tiny_strain_phenotype, tiny_cache, n_imp=3, seed=1, scan_window='genome')
         assert mi.lod.shape == rop.lod.shape
 
     def test_lod_nonnegative(self, tiny_strain_phenotype, tiny_cache):
-        result = scan_h2lmm_mi(tiny_strain_phenotype, tiny_cache, n_imp=3, seed=1, scan_window='genome')
+        result = scan_h2lmm_mi(
+            tiny_strain_phenotype, tiny_cache, n_imp=3, seed=1, scan_window='genome')
         assert np.all(result.lod >= 0)
 
     def test_locus_ids_match_rop(self, tiny_strain_phenotype, tiny_cache):
         rop = scan_h2lmm(tiny_strain_phenotype, tiny_cache, scan_window='genome')
-        mi  = scan_h2lmm_mi(tiny_strain_phenotype, tiny_cache, n_imp=3, seed=1, scan_window='genome')
+        mi  = scan_h2lmm_mi(
+            tiny_strain_phenotype, tiny_cache, n_imp=3, seed=1, scan_window='genome')
         np.testing.assert_array_equal(rop.locus_ids, mi.locus_ids)
 
     def test_seed_reproducible(self, tiny_strain_phenotype, tiny_cache):
-        mi1 = scan_h2lmm_mi(tiny_strain_phenotype, tiny_cache, n_imp=3, seed=7, scan_window='genome')
-        mi2 = scan_h2lmm_mi(tiny_strain_phenotype, tiny_cache, n_imp=3, seed=7, scan_window='genome')
+        mi1 = scan_h2lmm_mi(
+            tiny_strain_phenotype, tiny_cache, n_imp=3, seed=7, scan_window='genome')
+        mi2 = scan_h2lmm_mi(
+            tiny_strain_phenotype, tiny_cache, n_imp=3, seed=7, scan_window='genome')
         np.testing.assert_array_equal(mi1.lod, mi2.lod)
 
 

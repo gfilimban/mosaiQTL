@@ -37,7 +37,7 @@ from typing import Optional
 import pandas as pd
 
 from .qtl.scan import scan_h2lmm, scan_multi_gene
-from .qtl.fdr import storey_qvalue
+
 from .genotype import kinship as kin_module
 
 logger = logging.getLogger('mosaiqtl')

@@ -402,7 +402,7 @@ def find_peaks(scan_result, threshold, drop=1.5, allow_multiple=False,
             for i in range(n):
                 if lod_c[i] < threshold:
                     continue
-                left_ok  = (i == 0)     or (lod_c[i] >= lod_c[i - 1])
+                left_ok  = (i == 0) or (lod_c[i] >= lod_c[i - 1])
                 right_ok = (i == n - 1) or (lod_c[i] >= lod_c[i + 1])
                 if not (left_ok and right_ok):
                     continue

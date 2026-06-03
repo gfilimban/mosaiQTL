@@ -4,7 +4,9 @@ import pytest
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from mosaiqtl.qtl.lmm import fit_lmm_at_locus, estimate_h2_null, precompute_chromosome, scan_chromosome
+from mosaiqtl.qtl.lmm import (
+    fit_lmm_at_locus, estimate_h2_null, precompute_chromosome, scan_chromosome,
+)
 from mosaiqtl.models.records import LMMResult
 from mosaiqtl.genotype.genomecache import GenomeCache
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship

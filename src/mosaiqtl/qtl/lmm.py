@@ -224,10 +224,10 @@ def precompute_chromosome(
     H = probs  # (n_loci, m, J)
     if z_mat is not None:
         _z_rot = eigvecs.T @ z_mat                                    # (n, m)
-        H_t_raw = np.einsum('ks,lsj->lkj', _z_rot, H, optimize=True) # (n_loci, n, J)
+        H_t_raw = np.einsum('ks,lsj->lkj', _z_rot, H, optimize=True)  # (n_loci, n, J)
         del _z_rot
     else:
-        H_t_raw = np.einsum('nk,lnj->lkj', eigvecs, H, optimize=True) # (n_loci, n, J)
+        H_t_raw = np.einsum('nk,lnj->lkj', eigvecs, H, optimize=True)  # (n_loci, n, J)
 
     return {
         'locus_ids': locus_ids,
@@ -293,8 +293,8 @@ def _scan_chromosome_core(
     proj    = np.einsum('pn,lnj->lpj', xt_pinv, H_t, optimize=True)
     H_perp  = H_t - np.einsum('np,lpj->lnj', xt, proj, optimize=True)
 
-    c_all = np.einsum('lnj,n->lj',   H_perp, e0,     optimize=True)  # (n_loci, J)
-    G_all = np.einsum('lnj,lnk->ljk', H_perp, H_perp, optimize=True) # (n_loci, J, J)
+    c_all = np.einsum('lnj,n->lj',   H_perp, e0,     optimize=True)   # (n_loci, J)
+    G_all = np.einsum('lnj,lnk->ljk', H_perp, H_perp, optimize=True)  # (n_loci, J, J)
 
     G_pinv  = np.linalg.pinv(G_all, rcond=1e-10)
     beta_h  = (G_pinv @ c_all[..., None]).squeeze(-1)
@@ -353,7 +353,7 @@ def scan_chromosome(
 
 def scan_chromosome_batch(
     Y_mat: np.ndarray,
-    genomecache: 'GenomeCache',  # type: ignore[name-defined]
+    genomecache: 'GenomeCache',  # type: ignore[name-defined]  # noqa: F821
     chrom: str,
     x_covariates: np.ndarray,
     eigvals: np.ndarray,
@@ -400,7 +400,6 @@ def scan_chromosome_batch(
     tuple (max_lods, peak_positions) when return_peak_positions=True
     """
     locus_ids, positions_c, probs = genomecache.get_chromosome(chrom)
-    n_loci  = len(locus_ids)
     nf      = genomecache.n_founders
     n       = eigvals.shape[0]
     n_perms = Y_mat.shape[1]
@@ -422,14 +421,14 @@ def scan_chromosome_batch(
     if z_mat is not None:
         # fuse Z expansion + eigvec rotation: same optimisation as scan_chromosome
         _z_rot = eigvecs.T @ z_mat                                   # (n, m)
-        H_t    = np.einsum('ks,lsj->lkj', _z_rot, H, optimize=True) # (n_loci, n, J)
+        H_t    = np.einsum('ks,lsj->lkj', _z_rot, H, optimize=True)  # (n_loci, n, J)
         del _z_rot
     else:
         H_t = np.einsum('nk,lnj->lkj', eigvecs, H, optimize=True)   # (n_loci, n, J)
     H_t *= w_sqrt[None, :, None]
 
-    proj   = np.einsum('pn,lnj->lpj', xt_pinv, H_t, optimize=True)   # (n_loci, p, J)
-    H_perp = H_t - np.einsum('np,lpj->lnj', xt, proj, optimize=True) # (n_loci, n, J)
+    proj   = np.einsum('pn,lnj->lpj', xt_pinv, H_t, optimize=True)    # (n_loci, p, J)
+    H_perp = H_t - np.einsum('np,lpj->lnj', xt, proj, optimize=True)  # (n_loci, n, J)
     del H, H_t, proj
     gc.collect()
 
@@ -477,7 +476,7 @@ def scan_chromosome_batch(
 
 def scan_chromosome_mi(
     y: np.ndarray,
-    genomecache: 'GenomeCache',  # type: ignore[name-defined]
+    genomecache: 'GenomeCache',  # type: ignore[name-defined]  # noqa: F821
     chrom: str,
     x_covariates: np.ndarray,
     eigvals: np.ndarray,
@@ -523,7 +522,6 @@ def scan_chromosome_mi(
     locus_ids, positions, probs = genomecache.get_chromosome(chrom)
     n_loci, n_s, n_f = probs.shape
     n = len(y)
-    p = x_covariates.shape[1]
 
     # ── shared weight vector from h² (identical for all imputations) ────────
     w_sqrt = 1.0 / np.sqrt(h2_null * eigvals + (1.0 - h2_null))  # (n,)
@@ -572,14 +570,14 @@ def scan_chromosome_mi(
         # FWL: H_perp = H_t - xt @ (xt_pinv @ H_t)
         # xt_pinv: (p, k); H_t: (n_imp, b, k, n_f)
         proj   = np.einsum('pk,ibkj->ibpj', xt_pinv, H_t, optimize=True)   # (n_imp, b, p, n_f)
-        H_perp = H_t - np.einsum('kp,ibpj->ibkj', xt, proj, optimize=True) # (n_imp, b, k, n_f)
+        H_perp = H_t - np.einsum('kp,ibpj->ibkj', xt, proj, optimize=True)  # (n_imp, b, k, n_f)
         del H_b, H_t, proj
 
         # gram matrices — contract over k (rotated strain space)
         G_b    = np.einsum('ibkj,ibkl->ibjl', H_perp, H_perp, optimize=True)  # (n_imp, b, n_f, n_f)
         G_pinv = np.linalg.pinv(
             G_b.reshape(-1, n_f, n_f), rcond=1e-10
-        ).reshape(n_imp, b, n_f, n_f)                                           # (n_imp, b, n_f, n_f)
+        ).reshape(n_imp, b, n_f, n_f)  # (n_imp, b, n_f, n_f)
 
         # per-imputation LOD
         c      = np.einsum('ibkj,k->ibj', H_perp, e0, optimize=True)           # (n_imp, b, n_f)

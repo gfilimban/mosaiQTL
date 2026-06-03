@@ -265,6 +265,7 @@ def load_founder_alleles(
         n_f   = len(fcols)
 
         def _decode(arr: np.ndarray) -> np.ndarray:
+            """Decode bytes elements to str, leaving str elements unchanged."""
             return np.array(
                 [v.decode() if isinstance(v, bytes) else v for v in arr]
             ).astype(str)
