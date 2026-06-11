@@ -1,0 +1,15 @@
+# mosaiQTL default pipeline parameters
+# Override any key on the CLI: nextflow run main.nf --chroms 8
+
+genomecache:   null   # path to genome cache HDF5 (required)
+kinship_loco:  null   # path to LOCO kinship HDF5 (required)
+phenotypes:    null   # path to phenotype HDF5 (required)
+metadata:      null   # path to sample metadata CSV (required)
+gene_info:     null   # path to gene_info CSV (gene_id, chr, start, end)
+
+output_dir:    'results'
+scan_type:     'lmm'      # lmm | nb-glmm
+scan_window:   'cis'      # cis | genome | local
+chroms:        'all'      # 'all' or comma-separated: '1,2,8'
+n_perms:       1000
+window_mb:     1.0        # half-window for local scan
