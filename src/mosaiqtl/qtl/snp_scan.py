@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 import logging
 
+from ..utils import chr_sort_key
+
 logger = logging.getLogger('mosaiqtl')
 
 
@@ -298,7 +300,10 @@ def read_allele_dir(allele_dir, founders, chrom=None):
         raise ImportError('rpy2 required for reading allele_dir .RData files')
 
     rows = []
-    chr_dirs = sorted(glob.glob(os.path.join(allele_dir, 'chr*')))
+    chr_dirs = sorted(
+        glob.glob(os.path.join(allele_dir, 'chr*')),
+        key=lambda p: chr_sort_key(os.path.basename(p).replace('chr', '')),
+    )
     for chr_dir in chr_dirs:
         c = os.path.basename(chr_dir).replace('chr', '')
         if chrom is not None and c != str(chrom):
@@ -398,7 +403,12 @@ def read_alleles_flat(allele_dir, founders, chrom=None, pmap_dir=None):
     import glob as _glob
 
     rows, snp_ids = [], []
-    for fpath in sorted(_glob.glob(os.path.join(allele_dir, 'chr*.alleles'))):
+    for fpath in sorted(
+        _glob.glob(os.path.join(allele_dir, 'chr*.alleles')),
+        key=lambda p: chr_sort_key(
+            os.path.basename(p).replace('chr', '').replace('.alleles', '')
+        ),
+    ):
         c = os.path.basename(fpath).replace('chr', '').replace('.alleles', '')
         if chrom is not None and c != str(chrom):
             continue

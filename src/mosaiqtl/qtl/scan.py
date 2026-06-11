@@ -28,7 +28,7 @@ from pathlib import Path
 
 from ..genotype import kinship as kin_module
 from . import lmm as lmm_module
-from ..utils import rint, build_z_matrix
+from ..utils import rint, build_z_matrix, chr_sort_key
 
 logger = logging.getLogger("mosaiqtl")
 
@@ -597,7 +597,7 @@ def find_peaks(scan_result, threshold, drop=1.5, allow_multiple=False, min_lod_g
     _COLS = ("phenotype_id", "chr", "locus_id", "pos_mb", "lod", "ci_lo_mb", "ci_hi_mb")
     rows = []
 
-    for chrom in np.unique(scan_result.chromosomes):
+    for chrom in sorted(np.unique(scan_result.chromosomes), key=chr_sort_key):
         mask = scan_result.chromosomes == chrom
         lod_c = scan_result.lod[mask]
         pos_c = scan_result.positions[mask]

@@ -64,6 +64,7 @@ from scipy import stats as sp_stats
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from mosaiqtl.genotype.founders import F1_COLORS, FOUNDER_CODE, FOUNDER_COLORS, FOUNDER_ORDER
+from mosaiqtl.utils import chr_sort_key as _chr_sort_key
 
 _FOUNDER_CODE_INV: dict[str, str] = {v: k for k, v in FOUNDER_CODE.items()}
 
@@ -636,12 +637,7 @@ def _make_descriptive_plots(
             peak_pos = lod_all.loc[idx_pk, ['gene', 'chr', 'pos_mb', 'lod']]
             peak_pos = peak_pos.merge(pk_df[['gene']], on='gene')
 
-            def _chr_key(c):
-                try:
-                    return int(c)
-                except ValueError:
-                    return 100
-            chrs_sorted = sorted(peak_pos['chr'].unique(), key=_chr_key)
+            chrs_sorted = sorted(peak_pos['chr'].unique(), key=_chr_sort_key)
             scans_dict  = {
                 ch: (peak_pos[peak_pos['chr'] == ch]['pos_mb'].values,
                      peak_pos[peak_pos['chr'] == ch]['lod'].values)
@@ -1142,7 +1138,10 @@ def _make_comparison_plots(
                          .rename(columns={'pos_mb': 'peak_mb_r'}))
                 r_peak_rows.append(r_pk)
             else:
-                for cand in sorted(r_data.glob('chr*/lod.csv')):
+                for cand in sorted(
+                    r_data.glob('chr*/lod.csv'),
+                    key=lambda p: _chr_sort_key(p.parent.name.replace('chr', '')),
+                ):
                     tmp = pd.read_csv(cand, usecols=['gene', 'pos_mb', 'lod'])
                     r_peak_rows.append(
                         tmp.sort_values('lod', ascending=False)
@@ -2131,7 +2130,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     perm_n_s5 = len(perm_max_lods_s5)
                     # load all per-chromosome nulls saved during S5 run
                     chr_null_lods_s5 = {}
-                    for _f in sorted(py_dir.glob('s5_perm_max_lods_chr*.csv')):
+                    for _f in sorted(
+                        py_dir.glob('s5_perm_max_lods_chr*.csv'),
+                        key=lambda p: _chr_sort_key(
+                            p.stem.replace('s5_perm_max_lods_chr', '')
+                        ),
+                    ):
                         _ch_key = _f.stem.replace('s5_perm_max_lods_chr', '')
                         chr_null_lods_s5[_ch_key] = pd.read_csv(_f)['max_lod'].values
                     if not chr_null_lods_s5:
