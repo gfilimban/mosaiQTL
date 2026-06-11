@@ -34,10 +34,13 @@ def _load_phenotypes(
     gene_chr_map : {gene_id: chrom} for cis filtering
     """
     with h5py.File(h5_path, 'r') as f:
+        # accept both canonical names (gene_ids/sample_ids) and legacy (genes/samples)
+        _sid_key = 'sample_ids' if 'sample_ids' in f else 'samples'
+        _gid_key = 'gene_ids' if 'gene_ids' in f else 'genes'
         sample_ids: list[str] = [s.decode() if isinstance(s, bytes) else s
-                                  for s in f['sample_ids'][:]]
+                                  for s in f[_sid_key][:]]
         all_gene_ids: list[str] = [g.decode() if isinstance(g, bytes) else g
-                                    for g in f['gene_ids'][:]]
+                                    for g in f[_gid_key][:]]
         gene_chr_map = dict(zip(gene_info['gene_id'], gene_info['chr'].astype(str)))
 
         if scan_window == 'cis':

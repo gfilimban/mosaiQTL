@@ -2,7 +2,7 @@
 # Override any key on the CLI: nextflow run main.nf --chroms 8
 
 genomecache:   null   # path to genome cache HDF5 (required)
-kinship_loco:  null   # path to LOCO kinship HDF5 (required)
+kinship_loco:  null   # path to LOCO kinship HDF5 (optional — built from genomecache if null)
 phenotypes:    null   # path to phenotype HDF5 (required)
 metadata:      null   # path to sample metadata CSV (required)
 gene_info:     null   # path to gene_info CSV (gene_id, chr, start, end)

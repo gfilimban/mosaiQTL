@@ -2,14 +2,22 @@
 /*
  * mosaiQTL — genome-wide LMM QTL scan pipeline
  *
- * Run:
- *   nextflow run main.nf -profile local  -params-file config/default_params.yaml
- *   nextflow run main.nf -profile slurm  -params-file config/default_params.yaml -resume
- *   nextflow run main.nf -stub-run       -params-file config/default_params.yaml
+ * Run (gastroc example):
+ *   nextflow run workflow/main.nf -profile slurm \
+ *       -params-file config/gastroc_params.yaml -resume
+ *
+ * General:
+ *   nextflow run workflow/main.nf -profile local  -params-file config/default_params.yaml
+ *   nextflow run workflow/main.nf -stub-run        -params-file config/default_params.yaml
+ *
+ * params.kinship_loco is optional:
+ *   - if provided, KINSHIP_LOCO is skipped and the file is used directly
+ *   - if null (default), KINSHIP_LOCO builds it from params.genomecache
  */
 
 nextflow.enable.dsl = 2
 
+include { KINSHIP_LOCO  } from '../modules/local/kinship_loco'
 include { LMM_SCAN      } from '../modules/local/lmm_scan'
 include { MERGE_RESULTS } from '../modules/local/merge_results'
 
@@ -39,16 +47,22 @@ def chr_channel() {
 
 workflow {
 
-    genomecache  = _require(params.genomecache,  'genomecache')
-    kinship_loco = _require(params.kinship_loco, 'kinship_loco')
-    phenotypes   = _require(params.phenotypes,   'phenotypes')
-    gene_info    = _require(params.gene_info,    'gene_info')
+    genomecache = _require(params.genomecache, 'genomecache')
+    phenotypes  = _require(params.phenotypes,  'phenotypes')
+    gene_info   = _require(params.gene_info,   'gene_info')
+
+    // kinship: use pre-built file if provided, otherwise build it
+    if (params.kinship_loco) {
+        kinship = Channel.value(file(params.kinship_loco))
+    } else {
+        kinship = KINSHIP_LOCO(genomecache).kinship_h5
+    }
 
     chroms = chr_channel()
 
     LMM_SCAN(
         genomecache,
-        kinship_loco,
+        kinship,
         phenotypes,
         gene_info,
         chroms,
