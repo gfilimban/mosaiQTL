@@ -21,6 +21,8 @@ from mosaiqtl.viz.genome import (
     cis_distance_histogram,
     nb_vs_lmm_lod,
     library_size_qc,
+    chromosome_lod_profile,
+    peak_locus_zoom,
 )
 
 
@@ -165,3 +167,73 @@ class TestLibrarySizeQc:
     def test_returns_axes(self, library_sizes_cells):
         ax = library_size_qc(library_sizes_cells)
         assert isinstance(ax, plt.Axes)
+
+
+# ── chromosome_lod_profile ────────────────────────────────────────────────────
+
+class TestChromosomeLodProfile:
+    def test_returns_axes(self):
+        ax = chromosome_lod_profile(_pos_array(), _lod_array(), chrom='8')
+        assert isinstance(ax, plt.Axes)
+
+    def test_ylim_from_zero(self):
+        ax = chromosome_lod_profile(_pos_array(), _lod_array())
+        assert ax.get_ylim()[0] == 0.0
+
+    def test_with_threshold(self):
+        ax = chromosome_lod_profile(
+            _pos_array(), _lod_array(), threshold=3.5
+        )
+        lines = [ln for ln in ax.get_lines() if ln.get_linestyle() == '--']
+        assert len(lines) == 1
+
+    def test_n_loci_annotation(self):
+        pos = _pos_array()
+        ax = chromosome_lod_profile(pos, _lod_array(), annotate_n_loci=True)
+        texts = [t.get_text() for t in ax.texts]
+        assert any(str(len(pos)) in t for t in texts)
+
+    def test_no_annotation_when_disabled(self):
+        ax = chromosome_lod_profile(
+            _pos_array(), _lod_array(), annotate_n_loci=False
+        )
+        assert len(ax.texts) == 0
+
+
+# ── peak_locus_zoom ───────────────────────────────────────────────────────────
+
+class TestPeakLocusZoom:
+    def test_returns_axes(self):
+        pos = _pos_array()
+        lod = _lod_array()
+        peak = float(pos[np.argmax(lod)])
+        ax = peak_locus_zoom(pos, lod, peak, chrom='8')
+        assert isinstance(ax, plt.Axes)
+
+    def test_xlim_within_window(self):
+        pos = _pos_array()
+        lod = _lod_array()
+        peak = 75.0
+        window = 5.0
+        ax = peak_locus_zoom(pos, lod, peak, window_mb=window)
+        lo, hi = ax.get_xlim()
+        assert lo == pytest.approx(peak - window, abs=1e-3)
+        assert hi == pytest.approx(peak + window, abs=1e-3)
+
+    def test_ylim_from_zero(self):
+        pos = _pos_array()
+        lod = _lod_array()
+        peak = float(pos[np.argmax(lod)])
+        ax = peak_locus_zoom(pos, lod, peak)
+        assert ax.get_ylim()[0] == 0.0
+
+    def test_ci_shading_added(self):
+        pos = _pos_array()
+        lod = _lod_array()
+        peak = 75.0
+        ax = peak_locus_zoom(
+            pos, lod, peak, window_mb=20.0, ci_lo_mb=65.0, ci_hi_mb=85.0
+        )
+        shaded = [p for p in ax.patches
+                  if p.get_alpha() is not None and p.get_alpha() < 0.5]
+        assert len(shaded) >= 1

@@ -1,0 +1,16 @@
+# mosaiQTL — gastroc benchmark parameters
+# Run: nextflow run workflow/main.nf -profile slurm -params-file config/gastroc_params.yaml -resume
+
+genomecache:  '/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl/validation/gastroc_data/py_data/cache.h5'
+kinship_loco: null   # null → built automatically by KINSHIP_LOCO process on first run;
+                     # after first run set to the published kinship_loco.h5 path for -resume speed
+phenotypes:   '/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl/validation/gastroc_data/counts_lognorm.h5'
+metadata:     '/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl/validation/gastroc_data/metadata.csv'
+gene_info:    '/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl/validation/gastroc_data/gene_info.csv'
+
+output_dir:   '/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl/validation/gastroc_data/nf_results'
+scan_type:    'lmm'
+scan_window:  'cis'
+chroms:       'all'
+n_perms:      1000
+window_mb:    1.0

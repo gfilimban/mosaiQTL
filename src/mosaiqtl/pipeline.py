@@ -40,19 +40,20 @@ from .qtl.scan import scan_h2lmm, scan_multi_gene
 
 from .genotype import kinship as kin_module
 
-logger = logging.getLogger('mosaiqtl')
+logger = logging.getLogger("mosaiqtl")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # eGene utilities
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def call_egenes(
     peak_lod_df: pd.DataFrame,
     threshold: float,
-    effects_df: 'pd.DataFrame | None' = None,
-    gene_col: str = 'gene',
-    lod_col: str = 'peak_lod',
+    effects_df: "pd.DataFrame | None" = None,
+    gene_col: str = "gene",
+    lod_col: str = "peak_lod",
 ) -> pd.DataFrame:
     """Apply a LOD threshold and return one row per called eGene.
 
@@ -73,12 +74,12 @@ def call_egenes(
     one row per called eGene; positional columns NaN only if absent from both inputs
     """
     egenes = peak_lod_df[peak_lod_df[lod_col] >= threshold].copy()
-    pos_cols = ('chr', 'peak_locus', 'peak_mb')
+    pos_cols = ("chr", "peak_locus", "peak_mb")
     missing = [c for c in pos_cols if c not in egenes.columns]
     if missing and effects_df is not None and len(effects_df) > 0:
         fill_cols = [c for c in (gene_col, *missing) if c in effects_df.columns]
         if len(fill_cols) > 1:
-            egenes = egenes.merge(effects_df[fill_cols], on=gene_col, how='left')
+            egenes = egenes.merge(effects_df[fill_cols], on=gene_col, how="left")
     return egenes.reset_index(drop=True)
 
 
@@ -86,46 +87,56 @@ def call_egenes(
 # result containers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class DiscoveryResult:
     """output of pipeline.discover() — Layer 1."""
-    scan:         dict          # {gene_id: ScanResult}
-    model:        str           # 'nb' or 'lmm'
-    genomecache: object        # GenomeCache reference
-    kinship_decomp: Optional[dict] = None   # populated when model='lmm'
-    dispersion:   Optional[dict] = None     # {gene_id: float}, model='nb' only
+
+    scan: dict  # {gene_id: ScanResult}
+    model: str  # 'nb' or 'lmm'
+    genomecache: object  # GenomeCache reference
+    kinship_decomp: Optional[dict] = None  # populated when model='lmm'
+    dispersion: Optional[dict] = None  # {gene_id: float}, model='nb' only
 
 
 @dataclass
 class CharacterizationResult:
     """output of pipeline.characterize() — Layer 2."""
-    allele_effects: Optional[dict] = None   # {gene_id: np.ndarray (J-1,)}
-    vqtl:           Optional[dict] = None   # {gene_id: ScanResult}
-    mediation:      Optional[dict] = None   # {gene_id: DataFrame}
-    discovery:      Optional[DiscoveryResult] = None
+
+    allele_effects: Optional[dict] = None  # {gene_id: np.ndarray (J-1,)}
+    vqtl: Optional[dict] = None  # {gene_id: ScanResult}
+    mediation: Optional[dict] = None  # {gene_id: DataFrame}
+    discovery: Optional[DiscoveryResult] = None
 
 
 @dataclass
 class ResolutionResult:
     """output of pipeline.resolve() — Layer 3."""
-    snp_catalogue:     Optional[dict] = None  # {gene_id: DataFrame of candidate SNPs}
-    conditional_scan:  Optional[dict] = None  # {gene_id: list[ScanResult]}
-    ase:               Optional[dict] = None  # {gene_id: DataFrame allele counts}
-    sqtl:              Optional[dict] = None  # {gene_id: ScanResult on PSI phenotype}
-    modules_run:       list = field(default_factory=list)
+
+    snp_catalogue: Optional[dict] = None  # {gene_id: DataFrame of candidate SNPs}
+    conditional_scan: Optional[dict] = None  # {gene_id: list[ScanResult]}
+    ase: Optional[dict] = None  # {gene_id: DataFrame allele counts}
+    sqtl: Optional[dict] = None  # {gene_id: ScanResult on PSI phenotype}
+    modules_run: list = field(default_factory=list)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Layer 1 — QTL Discovery
 # ─────────────────────────────────────────────────────────────────────────────
 
-def discover(phenotype_matrix, gene_ids, genomecache,
-             covariates=None, sample_ids=None,
-             model='nb',
-             lib_sizes=None,
-             cis_loci_dict=None,
-             n_cores=1,
-             kinship_decomp=None):
+
+def discover(
+    phenotype_matrix,
+    gene_ids,
+    genomecache,
+    covariates=None,
+    sample_ids=None,
+    model="nb",
+    lib_sizes=None,
+    cis_loci_dict=None,
+    n_cores=1,
+    kinship_decomp=None,
+):
     """Layer 1 — genome-wide haplotype QTL scan for a set of genes.
 
     parameters
@@ -148,28 +159,40 @@ def discover(phenotype_matrix, gene_ids, genomecache,
     -------
     DiscoveryResult
     """
-    if model == 'nb':
+    if model == "nb":
         # counts_cells: (n_genes, n_cells); sample_ids: per-cell strain ids
         from .qtl.nb import scan_nb as _scan_nb
-        scan_results = _scan_nb(
-            phenotype_matrix, genomecache, sample_ids,
-            gene_ids=gene_ids, covariates_cells=covariates,
-            lib_sizes=lib_sizes, cis_loci_dict=cis_loci_dict,
-            n_cores=n_cores)
-        return DiscoveryResult(scan=scan_results, model='nb',
-                               genomecache=genomecache)
 
-    elif model == 'lmm':
+        scan_results = _scan_nb(
+            phenotype_matrix,
+            genomecache,
+            sample_ids,
+            gene_ids=gene_ids,
+            covariates_cells=covariates,
+            lib_sizes=lib_sizes,
+            cis_loci_dict=cis_loci_dict,
+            n_cores=n_cores,
+        )
+        return DiscoveryResult(scan=scan_results, model="nb", genomecache=genomecache)
+
+    elif model == "lmm":
         if kinship_decomp is None:
-            kd_raw = kin_module.calc_kinship(genomecache, method='loco')
+            kd_raw = kin_module.calc_kinship(genomecache, method="loco")
             kinship_decomp = kin_module.decomp_kinship(kd_raw)
         scan_results = scan_multi_gene(
-            phenotype_matrix, gene_ids, genomecache,
-            covariates=covariates, kinship_decomp=kinship_decomp,
-            sample_ids=sample_ids, n_cores=n_cores)
-        return DiscoveryResult(scan=scan_results, model='lmm',
-                               genomecache=genomecache,
-                               kinship_decomp=kinship_decomp)
+            phenotype_matrix,
+            gene_ids,
+            genomecache,
+            covariates=covariates,
+            kinship_decomp=kinship_decomp,
+            sample_ids=sample_ids,
+        )
+        return DiscoveryResult(
+            scan=scan_results,
+            model="lmm",
+            genomecache=genomecache,
+            kinship_decomp=kinship_decomp,
+        )
     else:
         raise ValueError(f'model must be "nb" or "lmm", got {model!r}')
 
@@ -178,11 +201,15 @@ def discover(phenotype_matrix, gene_ids, genomecache,
 # Layer 2 — QTL Characterization
 # ─────────────────────────────────────────────────────────────────────────────
 
-def characterize(discovery_result, covariates=None,
-                 modules=('allele_effects', 'vqtl', 'mediation'),
-                 allele_effects_kwargs=None,
-                 vqtl_kwargs=None,
-                 mediation_kwargs=None):
+
+def characterize(
+    discovery_result,
+    covariates=None,
+    modules=("allele_effects", "vqtl", "mediation"),
+    allele_effects_kwargs=None,
+    vqtl_kwargs=None,
+    mediation_kwargs=None,
+):
     """Layer 2 — characterize discovered QTLs.
 
     parameters
@@ -201,28 +228,29 @@ def characterize(discovery_result, covariates=None,
     """
     res = CharacterizationResult(discovery=discovery_result)
 
-    if 'allele_effects' in modules:
+    if "allele_effects" in modules:
         # extract betas at peak locus from each ScanResult;
         # LRT mode needed for NB to get non-zero betas
         ae = {}
         for gid, sr in discovery_result.scan.items():
-            if len(sr.lod) == 0: continue
+            if len(sr.lod) == 0:
+                continue
             pi = int(np.argmax(sr.lod))
-            ae[gid] = sr.betas[pi]   # (J-1,) — zeros for NB score-test mode
+            ae[gid] = sr.betas[pi]  # (J-1,) — zeros for NB score-test mode
         res.allele_effects = ae
-        logger.info(f'allele effects: {len(ae)} genes')
+        logger.info(f"allele effects: {len(ae)} genes")
 
-    if 'vqtl' in modules:
+    if "vqtl" in modules:
         # vqtl requires per-cell counts and subject_ids (not available from
         # pseudobulk DiscoveryResult). call scan_vqtl() directly with cell-
         # level data; pass vqtl_kwargs={'kinship_decomp': kd} for efficiency.
-        logger.info('vqtl: call scan_vqtl() directly with cell-level counts')
+        logger.info("vqtl: call scan_vqtl() directly with cell-level counts")
         res.vqtl = {}
 
-    if 'mediation' in modules:
+    if "mediation" in modules:
         # mediation requires explicit outcome + mediator pair — skip auto-loop
         # users should call mediation_scan_qr() directly per gene pair
-        logger.info('mediation: call mediation_scan_qr() directly per gene pair')
+        logger.info("mediation: call mediation_scan_qr() directly per gene pair")
         res.mediation = {}
 
     return res
@@ -232,15 +260,18 @@ def characterize(discovery_result, covariates=None,
 # Layer 3 — Mechanistic Resolution
 # ─────────────────────────────────────────────────────────────────────────────
 
-_LAYER3_MODULES = ('snp_catalogue', 'conditional_scan', 'ase', 'sqtl')
+_LAYER3_MODULES = ("snp_catalogue", "conditional_scan", "ase", "sqtl")
 
 
-def resolve(discovery_result, covariates=None,
-            modules=('snp_catalogue', 'conditional_scan'),
-            snp_catalogue_kwargs=None,
-            conditional_scan_kwargs=None,
-            ase_kwargs=None,
-            sqtl_kwargs=None):
+def resolve(
+    discovery_result,
+    covariates=None,
+    modules=("snp_catalogue", "conditional_scan"),
+    snp_catalogue_kwargs=None,
+    conditional_scan_kwargs=None,
+    ase_kwargs=None,
+    sqtl_kwargs=None,
+):
     """Layer 3 — Mechanistic Resolution.
 
     maps QTL intervals to candidate SNPs, decomposes multi-signal loci,
@@ -301,31 +332,29 @@ def resolve(discovery_result, covariates=None,
     cache = discovery_result.genomecache
     unknown = set(modules) - set(_LAYER3_MODULES)
     if unknown:
-        raise ValueError(f'unknown modules: {unknown}. valid: {_LAYER3_MODULES}')
+        raise ValueError(f"unknown modules: {unknown}. valid: {_LAYER3_MODULES}")
 
-    if 'snp_catalogue' in modules:
+    if "snp_catalogue" in modules:
         res.snp_catalogue = _run_snp_catalogue(
-            discovery_result, cache, **(snp_catalogue_kwargs or {}))
-        res.modules_run.append('snp_catalogue')
+            discovery_result, cache, **(snp_catalogue_kwargs or {})
+        )
+        res.modules_run.append("snp_catalogue")
 
-    if 'conditional_scan' in modules:
+    if "conditional_scan" in modules:
         res.conditional_scan = _run_conditional_scan(
-            discovery_result, cache, covariates,
-            **(conditional_scan_kwargs or {}))
-        res.modules_run.append('conditional_scan')
+            discovery_result, cache, covariates, **(conditional_scan_kwargs or {})
+        )
+        res.modules_run.append("conditional_scan")
 
-    if 'ase' in modules:
-        res.ase = _run_ase_kallisto(
-            discovery_result, **(ase_kwargs or {}))
-        res.modules_run.append('ase')
+    if "ase" in modules:
+        res.ase = _run_ase_kallisto(discovery_result, **(ase_kwargs or {}))
+        res.modules_run.append("ase")
 
-    if 'sqtl' in modules:
-        res.sqtl = _run_sqtl(
-            discovery_result, cache, covariates,
-            **(sqtl_kwargs or {}))
-        res.modules_run.append('sqtl')
+    if "sqtl" in modules:
+        res.sqtl = _run_sqtl(discovery_result, cache, covariates, **(sqtl_kwargs or {}))
+        res.modules_run.append("sqtl")
 
-    logger.info(f'Layer 3 complete: {res.modules_run}')
+    logger.info(f"Layer 3 complete: {res.modules_run}")
     return res
 
 
@@ -333,8 +362,8 @@ def resolve(discovery_result, covariates=None,
 # Layer 3 internal implementations
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _run_snp_catalogue(disc, cache, mgp_vcf=None, window_mb=10.0,
-                        founders=None):
+
+def _run_snp_catalogue(disc, cache, mgp_vcf=None, window_mb=10.0, founders=None):
     """3a — SNP catalogue: MGP overlay onto haplotype QTL intervals.
 
     for each gene with a peak QTL, queries the MGP VCF within window_mb
@@ -344,16 +373,16 @@ def _run_snp_catalogue(disc, cache, mgp_vcf=None, window_mb=10.0,
     requires: mgp_vcf (bgzipped + tabix-indexed Sanger MGP r9 VCF).
     """
     if mgp_vcf is None:
-        logger.warning('snp_catalogue: mgp_vcf not provided — skipping')
+        logger.warning("snp_catalogue: mgp_vcf not provided — skipping")
         return {}
     from .qtl.snp_scan import build_snp_catalogue
+
     return build_snp_catalogue(
-        disc.scan, cache, mgp_vcf,
-        window_mb=window_mb, founders=founders)
+        disc.scan, cache, mgp_vcf, window_mb=window_mb, founders=founders
+    )
 
 
-def _run_conditional_scan(disc, cache, covariates,
-                            n_signals=3, lod_drop_threshold=1.5):
+def _run_conditional_scan(disc, cache, covariates, n_signals=3, lod_drop_threshold=1.5):
     """3b — conditional scan: forward-stepwise multi-signal decomposition.
 
     for each gene with a significant peak, conditions on the peak-locus BLUP
@@ -366,18 +395,32 @@ def _run_conditional_scan(disc, cache, covariates,
     LD within the block.
     """
     from .qtl.epistasis import scan_conditional
+
     results = {}
     for gid, sr in disc.scan.items():
-        if len(sr.lod) == 0: continue
-        signals = scan_conditional(sr, cache, covariates,
-                                    n_signals=n_signals, lod_drop_threshold=lod_drop_threshold,
-                                    kinship_decomp=disc.kinship_decomp)
-        if signals: results[gid] = signals
+        if len(sr.lod) == 0:
+            continue
+        signals = scan_conditional(
+            sr,
+            cache,
+            covariates,
+            n_signals=n_signals,
+            lod_drop_threshold=lod_drop_threshold,
+            kinship_decomp=disc.kinship_decomp,
+        )
+        if signals:
+            results[gid] = signals
     return results
 
 
-def _run_ase_kallisto(disc, f1_fastq_dirs=None, founder_fastas=None,
-                       gtf_path=None, tool='kallisto', threads=8):
+def _run_ase_kallisto(
+    disc,
+    f1_fastq_dirs=None,
+    founder_fastas=None,
+    gtf_path=None,
+    tool="kallisto",
+    threads=8,
+):
     """3c — ASE in F1 hybrids via kallisto|bustools.
 
     for each F1 cross in f1_fastq_dirs, builds a two-founder transcriptome
@@ -414,17 +457,20 @@ def _run_ase_kallisto(disc, f1_fastq_dirs=None, founder_fastas=None,
         columns: gene_id, dam_counts, sire_counts, ai, n_cells
     """
     if f1_fastq_dirs is None or founder_fastas is None or gtf_path is None:
-        logger.warning('ase: f1_fastq_dirs, founder_fastas, and gtf_path required — skipping')
+        logger.warning(
+            "ase: f1_fastq_dirs, founder_fastas, and gtf_path required — skipping"
+        )
         return {}
-    if tool != 'kallisto':
+    if tool != "kallisto":
         raise NotImplementedError(f'ase tool {tool!r} not implemented; use "kallisto"')
     from .qtl.ase import run_kallisto_ase
-    return run_kallisto_ase(f1_fastq_dirs, founder_fastas, gtf_path,
-                             threads=threads)
+
+    return run_kallisto_ase(f1_fastq_dirs, founder_fastas, gtf_path, threads=threads)
 
 
-def _run_sqtl(disc, cache, covariates, psi_matrix=None,
-               junction_ids=None, gene_map=None):
+def _run_sqtl(
+    disc, cache, covariates, psi_matrix=None, junction_ids=None, gene_map=None
+):
     """3d — sQTL scan: haplotype scan on PSI (percent-spliced-in) phenotypes.
 
     reuses the same scan engine (scan_nb or scan_h2lmm) with PSI ratios
@@ -445,17 +491,19 @@ def _run_sqtl(disc, cache, covariates, psi_matrix=None,
     dict {junction_id: ScanResult}
     """
     if psi_matrix is None or junction_ids is None:
-        logger.warning('sqtl: psi_matrix and junction_ids required — skipping')
+        logger.warning("sqtl: psi_matrix and junction_ids required — skipping")
         return {}
     if disc.kinship_decomp is None:
-        kd_raw = kin_module.calc_kinship(cache, method='loco')
-        kd     = kin_module.decomp_kinship(kd_raw)
+        kd_raw = kin_module.calc_kinship(cache, method="loco")
+        kd = kin_module.decomp_kinship(kd_raw)
     else:
         kd = disc.kinship_decomp
     results = {}
     for j, jid in enumerate(junction_ids):
         psi_j = psi_matrix[:, j]
-        if np.all(np.isnan(psi_j)): continue
-        results[jid] = scan_h2lmm(psi_j, cache, covariates,
-                                    kinship_decomp=kd, phenotype_id=jid)
+        if np.all(np.isnan(psi_j)):
+            continue
+        results[jid] = scan_h2lmm(
+            psi_j, cache, covariates, kinship_decomp=kd, phenotype_id=jid
+        )
     return results

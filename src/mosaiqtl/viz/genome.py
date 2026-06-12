@@ -930,3 +930,156 @@ def ci_strip(
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
+
+
+def chromosome_lod_profile(
+    positions: np.ndarray,
+    lod: np.ndarray,
+    *,
+    ax: Optional[plt.Axes] = None,
+    chrom: str = '',
+    threshold: Optional[float] = None,
+    color: str = FOUNDER_COLORS['NODJ'],
+    fill: bool = True,
+    annotate_n_loci: bool = True,
+) -> plt.Axes:
+    """Whole-chromosome LOD profile with auto-detected peak and loci count.
+
+    Convenience wrapper around :func:`lod_profile` that highlights the peak
+    position and optionally annotates the number of loci tested.
+
+    Parameters
+    ----------
+    positions : np.ndarray
+        Marker positions in Mb, shape (n_loci,).
+    lod : np.ndarray
+        LOD scores, same shape as positions.
+    ax : plt.Axes, optional
+        Axes to plot on; created at dpi=300 if None.
+    chrom : str
+        Chromosome label for x-axis title.
+    threshold : float, optional
+        Permutation threshold drawn as a dashed horizontal line.
+    color : str
+        Line and fill color; must be imported from founders.py.
+    fill : bool
+        Shade area under the LOD curve.
+    annotate_n_loci : bool
+        Add a text annotation with the loci count in the upper-left corner.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    peak_idx = int(np.argmax(lod))
+    peak_pos = float(positions[peak_idx])
+    ax = lod_profile(
+        positions,
+        lod,
+        ax=ax,
+        chrom=chrom,
+        threshold=threshold,
+        peak_pos=peak_pos,
+        color=color,
+        fill=fill,
+    )
+    if annotate_n_loci:
+        ax.text(
+            0.02,
+            0.97,
+            f'n={len(positions):,} loci',
+            transform=ax.transAxes,
+            fontsize=7,
+            va='top',
+            color=COLOR_NEUTRAL_DARK,
+        )
+    return ax
+
+
+def peak_locus_zoom(
+    positions: np.ndarray,
+    lod: np.ndarray,
+    peak_mb: float,
+    *,
+    window_mb: float = 2.0,
+    ax: Optional[plt.Axes] = None,
+    chrom: str = '',
+    threshold: Optional[float] = None,
+    ci_lo_mb: Optional[float] = None,
+    ci_hi_mb: Optional[float] = None,
+    color: str = FOUNDER_COLORS['NODJ'],
+    snp_positions: Optional[np.ndarray] = None,
+    snp_neg_log10p: Optional[np.ndarray] = None,
+) -> plt.Axes:
+    """High-resolution LOD profile zoomed around a peak locus.
+
+    Slices to [peak_mb - window_mb, peak_mb + window_mb] and optionally
+    shades the confidence interval and overlays SNP association scores.
+
+    Parameters
+    ----------
+    positions : np.ndarray
+        Full-chromosome marker positions in Mb.
+    lod : np.ndarray
+        Full-chromosome LOD scores.
+    peak_mb : float
+        Peak locus position in Mb; centre of the zoom window.
+    window_mb : float
+        Half-width of the zoom window in Mb.
+    ax : plt.Axes, optional
+        Axes to draw on; created at dpi=300 if None.
+    chrom : str
+        Chromosome label for x-axis.
+    threshold : float, optional
+        Permutation threshold line.
+    ci_lo_mb : float, optional
+        Lower bound of LOD-support confidence interval in Mb.
+    ci_hi_mb : float, optional
+        Upper bound of LOD-support confidence interval in Mb.
+    color : str
+        LOD line color; from founders.py.
+    snp_positions : np.ndarray, optional
+        SNP positions in Mb for secondary-axis overlay.
+    snp_neg_log10p : np.ndarray, optional
+        −log10(p) values per SNP; requires snp_positions.
+
+    Returns
+    -------
+    plt.Axes
+        Primary axes (LOD); secondary axes accessible via ax.get_figure().
+    """
+    start_mb = peak_mb - window_mb
+    end_mb = peak_mb + window_mb
+    ax = region_zoom(
+        positions,
+        lod,
+        start_mb=start_mb,
+        end_mb=end_mb,
+        ax=ax,
+        chrom=chrom,
+        threshold=threshold,
+        color=color,
+        snp_positions=snp_positions,
+        snp_neg_log10p=snp_neg_log10p,
+    )
+    if ci_lo_mb is not None and ci_hi_mb is not None:
+        ax.axvspan(
+            ci_lo_mb,
+            ci_hi_mb,
+            alpha=0.12,
+            color=color,
+            zorder=0,
+        )
+    mask = (positions >= start_mb) & (positions <= end_mb)
+    if mask.any():
+        peak_lod_val = float(lod[mask].max())
+        ax.text(
+            peak_mb,
+            peak_lod_val * 1.05,
+            f'LOD={peak_lod_val:.1f}',
+            ha='center',
+            va='bottom',
+            fontsize=7,
+            color=FOUNDER_COLORS['PWKJ'],
+        )
+    return ax

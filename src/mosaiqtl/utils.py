@@ -2,7 +2,7 @@
 utils — shared utility functions
 
 rank-inverse normal transformation, sample alignment, Z-matrix construction,
-kinship/haplotype Z-expansion, and design matrix builder.
+kinship/haplotype Z-expansion, design matrix builder, and chromosome ordering.
 """
 
 import numpy as np
@@ -10,6 +10,28 @@ from scipy import stats
 import logging
 
 logger = logging.getLogger('mosaiqtl')
+
+
+def chr_sort_key(c: str) -> int:
+    """Numeric sort key for chromosome strings.
+
+    Returns the integer value for autosomes, 20 for X, 21 for Y, 99 for
+    anything else.  Use as ``key=chr_sort_key`` wherever chromosome lists
+    or file paths keyed by chromosome need genomic ordering.
+
+    Parameters
+    ----------
+    c : str
+        Chromosome label, e.g. ``'1'``, ``'19'``, ``'X'``.
+
+    Returns
+    -------
+    int
+    """
+    s = str(c).strip()
+    if s.isdigit():
+        return int(s)
+    return {'X': 20, 'Y': 21}.get(s.upper(), 99)
 
 
 def rint(x):

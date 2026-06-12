@@ -18,6 +18,8 @@ import os
 import glob
 import logging
 
+from ..utils import chr_sort_key
+
 logger = logging.getLogger('mosaiqtl')
 
 # default cc founder strain names (in standard order)
@@ -61,7 +63,7 @@ class GenomeCache:
         self._h5_handle = _h5_handle
         self.crossinfo = None   # DataFrame (strains × A-H) from cc_crossinfo.csv
         self.x_donor   = {}     # strain_id -> founder_col of x-chr donor
-        self.chromosomes = sorted(self._data.keys())
+        self.chromosomes = sorted(self._data.keys(), key=chr_sort_key)
 
     def __del__(self):
         """close open HDF5 handle on garbage collection."""
@@ -394,11 +396,7 @@ class GenomeCache:
         gmap_shared = gmap_idx.loc[list(shared_set)].copy()
         # sort key: integer chrs by value, X=20, others=99
 
-        def _chr_key(c):
-            """Sort key: numeric chrs by value, X=20, others=99."""
-            s = str(c)
-            return int(s) if s.isdigit() else (20 if s == 'X' else 99)
-        gmap_shared['_k'] = gmap_shared['chr'].map(_chr_key)
+        gmap_shared['_k'] = gmap_shared['chr'].map(chr_sort_key)
         gmap_shared = gmap_shared.sort_values(['_k', 'pos_cM']).drop(columns=['_k'])
         shared      = gmap_shared.index.tolist()          # position-sorted locus names
 
@@ -438,7 +436,7 @@ class GenomeCache:
         # chr column already str — build sorted chromosome list
         chrs = sorted(
             [c for c in gmap['chr'].unique() if c not in ('Y', 'M', 'MT', 'nan')],
-            key=lambda c: int(c) if c.isdigit() else (20 if c == 'X' else 99)
+            key=chr_sort_key,
         )
 
         # ── process per chromosome ────────────────────────────────────────────
@@ -739,7 +737,10 @@ class GenomeCache:
             model_dir = cache_dir
 
         # discover chromosome directories
-        chr_dirs = sorted(glob.glob(os.path.join(model_dir, 'chr*')))
+        chr_dirs = sorted(
+            glob.glob(os.path.join(model_dir, 'chr*')),
+            key=lambda p: chr_sort_key(os.path.basename(p).replace('chr', '')),
+        )
         if not chr_dirs:
             raise FileNotFoundError(
                 f'no chr* directories found in {model_dir}'
