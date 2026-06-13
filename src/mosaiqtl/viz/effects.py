@@ -6,6 +6,7 @@ from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import seaborn as sns
 
 from ..genotype.founders import (
@@ -471,3 +472,136 @@ def haplotype_sex_profile(
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
+
+
+# ---------------------------------------------------------------------------
+# Per-chromosome and grid summaries
+# ---------------------------------------------------------------------------
+
+def _eff_chr_sort_key(c: str) -> tuple[int, int]:
+    """Chromosome sort key matching _CHR_ORDER (1–19 then X)."""
+    try:
+        return (0, _CHR_ORDER.index(c))
+    except ValueError:
+        try:
+            return (1, int(c))
+        except ValueError:
+            return (2, 0)
+
+
+def effects_per_chr(
+    eff_df: pd.DataFrame,
+    founders: list[str],
+    *,
+    priority_genes: Optional[dict[str, str]] = None,
+) -> dict[str, plt.Figure]:
+    """Per-chromosome founder effect bar figures for the top gene on each chromosome.
+
+    Parameters
+    ----------
+    eff_df : pd.DataFrame
+        Columns: gene (str), chr (str), peak_mb, peak_lod, beta_A … beta_H.
+    founders : list[str]
+        Display-name founders matching the beta column order.
+    priority_genes : dict[str, str], optional
+        {chr: gene_name} — used instead of top-peak gene when present.
+
+    Returns
+    -------
+    dict[str, plt.Figure]
+        Keyed by chromosome string.
+    """
+    prio = priority_genes or {}
+    beta_cols = [b for b in eff_df.columns if b.startswith('beta_')]
+    chr_vals = eff_df['chr'].astype(str)
+    ordered = [c for c in _CHR_ORDER if c in set(chr_vals)]
+    extra = sorted(set(chr_vals) - set(_CHR_ORDER))
+    chrs = ordered + extra
+
+    out: dict[str, plt.Figure] = {}
+    for c in chrs:
+        eff_c = eff_df[chr_vals == c]
+        if eff_c.empty:
+            continue
+
+        gene = prio.get(c)
+        if gene and gene in eff_c['gene'].values:
+            row = eff_c[eff_c['gene'] == gene].iloc[0]
+        else:
+            row = eff_c.loc[eff_c['peak_lod'].idxmax()]
+            gene = str(row['gene'])
+
+        betas = np.array([float(row[b]) for b in beta_cols])
+        fig, ax = plt.subplots(figsize=(7, 3), dpi=300)
+        effect_bars(betas, founders, ax=ax)
+        ax.set_title(
+            f'Founder effects  {gene}  chr{c}  LOD={row["peak_lod"]:.1f}',
+            fontsize=9,
+        )
+        sns.despine(ax=ax)
+        fig.tight_layout()
+        out[c] = fig
+
+    return out
+
+
+def genome_effects_grid(
+    eff_df: pd.DataFrame,
+    founders: list[str],
+    *,
+    n_cols: int = 4,
+) -> plt.Figure:
+    """Grid of founder effect bars, one panel per chromosome (top gene).
+
+    Parameters
+    ----------
+    eff_df : pd.DataFrame
+        Columns: gene (str), chr (str), peak_lod, beta_A … beta_H.
+    founders : list[str]
+        Display-name founders matching the beta column order.
+    n_cols : int
+        Panels per row (default 4 → 4×5 for 20 chromosomes).
+
+    Returns
+    -------
+    plt.Figure
+    """
+    beta_cols = [b for b in eff_df.columns if b.startswith('beta_')]
+    chr_vals = eff_df['chr'].astype(str)
+    ordered = [c for c in _CHR_ORDER if c in set(chr_vals)]
+    extra = sorted(set(chr_vals) - set(_CHR_ORDER))
+    chrs = ordered + extra
+    n_chrs = len(chrs)
+    n_rows = (n_chrs + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(n_cols * 2.5, n_rows * 2.2),
+        dpi=300,
+        squeeze=False,
+    )
+
+    for i, c in enumerate(chrs):
+        ax = axes[i // n_cols, i % n_cols]
+        eff_c = eff_df[chr_vals == c]
+        if eff_c.empty:
+            ax.set_visible(False)
+            continue
+
+        row = eff_c.loc[eff_c['peak_lod'].idxmax()]
+        betas = np.array([float(row[b]) for b in beta_cols])
+        gene = str(row['gene'])
+
+        effect_bars(betas, founders, ax=ax)
+        ax.set_xlabel('')
+        ax.tick_params(labelsize=5)
+        ax.set_xticklabels(founders, rotation=60, ha='right', fontsize=5)
+        ax.set_title(f'chr{c}  {gene[:12]}', fontsize=7)
+        sns.despine(ax=ax)
+
+    for j in range(n_chrs, n_rows * n_cols):
+        axes[j // n_cols, j % n_cols].set_visible(False)
+
+    fig.suptitle('Founder effects — top gene per chromosome', fontsize=9, y=1.01)
+    fig.tight_layout()
+    return fig

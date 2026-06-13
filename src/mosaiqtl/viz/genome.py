@@ -4,15 +4,21 @@ from __future__ import annotations
 
 from typing import Optional
 
+import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import seaborn as sns
 
 from ..genotype.founders import COLOR_NEUTRAL_DARK, COLOR_CC_FALLBACK, FOUNDER_COLORS
+from .effects import effect_bars as _effect_bars
 
 _CHR_ORDER: list[str] = [str(i) for i in range(1, 20)] + ['X']
 _CHR_GAP_MB: float = 10.0
 _CHR_COLORS: tuple[str, str] = (FOUNDER_COLORS['NODJ'], COLOR_NEUTRAL_DARK)
+_MI_COLOR: str = FOUNDER_COLORS['WSBJ']
+_INST_COLOR: str = FOUNDER_COLORS['CASTJ']
+_SNP_COLOR: str = FOUNDER_COLORS['129S1J']
 
 
 def _set_font(ax: plt.Axes) -> None:
@@ -1083,3 +1089,898 @@ def peak_locus_zoom(
             color=FOUNDER_COLORS['PWKJ'],
         )
     return ax
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+def _chr_sort_key_local(c: str) -> tuple[int, int]:
+    """Numeric chromosome sort matching _CHR_ORDER (1–19, then X)."""
+    try:
+        return (0, _CHR_ORDER.index(c))
+    except ValueError:
+        try:
+            return (1, int(c))
+        except ValueError:
+            return (2, 0)
+
+
+def _ordered_chrs(chr_series: pd.Series) -> list[str]:
+    """Return unique chromosomes in _CHR_ORDER then extras alphabetically."""
+    present = set(chr_series.astype(str))
+    ordered = [c for c in _CHR_ORDER if c in present]
+    extra = sorted(present - set(_CHR_ORDER))
+    return ordered + extra
+
+
+# ---------------------------------------------------------------------------
+# Per-chromosome figure iterators
+# ---------------------------------------------------------------------------
+
+def lod_profiles_per_chr(
+    lod_df: pd.DataFrame,
+    pk_df: Optional[pd.DataFrame] = None,
+    thr_by_chr: Optional[dict[str, Optional[float]]] = None,
+    *,
+    color: str = FOUNDER_COLORS['NODJ'],
+    ylabel: str = 'LOD',
+    priority_genes: Optional[dict[str, str]] = None,
+) -> dict[str, plt.Figure]:
+    """Per-chromosome LOD profile figures for the top gene on each chromosome.
+
+    Reusable for the main LOD scan (S4), MI scan (S7 with color=_MI_COLOR),
+    and instability scan (S11 with color=_INST_COLOR / ylabel='Instability LOD').
+
+    Parameters
+    ----------
+    lod_df : pd.DataFrame
+        Required columns: gene (str), chr (str), pos_mb (float), lod (float).
+    pk_df : pd.DataFrame, optional
+        Peak table (gene, chr, peak_lod) for top-gene selection.
+        Defaults to highest mean LOD gene per chromosome if omitted.
+    thr_by_chr : dict, optional
+        Per-chromosome permutation threshold (may contain None values).
+    color : str
+        LOD line colour; must be imported from genotype.founders.
+    ylabel : str
+        Y-axis label.
+    priority_genes : dict, optional
+        {chr: gene_name} annotated in the title when not the top gene.
+
+    Returns
+    -------
+    dict[str, plt.Figure]
+        Keyed by chromosome string.
+    """
+    thr = thr_by_chr or {}
+    prio = priority_genes or {}
+    chr_vals = lod_df['chr'].astype(str)
+    chrs = _ordered_chrs(chr_vals)
+
+    out: dict[str, plt.Figure] = {}
+    for c in chrs:
+        lod_c = lod_df[chr_vals == c]
+        if lod_c.empty:
+            continue
+
+        if pk_df is not None:
+            pk_c = pk_df[pk_df['chr'].astype(str) == c]
+            top_gene = (
+                str(pk_c.loc[pk_c['peak_lod'].idxmax(), 'gene'])
+                if not pk_c.empty
+                else ''
+            )
+        else:
+            gene_max = lod_c.groupby('gene')['lod'].max()
+            top_gene = str(gene_max.idxmax()) if len(gene_max) > 0 else ''
+
+        if not top_gene:
+            continue
+        lod_top = lod_c[lod_c['gene'] == top_gene].sort_values('pos_mb')
+        if lod_top.empty:
+            continue
+
+        thr_val: Optional[float] = thr.get(c)
+        fig, ax = plt.subplots(figsize=(10, 3), dpi=300)
+        lod_profile(
+            lod_top['pos_mb'].values,
+            lod_top['lod'].values,
+            ax=ax,
+            chrom=c,
+            threshold=thr_val,
+            color=color,
+            fill=True,
+        )
+        ax.set_ylabel(ylabel)
+        title = f'{top_gene}  chr{c}'
+        p1 = prio.get(c)
+        if p1 and p1 != top_gene:
+            p1_rows = lod_c[lod_c['gene'] == p1]['lod']
+            if len(p1_rows) > 0:
+                title += f'  (priority: {p1} LOD={p1_rows.max():.1f})'
+        ax.set_title(title, fontsize=9)
+        sns.despine(ax=ax)
+        fig.tight_layout()
+        out[c] = fig
+
+    return out
+
+
+def perm_distributions_per_chr(
+    perm_by_chr: dict[str, np.ndarray],
+    thr_by_chr: dict[str, Optional[float]],
+) -> dict[str, plt.Figure]:
+    """Per-chromosome permutation null distribution figures.
+
+    Parameters
+    ----------
+    perm_by_chr : dict[str, np.ndarray]
+        Max-LOD null distribution per chromosome.
+    thr_by_chr : dict[str, float | None]
+        GEV threshold per chromosome.
+
+    Returns
+    -------
+    dict[str, plt.Figure]
+    """
+    out: dict[str, plt.Figure] = {}
+    for c in sorted(perm_by_chr, key=_chr_sort_key_local):
+        max_lods = perm_by_chr[c]
+        fig, ax = plt.subplots(figsize=(7, 4), dpi=300)
+        perm_distribution(max_lods, ax=ax, threshold=thr_by_chr.get(c), chrom=c)
+        sns.despine(ax=ax)
+        fig.tight_layout()
+        out[c] = fig
+    return out
+
+
+def snp_profiles_per_chr(
+    snp_df: pd.DataFrame,
+    pk_df: Optional[pd.DataFrame] = None,
+    *,
+    priority_genes: Optional[dict[str, str]] = None,
+) -> dict[str, plt.Figure]:
+    """Per-chromosome SNP fine-mapping association scatter figures.
+
+    Parameters
+    ----------
+    snp_df : pd.DataFrame
+        Columns: gene (str), chr (str), pos_mb (float), lod (float).
+    pk_df : pd.DataFrame, optional
+        Peak table for top-gene selection when snp_df covers multiple genes.
+    priority_genes : dict, optional
+        {chr: gene_name} forces the plotted gene per chromosome.
+
+    Returns
+    -------
+    dict[str, plt.Figure]
+    """
+    prio = priority_genes or {}
+    chr_vals = snp_df['chr'].astype(str)
+    chrs = _ordered_chrs(chr_vals)
+
+    out: dict[str, plt.Figure] = {}
+    for c in chrs:
+        snp_c = snp_df[chr_vals == c]
+        if snp_c.empty:
+            continue
+
+        if prio.get(c) and prio[c] in snp_c['gene'].values:
+            top_gene = prio[c]
+        elif pk_df is not None:
+            pk_c = pk_df[pk_df['chr'].astype(str) == c]
+            top_gene = (
+                str(pk_c.loc[pk_c['peak_lod'].idxmax(), 'gene'])
+                if not pk_c.empty
+                else ''
+            )
+        else:
+            gene_max = snp_c.groupby('gene')['lod'].max()
+            top_gene = str(gene_max.idxmax()) if len(gene_max) > 0 else ''
+
+        if not top_gene:
+            continue
+        snp_g = snp_c[snp_c['gene'] == top_gene].sort_values('pos_mb')
+        if snp_g.empty:
+            continue
+
+        fig, ax = plt.subplots(figsize=(10, 3), dpi=300)
+        ax.scatter(
+            snp_g['pos_mb'].values,
+            snp_g['lod'].values,
+            color=_SNP_COLOR,
+            s=5,
+            alpha=0.75,
+            linewidths=0,
+            zorder=2,
+        )
+        if len(snp_g) > 0:
+            top_row = snp_g.loc[snp_g['lod'].idxmax()]
+            snp_label = str(top_row.get('snp', ''))
+            if snp_label:
+                ax.annotate(
+                    snp_label,
+                    xy=(top_row['pos_mb'], top_row['lod']),
+                    xytext=(6, 4),
+                    textcoords='offset points',
+                    fontsize=6,
+                    color=FOUNDER_COLORS['PWKJ'],
+                    arrowprops=dict(
+                        arrowstyle='-',
+                        color=FOUNDER_COLORS['PWKJ'],
+                        lw=0.6,
+                    ),
+                )
+        ax.set_xlim(
+            float(snp_g['pos_mb'].min()),
+            float(snp_g['pos_mb'].max()),
+        )
+        ax.set_ylim(bottom=0)
+        ax.set_xlabel(f'Chr {c} position (Mb)')
+        ax.set_ylabel('LOD (SNP)')
+        ax.set_title(f'SNP fine-mapping  {top_gene}  chr{c}', fontsize=9)
+        sns.despine(ax=ax)
+        fig.tight_layout()
+        out[c] = fig
+
+    return out
+
+
+def locus_panels_per_chr(
+    lod_df: pd.DataFrame,
+    eff_df: Optional[pd.DataFrame] = None,
+    founders: Optional[list[str]] = None,
+    thr_by_chr: Optional[dict[str, Optional[float]]] = None,
+    *,
+    priority_genes: Optional[dict[str, str]] = None,
+) -> dict[str, plt.Figure]:
+    """Per-chromosome qtl2-style locus panels (founder effects + LOD profile).
+
+    qtl2 equivalent: ``plot_coefCC`` at peak locus stacked above ``plot_scan1``.
+    The effect bar uses peak-locus betas from *eff_df* rather than a per-locus
+    coefficient profile, because mosaiqtl stores only peak-locus betas per gene.
+
+    Parameters
+    ----------
+    lod_df : pd.DataFrame
+        Columns: gene, chr (str), pos_mb, lod.
+    eff_df : pd.DataFrame, optional
+        Columns: gene, chr (str), peak_mb, peak_lod, beta_A … beta_H.
+        When provided, the top panel shows founder effect bars.
+    founders : list[str], optional
+        Display-name founder list matching beta column order (e.g. AJ, B6J …).
+    thr_by_chr : dict, optional
+        Per-chromosome GEV threshold.
+    priority_genes : dict, optional
+        {chr: gene_name}.
+
+    Returns
+    -------
+    dict[str, plt.Figure]
+    """
+    thr = thr_by_chr or {}
+    prio = priority_genes or {}
+    chr_vals = lod_df['chr'].astype(str)
+    chrs = _ordered_chrs(chr_vals)
+
+    out: dict[str, plt.Figure] = {}
+    for c in chrs:
+        lod_c = lod_df[chr_vals == c]
+        if lod_c.empty:
+            continue
+
+        if eff_df is not None:
+            eff_c = eff_df[eff_df['chr'].astype(str) == c]
+            top_gene = (
+                str(eff_c.loc[eff_c['peak_lod'].idxmax(), 'gene'])
+                if not eff_c.empty
+                else ''
+            )
+        else:
+            gene_max = lod_c.groupby('gene')['lod'].max()
+            top_gene = str(gene_max.idxmax()) if len(gene_max) > 0 else ''
+
+        if prio.get(c):
+            candidates = (
+                eff_df[eff_df['chr'].astype(str) == c]['gene'].values
+                if eff_df is not None
+                else lod_c['gene'].unique()
+            )
+            if prio[c] in candidates:
+                top_gene = prio[c]
+
+        if not top_gene:
+            continue
+        lod_top = lod_c[lod_c['gene'] == top_gene].sort_values('pos_mb')
+        if lod_top.empty:
+            continue
+
+        peak_betas: Optional[np.ndarray] = None
+        peak_pos: Optional[float] = None
+        if eff_df is not None and founders is not None:
+            eff_row_df = eff_df[
+                (eff_df['chr'].astype(str) == c) & (eff_df['gene'] == top_gene)
+            ]
+            if not eff_row_df.empty:
+                beta_cols = [b for b in eff_row_df.columns if b.startswith('beta_')]
+                row0 = eff_row_df.iloc[0]
+                peak_betas = np.array([float(row0[b]) for b in beta_cols])
+                peak_pos = float(row0.get('peak_mb', lod_top['pos_mb'].iloc[0]))
+
+        thr_val: Optional[float] = thr.get(c)
+        fig = locus_panel(
+            lod_top['pos_mb'].values,
+            lod_top['lod'].values,
+            founders or [],
+            peak_betas=peak_betas,
+            peak_pos=peak_pos,
+            threshold=thr_val,
+            chrom=c,
+            highlight_gene=top_gene,
+        )
+        out[c] = fig
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Single-figure grid summaries
+# ---------------------------------------------------------------------------
+
+def locus_panel(
+    positions: np.ndarray,
+    lod: np.ndarray,
+    founders: list[str],
+    *,
+    peak_betas: Optional[np.ndarray] = None,
+    peak_pos: Optional[float] = None,
+    threshold: Optional[float] = None,
+    chrom: str = '',
+    highlight_gene: Optional[str] = None,
+) -> plt.Figure:
+    """qtl2-style two-panel locus view: founder effect bars (top) + LOD profile.
+
+    The top panel is omitted when *peak_betas* is None, yielding a single LOD panel.
+
+    Parameters
+    ----------
+    positions : np.ndarray
+        Locus positions in Mb for the chromosome.
+    lod : np.ndarray
+        LOD scores matching *positions*.
+    founders : list[str]
+        Display-name founders in FOUNDER_ORDER for the effect bar axis labels.
+    peak_betas : np.ndarray, optional
+        Per-founder betas at the peak locus (shape (J,)); adds the top panel.
+    peak_pos : float, optional
+        Peak locus position in Mb; passed to lod_profile for annotation.
+    threshold : float, optional
+        Permutation threshold; drawn as a dashed line on the LOD panel.
+    chrom : str
+        Chromosome label for the x-axis.
+    highlight_gene : str, optional
+        Gene name shown in the figure title.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    if peak_betas is not None:
+        fig = plt.figure(figsize=(10, 5), dpi=300)
+        gs = gridspec.GridSpec(2, 1, height_ratios=[2, 1], hspace=0.25)
+        ax_top = fig.add_subplot(gs[0])
+        ax_bot = fig.add_subplot(gs[1])
+
+        _effect_bars(peak_betas, founders, ax=ax_top)
+        ax_top.set_xlabel('')
+        title = highlight_gene or ''
+        if chrom:
+            title = f'{title}  chr{chrom}' if title else f'chr{chrom}'
+        if title:
+            ax_top.set_title(title, fontsize=9)
+        sns.despine(ax=ax_top)
+
+        lod_profile(positions, lod, ax=ax_bot, chrom=chrom,
+                    threshold=threshold, peak_pos=peak_pos, fill=True)
+        ax_bot.set_title('')
+        sns.despine(ax=ax_bot)
+    else:
+        fig, ax_bot = plt.subplots(figsize=(10, 3), dpi=300)
+        lod_profile(positions, lod, ax=ax_bot, chrom=chrom,
+                    threshold=threshold, peak_pos=peak_pos, fill=True)
+        if highlight_gene or chrom:
+            label = highlight_gene or ''
+            if chrom:
+                label = f'{label}  chr{chrom}' if label else f'chr{chrom}'
+            ax_bot.set_title(label, fontsize=9)
+        sns.despine(ax=ax_bot)
+
+    fig.tight_layout()
+    return fig
+
+
+def lod_panel_grid(
+    lod_df: pd.DataFrame,
+    pk_df: Optional[pd.DataFrame] = None,
+    thr_by_chr: Optional[dict[str, Optional[float]]] = None,
+    *,
+    priority_genes: Optional[dict[str, str]] = None,
+    n_cols: int = 4,
+) -> plt.Figure:
+    """Grid of LOD profiles, one panel per chromosome (LOD-only diagnostic).
+
+    Parameters
+    ----------
+    lod_df : pd.DataFrame
+        Columns: gene, chr (str), pos_mb, lod.
+    pk_df : pd.DataFrame, optional
+        Peak table for top-gene selection.
+    thr_by_chr : dict, optional
+        Per-chromosome permutation threshold.
+    priority_genes : dict, optional
+        {chr: gene_name} annotated in panel titles.
+    n_cols : int
+        Panels per row (default 4 → 4×5 for 20 chromosomes).
+
+    Returns
+    -------
+    plt.Figure
+    """
+    thr = thr_by_chr or {}
+    prio = priority_genes or {}
+    chr_vals = lod_df['chr'].astype(str)
+    chrs = _ordered_chrs(chr_vals)
+    n_chrs = len(chrs)
+    n_rows = (n_chrs + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(n_cols * 3, n_rows * 2.2),
+        dpi=300,
+        squeeze=False,
+    )
+
+    for i, c in enumerate(chrs):
+        ax = axes[i // n_cols, i % n_cols]
+        lod_c = lod_df[chr_vals == c]
+
+        if pk_df is not None:
+            pk_c = pk_df[pk_df['chr'].astype(str) == c]
+            top_gene = (
+                str(pk_c.loc[pk_c['peak_lod'].idxmax(), 'gene'])
+                if not pk_c.empty
+                else ''
+            )
+        else:
+            gene_max = lod_c.groupby('gene')['lod'].max()
+            top_gene = str(gene_max.idxmax()) if len(gene_max) > 0 else ''
+
+        if top_gene:
+            lod_top = lod_c[lod_c['gene'] == top_gene].sort_values('pos_mb')
+            if not lod_top.empty:
+                lod_profile(
+                    lod_top['pos_mb'].values,
+                    lod_top['lod'].values,
+                    ax=ax,
+                    chrom='',
+                    threshold=thr.get(c),
+                    fill=True,
+                    linewidth=0.8,
+                )
+                label = prio.get(c) or top_gene
+                ax.set_title(f'chr{c}  {label[:14]}', fontsize=7)
+                ax.set_xlabel(f'chr{c} (Mb)', fontsize=6)
+                ax.tick_params(labelsize=5)
+                sns.despine(ax=ax)
+                continue
+        ax.set_visible(False)
+
+    for j in range(n_chrs, n_rows * n_cols):
+        axes[j // n_cols, j % n_cols].set_visible(False)
+
+    fig.suptitle('LOD profiles — top gene per chromosome', fontsize=9, y=1.01)
+    fig.tight_layout()
+    return fig
+
+
+def locus_panel_grid(
+    lod_df: pd.DataFrame,
+    eff_df: Optional[pd.DataFrame] = None,
+    founders: Optional[list[str]] = None,
+    thr_by_chr: Optional[dict[str, Optional[float]]] = None,
+    *,
+    priority_genes: Optional[dict[str, str]] = None,
+    n_cols: int = 4,
+) -> plt.Figure:
+    """Grid of qtl2-style locus panels (founder effects + LOD), one per chromosome.
+
+    Each cell contains an effect bar (top sub-panel) and a LOD profile (bottom
+    sub-panel) using ``GridSpecFromSubplotSpec`` nested inside the outer grid.
+    Falls back to LOD-only when *eff_df* or *founders* is not provided, or when
+    a gene lacks effect data.
+
+    Parameters
+    ----------
+    lod_df : pd.DataFrame
+        Columns: gene, chr (str), pos_mb, lod.
+    eff_df : pd.DataFrame, optional
+        Columns: gene, chr (str), peak_mb, peak_lod, beta_A … beta_H.
+    founders : list[str], optional
+        Display-name founders matching beta column order.
+    thr_by_chr : dict, optional
+        Per-chromosome GEV threshold.
+    priority_genes : dict, optional
+        {chr: gene_name}.
+    n_cols : int
+        Panels per row.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    thr = thr_by_chr or {}
+    prio = priority_genes or {}
+    show_effects = eff_df is not None and founders is not None
+    chr_vals = lod_df['chr'].astype(str)
+    chrs = _ordered_chrs(chr_vals)
+    n_chrs = len(chrs)
+    n_rows = (n_chrs + n_cols - 1) // n_cols
+    cell_h = 3.8 if show_effects else 2.2
+
+    fig = plt.figure(figsize=(n_cols * 3, n_rows * cell_h), dpi=300)
+    outer = gridspec.GridSpec(n_rows, n_cols, figure=fig, hspace=0.55, wspace=0.4)
+
+    for i, c in enumerate(chrs):
+        row, col = i // n_cols, i % n_cols
+        lod_c = lod_df[chr_vals == c]
+        if lod_c.empty:
+            continue
+
+        if eff_df is not None:
+            eff_c = eff_df[eff_df['chr'].astype(str) == c]
+            top_gene = (
+                str(eff_c.loc[eff_c['peak_lod'].idxmax(), 'gene'])
+                if not eff_c.empty
+                else ''
+            )
+        else:
+            gene_max = lod_c.groupby('gene')['lod'].max()
+            top_gene = str(gene_max.idxmax()) if len(gene_max) > 0 else ''
+
+        if prio.get(c):
+            candidates = (
+                eff_df[eff_df['chr'].astype(str) == c]['gene'].values
+                if eff_df is not None
+                else lod_c['gene'].unique()
+            )
+            if prio[c] in candidates:
+                top_gene = prio[c]
+
+        if not top_gene:
+            continue
+        lod_top = lod_c[lod_c['gene'] == top_gene].sort_values('pos_mb')
+        if lod_top.empty:
+            continue
+        label = top_gene[:14]
+        thr_val: Optional[float] = thr.get(c)
+
+        if show_effects:
+            eff_row_df = eff_df[
+                (eff_df['chr'].astype(str) == c) & (eff_df['gene'] == top_gene)
+            ]
+            if not eff_row_df.empty:
+                beta_cols = [b for b in eff_row_df.columns if b.startswith('beta_')]
+                betas = np.array([float(eff_row_df.iloc[0][b]) for b in beta_cols])
+                inner = gridspec.GridSpecFromSubplotSpec(
+                    2, 1,
+                    subplot_spec=outer[row, col],
+                    height_ratios=[2, 1],
+                    hspace=0.08,
+                )
+                ax_top = fig.add_subplot(inner[0])
+                ax_bot = fig.add_subplot(inner[1])
+
+                _effect_bars(betas, founders, ax=ax_top)  # type: ignore[arg-type]
+                ax_top.set_xlabel('')
+                ax_top.tick_params(labelsize=5)
+                ax_top.set_title(f'chr{c}  {label}', fontsize=7)
+                sns.despine(ax=ax_top)
+
+                lod_profile(
+                    lod_top['pos_mb'].values, lod_top['lod'].values,
+                    ax=ax_bot, chrom='', threshold=thr_val,
+                    fill=True, linewidth=0.8,
+                )
+                ax_bot.set_xlabel(f'chr{c} (Mb)', fontsize=6)
+                ax_bot.tick_params(labelsize=5)
+                ax_bot.set_title('')
+                sns.despine(ax=ax_bot)
+                continue
+
+        # LOD-only fallback
+        ax = fig.add_subplot(outer[row, col])
+        lod_profile(
+            lod_top['pos_mb'].values, lod_top['lod'].values,
+            ax=ax, chrom='', threshold=thr_val, fill=True, linewidth=0.8,
+        )
+        ax.set_xlabel(f'chr{c} (Mb)', fontsize=6)
+        ax.tick_params(labelsize=5)
+        ax.set_title(f'chr{c}  {label}', fontsize=7)
+        sns.despine(ax=ax)
+
+    for j in range(n_chrs, n_rows * n_cols):
+        ax_empty = fig.add_subplot(outer[j // n_cols, j % n_cols])
+        ax_empty.set_visible(False)
+
+    title = 'Locus panels — top gene per chromosome'
+    if show_effects:
+        title += '  (founder effects + LOD)'
+    fig.suptitle(title, fontsize=9, y=1.01)
+    return fig
+
+
+def perm_panel_grid(
+    perm_by_chr: dict[str, np.ndarray],
+    thr_by_chr: dict[str, Optional[float]],
+    *,
+    n_cols: int = 4,
+) -> plt.Figure:
+    """Grid of permutation null distributions, one panel per chromosome.
+
+    Parameters
+    ----------
+    perm_by_chr : dict[str, np.ndarray]
+        Max-LOD null distribution per chromosome.
+    thr_by_chr : dict[str, float | None]
+        GEV threshold per chromosome.
+    n_cols : int
+        Panels per row.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    chrs = sorted(perm_by_chr, key=_chr_sort_key_local)
+    n_chrs = len(chrs)
+    n_rows = (n_chrs + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(n_cols * 3.5, n_rows * 2.5),
+        dpi=300,
+        squeeze=False,
+    )
+
+    for i, c in enumerate(chrs):
+        ax = axes[i // n_cols, i % n_cols]
+        perm_distribution(perm_by_chr[c], ax=ax, threshold=thr_by_chr.get(c), chrom=c)
+        ax.tick_params(labelsize=5)
+        ax.set_xlabel('Max LOD', fontsize=6)
+        ax.set_ylabel('Count', fontsize=6)
+        try:
+            legend = ax.get_legend()
+            if legend:
+                legend.prop.set_size(5)
+        except AttributeError:
+            pass
+        sns.despine(ax=ax)
+
+    for j in range(n_chrs, n_rows * n_cols):
+        axes[j // n_cols, j % n_cols].set_visible(False)
+
+    fig.suptitle('Permutation null distributions by chromosome', fontsize=9, y=1.01)
+    fig.tight_layout()
+    return fig
+
+
+def genome_summary(
+    pk_df: pd.DataFrame,
+    is_egene: np.ndarray,
+    thr_by_chr: Optional[dict[str, Optional[float]]] = None,
+    *,
+    scan_stats: Optional[dict] = None,
+) -> plt.Figure:
+    """Genome-wide summary: Manhattan scatter (top) + eGene count per chr (bottom).
+
+    Parameters
+    ----------
+    pk_df : pd.DataFrame
+        Columns: gene, chr (str), peak_mb, peak_lod.
+    is_egene : np.ndarray
+        Boolean mask aligned to *pk_df* rows; True = eGene.
+    thr_by_chr : dict, optional
+        Per-chromosome threshold drawn as dashed horizontal lines.
+    scan_stats : dict, optional
+        Optional annotations: n_genes, n_egenes, pi0, perm_n, top_gene, peak_chr.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    _ = scan_stats  # reserved for future annotation overlay
+    chr_arr = pk_df['chr'].astype(str).values
+    pos_arr = pk_df['peak_mb'].values.astype(float)
+    lod_arr = pk_df['peak_lod'].values.astype(float)
+    chrs = _ordered_chrs(pd.Series(chr_arr))
+
+    fig, (ax_mh, ax_bar) = plt.subplots(
+        2, 1,
+        figsize=(14, 5),
+        dpi=300,
+        gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.4},
+    )
+
+    egene_color = FOUNDER_COLORS['PWKJ']
+    offset = 0.0
+    xticks: list[float] = []
+    egene_counts: list[int] = []
+
+    for c in chrs:
+        mask = chr_arr == c
+        pos_c = pos_arr[mask]
+        lod_c = lod_arr[mask]
+        eg_c = is_egene[mask]
+
+        if len(pos_c) == 0:
+            egene_counts.append(0)
+            xticks.append(offset)
+            continue
+
+        x = pos_c + offset
+        ax_mh.scatter(
+            x[~eg_c], lod_c[~eg_c],
+            color=COLOR_CC_FALLBACK, s=3, linewidths=0, zorder=2, alpha=0.55,
+        )
+        ax_mh.scatter(
+            x[eg_c], lod_c[eg_c],
+            color=egene_color, s=6, linewidths=0, zorder=3,
+        )
+
+        if thr_by_chr and (thr_val := thr_by_chr.get(c)) is not None:
+            ax_mh.hlines(
+                thr_val,
+                offset,
+                offset + float(pos_c.max()),
+                colors=COLOR_NEUTRAL_DARK,
+                linewidth=0.7,
+                linestyle='--',
+                zorder=1,
+            )
+
+        xticks.append(float(offset + (float(pos_c.max()) - float(pos_c.min())) / 2.0))
+        egene_counts.append(int(eg_c.sum()))
+        offset += float(pos_c.max()) + _CHR_GAP_MB
+
+    ax_mh.set_xlim(0, offset)
+    ax_mh.set_ylim(bottom=0)
+    ax_mh.set_xticks(xticks)
+    ax_mh.set_xticklabels(chrs, fontsize=7)
+    ax_mh.tick_params(axis='x', length=2)
+    ax_mh.set_ylabel('Peak LOD', fontsize=8)
+    n_genes = len(pk_df)
+    n_eg = int(is_egene.sum())
+    ax_mh.set_title(
+        f'Genome-wide peak LOD  ({n_genes:,} genes, {n_eg:,} eGenes)',
+        fontsize=9,
+    )
+    sns.despine(ax=ax_mh)
+
+    ax_bar.bar(range(len(chrs)), egene_counts, color=egene_color, width=0.7)
+    ax_bar.set_xticks(range(len(chrs)))
+    ax_bar.set_xticklabels(chrs, fontsize=7)
+    ax_bar.set_ylabel('eGenes', fontsize=8)
+    ax_bar.set_xlim(-0.5, len(chrs) - 0.5)
+    ax_bar.set_ylim(bottom=0)
+    sns.despine(ax=ax_bar)
+
+    fig.tight_layout()
+    return fig
+
+
+def genome_diagnostic(
+    pk_df: pd.DataFrame,
+    thr_by_chr: dict[str, Optional[float]],
+    *,
+    cis_dist_mb: Optional[np.ndarray] = None,
+    scan_stats: Optional[dict] = None,
+) -> plt.Figure:
+    """Diagnostic overview: threshold per chr + optional cis-distance hist + stats.
+
+    Parameters
+    ----------
+    pk_df : pd.DataFrame
+        Columns: gene, chr (str), peak_mb, peak_lod.
+    thr_by_chr : dict[str, float | None]
+        Per-chromosome GEV thresholds.
+    cis_dist_mb : np.ndarray, optional
+        Cis distances in Mb for eGenes; adds a histogram panel when provided.
+    scan_stats : dict, optional
+        Keys: n_genes, n_egenes, pi0, perm_n, top_gene, peak_chr.
+
+    Returns
+    -------
+    plt.Figure
+    """
+    n_panels = 3 if cis_dist_mb is not None else 2
+    fig, axes = plt.subplots(
+        1, n_panels,
+        figsize=(n_panels * 4.5, 3.5),
+        dpi=300,
+    )
+    axes = axes if n_panels > 1 else [axes]
+
+    chrs_ordered = [c for c in _CHR_ORDER if c in thr_by_chr]
+    chrs_ordered += sorted(set(thr_by_chr) - set(_CHR_ORDER))
+    thrs = [thr_by_chr[c] if thr_by_chr[c] is not None else 0.0
+            for c in chrs_ordered]
+
+    ax0 = axes[0]
+    ax0.bar(
+        range(len(chrs_ordered)),
+        thrs,
+        color=FOUNDER_COLORS['NZOJ'],
+        width=0.7,
+    )
+    ax0.set_xticks(range(len(chrs_ordered)))
+    ax0.set_xticklabels(chrs_ordered, fontsize=6, rotation=45, ha='right')
+    ax0.set_ylabel('GEV threshold (LOD)', fontsize=8)
+    ax0.set_title('Permutation threshold per chromosome', fontsize=8)
+    ax0.set_xlim(-0.5, len(chrs_ordered) - 0.5)
+    ax0.set_ylim(bottom=0)
+    sns.despine(ax=ax0)
+
+    if cis_dist_mb is not None:
+        ax1 = axes[1]
+        finite = cis_dist_mb[np.isfinite(cis_dist_mb)]
+        ax1.hist(finite, bins=40, color=FOUNDER_COLORS['NODJ'])
+        ax1.set_xlabel('Cis distance (Mb)', fontsize=8)
+        ax1.set_ylabel('eGene count', fontsize=8)
+        ax1.set_title('eGene cis-distance', fontsize=8)
+        ax1.set_ylim(bottom=0)
+        sns.despine(ax=ax1)
+        ax_stats = axes[2]
+    else:
+        ax_stats = axes[1]
+
+    stats = scan_stats or {}
+    n_genes = stats.get('n_genes', len(pk_df))
+    n_egenes = stats.get('n_egenes', 0)
+    pi0_val = stats.get('pi0', float('nan'))
+    n_perms = stats.get('n_perms', 0)
+    top_gene = stats.get('top_gene', '')
+    peak_chr = stats.get('peak_chr', '')
+
+    try:
+        pi0_str = f'{float(pi0_val):.3f}'
+    except (TypeError, ValueError):
+        pi0_str = '—'
+
+    text_lines = [
+        f'Genes tested:  {n_genes:,}',
+        f'eGenes (FDR):  {n_egenes:,}',
+        f'π₀ (Storey):   {pi0_str}',
+        f'Permutations:  {n_perms:,}',
+        '',
+        f'Top gene:      {top_gene}',
+        f'Peak chr:      chr{peak_chr}',
+    ]
+    ax_stats.text(
+        0.05, 0.95,
+        '\n'.join(text_lines),
+        transform=ax_stats.transAxes,
+        fontsize=8,
+        va='top',
+        ha='left',
+        fontfamily=['Carlito', 'Calibri', 'DejaVu Sans'],
+        bbox=dict(
+            boxstyle='round,pad=0.5',
+            facecolor='white',
+            edgecolor=COLOR_NEUTRAL_DARK,
+            alpha=0.9,
+        ),
+    )
+    ax_stats.set_axis_off()
+
+    fig.tight_layout()
+    return fig
