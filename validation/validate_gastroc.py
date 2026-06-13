@@ -92,6 +92,17 @@ from mosaiqtl.viz.genome import (
     egene_lod_distribution as _viz_egene_lod_distribution,
     mediation_profile as _viz_mediation_profile,
     ci_strip as _viz_ci_strip,
+    lod_profiles_per_chr as _viz_lod_profiles_per_chr,
+    lod_panel_grid as _viz_lod_panel_grid,
+    locus_panels_per_chr as _viz_locus_panels_per_chr,
+    locus_panel_grid as _viz_locus_panel_grid,
+    perm_distributions_per_chr as _viz_perm_distributions_per_chr,
+    perm_panel_grid as _viz_perm_panel_grid,
+    snp_profiles_per_chr as _viz_snp_profiles_per_chr,
+    genome_summary as _viz_genome_summary,
+    genome_diagnostic as _viz_genome_diagnostic,
+    _MI_COLOR,
+    _INST_COLOR,
 )
 from mosaiqtl.viz.haplotypes import (
     kinship_distribution as _viz_kinship_distribution,
@@ -102,6 +113,7 @@ from mosaiqtl.viz.haplotypes import (
 from mosaiqtl.viz.effects import (
     effect_bars as _viz_effect_bars,
     haplotype_sex_profile,
+    genome_effects_grid as _viz_genome_effects_grid,
 )
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 from mosaiqtl.qtl.scan import (
@@ -543,112 +555,169 @@ def _make_descriptive_plots(
         except Exception as exc:
             log.warning('  s3_kinship_heatmap: %s', exc)
 
-    # ── S4: LOD profile — top gene on peak_chr ───────────────────────────────
+    # ── S4: read lod_df once (reused for profile, Manhattan) ─────────────────
     s4_lod_path = py_dir / 's4_lod.csv'
+    s4_pk_path  = py_dir / 's4_peak_lod.csv'
+    _lod_df: 'pd.DataFrame | None' = None
     if s4_lod_path.exists():
         try:
-            lod_df = pd.read_csv(s4_lod_path)
-            lod_df['chr'] = lod_df['chr'].astype(str)
-            lod_pc = lod_df[lod_df['chr'] == str(peak_chr)]
-            if len(lod_pc) > 0:
-                top_gene = _pick_top_gene(lod_pc, peak_chr)
-                lod_top  = lod_pc[lod_pc['gene'] == top_gene].sort_values('pos_mb')
-                thr_path = py_dir / 's5_threshold.csv'
-                thr = None
-                if thr_path.exists():
-                    _td = pd.read_csv(thr_path); _td['chr'] = _td['chr'].astype(str)
-                    _tr = _td[_td['chr'] == str(peak_chr)]
-                    thr = float(_tr['threshold'].iloc[0]) if len(_tr) > 0 else float(_td['threshold'].iloc[0])
+            _lod_df = pd.read_csv(s4_lod_path, low_memory=False)
+            _lod_df['chr'] = _lod_df['chr'].astype(str)
+        except Exception as exc:
+            log.warning('  s4_lod.csv read failed: %s', exc)
+
+    # ── S4: per-chromosome threshold lookup ──────────────────────────────────
+    _thr_by_chr: 'dict[str, float | None]' = {}
+    _s4_thr_path = py_dir / 's5_threshold.csv'
+    if _s4_thr_path.exists():
+        try:
+            _td0 = pd.read_csv(_s4_thr_path)
+            _td0['chr'] = _td0['chr'].astype(str)
+            for _tc, _tg in _td0.groupby('chr'):
+                _thr_by_chr[str(_tc)] = float(_tg['threshold'].iloc[0])
+        except Exception:
+            pass
+
+    # ── S4: LOD profile — top gene per chromosome ────────────────────────────
+    if _lod_df is not None and s4_pk_path.exists():
+        try:
+            pk_df = pd.read_csv(s4_pk_path)
+            pk_df['chr'] = pk_df['chr'].astype(str)
+            for c in sorted(_lod_df['chr'].unique(), key=_chr_sort_key):
+                pk_c = pk_df[pk_df['chr'] == c]
+                if pk_c.empty:
+                    continue
+                top_gene = str(pk_c.loc[pk_c['peak_lod'].idxmax(), 'gene'])
+                lod_top  = _lod_df[
+                    (_lod_df['chr'] == c) & (_lod_df['gene'] == top_gene)
+                ].sort_values('pos_mb')
+                if lod_top.empty:
+                    continue
+                thr = _thr_by_chr.get(c)
                 fig, ax = plt.subplots(figsize=(10, 3), dpi=300)
-                _viz_lod_profile(
-                    lod_top['pos_mb'].values, lod_top['lod'].values,
-                    ax=ax, chrom=peak_chr, threshold=thr, fill=True,
-                )
-                ax.set_title(f'LOD profile  {top_gene}  chr{peak_chr}',
-                             fontsize=9)
+                _viz_lod_profile(lod_top['pos_mb'].values, lod_top['lod'].values,
+                                 ax=ax, chrom=c, threshold=thr, fill=True)
+                ax.set_title(f'LOD profile  {top_gene}  chr{c}', fontsize=9)
                 fig.tight_layout()
-                fig.savefig(plt_dir / 's4_lod_profile.png', dpi=300)
+                fig.savefig(plt_dir / f's4_lod_profile_chr{c}.png', dpi=300)
                 plt.close(fig)
-                log.info('  s4_lod_profile.png  (gene=%s)', top_gene)
-                # also plot Piezo1 if present and different from top gene
-                _p1 = PRIORITY_GENE.get(str(peak_chr))
-                if _p1 and _p1 != top_gene and _p1 in lod_pc['gene'].values:
-                    lod_p1 = lod_pc[lod_pc['gene'] == _p1].sort_values('pos_mb')
-                    fig_p1, ax_p1 = plt.subplots(figsize=(10, 3), dpi=300)
-                    _viz_lod_profile(
-                        lod_p1['pos_mb'].values, lod_p1['lod'].values,
-                        ax=ax_p1, chrom=peak_chr, threshold=thr, fill=True,
-                    )
-                    ax_p1.set_title(f'LOD profile  {_p1}  chr{peak_chr}', fontsize=9)
-                    fig_p1.tight_layout()
-                    fig_p1.savefig(plt_dir / f's4_lod_profile_{_p1}.png', dpi=300)
-                    plt.close(fig_p1)
-                    log.info('  s4_lod_profile_%s.png', _p1)
+                log.info('  s4_lod_profile_chr%s.png  (gene=%s)', c, top_gene)
+                _p1 = PRIORITY_GENE.get(c)
+                if _p1 and _p1 != top_gene:
+                    lod_p1 = _lod_df[
+                        (_lod_df['chr'] == c) & (_lod_df['gene'] == _p1)
+                    ].sort_values('pos_mb')
+                    if not lod_p1.empty:
+                        fig2, ax2 = plt.subplots(figsize=(10, 3), dpi=300)
+                        _viz_lod_profile(lod_p1['pos_mb'].values, lod_p1['lod'].values,
+                                         ax=ax2, chrom=c, threshold=thr, fill=True)
+                        ax2.set_title(f'LOD profile  {_p1}  chr{c}', fontsize=9)
+                        fig2.tight_layout()
+                        fig2.savefig(plt_dir / f's4_lod_profile_{_p1}.png', dpi=300)
+                        plt.close(fig2)
+                        log.info('  s4_lod_profile_%s.png', _p1)
         except Exception as exc:
             log.warning('  s4_lod_profile: %s', exc)
 
-    # ── S4: founder coef bar at peak locus ───────────────────────────────────
+    # ── S4: founder coef bar — top gene per chromosome ───────────────────────
     s4_eff_path = py_dir / 's4_allele_effects.csv'
     if s4_eff_path.exists():
         try:
-            eff_df = pd.read_csv(s4_eff_path)
-            eff_pc = eff_df[eff_df['chr'].astype(str) == str(peak_chr)]
-            if len(eff_pc) > 0:
-                top_row   = eff_pc.loc[eff_pc['peak_lod'].idxmax()]
-                beta_cols = [c for c in eff_pc.columns if c.startswith('beta_')]
-                betas     = np.array([top_row[c] for c in beta_cols])
-                fnames    = _display_founders([c.replace('beta_', '') for c in beta_cols])
-                fig, ax   = plt.subplots(figsize=(7, 3), dpi=300)
+            eff_df    = pd.read_csv(s4_eff_path)
+            eff_df['chr'] = eff_df['chr'].astype(str)
+            beta_cols = [bc for bc in eff_df.columns if bc.startswith('beta_')]
+            for c in sorted(eff_df['chr'].unique(), key=_chr_sort_key):
+                eff_c = eff_df[eff_df['chr'] == c]
+                if eff_c.empty:
+                    continue
+                top_row = eff_c.loc[eff_c['peak_lod'].idxmax()]
+                betas   = np.array([top_row[bc] for bc in beta_cols])
+                fnames  = _display_founders([bc.replace('beta_', '') for bc in beta_cols])
+                fig, ax = plt.subplots(figsize=(7, 3), dpi=300)
                 _viz_effect_bars(betas, fnames, ax=ax)
                 ax.set_title(
                     f'Founder effects  {top_row["gene"]}  '
                     f'{top_row["peak_locus"]}  LOD={top_row["peak_lod"]:.1f}',
                     fontsize=9)
                 fig.tight_layout()
-                fig.savefig(plt_dir / 's4_founder_effects.png', dpi=300)
+                fig.savefig(plt_dir / f's4_founder_effects_chr{c}.png', dpi=300)
                 plt.close(fig)
-                log.info('  s4_founder_effects.png  (gene=%s)', top_row['gene'])
-                # also plot Piezo1 if present and different from top gene
-                _p1 = PRIORITY_GENE.get(str(peak_chr))
-                if _p1 and top_row['gene'] != _p1 and _p1 in eff_pc['gene'].values:
-                    p1_row   = eff_pc[eff_pc['gene'] == _p1].iloc[0]
-                    betas_p1 = np.array([p1_row[c] for c in beta_cols])
-                    fig_p1, ax_p1 = plt.subplots(figsize=(7, 3), dpi=300)
-                    _viz_effect_bars(betas_p1, fnames, ax=ax_p1)  # fnames already display names
-                    ax_p1.set_title(
+                log.info('  s4_founder_effects_chr%s.png  (gene=%s)', c, top_row['gene'])
+                _p1 = PRIORITY_GENE.get(c)
+                if _p1 and top_row['gene'] != _p1 and _p1 in eff_c['gene'].values:
+                    p1_row   = eff_c[eff_c['gene'] == _p1].iloc[0]
+                    betas_p1 = np.array([p1_row[bc] for bc in beta_cols])
+                    fig2, ax2 = plt.subplots(figsize=(7, 3), dpi=300)
+                    _viz_effect_bars(betas_p1, fnames, ax=ax2)
+                    ax2.set_title(
                         f'Founder effects  {p1_row["gene"]}  '
                         f'{p1_row["peak_locus"]}  LOD={p1_row["peak_lod"]:.1f}',
                         fontsize=9)
-                    fig_p1.tight_layout()
-                    fig_p1.savefig(plt_dir / f's4_founder_effects_{_p1}.png', dpi=300)
-                    plt.close(fig_p1)
+                    fig2.tight_layout()
+                    fig2.savefig(plt_dir / f's4_founder_effects_{_p1}.png', dpi=300)
+                    plt.close(fig2)
                     log.info('  s4_founder_effects_%s.png', _p1)
         except Exception as exc:
             log.warning('  s4_founder_effects: %s', exc)
 
+    # ── S4: founder effects grid + locus panel grids ─────────────────────────
+    if s4_eff_path.exists() and _lod_df is not None:
+        try:
+            _eff4     = pd.read_csv(s4_eff_path)
+            _eff4['chr'] = _eff4['chr'].astype(str)
+            _beta_cols4  = [bc for bc in _eff4.columns if bc.startswith('beta_')]
+            _fnames4     = _display_founders([bc.replace('beta_', '') for bc in _beta_cols4])
+            fig_eg = _viz_genome_effects_grid(_eff4, _fnames4)
+            fig_eg.savefig(plt_dir / 's4_founder_effects_grid.png', dpi=300,
+                           bbox_inches='tight')
+            plt.close(fig_eg)
+            log.info('  s4_founder_effects_grid.png')
+            fig_lpg = _viz_lod_panel_grid(
+                _lod_df, _eff4,
+                thr_by_chr=_thr_by_chr or None,
+                priority_genes=PRIORITY_GENE,
+            )
+            fig_lpg.savefig(plt_dir / 's4_lod_panel_grid.png', dpi=300,
+                            bbox_inches='tight')
+            plt.close(fig_lpg)
+            log.info('  s4_lod_panel_grid.png')
+            fig_lcg = _viz_locus_panel_grid(
+                _lod_df, _eff4, _fnames4,
+                _thr_by_chr or None,
+                priority_genes=PRIORITY_GENE,
+            )
+            fig_lcg.savefig(plt_dir / 's4_locus_panel_grid.png', dpi=300,
+                            bbox_inches='tight')
+            plt.close(fig_lcg)
+            log.info('  s4_locus_panel_grid.png')
+            _lp_figs = _viz_locus_panels_per_chr(
+                _lod_df, _eff4, _fnames4,
+                _thr_by_chr or None,
+                priority_genes=PRIORITY_GENE,
+            )
+            for _lp_c, _lp_fig in _lp_figs.items():
+                _lp_fig.savefig(plt_dir / f's4_locus_panel_chr{_lp_c}.png', dpi=300)
+                plt.close(_lp_fig)
+            if _lp_figs:
+                log.info('  s4_locus_panel_chr*.png  (%d files)', len(_lp_figs))
+        except Exception as exc:
+            log.warning('  s4_grid: %s', exc)
+
     # ── S4: Manhattan — peak LOD per gene across all scanned chr ──────────────
     peak_lod_path = py_dir / 's4_peak_lod.csv'
-    if peak_lod_path.exists() and s4_lod_path.exists():
+    if peak_lod_path.exists() and _lod_df is not None:
         try:
-            pk_df   = pd.read_csv(peak_lod_path)
-            lod_all = pd.read_csv(s4_lod_path)
-            lod_all['chr'] = lod_all['chr'].astype(str)
-            idx_pk   = lod_all.groupby('gene')['lod'].idxmax()
-            peak_pos = lod_all.loc[idx_pk, ['gene', 'chr', 'pos_mb', 'lod']]
-            peak_pos = peak_pos.merge(pk_df[['gene']], on='gene')
-
+            _pk2     = pd.read_csv(peak_lod_path)
+            idx_pk   = _lod_df.groupby('gene')['lod'].idxmax()
+            peak_pos = _lod_df.loc[idx_pk, ['gene', 'chr', 'pos_mb', 'lod']]
+            peak_pos = peak_pos.merge(_pk2[['gene']], on='gene')
             chrs_sorted = sorted(peak_pos['chr'].unique(), key=_chr_sort_key)
             scans_dict  = {
                 ch: (peak_pos[peak_pos['chr'] == ch]['pos_mb'].values,
                      peak_pos[peak_pos['chr'] == ch]['lod'].values)
                 for ch in chrs_sorted
             }
-            thr_path = py_dir / 's5_threshold.csv'
-            thr = None
-            if thr_path.exists():
-                _td = pd.read_csv(thr_path); _td['chr'] = _td['chr'].astype(str)
-                _tr = _td[_td['chr'] == str(peak_chr)]
-                thr = float(_tr['threshold'].iloc[0]) if len(_tr) > 0 else float(_td['threshold'].iloc[0])
+            thr = _thr_by_chr.get(str(peak_chr))
             fig = _viz_manhattan(scans_dict, threshold=thr)
             fig.axes[0].set_title(f'Manhattan  n={len(peak_pos)} genes', fontsize=9)
             fig.tight_layout()
@@ -682,6 +751,33 @@ def _make_descriptive_plots(
         except Exception as exc:
             log.warning('  s5_perm_distribution: %s', exc)
 
+    # ── S5: per-chromosome permutation distributions ──────────────────────────
+    if s5_thr_path.exists():
+        try:
+            _thr5 = pd.read_csv(s5_thr_path)
+            _thr5['chr'] = _thr5['chr'].astype(str)
+            _thr5_dict = dict(
+                zip(_thr5['chr'], _thr5['threshold'].where(_thr5['threshold'].notna(), None))
+            )
+            _perm5: dict[str, np.ndarray] = {}
+            for _c5 in _thr5_dict:
+                _p5f = py_dir / f's5_perm_max_lods_chr{_c5}.csv'
+                if _p5f.exists():
+                    _perm5[_c5] = pd.read_csv(_p5f)['max_lod'].values
+            if _perm5:
+                _perm_figs = _viz_perm_distributions_per_chr(_perm5, _thr5_dict)
+                for _pc5, _pf5 in _perm_figs.items():
+                    _pf5.savefig(plt_dir / f's5_perm_chr{_pc5}.png', dpi=300)
+                    plt.close(_pf5)
+                log.info('  s5_perm_chr*.png  (%d files)', len(_perm_figs))
+                fig_pg = _viz_perm_panel_grid(_perm5, _thr5_dict)
+                fig_pg.savefig(plt_dir / 's5_perm_panel_grid.png', dpi=300,
+                               bbox_inches='tight')
+                plt.close(fig_pg)
+                log.info('  s5_perm_panel_grid.png')
+        except Exception as exc:
+            log.warning('  s5_per_chr: %s', exc)
+
     # ── S6: eGene calling — LOD distribution + threshold ─────────────────────
     peak_lod_path = py_dir / 's4_peak_lod.csv'
     if peak_lod_path.exists():
@@ -711,6 +807,47 @@ def _make_descriptive_plots(
                      is_egene.sum(), len(pk))
         except Exception as exc:
             log.warning('  s6_egene_lod_distribution: %s', exc)
+
+    # ── S6: genome-wide summary + diagnostic plots ────────────────────────────
+    _pk6_path = py_dir / 's4_peak_lod.csv'
+    if _pk6_path.exists():
+        try:
+            _pk6 = pd.read_csv(_pk6_path)
+            _pk6['chr'] = _pk6['chr'].astype(str)
+            _sum6_path = py_dir / 'eqtl_summary.csv'
+            _eg6_set = (set(pd.read_csv(_sum6_path)['gene'])
+                        if _sum6_path.exists() else set())
+            _is_eg6 = _pk6['gene'].isin(_eg6_set).values
+            _thr6: dict = {}
+            if s5_thr_path.exists():
+                _td6 = pd.read_csv(s5_thr_path)
+                _td6['chr'] = _td6['chr'].astype(str)
+                _thr6 = dict(zip(_td6['chr'],
+                                 _td6['threshold'].where(_td6['threshold'].notna(), None)))
+            _scan_stats6: dict = {
+                'n_genes': len(_pk6),
+                'n_egenes': int(_is_eg6.sum()),
+                'peak_chr': str(peak_chr),
+                'top_gene': (str(_pk6.loc[_pk6['peak_lod'].idxmax(), 'gene'])
+                             if len(_pk6) > 0 else ''),
+            }
+            if _sum6_path.exists():
+                _sum6 = pd.read_csv(_sum6_path)
+                if 'pi0' in _sum6.columns and len(_sum6) > 0:
+                    _scan_stats6['pi0'] = float(_sum6['pi0'].iloc[0])
+            fig_gs = _viz_genome_summary(_pk6, _is_eg6, _thr6 or None,
+                                         scan_stats=_scan_stats6)
+            fig_gs.savefig(plt_dir / 's6_genome_summary.png', dpi=300,
+                           bbox_inches='tight')
+            plt.close(fig_gs)
+            log.info('  s6_genome_summary.png')
+            fig_gd = _viz_genome_diagnostic(_pk6, _thr6, scan_stats=_scan_stats6)
+            fig_gd.savefig(plt_dir / 's6_genome_diagnostic.png', dpi=300,
+                           bbox_inches='tight')
+            plt.close(fig_gd)
+            log.info('  s6_genome_diagnostic.png')
+        except Exception as exc:
+            log.warning('  s6_genome_summary: %s', exc)
 
     # ── S8: SNP LOD profile for top eGene ────────────────────────────────────
     s8_path = py_dir / 's8_snp_lod.csv'
@@ -776,6 +913,26 @@ def _make_descriptive_plots(
         except Exception as exc:
             log.warning('  s8_snp_lod_profile: %s', exc)
 
+    # ── S8: per-chromosome SNP fine-mapping figures ───────────────────────────
+    if s8_path.exists():
+        try:
+            _snp8 = pd.read_csv(s8_path)
+            _snp8['chr'] = _snp8['chr'].astype(str)
+            _pk8 = None
+            if (py_dir / 's4_peak_lod.csv').exists():
+                _pk8 = pd.read_csv(py_dir / 's4_peak_lod.csv')
+                _pk8['chr'] = _pk8['chr'].astype(str)
+            _snp_figs = _viz_snp_profiles_per_chr(
+                _snp8, _pk8, priority_genes=PRIORITY_GENE,
+            )
+            for _sc8, _sf8 in _snp_figs.items():
+                _sf8.savefig(plt_dir / f's8_snp_chr{_sc8}.png', dpi=300)
+                plt.close(_sf8)
+            if _snp_figs:
+                log.info('  s8_snp_chr*.png  (%d files)', len(_snp_figs))
+        except Exception as exc:
+            log.warning('  s8_snp_per_chr: %s', exc)
+
     # ── S10: CI strip per eGene ───────────────────────────────────────────────
     s10_path = py_dir / 's10_ci.csv'
     if s10_path.exists():
@@ -839,6 +996,30 @@ def _make_descriptive_plots(
         except Exception as exc:
             log.warning('  s11_instability_profile: %s', exc)
 
+    # ── S11: per-chromosome instability figures ───────────────────────────────
+    if s11_path.exists():
+        try:
+            _inst11 = pd.read_csv(s11_path)
+            _inst11['chr'] = _inst11['chr'].astype(str)
+            _pk11 = None
+            if (py_dir / 's4_peak_lod.csv').exists():
+                _pk11 = pd.read_csv(py_dir / 's4_peak_lod.csv')
+                _pk11['chr'] = _pk11['chr'].astype(str)
+            _inst_figs = _viz_lod_profiles_per_chr(
+                _inst11, _pk11,
+                thr_by_chr=_thr_by_chr or None,
+                color=_INST_COLOR,
+                ylabel='Instability LOD',
+                priority_genes=PRIORITY_GENE,
+            )
+            for _ic11, _if11 in _inst_figs.items():
+                _if11.savefig(plt_dir / f's11_instability_chr{_ic11}.png', dpi=300)
+                plt.close(_if11)
+            if _inst_figs:
+                log.info('  s11_instability_chr*.png  (%d files)', len(_inst_figs))
+        except Exception as exc:
+            log.warning('  s11_per_chr: %s', exc)
+
     # ── S7: MI scan LOD profile ───────────────────────────────────────────────
     s7_path = py_dir / 's7_mi_lod.csv'
     if s7_path.exists():
@@ -880,6 +1061,30 @@ def _make_descriptive_plots(
         except Exception as exc:
             log.warning('  s7_mi_lod_profile: %s', exc)
 
+    # ── S7: per-chromosome MI LOD figures ─────────────────────────────────────
+    if s7_path.exists():
+        try:
+            _mi7 = pd.read_csv(s7_path)
+            _mi7['chr'] = _mi7['chr'].astype(str)
+            _pk7 = None
+            if (py_dir / 's4_peak_lod.csv').exists():
+                _pk7 = pd.read_csv(py_dir / 's4_peak_lod.csv')
+                _pk7['chr'] = _pk7['chr'].astype(str)
+            _mi_figs = _viz_lod_profiles_per_chr(
+                _mi7, _pk7,
+                thr_by_chr=_thr_by_chr or None,
+                color=_MI_COLOR,
+                ylabel='LOD (MI)',
+                priority_genes=PRIORITY_GENE,
+            )
+            for _mc7, _mf7 in _mi_figs.items():
+                _mf7.savefig(plt_dir / f's7_mi_chr{_mc7}.png', dpi=300)
+                plt.close(_mf7)
+            if _mi_figs:
+                log.info('  s7_mi_chr*.png  (%d files)', len(_mi_figs))
+        except Exception as exc:
+            log.warning('  s7_per_chr: %s', exc)
+
     # ── S9: mediation LOD profile (base vs mediated) ──────────────────────────
     s9_path = py_dir / 's9_mediation.csv'
     if s9_path.exists():
@@ -905,6 +1110,34 @@ def _make_descriptive_plots(
                 log.info('  s9_mediation_profile.png  (gene=%s)', top_gene)
         except Exception as exc:
             log.warning('  s9_mediation_profile: %s', exc)
+
+    # ── S9: per-outcome-gene mediation profiles ───────────────────────────────
+    if s9_path.exists():
+        try:
+            _med9 = pd.read_csv(s9_path)
+            _med9['chr'] = _med9['chr'].astype(str)
+            _n_med9 = 0
+            for _g9 in sorted(_med9['gene'].unique()):
+                _med_g = _med9[_med9['gene'] == _g9].sort_values('pos_mb')
+                if _med_g.empty:
+                    continue
+                _c9 = str(_med_g['chr'].iloc[0])
+                _fig9, _ax9 = plt.subplots(figsize=(10, 3), dpi=300)
+                _viz_mediation_profile(
+                    _med_g['pos_mb'].values,
+                    _med_g['lod_base'].values,
+                    _med_g['lod_mediated'].values,
+                    ax=_ax9, chrom=_c9, gene=_g9,
+                )
+                _fig9.tight_layout()
+                _safe_g9 = re.sub(r'[^a-zA-Z0-9_-]', '_', _g9)
+                _fig9.savefig(plt_dir / f's9_mediation_{_safe_g9}.png', dpi=300)
+                plt.close(_fig9)
+                _n_med9 += 1
+            if _n_med9:
+                log.info('  s9_mediation_*.png  (%d genes)', _n_med9)
+        except Exception as exc:
+            log.warning('  s9_per_gene: %s', exc)
 
     # ── timing / memory summary ───────────────────────────────────────────────
     # Excluded from plot (no meaningful compute or memory signal):
@@ -1976,15 +2209,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     peak_chr = chrs_to_scan[0] if chrs_to_scan else '8'
     if peak_lod_path.exists():
         _pk = pd.read_csv(peak_lod_path)
-        if len(_pk) > 0 and 'gene' in _pk.columns:
-            # identify chr of peak gene from lod_df or from gene_info
-            lod_for_peak = lod_df if 'lod_df' in dir() else None
-            if lod_for_peak is not None and len(lod_for_peak) > 0:
-                top_gene_name = _pk.iloc[_pk['peak_lod'].argmax()]['gene']
-                top_rows = lod_for_peak[lod_for_peak['gene'] == top_gene_name]
-                if len(top_rows) > 0:
-                    peak_chr_row = top_rows.loc[top_rows['lod'].idxmax()]
-                    peak_chr = str(peak_chr_row['chr'])
+        _pk['chr'] = _pk['chr'].astype(str)
+        if len(_pk) > 0 and 'peak_lod' in _pk.columns and 'chr' in _pk.columns:
+            peak_chr = str(_pk.iloc[_pk['peak_lod'].argmax()]['chr'])
 
     log.info('[downstream sections] peak_chr=%s', peak_chr)
 

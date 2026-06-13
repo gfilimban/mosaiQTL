@@ -99,3 +99,5 @@ claude/*.md
 graphify-out
 CLAUDE.md
 .aider*
+memory/
+docs/superpowers/
