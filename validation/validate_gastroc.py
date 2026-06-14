@@ -121,6 +121,8 @@ from mosaiqtl.qtl.scan import (
     instability_lm_scan,
     scan_h2lmm,
     scan_h2lmm_mi,
+    scan_multi_gene_mi,
+    instability_scan_multi_gene,
     ScanResult,
 )
 from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome
@@ -129,13 +131,15 @@ from mosaiqtl.qtl.permutation import (
     get_gev_thresholds,
     run_positional_scans,
     run_threshold_scans,
+    ci_scan_multi_gene,
 )
 from mosaiqtl.qtl.mediation import (
     mediation_scan_qr,
     mediation_scan_qr_batch,
     select_cis_mediation_pairs,
+    mediation_scan_multi_outcome,
 )
-from mosaiqtl.qtl.snp_scan import imputed_snp_scan_from_db
+from mosaiqtl.qtl.snp_scan import imputed_snp_scan_from_db, snp_scan_multi_gene
 from mosaiqtl.qtl.fdr import storey_qvalue
 from mosaiqtl.qtl.effects import qtl_gxe_lrt
 from mosaiqtl.io.covariates import encode_sex
@@ -2582,45 +2586,31 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 results['S7_mi_scan'] = None
             else:
                 h5_path = data_dir / 'counts_lognorm.h5'
-                # batch-load all eGene expressions once
                 _s7_ids = [gene_name_to_id.get(r['gene'], r['gene'])
                            for _, r in egenes_df.iterrows()]
                 _s7_counts, _s7_loaded, _s7_sids = _load_expression(h5_path, _s7_ids)
-                _s7_cache = {gid: _s7_counts[i] for i, gid in enumerate(_s7_loaded)}
-                _n_s7 = len(egenes_df)
-                mi_rows = []
-                for _i_s7, (_, erow) in enumerate(egenes_df.iterrows()):
-                    gene_name = erow['gene']
-                    gene_id   = gene_name_to_id.get(gene_name, gene_name)
-                    gene_chr  = str(erow.get('chr', peak_chr))
-                    if gene_id not in _s7_cache:
-                        continue
-                    sids_g     = _s7_sids
-                    geno_ids_g = [meta_geno_map.get(s, s) for s in sids_g]
-                    y_g   = _s7_cache[gene_id].astype(float)
-                    cov_g = _build_covariates(meta, sids_g)
-                    sex_g = np.array([float(_sex_by_sid.get(s, 0.0)) for s in sids_g])
-                    log.info('  [%d/%d] MI scan: %s  chr%s',
-                             _i_s7 + 1, _n_s7, gene_name, gene_chr)
-                    _t_s7g = time.perf_counter()
-                    mi_scan = scan_h2lmm_mi(
-                        y_g, cache,
-                        covariates=cov_g,
-                        kinship_decomp=kinship_decomp,
-                        sample_ids=geno_ids_g,
-                        n_imp=11, seed=1,
-                        phenotype_id=gene_name,
-                        scan_window='cis', gene_chr=gene_chr,
-                    )
-                    log.info('    done in %.1fs', time.perf_counter() - _t_s7g)
-                    mi_rows.append(_scan_to_df(mi_scan, gene_name))
-
-                if mi_rows:
-                    mi_df = pd.concat(mi_rows, ignore_index=True)
-                    mi_df.to_csv(py_dir / 's7_mi_lod.csv', index=False)
-                    log.info('  MI scan complete: %d genes', len(mi_rows))
+                _s7_expr = {gid: _s7_counts[i].astype(float)
+                            for i, gid in enumerate(_s7_loaded)}
+                _s7_chr_map = {}
+                for _, erow in egenes_df.iterrows():
+                    gid = gene_name_to_id.get(erow['gene'], erow['gene'])
+                    _s7_chr_map[gid] = str(erow.get('chr', peak_chr))
+                geno_ids_s7 = [meta_geno_map.get(s, s) for s in _s7_sids]
+                cov_s7 = _build_covariates(meta, _s7_sids)
+                _s7_path = py_dir / 's7_mi_lod.csv'
+                log.info('  scanning %d eGenes via MI (streaming)...', len(_s7_expr))
+                mi_df = scan_multi_gene_mi(
+                    _s7_expr, _s7_chr_map, cache,
+                    covariates=cov_s7,
+                    kinship_decomp=kinship_decomp,
+                    sample_ids=geno_ids_s7,
+                    n_imp=11, seed=1,
+                    output_path=_s7_path,
+                )
+                del _s7_expr, _s7_counts
+                if not mi_df.empty:
+                    log.info('  MI scan complete: %d genes', mi_df['gene'].nunique())
                     results['S7_mi_scan'] = True
-                    # optional: compare to R
                     if r_mi_path.exists():
                         r_mi = pd.read_csv(r_mi_path)
                         merged_mi = _pos_merge(mi_df, r_mi, 'lod', 'lod')
@@ -2659,46 +2649,30 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 results['S8_snp_lod_r'] = None
             else:
                 h5_path = data_dir / 'counts_lognorm.h5'
-                # batch-load all eGene expressions once
                 _s8_ids = [gene_name_to_id.get(r['gene'], r['gene'])
                            for _, r in egenes_df.iterrows()]
                 _s8_counts, _s8_loaded, _s8_sids = _load_expression(h5_path, _s8_ids)
-                _s8_cache = {gid: _s8_counts[i] for i, gid in enumerate(_s8_loaded)}
-                _n_s8 = len(egenes_df)
-                snp_rows = []
-                for _i_s8, (_, erow) in enumerate(egenes_df.iterrows()):
-                    gene_name = erow['gene']
-                    gene_id   = gene_name_to_id.get(gene_name, gene_name)
-                    gene_chr  = str(erow.get('chr', peak_chr))
-                    if gene_id not in _s8_cache:
-                        continue
-                    sids_g     = _s8_sids
-                    geno_ids_g = [meta_geno_map.get(s, s) for s in sids_g]
-                    y_g   = _s8_cache[gene_id].astype(float)
-                    cov_g = _build_covariates(meta, sids_g)
-                    log.info('  [%d/%d] SNP scan: %s  chr%s',
-                             _i_s8 + 1, _n_s8, gene_name, gene_chr)
-                    _t_s8g = time.perf_counter()
-                    try:
-                        snp_scan = imputed_snp_scan_from_db(
-                            y_g, cache,
-                            alleles_h5=str(ALLELE_H5),
-                            chrom=gene_chr,
-                            covariates=cov_g,
-                            kinship_decomp={gene_chr: kinship_decomp[gene_chr]},
-                            sample_ids=geno_ids_g,
-                            founder_col_map=FOUNDER_CODE,
-                        )
-                        log.info('    done in %.1fs', time.perf_counter() - _t_s8g)
-                        if not snp_scan.empty:
-                            snp_scan = snp_scan.copy()
-                            snp_scan.insert(0, 'gene', gene_name)
-                            snp_rows.append(snp_scan)
-                    except Exception as exc:
-                        log.warning('  SNP scan failed for %s: %s', gene_id, exc)
-
-                if snp_rows:
-                    snp_df = pd.concat(snp_rows, ignore_index=True)
+                _s8_expr = {gid: _s8_counts[i].astype(float)
+                            for i, gid in enumerate(_s8_loaded)}
+                _s8_chr_map = {}
+                for _, erow in egenes_df.iterrows():
+                    gid = gene_name_to_id.get(erow['gene'], erow['gene'])
+                    _s8_chr_map[gid] = str(erow.get('chr', peak_chr))
+                geno_ids_s8 = [meta_geno_map.get(s, s) for s in _s8_sids]
+                cov_s8 = _build_covariates(meta, _s8_sids)
+                _s8_path = py_dir / 's8_snp_lod.csv'
+                log.info('  scanning %d eGenes via SNP (streaming)...', len(_s8_expr))
+                snp_df = snp_scan_multi_gene(
+                    _s8_expr, _s8_chr_map, cache,
+                    alleles_h5=str(ALLELE_H5),
+                    covariates=cov_s8,
+                    kinship_decomp=kinship_decomp,
+                    sample_ids=geno_ids_s8,
+                    founder_col_map=FOUNDER_CODE,
+                    output_path=_s8_path,
+                )
+                del _s8_expr, _s8_counts
+                if not snp_df.empty:
                     snp_df.to_csv(py_dir / 's8_snp_lod.csv', index=False)
                     if r_snp_path.exists():
                         r_snp = pd.read_csv(r_snp_path)
@@ -2780,62 +2754,27 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     gene_name_to_id.get(_nm, _nm) for _nm in _s9_all_names
                 ))
                 _s9_counts, _s9_loaded, _s9_sids = _load_expression(h5_path, _s9_all_ids)
-                _s9_expr = {gid: _s9_counts[i] for i, gid in enumerate(_s9_loaded)}
+                _s9_expr = {gid: _s9_counts[i].astype(float)
+                            for i, gid in enumerate(_s9_loaded)}
+                del _s9_counts
                 log.info('  pre-loaded %d gene expressions (%d unique IDs) in 1 HDF5 call',
                          len(_s9_loaded), len(_s9_all_ids))
 
-                _n_s9 = len(_pairs_by_outcome)
-                med_rows = []
-                for _i_s9, (outcome_name, med_list) in enumerate(_pairs_by_outcome.items()):
-                    outcome_id = gene_name_to_id.get(outcome_name, outcome_name)
-                    if outcome_id not in _s9_expr:
-                        continue
-                    sids_g     = _s9_sids
-                    geno_ids_g = [meta_geno_map.get(s, s) for s in sids_g]
-                    y_g   = _s9_expr[outcome_id].astype(float)
-                    cov_g = _build_covariates(meta, sids_g)
-                    ch    = med_list[0][1]   # all mediators share same chr
-
-                    med_vecs: dict[str, 'np.ndarray'] = {}
-                    for med_name, _ in med_list:
-                        med_id = gene_name_to_id.get(med_name, med_name)
-                        if med_id in _s9_expr:
-                            med_vecs[med_name] = _s9_expr[med_id].astype(float)
-
-                    if not med_vecs:
-                        continue
-                    log.info('  [%d/%d] mediation: %s → %d mediator(s)',
-                             _i_s9 + 1, _n_s9, outcome_name, len(med_vecs))
-                    _t_med = time.perf_counter()
-                    try:
-                        batch_df = mediation_scan_qr_batch(
-                            y_g, med_vecs, cache,
-                            covariates=cov_g,
-                            kinship_decomp=kinship_decomp,
-                            sample_ids=geno_ids_g,
-                            outcome_id=outcome_name,
-                            scan_window='cis', gene_chr=ch,
-                        )
-                        log.info('    done in %.1fs', time.perf_counter() - _t_med)
-                        if batch_df.empty:
-                            continue
-                        batch_df = batch_df.rename(columns={
-                            'outcome_id': 'gene', 'mediator_id': 'mediator'})
-                        batch_df = batch_df[
-                            (batch_df['lod_base'] >= 1.5) &
-                            (batch_df['lod_base'] - batch_df['lod_mediated'] >= 0.5)
-                        ]
-                        med_rows.append(
-                            batch_df[['gene', 'mediator', 'chr', 'locus',
-                                      'pos_mb', 'lod_base', 'lod_mediated']])
-                    except Exception as exc:
-                        log.warning('  mediation batch failed for %s: %s',
-                                    outcome_name, exc)
-                if med_rows:
-                    log.info('  writing mediation results ...')
-                    med_df = pd.concat(med_rows, ignore_index=True)
-                    med_df.to_csv(py_dir / 's9_mediation.csv', index=False)
-                    log.info('  mediation complete: %d genes', len(med_rows))
+                geno_ids_s9 = [meta_geno_map.get(s, s) for s in _s9_sids]
+                cov_s9 = _build_covariates(meta, _s9_sids)
+                _med_path = py_dir / 's9_mediation.csv'
+                log.info('  running mediation for %d outcomes (streaming)...',
+                         len(_pairs_by_outcome))
+                med_df = mediation_scan_multi_outcome(
+                    _pairs_by_outcome, _s9_expr, cache,
+                    covariates=cov_s9,
+                    kinship_decomp=kinship_decomp,
+                    sample_ids=geno_ids_s9,
+                    output_path=_med_path,
+                )
+                del _s9_expr
+                if not med_df.empty:
+                    log.info('  mediation complete: %d genes', med_df['gene'].nunique())
                     results['S9_mediation'] = True
                     if r_med_path.exists():
                         r_med = pd.read_csv(r_med_path)
@@ -2881,67 +2820,35 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 results['S10_ci'] = None
             else:
                 h5_path = data_dir / 'counts_lognorm.h5'
-                # batch-load all eGene expressions once (avoids per-gene open/scan/close cycles)
                 _s10_ids = [gene_name_to_id.get(r['gene'], r['gene'])
                             for _, r in egenes_df.iterrows()]
                 _s10_counts, _s10_loaded, _s10_sids = _load_expression(h5_path, _s10_ids)
-                _s10_cache = {gid: _s10_counts[i] for i, gid in enumerate(_s10_loaded)}
-                _n_s10 = len(egenes_df)
-                ci_rows = []
-                for _i_s10, (_, erow) in enumerate(egenes_df.iterrows()):
-                    gene_name = erow['gene']
-                    gene_id   = gene_name_to_id.get(gene_name, gene_name)
-                    gene_chr  = str(erow.get('chr', peak_chr))
-                    if gene_id not in _s10_cache:
-                        continue
-                    sids_g     = _s10_sids
-                    geno_ids_g = [meta_geno_map.get(s, s) for s in sids_g]
-                    y_g   = _s10_cache[gene_id].astype(float)
-                    cov_g = _build_covariates(meta, sids_g)
-                    sex_g = np.array([float(_sex_by_sid.get(s, 0.0)) for s in sids_g])
-                    log.info('  [%d/%d] bootstrap CI: %s  chr%s',
-                             _i_s10 + 1, _n_s10, gene_name, gene_chr)
-                    _t_s10g = time.perf_counter()
-                    try:
-                        kd_pc    = {gene_chr: kinship_decomp[gene_chr]}
-                        scan_g   = scan_h2lmm(
-                            y_g, cache,
-                            covariates=cov_g,
-                            kinship_decomp=kinship_decomp,
-                            sample_ids=geno_ids_g,
-                            use_rint=True,
-                            phenotype_id=gene_name,
-                            scan_window='cis', gene_chr=gene_chr,
-                        )
-                        boot_out = generate_null_outcomes(
-                            y_g, n_perms=200, seed=1, method='bootstrap')
-                        ci_mbs, _ci_info = run_positional_scans(
-                            boot_out, cache,
-                            phenotype=y_g,
-                            covariates=cov_g,
-                            kinship_decomp=kd_pc,
-                            peak_chrom=gene_chr,
-                            sample_ids=geno_ids_g,
-                        )
-                        peak_mb = float(scan_g.positions[scan_g.lod.argmax()])
-                        log.info('    done in %.1fs', time.perf_counter() - _t_s10g)
-                        ci_rows.append({
-                            'gene':    gene_name,
-                            'chr':     gene_chr,
-                            'peak_mb': peak_mb,
-                            'ci_lo':   float(np.quantile(ci_mbs, 0.025)),
-                            'ci_hi':   float(np.quantile(ci_mbs, 0.975)),
-                            'ci_width_mb': float(np.quantile(ci_mbs, 0.975) -
-                                                  np.quantile(ci_mbs, 0.025)),
-                        })
-                    except Exception as exc:
-                        log.warning('  CI failed for %s: %s', gene_id, exc)
-                if ci_rows:
-                    ci_df = pd.DataFrame(ci_rows)
-                    ci_df.to_csv(py_dir / 's10_ci.csv', index=False)
+                _s10_expr = {gid: _s10_counts[i].astype(float)
+                             for i, gid in enumerate(_s10_loaded)}
+                del _s10_counts
+                _s10_chr_map = {}
+                _s10_peak_map = {}
+                for _, erow in egenes_df.iterrows():
+                    gid = gene_name_to_id.get(erow['gene'], erow['gene'])
+                    _s10_chr_map[gid] = str(erow.get('chr', peak_chr))
+                    _s10_peak_map[gid] = float(erow.get('peak_mb', np.nan))
+                geno_ids_s10 = [meta_geno_map.get(s, s) for s in _s10_sids]
+                cov_s10 = _build_covariates(meta, _s10_sids)
+                _s10_path = py_dir / 's10_ci.csv'
+                log.info('  bootstrap CI for %d eGenes (streaming)...', len(_s10_expr))
+                ci_df = ci_scan_multi_gene(
+                    _s10_expr, _s10_chr_map, _s10_peak_map, cache,
+                    covariates=cov_s10,
+                    kinship_decomp=kinship_decomp,
+                    sample_ids=geno_ids_s10,
+                    n_boot=200, seed=1,
+                    output_path=_s10_path,
+                )
+                del _s10_expr
+                if not ci_df.empty:
                     log.info('  CI complete: %d genes  median width=%.2f Mb',
-                             len(ci_rows),
-                             float(np.median([r['ci_width_mb'] for r in ci_rows])))
+                             len(ci_df),
+                             float(np.median(ci_df['ci_width_mb'])))
                     results['S10_ci'] = True
                     if r_ci_path.exists():
                         r_ci      = pd.read_csv(r_ci_path)
@@ -2982,48 +2889,31 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 log.info('  %s no eGenes — run S4+S5 first', SKIP)
                 results['S11_instability'] = None
             else:
-                h5_path   = data_dir / 'counts_lognorm.h5'
-                # batch-load all eGene expressions once (avoids per-gene open/scan/close cycles)
+                h5_path = data_dir / 'counts_lognorm.h5'
                 _s11_ids = [gene_name_to_id.get(r['gene'], r['gene'])
                             for _, r in egenes_df.iterrows()]
                 _s11_counts, _s11_loaded, _s11_sids = _load_expression(h5_path, _s11_ids)
-                _s11_cache = {gid: _s11_counts[i] for i, gid in enumerate(_s11_loaded)}
-                _n_s11 = len(egenes_df)
-                # instability_lm_scan calls fixef_eqtl_scan 100× per gene (per subsample),
-                # each iterating all ~104k loci with just_these_loci set to filter one chr.
-                # Time per gene scales with n_subsamples × total_loci_in_cache × per-locus cost.
-                inst_rows = []
-                for _i_s11, (_, erow) in enumerate(egenes_df.iterrows()):
-                    gene_name = erow['gene']
-                    gene_id   = gene_name_to_id.get(gene_name, gene_name)
-                    gene_chr  = str(erow.get('chr', peak_chr))
-                    if gene_id not in _s11_cache:
-                        continue
-                    sids_g     = _s11_sids
-                    geno_ids_g = [meta_geno_map.get(s, s) for s in sids_g]
-                    y_g   = _s11_cache[gene_id].astype(float)
-                    cov_g = _build_covariates(meta, sids_g)
-                    sex_g = np.array([float(_sex_by_sid.get(s, 0.0)) for s in sids_g])
-                    log.info('  [%d/%d] instability: %s  chr%s',
-                             _i_s11 + 1, _n_s11, gene_name, gene_chr)
-                    _t_s11g = time.perf_counter()
-                    try:
-                        _lids_inst, _, _ = cache.get_chromosome(gene_chr)
-                        inst = instability_lm_scan(
-                            y_g, cache,
-                            covariates=cov_g,
-                            sample_ids=geno_ids_g,
-                            n_subsamples=100, seed=1,
-                            just_these_loci=set(_lids_inst),
-                        )
-                        log.info('    done in %.1fs', time.perf_counter() - _t_s11g)
-                        inst_rows.append(_scan_to_df(inst, gene_name))
-                    except Exception as exc:
-                        log.warning('  instability failed for %s: %s', gene_id, exc)
-                if inst_rows:
-                    inst_df = pd.concat(inst_rows, ignore_index=True)
-                    inst_df.to_csv(py_dir / 's11_instability.csv', index=False)
-                    log.info('  instability complete: %d genes', len(inst_rows))
+                _s11_expr = {gid: _s11_counts[i].astype(float)
+                             for i, gid in enumerate(_s11_loaded)}
+                del _s11_counts
+                _s11_chr_map = {}
+                for _, erow in egenes_df.iterrows():
+                    gid = gene_name_to_id.get(erow['gene'], erow['gene'])
+                    _s11_chr_map[gid] = str(erow.get('chr', peak_chr))
+                geno_ids_s11 = [meta_geno_map.get(s, s) for s in _s11_sids]
+                cov_s11 = _build_covariates(meta, _s11_sids)
+                _s11_path = py_dir / 's11_instability.csv'
+                log.info('  instability scan for %d eGenes (streaming)...', len(_s11_expr))
+                inst_df = instability_scan_multi_gene(
+                    _s11_expr, _s11_chr_map, cache,
+                    covariates=cov_s11,
+                    sample_ids=geno_ids_s11,
+                    n_subsamples=100, seed=1,
+                    output_path=_s11_path,
+                )
+                del _s11_expr
+                if not inst_df.empty:
+                    log.info('  instability complete: %d genes', inst_df['gene'].nunique())
                     results['S11_instability'] = True
                     if r_inst_path.exists():
                         r_inst      = pd.read_csv(r_inst_path)

@@ -24,8 +24,11 @@ design notes:
     kinship / OLS); used by Phase 1 validation only.
 """
 
+import gc
 import numpy as np
+import pandas as pd
 import logging
+from pathlib import Path
 from scipy.stats import genextreme
 
 logger = logging.getLogger('mosaiqtl')
@@ -678,3 +681,86 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
         'alpha': ci_alpha,
     }
     return peak_pos, ci_info
+
+
+def ci_scan_multi_gene(
+    expr_cache: 'dict[str, np.ndarray]',
+    gene_chr_map: 'dict[str, str]',
+    peak_mb_map: 'dict[str, float]',
+    genomecache,
+    covariates: 'np.ndarray | None' = None,
+    kinship_decomp: 'dict | None' = None,
+    sample_ids: 'list[str] | None' = None,
+    n_boot: int = 200,
+    seed: int = 1,
+    use_rint: bool = True,
+    output_path: 'Path | None' = None,
+) -> pd.DataFrame:
+    """bootstrap positional CI for a set of genes, streaming to disk.
+
+    calls generate_null_outcomes + run_positional_scans per gene, streams each
+    CI row immediately — no accumulation of bootstrap matrices across genes.
+
+    parameters
+    ----------
+    expr_cache     : dict {gene_id: np.ndarray (n,)}  pre-loaded expression vectors
+    gene_chr_map   : dict {gene_id: str}  chromosome per gene
+    peak_mb_map    : dict {gene_id: float}  peak position in Mb (from S4 scan)
+    genomecache    : GenomeCache
+    covariates     : np.ndarray (n, p) or None
+    kinship_decomp : dict or None  {chrom: {'values':, 'vectors':}}
+    sample_ids     : list[str] or None  genotype-level strain IDs
+    n_boot         : int  bootstrap replicates per gene (default 200)
+    seed           : int  base seed; incremented per gene
+    use_rint       : bool
+    output_path    : Path or None  stream CSV here; None accumulates in RAM
+
+    returns
+    -------
+    pd.DataFrame  columns: gene, chr, peak_mb, ci_lo, ci_hi, ci_width_mb
+    """
+    _first = True
+    _buf: 'list[dict]' = []
+    for _g, (gene_id, y) in enumerate(expr_cache.items()):
+        gene_chr = gene_chr_map.get(gene_id, '')
+        peak_mb = peak_mb_map.get(gene_id)
+        if not gene_chr or peak_mb is None:
+            logger.warning(
+                'ci_scan_multi_gene: missing chr/peak_mb for %s — skipped', gene_id)
+            continue
+        _kd_g = ({gene_chr: kinship_decomp[gene_chr]}
+                 if kinship_decomp is not None else None)
+        try:
+            boot_out = generate_null_outcomes(
+                y, n_perms=n_boot, seed=seed + _g, method='bootstrap')
+            ci_mbs, ci_info = run_positional_scans(
+                boot_out, genomecache,
+                phenotype=y,
+                covariates=covariates,
+                kinship_decomp=_kd_g,
+                peak_chrom=gene_chr,
+                use_rint=use_rint,
+                sample_ids=sample_ids,
+            )
+            del boot_out, ci_mbs
+            row = {
+                'gene':        gene_id,
+                'chr':         gene_chr,
+                'peak_mb':     float(peak_mb),
+                'ci_lo':       ci_info['ci_lo'],
+                'ci_hi':       ci_info['ci_hi'],
+                'ci_width_mb': ci_info['ci_hi'] - ci_info['ci_lo'],
+            }
+            if output_path is not None:
+                pd.DataFrame([row]).to_csv(
+                    output_path, mode='a', header=_first, index=False)
+                _first = False
+            else:
+                _buf.append(row)
+        except Exception as exc:
+            logger.warning('ci_scan_multi_gene: %s failed — %s', gene_id, exc)
+    gc.collect()
+    if output_path is not None:
+        return (pd.read_csv(output_path)
+                if output_path.exists() and not _first else pd.DataFrame())
+    return pd.DataFrame(_buf) if _buf else pd.DataFrame()

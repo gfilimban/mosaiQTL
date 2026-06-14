@@ -1105,3 +1105,157 @@ def scan_h2lmm_mi(
         phenotype_id=phenotype_id,
         model="additive",
     )
+
+
+def scan_multi_gene_mi(
+    expr_cache: 'dict[str, np.ndarray]',
+    gene_chr_map: 'dict[str, str]',
+    genomecache: 'GenomeCache',  # type: ignore[name-defined]  # noqa: F821
+    covariates: 'np.ndarray | None' = None,
+    kinship_decomp: 'dict | None' = None,
+    sample_ids: 'list[str] | None' = None,
+    n_imp: int = 11,
+    seed: int = 1,
+    use_rint: bool = True,
+    output_path: 'Path | None' = None,
+) -> pd.DataFrame:
+    """multiple-imputation scan over a set of genes, streaming to disk.
+
+    calls scan_h2lmm_mi per gene and writes each result to output_path
+    immediately, keeping peak memory proportional to one gene rather than
+    all genes simultaneously.
+
+    parameters
+    ----------
+    expr_cache     : dict {gene_id: np.ndarray (n,)}  pre-loaded expression vectors
+    gene_chr_map   : dict {gene_id: str}  chromosome for cis scan
+    genomecache    : GenomeCache
+    covariates     : np.ndarray (n, p) or None
+    kinship_decomp : dict or None  {chrom: {'values':, 'vectors':}}
+    sample_ids     : list[str] or None  genotype-level strain IDs
+    n_imp          : int  imputations per gene (default 11)
+    seed           : int  base seed; incremented per gene
+    use_rint       : bool
+    output_path    : Path or None  stream CSV here; None accumulates in RAM
+
+    returns
+    -------
+    pd.DataFrame  columns: gene, chr, locus, pos_mb, lod
+    """
+    _first = True
+    _buf: 'list[pd.DataFrame]' = []
+    for _g, (gene_id, y) in enumerate(expr_cache.items()):
+        gene_chr = gene_chr_map.get(gene_id, '')
+        if not gene_chr:
+            logger.warning('scan_multi_gene_mi: no chr for %s — skipped', gene_id)
+            continue
+        try:
+            res = scan_h2lmm_mi(
+                y, genomecache,
+                covariates=covariates,
+                kinship_decomp=kinship_decomp,
+                sample_ids=sample_ids,
+                n_imp=n_imp,
+                seed=seed + _g,
+                use_rint=use_rint,
+                phenotype_id=gene_id,
+                scan_window='cis',
+                gene_chr=gene_chr,
+            )
+            _df = pd.DataFrame({
+                'gene': gene_id,
+                'chr': res.chromosomes,
+                'locus': res.locus_ids,
+                'pos_mb': res.positions,
+                'lod': res.lod,
+            })
+            del res
+            if output_path is not None:
+                _df.to_csv(output_path, mode='a', header=_first, index=False)
+                _first = False
+            else:
+                _buf.append(_df)
+            del _df
+        except Exception as exc:
+            logger.warning('scan_multi_gene_mi: %s failed — %s', gene_id, exc)
+    gc.collect()
+    if output_path is not None:
+        return (pd.read_csv(output_path)
+                if output_path.exists() and not _first else pd.DataFrame())
+    return pd.concat(_buf, ignore_index=True) if _buf else pd.DataFrame()
+
+
+def instability_scan_multi_gene(
+    expr_cache: 'dict[str, np.ndarray]',
+    gene_chr_map: 'dict[str, str]',
+    genomecache: 'GenomeCache',  # type: ignore[name-defined]  # noqa: F821
+    covariates: 'np.ndarray | None' = None,
+    sample_ids: 'list[str] | None' = None,
+    n_subsamples: int = 100,
+    subsample_prop: float = 0.63,
+    seed: int = 1,
+    output_path: 'Path | None' = None,
+) -> pd.DataFrame:
+    """instability scan over a set of genes, streaming to disk.
+
+    calls instability_lm_scan per gene restricted to each gene's chromosome
+    and streams each result immediately, keeping peak memory bounded.
+
+    parameters
+    ----------
+    expr_cache     : dict {gene_id: np.ndarray (n,)}
+    gene_chr_map   : dict {gene_id: str}
+    genomecache    : GenomeCache
+    covariates     : np.ndarray (n, p) or None
+    sample_ids     : list[str] or None  genotype-level strain IDs
+    n_subsamples   : int  bootstrap iterations per gene (default 100)
+    subsample_prop : float  proportion of strains per subsample (default 0.63)
+    seed           : int  base seed; incremented per gene
+    output_path    : Path or None  stream CSV here; None accumulates in RAM
+
+    returns
+    -------
+    pd.DataFrame  columns: gene, chr, locus, pos_mb, lod
+    """
+    _first = True
+    _buf: 'list[pd.DataFrame]' = []
+    for _g, (gene_id, y) in enumerate(expr_cache.items()):
+        gene_chr = gene_chr_map.get(gene_id, '')
+        if not gene_chr:
+            logger.warning(
+                'instability_scan_multi_gene: no chr for %s — skipped', gene_id)
+            continue
+        try:
+            lids_chr, _, _ = genomecache.get_chromosome(gene_chr)
+            res = instability_lm_scan(
+                y, genomecache,
+                covariates=covariates,
+                sample_ids=sample_ids,
+                n_subsamples=n_subsamples,
+                subsample_prop=subsample_prop,
+                seed=seed + _g,
+                phenotype_id=gene_id,
+                just_these_loci=set(lids_chr),
+            )
+            _df = pd.DataFrame({
+                'gene': gene_id,
+                'chr': res.chromosomes,
+                'locus': res.locus_ids,
+                'pos_mb': res.positions,
+                'lod': res.lod,
+            })
+            del res
+            if output_path is not None:
+                _df.to_csv(output_path, mode='a', header=_first, index=False)
+                _first = False
+            else:
+                _buf.append(_df)
+            del _df
+        except Exception as exc:
+            logger.warning(
+                'instability_scan_multi_gene: %s failed — %s', gene_id, exc)
+    gc.collect()
+    if output_path is not None:
+        return (pd.read_csv(output_path)
+                if output_path.exists() and not _first else pd.DataFrame())
+    return pd.concat(_buf, ignore_index=True) if _buf else pd.DataFrame()

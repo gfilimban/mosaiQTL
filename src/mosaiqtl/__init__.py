@@ -33,17 +33,25 @@ from .qtl.nb import (scan_nb, scan_nb_gene,                         # noqa: F401
 # gaussian lmm scan
 from .qtl.scan import (scan_h2lmm, scan_h2lmm_mi, scan_multi_gene,  # noqa: F401
                         ScanResult, grab_locus_from_scan, lod_drop_ci,
-                        fixef_eqtl_scan, instability_lm_scan)
+                        fixef_eqtl_scan, instability_lm_scan,
+                        scan_multi_gene_mi, instability_scan_multi_gene)
 
 # permutation thresholds
 from .qtl.permutation import (KinshipSingularError,                  # noqa: F401
                                 generate_null_outcomes,
                                 run_threshold_scans,
                                 get_gev_thresholds,
-                                run_positional_scans)
+                                run_positional_scans,
+                                ci_scan_multi_gene)
 
 # snp catalogue (Layer 3a)
-from .qtl.snp_scan import build_snp_catalogue                        # noqa: F401
+from .qtl.snp_scan import (build_snp_catalogue,                      # noqa: F401
+                             snp_scan_multi_gene)
+
+# mediation
+from .qtl.mediation import (mediation_scan_qr, mediation_scan_qr_batch,  # noqa: F401
+                              select_cis_mediation_pairs,
+                              mediation_scan_multi_outcome)
 
 # three-layer user API
 from .pipeline import discover, characterize, resolve                # noqa: F401

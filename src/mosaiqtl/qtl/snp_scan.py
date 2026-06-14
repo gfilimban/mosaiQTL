@@ -8,10 +8,12 @@ then runs the haplotype lmm scan restricted to the imputed dosage.
   build.allele.dir() + load  →  imputed_snp_scan_from_db()  (HDF5 path)
 """
 
+import gc
 import os
 import numpy as np
 import pandas as pd
 import logging
+from pathlib import Path
 
 from ..utils import chr_sort_key
 
@@ -526,3 +528,72 @@ def build_snp_catalogue(scan_results, genomecache, mgp_vcf,
 
     vcf.close()
     return results
+
+
+def snp_scan_multi_gene(
+    expr_cache: 'dict[str, np.ndarray]',
+    gene_chr_map: 'dict[str, str]',
+    genomecache,
+    alleles_h5: str,
+    covariates: 'np.ndarray | None' = None,
+    kinship_decomp: 'dict | None' = None,
+    sample_ids: 'list[str] | None' = None,
+    founder_col_map: 'dict[str, str] | None' = None,
+    output_path: 'Path | None' = None,
+) -> pd.DataFrame:
+    """imputed SNP scan over a set of genes, streaming to disk.
+
+    calls imputed_snp_scan_from_db per gene and streams each result immediately,
+    keeping peak memory bounded to one gene at a time.
+
+    parameters
+    ----------
+    expr_cache      : dict {gene_id: np.ndarray (n,)}  pre-loaded expression vectors
+    gene_chr_map    : dict {gene_id: str}  chromosome for each gene
+    genomecache     : GenomeCache
+    alleles_h5      : str  path to founder_alleles.h5
+    covariates      : np.ndarray (n, p) or None
+    kinship_decomp  : dict or None  {chrom: {'values':, 'vectors':}}
+    sample_ids      : list[str] or None  genotype-level strain IDs
+    founder_col_map : dict {founder_name: allele_code} or None
+    output_path     : Path or None  stream CSV here; None accumulates in RAM
+
+    returns
+    -------
+    pd.DataFrame  imputed_snp_scan_from_db output with 'gene' column prepended
+    """
+    _first = True
+    _buf: 'list[pd.DataFrame]' = []
+    for gene_id, y in expr_cache.items():
+        gene_chr = gene_chr_map.get(gene_id, '')
+        if not gene_chr:
+            logger.warning('snp_scan_multi_gene: no chr for %s — skipped', gene_id)
+            continue
+        _kd_g = ({gene_chr: kinship_decomp[gene_chr]}
+                 if kinship_decomp is not None else None)
+        try:
+            _df = imputed_snp_scan_from_db(
+                y, genomecache,
+                alleles_h5=alleles_h5,
+                chrom=gene_chr,
+                covariates=covariates,
+                kinship_decomp=_kd_g,
+                sample_ids=sample_ids,
+                founder_col_map=founder_col_map,
+            )
+            if not _df.empty:
+                _df = _df.copy()
+                _df.insert(0, 'gene', gene_id)
+                if output_path is not None:
+                    _df.to_csv(output_path, mode='a', header=_first, index=False)
+                    _first = False
+                else:
+                    _buf.append(_df)
+            del _df
+        except Exception as exc:
+            logger.warning('snp_scan_multi_gene: %s failed — %s', gene_id, exc)
+    gc.collect()
+    if output_path is not None:
+        return (pd.read_csv(output_path)
+                if output_path.exists() and not _first else pd.DataFrame())
+    return pd.concat(_buf, ignore_index=True) if _buf else pd.DataFrame()

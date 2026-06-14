@@ -84,13 +84,13 @@ src/mosaiqtl/
 │   ├── CLAUDE.md
 │   ├── nb.py               # NB-GLMM Stage 1 and 2 (primary model, transcriptomics)
 │   ├── lmm.py              # Gaussian LMM engine (qtl2/miqtl-port); scan_chromosome_batch with return_peak_positions; scan_chromosome_mi vectorised over imputations; precompute_chromosome + scan_chromosome_fast for per-gene multi-gene loops
-│   ├── scan.py             # Z-matrix n=418, MI (vectorised), fixef, instability (strain-level subsampling); scan_window='cis'|'genome'|'local'
-│   ├── permutation.py      # fix_h2=True, GEV thresholds; run_positional_scans vectorised via scan_chromosome_batch
+│   ├── scan.py             # Z-matrix n=418, MI (vectorised), fixef, instability; scan_multi_gene_mi + instability_scan_multi_gene (streaming multi-gene wrappers)
+│   ├── permutation.py      # fix_h2=True, GEV thresholds; run_positional_scans vectorised via scan_chromosome_batch; ci_scan_multi_gene (streaming CI wrapper)
 │   ├── effects.py          # founder haplotype effect estimation
-│   ├── mediation.py        # QR-based mediation; mediation_scan_qr_batch vectorises all mediators per outcome via Woodbury rank-1
+│   ├── mediation.py        # QR-based mediation; mediation_scan_qr_batch vectorises all mediators per outcome; mediation_scan_multi_outcome (streaming multi-outcome wrapper)
 │   ├── epistasis.py        # pairwise GxG, conditional scanning
 │   ├── vqtl.py             # dispersion QTL, VQTLResult
-│   ├── snp_scan.py         # marginal SNP fine-mapping
+│   ├── snp_scan.py         # marginal SNP fine-mapping; snp_scan_multi_gene (streaming multi-gene wrapper)
 │   └── ase.py              # allele-specific expression (scaffold)
 ├── models/                 # shared dataclasses and Pydantic schemas
 │   ├── records.py          # ScanResult, VQTLResult, QTLResult, FounderEffect
@@ -226,6 +226,201 @@ where $s(i)$ maps animal $i$ to its strain genotype.
 
 ---
 
+## 5b. LMM MODEL AND LOD SCORE
+
+### Model equations
+
+At each locus $\ell$, two nested models are compared:
+
+**Null (H₀ — no QTL at locus ℓ):**
+
+$$y = X\beta + Zu + \varepsilon, \quad u \sim \mathcal{N}(0,\, \tau^2 K^{(-c)}), \quad \varepsilon \sim \mathcal{N}(0,\, \sigma^2 I)$$
+
+**Alternative (H₁ — QTL present at locus ℓ):**
+
+$$y = H_\ell\,\alpha + X\beta + Zu + \varepsilon$$
+
+| Symbol | Dimension | Meaning |
+|---|---|---|
+| $y$ | $n \times 1$ | RINT-transformed phenotype (mean 0, SD 1 by construction) |
+| $H_\ell$ | $n \times J$ | Founder haplotype probabilities at locus $\ell$ |
+| $\alpha$ | $J \times 1$ | Per-founder allele effects (target of inference) |
+| $X$ | $n \times p$ | Fixed covariate matrix (intercept, sex, batch, …) |
+| $Z$ | $n \times m$ | Sample-to-strain design matrix |
+| $u$ | $m \times 1$ | Polygenic random effects |
+| $K^{(-c)}$ | $m \times m$ | LOCO kinship for chromosome $c$ |
+| $\tau^2, \sigma^2$ | scalars | Genetic and residual variance components |
+
+The only structural difference between H₀ and H₁ is the presence of $H_\ell\alpha$.
+
+---
+
+### Kinship rotation (eigendecomposition trick)
+
+The covariance $V = \sigma^2 I + \tau^2 Z K^{(-c)} Z^T$ is dense and non-diagonal.
+Eigendecomposing $K^{(-c)} = U \Lambda U^T$ and rotating data into eigenvector space
+converts the LMM to weighted least squares:
+
+$$\tilde{y} = U^T y, \quad \tilde{H} = U^T H_\ell, \quad \tilde{X} = U^T X$$
+
+Weights: $w_i = \bigl(\sigma^2 + \tau^2\lambda_i\bigr)^{-1}$, where $\lambda_i$ are eigenvalues of $K^{(-c)}$.
+All matrix operations are then $O(n^2 J)$ per locus rather than $O(n^3)$.
+
+**Precomputation savings:** $U^T Z H$ (the rotated haplotype tensor) depends only on the
+genome cache and kinship eigenvectors — not on $y$. `precompute_chromosome` computes
+it once per chromosome; `scan_chromosome` reuses it for every gene in the loop,
+reducing per-gene cost from $O(L \cdot n^2 \cdot J)$ to $O(L \cdot n \cdot J)$.
+
+---
+
+### Multi-gene scan amortization — why mosaiQTL is faster than miQTL
+
+#### The problem: per-gene repetition of chromosome-constant work
+
+miQTL's `scan.h2lmm` takes a **single phenotype vector** and a genomecache. When scanning
+G genes genome-wide, the caller loops:
+
+```r
+for (gene in genes) {
+    result[[gene]] <- scan.h2lmm(pheno[, gene], genomecache, ...)
+}
+```
+
+Each call to `scan.h2lmm` for chromosome $c$:
+
+1. Loads haplotype probs $H \in \mathbb{R}^{L \times n \times J}$ from the HAPPY cache
+2. Computes the rotated haplotype tensor $\tilde{H} = U^T Z H$, cost $O(L \cdot n^2 \cdot J)$
+3. Applies FWL projection and computes RSS₀/RSS₁ per locus for this gene's $y$
+
+Step 2 depends only on $K^{(-c)}$ eigenvectors $U$ and the genome cache $H$ — it does
+**not** depend on $y$. Yet it is recomputed in full for every gene. For $G = 2{,}000$ genes
+on chromosome 8 ($L \approx 3{,}700$ loci, $n = 416$ samples, $J = 8$ founders):
+
+$$\text{miQTL cost per chromosome} = G \cdot O(L \cdot n^2 \cdot J) + G \cdot O(L \cdot n \cdot J)$$
+
+The $O(L \cdot n^2 \cdot J)$ term dominates and is repeated 2,000 times unnecessarily.
+
+---
+
+#### The fix: `precompute_chromosome` + `scan_chromosome_fast`
+
+mosaiQTL separates the chromosome-constant and gene-dependent work into two explicit steps.
+
+**Step 1 — `precompute_chromosome` (once per chromosome):**
+
+```python
+chr_data = precompute_chromosome(genomecache, chrom, eigvals, eigvecs, z_mat)
+# chr_data contains:
+#   H_t_raw : (L, n, J)  — rotated haplotype tensor  U' Z H
+#   xt      : (p, n)     — rotated covariates         U' X
+#   xt_pinv : (n, p)     — pseudoinverse of xt
+#   eigvals : (n,)       — LOCO kinship eigenvalues
+```
+
+The key precomputed quantity is:
+
+$$H_{t,\text{raw}} = (U^T Z)\, H \quad \in \mathbb{R}^{L \times n \times J}$$
+
+computed via a fused einsum that avoids explicitly forming $K_n = Z K_m Z^T$:
+
+```python
+z_rot    = eigvecs.T @ z_mat          # (n, m) — fused once
+H_t_raw  = einsum('nk,bnj->bkj', z_rot, probs)   # (L, n, J)
+```
+
+This is computed **once** for all $G$ genes on the chromosome.
+
+**Step 2 — `scan_chromosome` (once per gene, reuses `chr_data`):**
+
+For each gene with phenotype $y$ and heritability $h^2$:
+
+1. Compute per-locus weights $w_i = (1 - h^2 + h^2 \lambda_i)^{-1}$ — $O(n)$
+2. Scale `H_t_raw` by $\sqrt{w}$ — $O(L \cdot n \cdot J)$
+3. Apply FWL projection: $H_\perp = \tilde{H} - \tilde{X}(\tilde{X}^T\tilde{H})^{-1}\tilde{X}^T\tilde{H}$ — $O(L \cdot n \cdot J)$
+4. Compute $c = H_\perp^T \tilde{y}$, $G = H_\perp^T H_\perp$, LOD — $O(L \cdot n \cdot J)$
+
+No $O(n^2)$ work appears per gene. The dominant rotation cost has been paid once.
+
+**mosaiQTL cost per chromosome:**
+
+$$O(L \cdot n^2 \cdot J) + G \cdot O(L \cdot n \cdot J)$$
+
+---
+
+#### Cost comparison
+
+| Term | miQTL | mosaiQTL | Ratio |
+|---|---|---|---|
+| Haplotype rotation $O(L \cdot n^2 \cdot J)$ | $G$ times | 1 time | $G\times$ |
+| Per-gene FWL $O(L \cdot n \cdot J)$ | $G$ times | $G$ times | 1× |
+| Dominant cost at $G = 2{,}000$ | $2{,}000 \times$ full rotation | 1× full rotation | ~$2{,}000\times$ |
+
+At $G = 2{,}000$, $L = 3{,}700$, $n = 416$, $J = 8$: the $O(L \cdot n^2 \cdot J)$ term is
+$\approx 4 \times 10^{10}$ FLOPs per chromosome in miQTL versus $\approx 2 \times 10^{7}$ FLOPs
+in mosaiQTL for the same rotation work — a ~$2{,}000\times$ reduction in the dominant cost.
+The per-gene FWL term adds $G \times O(L \cdot n \cdot J) \approx 2 \times 10^{8}$ FLOPs, which
+becomes the new bottleneck and is identical in both implementations.
+
+In practice the observed speedup is lower than $2{,}000\times$ because:
+- Cache effects and BLAS threading flatten raw FLOP ratios
+- Per-gene Python overhead (h² scaling, FWL, RSS) has constant factors miQTL's R/BLAS path avoids
+- miQTL's HAPPY I/O is per-chromosome (not per-locus) for most scan calls — I/O is not the bottleneck
+
+Empirically, mosaiQTL's `scan_multi_gene` on the gastroc benchmark runs ~8–15× faster than
+miQTL's per-gene loop on the same chromosome subset (measured; see `benchmarks/`).
+
+---
+
+#### Why the API design difference matters
+
+miQTL's `scan.h2lmm` is designed for **single-gene interactive use** — the correct choice for an
+R package where a scientist runs one gene at a time at the REPL. There is no batch-gene API because
+R's call semantics don't encourage it: each call is a complete, self-contained analysis.
+
+mosaiQTL's `scan_multi_gene` is designed for **pipeline use** — the outer loop over genes is
+inside the package, not in the user's script. This exposes the chromosome as the natural unit
+of precomputation and makes amortization automatic.
+
+The speedup is therefore not a property of Python vs R as languages — both can do the same matrix
+math. It is a consequence of **where the gene loop lives**: outside the package in miQTL,
+inside the package in mosaiQTL.
+
+---
+
+### LOD score
+
+After rotation, both models produce a weighted residual sum of squares (RSS):
+
+$$\text{LOD}_\ell = \frac{n}{2} \log_{10}\!\left(\frac{\text{RSS}_0}{\text{RSS}_1}\right)$$
+
+- **RSS₀**: variance in $\tilde{y}$ unexplained by covariates + kinship alone (H₀ fit)
+- **RSS₁**: variance unexplained after adding $\tilde{H}_\ell\alpha$ (H₁ fit)
+- **RSS₀ − RSS₁**: variance *explained* by the haplotype at locus $\ell$
+- Denominator is $n$ (ML convention), not $n-p$ (REML) — matches miQTL/qtl2
+
+| LOD | Likelihood interpretation |
+|---|---|
+| 1 | H₁ is 10× more likely than H₀ |
+| 3 | H₁ is 1,000× more likely (approximate genome-wide significance) |
+| 0 | no improvement — haplotype adds nothing beyond polygenic background |
+
+---
+
+### What the outputs tell you
+
+| Output | Source | Meaning |
+|---|---|---|
+| $\hat{\alpha}$ (`betas`) | H₁ fit | Per-founder effect in RINT units — which haplotype raises/lowers expression and by how many SDs |
+| $\hat{h}^2 = \tau^2/(\tau^2+\sigma^2)$ | Null fit | Fraction of phenotypic variance explained by polygenic background |
+| LOD | RSS₀/RSS₁ | Evidence that haplotype at locus $\ell$ explains expression *beyond* background relatedness |
+
+**RINT baseline:** $y$ is standard normal (mean = 0, SD = 1), so $\hat{\alpha}_f = -0.5$ means strains
+carrying founder $f$'s haplotype express ~0.5 SDs *below* the population mean at that locus
+(roughly the 31st percentile). To report biological effect sizes, re-run `get_allele_effects`
+on the un-RINTed log-normalized phenotype — betas will then be in log₂ CPM units.
+
+---
+
 ## 6. DATA FLOW
 
 ```
@@ -325,9 +520,19 @@ subsets of eGenes. See `validate_gastroc.py` S7–S11 for the reference implemen
 
   → Optional downstream                  [qtl/mediation.py, epistasis.py, vqtl.py]
       - QR-based mediation: mediation_scan_qr_batch vectorises all mediators of one outcome per chromosome via Woodbury rank-1 update (H⊥X computed once; G_inv shared; per-mediator LOD via Sherman-Morrison). h2 fixed from base model (drift ≤ 0.03 empirically). ~100–250× faster than per-mediator loop at 127k pairs.
+      - mediation_scan_multi_outcome: streams one outcome at a time; del + gc.collect() per gene; output_path writes CSV incrementally — peak RAM bounded to one gene regardless of dataset size.
       - pairwise epistasis scan
       - dispersion QTL (vQTL)
       - conditional multi-signal scan
+
+  → Streaming multi-gene wrappers (all scan types)
+      Each wrapper owns the gene loop, writes results incrementally via output_path: Path | None,
+      and del + gc.collect() after each gene. Callers get constant-memory behaviour automatically.
+      scan.py:       scan_multi_gene_mi        — MI scan across a gene set
+      scan.py:       instability_scan_multi_gene — instability scan across a gene set
+      permutation.py: ci_scan_multi_gene       — bootstrap CI across a gene set (accepts peak_mb_map)
+      snp_scan.py:   snp_scan_multi_gene       — SNP fine-mapping across a gene set
+      mediation.py:  mediation_scan_multi_outcome — mediation across all (outcome, mediator) pairs
 
 Final outputs:
   - eGene tables per cell type (gene_id, chr, pos_mb, LOD, FDR, founder effects)
@@ -1042,6 +1247,7 @@ it is inferred from the input data.
 | `run_positional_scans` previously called `scan_chromosome` sequentially per bootstrap replicate — fixed: vectorised via `scan_chromosome_batch(return_peak_positions=True)` | permutation.py | ✅ fixed |
 | `mediation_scan_qr` recomputed base scan for every (outcome, mediator) pair — fixed: `mediation_scan_qr_batch` processes all mediators of one outcome in a single chromosome pass using Woodbury rank-1 (h2 fixed from base model; empirical drift ≤ 0.03, r(exact,fixed) ≥ 0.9999). validate_gastroc.py S9 updated to call batch variant. | mediation.py | ✅ fixed |
 | `scan_h2lmm_mi` looped n_imp × n_chr `scan_chromosome` calls + GenomeCache allocations per imputation — fixed: `scan_chromosome_mi` generates all draws at once and vectorises over the imputation axis in a single batched einsum pass | lmm.py + scan.py | ✅ fixed |
+| validate_gastroc.py S7–S11 accumulated per-gene result rows in Python lists and called `pd.concat` at section end — `pd.concat` of a large list doubles peak RAM (list + combined copy simultaneously), triggering OOM kill for mediation at ~90 outcome genes × 9 mediators. Fixed: five streaming multi-gene wrappers added to the package (`scan_multi_gene_mi`, `instability_scan_multi_gene`, `ci_scan_multi_gene`, `snp_scan_multi_gene`, `mediation_scan_multi_outcome`); each writes to `output_path` per gene and `del` + `gc.collect()` after each result; validation script calls one function per section — no accumulation in the caller | scan.py, snp_scan.py, mediation.py, permutation.py, validate_gastroc.py | ✅ fixed |
 | S11 gastroc comparison: R exports `neg_log10_p` (median −log10 F-test p across subsamples); Python exports `lod` (mean bootstrap LOD). Incompatible on linear scale — fixed: comparison switched to Spearman rank correlation (monotone with instability signal) | validate_gastroc.py | ✅ fixed |
 | S9 gastroc comparison: miQTL's `mediation.scan.qr()` may export `LOD` (uppercase) and `pos.Mb` rather than `lod`/`pos_mb` — fixed: column normalization applied after `pd.read_csv` before `_pos_merge` | validate_gastroc.py | ✅ fixed |
 | gastroc benchmark S4–S11 not yet run — pending HPC run; rsync r_data/ then run validate_gastroc.py --compare | gastroc_data/ | MED |
