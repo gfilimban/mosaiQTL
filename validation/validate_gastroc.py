@@ -941,21 +941,21 @@ def _make_descriptive_plots(
     s10_path = py_dir / 's10_ci.csv'
     if s10_path.exists():
         try:
-            ci_df = pd.read_csv(s10_path).sort_values('peak_mb')
-            fig, ax = plt.subplots(
-                figsize=(8, max(3, len(ci_df) * 0.35)), dpi=300)
-            _viz_ci_strip(
-                ci_df['gene'].tolist(),
-                ci_df['ci_lo'].values,
-                ci_df['ci_hi'].values,
-                ci_df['peak_mb'].values,
-                ax=ax, chrom=peak_chr,
-            )
-            ax.set_title(f'Bootstrap CI  {len(ci_df)} eGenes', fontsize=9)
+            ci_df = pd.read_csv(s10_path, low_memory=False).sort_values('peak_mb')
+            ci_df['ci_width'] = ci_df['ci_hi'] - ci_df['ci_lo']
+            fig, ax = plt.subplots(figsize=(10, 4), dpi=300)
+            ax.scatter(ci_df['peak_mb'], ci_df['ci_width'],
+                       s=4, alpha=0.4, linewidths=0,
+                       color=FOUNDER_COLORS['NODJ'])
+            ax.set_xlabel(f'Peak position  chr{peak_chr} (Mb)', fontsize=9)
+            ax.set_ylabel('CI width (Mb)', fontsize=9)
+            ax.set_ylim(bottom=0)
+            ax.set_title(f'Bootstrap CI width  {len(ci_df)} eGenes', fontsize=9)
+            sns.despine(ax=ax)
             fig.tight_layout()
             fig.savefig(plt_dir / 's10_ci_strip.png', dpi=300)
             plt.close(fig)
-            log.info('  s10_ci_strip.png')
+            log.info('  s10_ci_strip.png  (%d genes)', len(ci_df))
         except Exception as exc:
             log.warning('  s10_ci_strip: %s', exc)
 
@@ -1090,58 +1090,36 @@ def _make_descriptive_plots(
             log.warning('  s7_per_chr: %s', exc)
 
     # ── S9: mediation LOD profile (base vs mediated) ──────────────────────────
+    # ── S9: peak lod_mediated per chromosome ─────────────────────────────────
     s9_path = py_dir / 's9_mediation.csv'
     if s9_path.exists():
         try:
-            med_df = pd.read_csv(s9_path)
+            med_df = pd.read_csv(s9_path, low_memory=False)
             med_df['chr'] = med_df['chr'].astype(str)
-            med_pc = med_df[med_df['chr'] == str(peak_chr)]
-            if len(med_pc) > 0:
-                top_gene = _pick_top_gene(med_pc, peak_chr, lod_col='lod_base')
-                med_top  = med_pc[med_pc['gene'] == top_gene].sort_values('pos_mb')
-                fig, ax  = plt.subplots(figsize=(10, 3), dpi=300)
-                _viz_mediation_profile(
-                    med_top['pos_mb'].values,
-                    med_top['lod_base'].values,
-                    med_top['lod_mediated'].values,
-                    ax=ax, chrom=peak_chr, gene=top_gene,
-                )
-                ax.set_title(f'Mediation  {top_gene}  chr{peak_chr}',
-                             fontsize=9)
-                fig.tight_layout()
-                fig.savefig(plt_dir / 's9_mediation_profile.png', dpi=300)
-                plt.close(fig)
-                log.info('  s9_mediation_profile.png  (gene=%s)', top_gene)
+            peak_med = (med_df.groupby('chr')['lod_mediated']
+                        .max()
+                        .reset_index()
+                        .sort_values('chr', key=lambda s: s.map(
+                            lambda c: int(c) if c.isdigit() else 100)))
+            fig, ax = plt.subplots(figsize=(max(6, len(peak_med) * 0.55), 3.5),
+                                   dpi=300)
+            ax.bar(range(len(peak_med)), peak_med['lod_mediated'],
+                   color=FOUNDER_COLORS['NODJ'], edgecolor='none')
+            ax.set_xticks(range(len(peak_med)))
+            ax.set_xticklabels([f'chr{c}' for c in peak_med['chr']],
+                                rotation=45, ha='right', fontsize=7)
+            ax.set_ylabel('Peak lod_mediated', fontsize=9)
+            ax.set_title(f'Mediation — peak lod_mediated per chromosome'
+                         f'  ({len(med_df["gene"].unique())} outcomes)',
+                         fontsize=9)
+            ax.set_ylim(bottom=0)
+            sns.despine(ax=ax)
+            fig.tight_layout()
+            fig.savefig(plt_dir / 's9_mediation_by_chr.png', dpi=300)
+            plt.close(fig)
+            log.info('  s9_mediation_by_chr.png  (%d chr)', len(peak_med))
         except Exception as exc:
-            log.warning('  s9_mediation_profile: %s', exc)
-
-    # ── S9: per-outcome-gene mediation profiles ───────────────────────────────
-    if s9_path.exists():
-        try:
-            _med9 = pd.read_csv(s9_path)
-            _med9['chr'] = _med9['chr'].astype(str)
-            _n_med9 = 0
-            for _g9 in sorted(_med9['gene'].unique()):
-                _med_g = _med9[_med9['gene'] == _g9].sort_values('pos_mb')
-                if _med_g.empty:
-                    continue
-                _c9 = str(_med_g['chr'].iloc[0])
-                _fig9, _ax9 = plt.subplots(figsize=(10, 3), dpi=300)
-                _viz_mediation_profile(
-                    _med_g['pos_mb'].values,
-                    _med_g['lod_base'].values,
-                    _med_g['lod_mediated'].values,
-                    ax=_ax9, chrom=_c9, gene=_g9,
-                )
-                _fig9.tight_layout()
-                _safe_g9 = re.sub(r'[^a-zA-Z0-9_-]', '_', _g9)
-                _fig9.savefig(plt_dir / f's9_mediation_{_safe_g9}.png', dpi=300)
-                plt.close(_fig9)
-                _n_med9 += 1
-            if _n_med9:
-                log.info('  s9_mediation_*.png  (%d genes)', _n_med9)
-        except Exception as exc:
-            log.warning('  s9_per_gene: %s', exc)
+            log.warning('  s9_mediation_by_chr: %s', exc)
 
     # ── timing / memory summary ───────────────────────────────────────────────
     # Excluded from plot (no meaningful compute or memory signal):
@@ -1158,13 +1136,10 @@ def _make_descriptive_plots(
     if scan_stats_path.exists():
         try:
             ss_raw = pd.read_csv(scan_stats_path)
-            ss_raw = ss_raw[ss_raw['section'].isin(_PLOT_SECTIONS)].copy()
-            existing = set(ss_raw['section'])
-            fill_rows = [{'section': s, 'elapsed_s': 0.0, 'peak_heap_mb': 0.0}
-                         for s in _PLOT_SECTIONS if s not in existing]
-            if fill_rows:
-                ss_raw = pd.concat(
-                    [ss_raw, pd.DataFrame(fill_rows)], ignore_index=True)
+            ss_raw = ss_raw[
+                ss_raw['section'].isin(_PLOT_SECTIONS)
+                & ss_raw['elapsed_s'].gt(0)
+            ].copy()
             ss_raw['_ord'] = ss_raw['section'].map(
                 {s: i for i, s in enumerate(_PLOT_SECTIONS)})
             ss = ss_raw.sort_values('_ord').reset_index(drop=True)
@@ -1207,7 +1182,8 @@ def _make_descriptive_plots(
                                      .str.replace('S4_chr', '', regex=False))
 
                 chr_rows = chr_rows.sort_values(
-                    'chrom', key=lambda s: s.map(_chr_sort_key))
+                    'chrom', key=lambda s: s.map(
+                        lambda c: int(c) if c.isdigit() else 100))
                 chr_rows['gpm'] = (chr_rows['n_items']
                                    / chr_rows['elapsed_s'].replace(0, float('nan')) * 60)
                 fig_tp, ax_tp = plt.subplots(figsize=(9, 3.5), dpi=300)
