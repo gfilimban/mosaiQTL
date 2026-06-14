@@ -857,7 +857,7 @@ def _make_descriptive_plots(
     s8_path = py_dir / 's8_snp_lod.csv'
     if s8_path.exists():
         try:
-            snp_df = pd.read_csv(s8_path)
+            snp_df = pd.read_csv(s8_path, low_memory=False)
             snp_df['chr'] = snp_df['chr'].astype(str)
             snp_pc = snp_df[snp_df['chr'] == str(peak_chr)]
             if len(snp_pc) > 0:
@@ -920,7 +920,7 @@ def _make_descriptive_plots(
     # ── S8: per-chromosome SNP fine-mapping figures ───────────────────────────
     if s8_path.exists():
         try:
-            _snp8 = pd.read_csv(s8_path)
+            _snp8 = pd.read_csv(s8_path, low_memory=False)
             _snp8['chr'] = _snp8['chr'].astype(str)
             _pk8 = None
             if (py_dir / 's4_peak_lod.csv').exists():
@@ -963,7 +963,7 @@ def _make_descriptive_plots(
     s11_path = py_dir / 's11_instability.csv'
     if s11_path.exists():
         try:
-            inst_df = pd.read_csv(s11_path)
+            inst_df = pd.read_csv(s11_path, low_memory=False)
             inst_df['chr'] = inst_df['chr'].astype(str)
             inst_pc = inst_df[inst_df['chr'] == str(peak_chr)]
             if len(inst_pc) > 0:
@@ -1028,7 +1028,7 @@ def _make_descriptive_plots(
     s7_path = py_dir / 's7_mi_lod.csv'
     if s7_path.exists():
         try:
-            mi_df = pd.read_csv(s7_path)
+            mi_df = pd.read_csv(s7_path, low_memory=False)
             mi_df['chr'] = mi_df['chr'].astype(str)
             mi_pc = mi_df[mi_df['chr'] == str(peak_chr)]
             if len(mi_pc) > 0:
@@ -1068,7 +1068,7 @@ def _make_descriptive_plots(
     # ── S7: per-chromosome MI LOD figures ─────────────────────────────────────
     if s7_path.exists():
         try:
-            _mi7 = pd.read_csv(s7_path)
+            _mi7 = pd.read_csv(s7_path, low_memory=False)
             _mi7['chr'] = _mi7['chr'].astype(str)
             _pk7 = None
             if (py_dir / 's4_peak_lod.csv').exists():
@@ -1205,12 +1205,6 @@ def _make_descriptive_plots(
             if len(chr_rows) > 0:
                 chr_rows['chrom'] = (chr_rows['section']
                                      .str.replace('S4_chr', '', regex=False))
-
-                def _chr_sort_key(c: str) -> int:
-                    try:
-                        return int(c)
-                    except ValueError:
-                        return 100
 
                 chr_rows = chr_rows.sort_values(
                     'chrom', key=lambda s: s.map(_chr_sort_key))
