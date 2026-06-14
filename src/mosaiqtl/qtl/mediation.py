@@ -10,10 +10,12 @@ lod_drop = lod_base − lod_mediated
   < 0  amplification (shared upstream regulator)
 """
 
+import gc
 import time
 import numpy as np
 import pandas as pd
 import logging
+from pathlib import Path
 from scipy import stats as sp_stats
 from ..utils import build_z_matrix
 
@@ -582,3 +584,90 @@ def fixef_mediation_scan(outcome, mediator, genomecache,
         rows.append(df)
 
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+
+def mediation_scan_multi_outcome(
+    pairs_by_outcome: 'dict[str, list[tuple[str, str]]]',
+    expr_cache: 'dict[str, np.ndarray]',
+    genomecache,
+    covariates: 'np.ndarray | None' = None,
+    kinship_decomp: 'dict | None' = None,
+    sample_ids: 'list[str] | None' = None,
+    lod_base_min: float = 1.5,
+    lod_drop_min: float = 0.5,
+    output_path: 'Path | None' = None,
+) -> pd.DataFrame:
+    """mediation scan over all outcome genes, streaming to disk.
+
+    iterates outcomes from pairs_by_outcome, calls mediation_scan_qr_batch
+    for each, applies lod_base and lod_drop filters, and writes filtered rows
+    immediately — peak memory is one outcome's chromosome worth of loci.
+
+    parameters
+    ----------
+    pairs_by_outcome : dict {outcome_id: [(mediator_id, chr), ...]}
+        all mediators for one outcome share the same chromosome.
+        build with select_cis_mediation_pairs then group by outcome.
+    expr_cache       : dict {gene_id: np.ndarray (n,)}  outcome and mediator vectors
+    genomecache      : GenomeCache
+    covariates       : np.ndarray (n, p) or None
+    kinship_decomp   : dict or None
+    sample_ids       : list[str] or None  genotype-level strain IDs
+    lod_base_min     : float  minimum base LOD to retain (default 1.5)
+    lod_drop_min     : float  minimum LOD drop to retain (default 0.5)
+    output_path      : Path or None  stream CSV here; None accumulates in RAM
+
+    returns
+    -------
+    pd.DataFrame  columns: gene, mediator, chr, locus, pos_mb, lod_base, lod_mediated
+    """
+    _COLS = ['gene', 'mediator', 'chr', 'locus', 'pos_mb', 'lod_base', 'lod_mediated']
+    _first = True
+    _buf: 'list[pd.DataFrame]' = []
+    _n = len(pairs_by_outcome)
+    for _i, (outcome_id, med_list) in enumerate(pairs_by_outcome.items()):
+        if outcome_id not in expr_cache:
+            continue
+        ch = med_list[0][1]
+        med_vecs = {
+            mid: expr_cache[mid] for mid, _ in med_list if mid in expr_cache
+        }
+        if not med_vecs:
+            continue
+        logger.debug(
+            'mediation_scan_multi_outcome: [%d/%d] %s → %d mediator(s)',
+            _i + 1, _n, outcome_id, len(med_vecs),
+        )
+        try:
+            _df = mediation_scan_qr_batch(
+                expr_cache[outcome_id], med_vecs, genomecache,
+                covariates=covariates,
+                kinship_decomp=kinship_decomp,
+                sample_ids=sample_ids,
+                outcome_id=outcome_id,
+                scan_window='cis', gene_chr=ch,
+            )
+            if not _df.empty:
+                _df = _df.rename(columns={
+                    'outcome_id': 'gene', 'mediator_id': 'mediator'})
+                _df = _df[
+                    (_df['lod_base'] >= lod_base_min) &
+                    (_df['lod_base'] - _df['lod_mediated'] >= lod_drop_min)
+                ][_COLS]
+                if not _df.empty:
+                    if output_path is not None:
+                        _df.to_csv(
+                            output_path, mode='a', header=_first, index=False)
+                        _first = False
+                    else:
+                        _buf.append(_df.copy())
+            del _df
+        except Exception as exc:
+            logger.warning(
+                'mediation_scan_multi_outcome: %s failed — %s', outcome_id, exc)
+        del med_vecs
+    gc.collect()
+    if output_path is not None:
+        return (pd.read_csv(output_path)
+                if output_path.exists() and not _first else pd.DataFrame())
+    return pd.concat(_buf, ignore_index=True) if _buf else pd.DataFrame()
