@@ -570,15 +570,20 @@ def _make_descriptive_plots(
         except Exception as exc:
             log.warning('  s4_lod.csv read failed: %s', exc)
 
-    # ── S4: per-chromosome threshold lookup ──────────────────────────────────
+    # ── threshold lookup (genome-wide scalar from s5_threshold.csv) ──────────
     _thr_by_chr: 'dict[str, float | None]' = {}
     _s4_thr_path = py_dir / 's5_threshold.csv'
     if _s4_thr_path.exists():
         try:
             _td0 = pd.read_csv(_s4_thr_path)
             _td0['chr'] = _td0['chr'].astype(str)
-            for _tc, _tg in _td0.groupby('chr'):
-                _thr_by_chr[str(_tc)] = float(_tg['threshold'].iloc[0])
+            if 'genome_wide' in _td0['chr'].values:
+                _gw_thr = float(_td0.loc[_td0['chr'] == 'genome_wide', 'threshold'].iloc[0])
+                for _tc in chrs_to_scan:
+                    _thr_by_chr[str(_tc)] = _gw_thr
+            else:
+                for _tc, _tg in _td0.groupby('chr'):
+                    _thr_by_chr[str(_tc)] = float(_tg['threshold'].iloc[0])
         except Exception:
             pass
 
@@ -2043,9 +2048,11 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     df = _scan_to_df(scan, gene_name)
                     all_lod_rows.append(df)
 
-                    # collect peak-locus betas for allele effects comparison
+                    # collect peak-locus betas and h2 for allele effects + threshold gene selection
                     if hasattr(scan, 'betas') and scan.betas is not None:
                         peak_idx = int(np.argmax(scan.lod))
+                        _h2_val  = (list(scan.h2_null.values())[0]
+                                    if scan.h2_null else float('nan'))
                         eff: dict = {
                             'gene':        gene_name,
                             'gene_id':     gene_id,
@@ -2053,6 +2060,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             'peak_locus':  str(scan.locus_ids[peak_idx]),
                             'peak_mb':     float(scan.positions[peak_idx]),
                             'peak_lod':    float(scan.lod[peak_idx]),
+                            'h2':          float(_h2_val),
                         }
                         for fi, fname in enumerate(cache.founders):
                             eff[f'beta_{fname}'] = float(scan.betas[peak_idx, fi])
@@ -2195,88 +2203,95 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     perm_n_s5: int = 0
 
     # ─────────────────────────────────────────────────────────────────────────
-    # S5 — permutation threshold: one per chromosome, top-LOD gene per chr
-    # Matches miQTL: descending-LOD order, first valid gene, no focal gene bias.
-    # Piezo1 is reserved for additional plots only (via PRIORITY_GENE, never permutation).
+    # S5 — genome-wide permutation threshold (Churchill & Doerge 1994)
+    # Representative gene: median-h² gene across all scanned genes.
+    # Rationale: fix_h2=True makes the null max-LOD distribution approximately
+    # gene-independent given h²; median-h² gives a threshold accurate on average
+    # across genes rather than calibrated only for the extreme (max-LOD) gene.
+    # A single genome-wide max-LOD vector (all chromosomes, one permuted phenotype)
+    # → one GEV threshold applied uniformly across all chromosomes.
     # ─────────────────────────────────────────────────────────────────────────
     sec = 5
     r_perm_lod_path = r_data / f'perm_max_lods_chr{peak_chr}.csv'
     if sec in sections:
-        log.info('\nS5: permutation thresholds (all chromosomes, top-LOD gene per chr)...')
+        log.info('\nS5: genome-wide permutation threshold (1000 perms, median-h² gene)...')
         if not _checkpoint(py_dir, str(sec), force):
             _rss_s5 = _get_rss_mb()
             tracemalloc.start()
             _t_s5 = time.perf_counter()
-            if not peak_lod_path.exists():
-                log.info('  %s s4_peak_lod.csv not found — run S4 first', SKIP)
+            eff_path_s5 = py_dir / 's4_allele_effects.csv'
+            if not eff_path_s5.exists():
+                log.info('  %s s4_allele_effects.csv not found — run S4 first', SKIP)
                 results['S5_perm_threshold'] = None
             else:
-                peak_py_s5 = pd.read_csv(peak_lod_path)
-                h5_path    = data_dir / 'counts_lognorm.h5'
-                chr_null_lods_s5 = {}
-                thr_rows_s5: list[dict] = []
-                n_genes_s5_total = 0
+                eff_s5   = pd.read_csv(eff_path_s5, usecols=['gene', 'gene_id', 'chr', 'h2'])
+                h5_path  = data_dir / 'counts_lognorm.h5'
 
-                for _ch in chrs_to_scan:
-                    _sub = peak_py_s5[peak_py_s5['chr'].astype(str) == str(_ch)]
-                    if len(_sub) == 0:
-                        log.info('  chr%s: no genes in s4_peak_lod — skipping', _ch)
-                        continue
-                    # top-LOD gene (miQTL native: descending LOD, no focal gene bias)
-                    _perm_gene = _sub.loc[_sub['peak_lod'].idxmax(), 'gene']
-                    _perm_id   = gene_name_to_id.get(_perm_gene, _perm_gene)
-                    log.info('  chr%s  perm gene: %s', _ch, _perm_gene)
+                # pick the gene whose h² is closest to the population median
+                _h2_valid = eff_s5['h2'].dropna()
+                _h2_med   = float(_h2_valid.median())
+                _med_row  = eff_s5.iloc[(_h2_valid - _h2_med).abs().values.argmin()]
+                _perm_gene = str(_med_row['gene'])
+                _perm_id   = str(_med_row['gene_id']) if pd.notna(_med_row.get('gene_id')) \
+                             else gene_name_to_id.get(_perm_gene, _perm_gene)
+                log.info('  median h²=%.3f  representative gene: %s (h²=%.3f)',
+                         _h2_med, _perm_gene, float(_med_row['h2']))
 
-                    _cts, _lds, _sids = _load_expression(h5_path, [_perm_id])
-                    if _cts.shape[0] == 0:
-                        log.info('  chr%s  %s expression not found — skipping', _ch, _perm_id)
-                        continue
-
+                _cts, _lds, _sids = _load_expression(h5_path, [_perm_id])
+                if _cts.shape[0] == 0:
+                    log.info('  %s expression for %s not found', SKIP, _perm_id)
+                    results['S5_perm_threshold'] = None
+                else:
                     _gids = [meta_geno_map.get(s, s) for s in _sids]
                     _y    = _cts[0].astype(float)
-                    _null = generate_null_outcomes(_y, n_perms=250, seed=1)
-                    _ch_max, _ch_nulls = run_threshold_scans(
+
+                    # genome-wide scan: pass full kinship_decomp so max is taken
+                    # across ALL chromosomes per permutation replicate
+                    _null = generate_null_outcomes(_y, n_perms=1000, seed=1)
+                    _gw_max, _chr_nulls = run_threshold_scans(
                         _null, cache,
                         phenotype=_y,
                         covariates=None,
-                        kinship_decomp={_ch: kinship_decomp[_ch]},
-                        chrom=_ch,
+                        kinship_decomp=kinship_decomp,
+                        chrom=None,
                         sample_ids=_gids,
                     )
-                    chr_null_lods_s5[_ch] = _ch_nulls.get(_ch, _ch_max)
-                    _ch_thr, _ = get_gev_thresholds(_ch_max, percentile=0.95)
-                    thr_rows_s5.append({
-                        'chr': _ch, 'threshold': _ch_thr,
-                        'perm_gene': _perm_gene, 'n_perms': 250,
-                    })
-                    log.info('  chr%s  GEV threshold=%.3f', _ch, _ch_thr)
-                    n_genes_s5_total += len(_sub)
+                    chr_null_lods_s5 = _chr_nulls
+                    perm_max_lods_s5 = _gw_max
+                    perm_n_s5        = int(np.isfinite(_gw_max).sum())
 
-                    # save per-chromosome null (all chrs — used by checkpoint reload)
-                    _ch_null_path = py_dir / f's5_perm_max_lods_chr{_ch}.csv'
-                    pd.DataFrame({'max_lod': _ch_nulls.get(_ch, _ch_max)}).to_csv(
-                        _ch_null_path, index=False)
-                    # also save peak_chr null as the canonical file for R comparison
-                    if str(_ch) == str(peak_chr):
-                        perm_max_lods_s5 = _ch_max
-                        perm_n_s5 = int(np.isfinite(_ch_max).sum())
-                        pd.DataFrame({'max_lod': _ch_max}).to_csv(
-                            py_dir / 's5_perm_max_lods.csv', index=False)
-                        if r_perm_lod_path.exists():
-                            r_max_lods = pd.read_csv(r_perm_lod_path)['max_lod'].values
-                            r_thr, _ = get_gev_thresholds(r_max_lods, percentile=0.95)
-                            delta = abs(_ch_thr - r_thr)
-                            log.info('  vs R chr%s: R GEV=%.3f  delta=%.3f',
-                                     _ch, r_thr, delta)
-                            _check('GEV threshold delta', delta, 0.5, '<')
+                    _gw_thr, _ = get_gev_thresholds(_gw_max, percentile=0.95)
+                    log.info('  genome-wide GEV threshold=%.3f  (n_perms=%d)',
+                             _gw_thr, perm_n_s5)
 
-                if thr_rows_s5:
-                    pd.DataFrame(thr_rows_s5).to_csv(
-                        py_dir / 's5_threshold.csv', index=False)
-                    log.info('  s5_threshold.csv: %d chromosomes', len(thr_rows_s5))
+                    # save genome-wide null distribution (single file)
+                    pd.DataFrame({'max_lod': _gw_max}).to_csv(
+                        py_dir / 's5_perm_max_lods.csv', index=False)
+
+                    # save per-chromosome nulls for distribution plots
+                    for _c5, _c5_null in _chr_nulls.items():
+                        pd.DataFrame({'max_lod': _c5_null}).to_csv(
+                            py_dir / f's5_perm_max_lods_chr{_c5}.csv', index=False)
+
+                    # single-row threshold file with genome_wide sentinel
+                    pd.DataFrame([{
+                        'chr':       'genome_wide',
+                        'threshold': _gw_thr,
+                        'perm_gene': _perm_gene,
+                        'h2_median': _h2_med,
+                        'n_perms':   perm_n_s5,
+                    }]).to_csv(py_dir / 's5_threshold.csv', index=False)
+
+                    # compare to R peak-chr permutation (approximate — different scope)
+                    if r_perm_lod_path.exists():
+                        r_max_lods = pd.read_csv(r_perm_lod_path)['max_lod'].values
+                        r_thr, _   = get_gev_thresholds(r_max_lods, percentile=0.95)
+                        log.info('  R chr%s GEV=%.3f  delta vs genome-wide=%.3f'
+                                 '  (expected: gw > per-chr)', peak_chr, r_thr,
+                                 _gw_thr - r_thr)
+
                     results['S5_perm_threshold'] = True
-                else:
-                    results['S5_perm_threshold'] = None
+                    n_genes_s5_total = len(eff_s5)
 
             _, _s5_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
@@ -2285,7 +2300,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                           max(0.0, _get_rss_mb() - _rss_s5))
             _mark_done(py_dir, str(sec))
 
-    # ── eGene calling (after S5 — per-chromosome thresholds from s5_threshold.csv)
+    # ── eGene calling (after S5 — genome-wide threshold from s5_threshold.csv)
     if peak_lod_path.exists():
         log.info('\n── eGene calling + GxE/PxG ──────────────────────────────────────')
         peak_py_loaded = pd.read_csv(peak_lod_path)
@@ -2294,8 +2309,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         if py_thr_path.exists():
             _thr_df  = pd.read_csv(py_thr_path)
             _thr_map = {str(r['chr']): float(r['threshold']) for _, r in _thr_df.iterrows()}
-            thr = _thr_map.get(str(peak_chr))  # scalar for logging / plots
-            if _thr_map:
+            # genome-wide sentinel: one threshold applied to all chromosomes
+            _gw_thr_val = _thr_map.get('genome_wide')
+            thr = _gw_thr_val if _gw_thr_val is not None else _thr_map.get(str(peak_chr))
+            if thr is not None:
                 eff_path = py_dir / 's4_allele_effects.csv'
                 eff_tmp: 'pd.DataFrame | None' = None
                 if eff_path.exists():
@@ -2303,25 +2320,17 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         eff_path,
                         usecols=['gene', 'gene_id', 'chr', 'peak_locus', 'peak_mb', 'peak_lod'])
                 _frames: 'list[pd.DataFrame]' = []
-                _no_thr = 0
                 for _ch, _ch_df in peak_py_loaded.groupby(
                         peak_py_loaded['chr'].astype(str)):
-                    _ch_thr = _thr_map.get(str(_ch))
-                    if _ch_thr is None:
-                        _no_thr += len(_ch_df)
-                        continue
                     _ch_eff = (eff_tmp[eff_tmp['chr'].astype(str) == str(_ch)]
                                if eff_tmp is not None else None)
                     # R uses strict `lod > thr`; pre-filter to match before call_egenes (>=)
-                    _ch_df_strict = _ch_df[_ch_df['peak_lod'] > _ch_thr]
-                    _frames.append(call_egenes(_ch_df_strict, _ch_thr, effects_df=_ch_eff))
-                if _no_thr:
-                    log.warning('[eGenes] %d genes on chromosomes with no threshold',
-                                _no_thr)
+                    _ch_df_strict = _ch_df[_ch_df['peak_lod'] > thr]
+                    _frames.append(call_egenes(_ch_df_strict, thr, effects_df=_ch_eff))
                 egenes_df = (pd.concat(_frames, ignore_index=True)
                              if _frames else pd.DataFrame())
-                log.info('[eGenes] per-chr thresholds → %d / %d genes called',
-                         len(egenes_df), len(peak_py_loaded))
+                log.info('[eGenes] genome-wide threshold=%.3f → %d / %d genes called',
+                         thr, len(egenes_df), len(peak_py_loaded))
 
             # ── reload perm nulls from CSV when running from checkpoint ─────────
             if perm_max_lods_s5 is None:
