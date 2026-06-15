@@ -3050,6 +3050,8 @@ def main() -> None:
                          f'(default: {GENOMECACHE})')
     ap.add_argument('--sections', default=None,
                     help='comma-separated section numbers (default: all)')
+    ap.add_argument('--plots-only', action='store_true',
+                    help='skip all scans, regenerate descriptive plots from existing py_data/')
     ap.add_argument('--force',    action='store_true',
                     help='ignore checkpoints and rerun all sections')
     ap.add_argument('--n_genes',  type=int, default=None,
@@ -3077,8 +3079,11 @@ def main() -> None:
         log.info('done — run validate_gastroc.py without --build-cache to validate')
         sys.exit(0)
 
-    sections = (set(int(s.strip()) for s in args.sections.split(','))
-                if args.sections else set(range(1, 12)))
+    if args.plots_only:
+        sections: set[int] = set()
+    else:
+        sections = (set(int(s.strip()) for s in args.sections.split(','))
+                    if args.sections else set(range(1, 12)))
 
     # parse scan_type (handle "L:2.5" format)
     scan_type_raw = args.scan_type.upper()
