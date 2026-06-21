@@ -116,16 +116,24 @@ class GenomeCache:
         d = self._data[chrom]
         lids  = d['locus_ids']
         pos   = d['positions']
-        probs = np.asarray(d['probs'])
+        probs = np.asarray(d['probs'])   # h5py Dataset → numpy (one chr, then released)
 
         if len(pos) > 1 and not np.all(pos[:-1] <= pos[1:]):
             ord_  = np.argsort(pos)
             lids  = lids[ord_]
             pos   = pos[ord_]
             probs = probs[ord_]
-            d['locus_ids'] = lids
-            d['positions'] = pos
-            d['probs']     = probs
+            # cache sorted lids/pos so repeated callers see consistent order;
+            # do NOT overwrite d['probs'] with the numpy array — keeping the
+            # h5py Dataset ref means each call loads from disk into a temporary
+            # buffer that is freed after this function returns, so only one
+            # chromosome's probs live in RAM at a time regardless of how many
+            # chromosomes have been accessed (e.g. during LOCO kinship).
+            d['locus_ids']  = lids
+            d['positions']  = pos
+            d['_sort_ord']  = ord_     # apply on subsequent calls instead
+        elif '_sort_ord' in d:
+            probs = probs[d['_sort_ord']]
 
         return lids, pos, probs
 

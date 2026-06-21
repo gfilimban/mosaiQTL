@@ -1467,10 +1467,10 @@ def locus_panel(
     plt.Figure
     """
     if peak_betas is not None:
-        fig = plt.figure(figsize=(10, 5), dpi=300)
-        gs = gridspec.GridSpec(2, 1, height_ratios=[2, 1], hspace=0.25)
-        ax_top = fig.add_subplot(gs[0])
-        ax_bot = fig.add_subplot(gs[1])
+        fig, (ax_top, ax_bot) = plt.subplots(
+            2, 1, figsize=(10, 5), dpi=300,
+            gridspec_kw={'height_ratios': [2, 1]},
+        )
 
         _effect_bars(peak_betas, founders, ax=ax_top)
         ax_top.set_xlabel('')
@@ -1580,7 +1580,7 @@ def lod_panel_grid(
         axes[j // n_cols, j % n_cols].set_visible(False)
 
     fig.suptitle('LOD profiles — top gene per chromosome', fontsize=9, y=1.01)
-    fig.tight_layout()
+    fig.tight_layout(h_pad=1.5)
     return fig
 
 
@@ -1808,7 +1808,7 @@ def genome_summary(
         2, 1,
         figsize=(14, 5),
         dpi=300,
-        gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.4},
+        gridspec_kw={'height_ratios': [3, 1]},
     )
 
     egene_color = FOUNDER_COLORS['PWKJ']
@@ -1874,7 +1874,7 @@ def genome_summary(
     ax_bar.set_ylim(bottom=0)
     sns.despine(ax=ax_bar)
 
-    fig.tight_layout()
+    fig.tight_layout(h_pad=2.0)
     return fig
 
 

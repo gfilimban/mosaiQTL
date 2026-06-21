@@ -297,6 +297,17 @@ all_chrs     <- names(kinship_loco)
 cat(sprintf('[load] %d chromosomes  kinship %d×%d\n',
             length(all_chrs), nrow(kinship_loco[[1]]), ncol(kinship_loco[[1]])))
 
+# local runs default to chr 19 (one chr, fast); HPC uses the per-chr arg
+local_default_chr <- '19'
+target_chrs <- if (hpc_mode) chr_arg else local_default_chr
+cat(sprintf('[target] scan chromosomes: %s\n', paste(target_chrs, collapse = ',')))
+
+# Sort pheno_df rows by genotype so make.processed.data's include.subjects order
+# (unique first-appearance in data) equals alphabetical, matching model.matrix Z columns.
+# Without this, Z @ K @ Z^T scrambles the kinship assignment when pheno.id != geno.id.
+pheno_df <- pheno_df[order(pheno_df$genotype), ]
+cat('[fix] pheno_df sorted by genotype; first-appearance order now alphabetical\n')
+
 # ─────────────────────────────────────────────────────────────────────────────
 # S1 — cache info
 # ─────────────────────────────────────────────────────────────────────────────
@@ -476,7 +487,7 @@ peak_lod_df       <- NULL
 chr8_scan_results <- list()
 
 if (run(4)) {
-  scan_chrs <- if (hpc_mode) chr_arg else all_chrs
+  scan_chrs <- target_chrs
   cat(sprintf('\n[S4] LOCO scan  %d genes × chr %s%s\n',
               n_genes,
               paste(scan_chrs, collapse = ','),
@@ -679,9 +690,9 @@ if (run(4)) {
   # ── plots: sequential mode only (HPC jobs write lod.csv then exit here) ──────
   if (!hpc_mode) {
     top_gene <- if (focal_gene %in% peak_lod_df$gene) focal_gene else peak_lod_df$gene[1]
-    cat(sprintf('\n[S4] building genome-wide scan object for %s\n', top_gene))
+    cat(sprintf('\n[S4] building scan object for %s (chr %s)\n', top_gene, paste(scan_chrs, collapse=',')))
     gene_chr_scans <- list()
-    for (ch in all_chrs) {
+    for (ch in scan_chrs) {
       f_top  <- as.formula(paste(top_gene, '~ sex + dataset'))
       gene_chr_scans[[ch]] <- scan.h2lmm(
         genomecache      = genomecache,
@@ -790,7 +801,7 @@ if (run(5)) {
   cat(sprintf('\n[S5] permutation thresholds — all chromosomes (top gene per chr)\n'))
 
   thr_rows <- list()
-  for (ch in all_chrs) {
+  for (ch in target_chrs) {
     # try genes in descending LOD order until one produces a valid perm run
     sub_ch <- peak_lod_df[as.character(peak_lod_df$chr) == ch, ]
     if (nrow(sub_ch) == 0L) next
@@ -1177,7 +1188,7 @@ if (run(11)) {
   cat('\n[S11] instability scan — all genes, cis\n')
   inst_rows <- list()
 
-  for (ch in all_chrs) {
+  for (ch in target_chrs) {
     chr_genes_11 <- switch(scan_type,
       'G' = gene_cols,
       'C' = , 'L' = if (!is.null(gene_chr_map))
