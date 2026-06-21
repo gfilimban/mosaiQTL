@@ -344,14 +344,15 @@ if (run(1)) {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# S2 — haplotype probabilities (5 evenly spaced loci on chr 8)
+# S2 — haplotype probabilities (5 evenly spaced loci on target chromosome)
 # ─────────────────────────────────────────────────────────────────────────────
 if (run(2)) {
-  cat('\n[S2] haplotype probs  chr8 (5 loci)\n')
+  s2_chr <- target_chrs[1]
+  cat(sprintf('\n[S2] haplotype probs  chr%s (5 loci)\n', s2_chr))
   gc(reset = TRUE, verbose = FALSE)
   t_s2 <- system.time({
     rd    <- DiploprobReader$new(genomecache_orig)
-    loci8 <- rd$getLoci('8')
+    loci8 <- rd$getLoci(s2_chr)
     loci8 <- loci8[round(seq(1, length(loci8), length.out = 5))]
 
     hap_rows <- do.call(rbind, lapply(loci8, function(loc) {
@@ -435,9 +436,10 @@ if (run(3)) {
     plot_kinship_chr(K_c, k_chr, title,
                      sprintf('kinship_chr%s_contribution.png', k_chr))
   }
-  # ── chr8 full K matrix elements (for Python element-level scatter) ──────────
-  if ('8' %in% names(kinship_loco)) {
-    K8  <- kinship_loco[['8']]
+  # ── target-chr full K matrix elements (for Python element-level scatter) ────
+  k_elem_chr <- target_chrs[1]
+  if (k_elem_chr %in% names(kinship_loco)) {
+    K8  <- kinship_loco[[k_elem_chr]]
     ord <- canonical_order(rownames(K8))
     K8  <- K8[ord, ord]
     strain_names <- rownames(K8)
@@ -448,9 +450,10 @@ if (run(3)) {
       k_value  = as.vector(K8),
       stringsAsFactors = FALSE
     )
-    write.csv(elem_df, file.path(out_dir, 'kinship_chr8_elements.csv'), row.names = FALSE)
-    cat(sprintf('  kinship_chr8_elements.csv written (%d×%d = %d elements)\n',
-                n_str, n_str, nrow(elem_df)))
+    elem_fname <- sprintf('kinship_chr%s_elements.csv', k_elem_chr)
+    write.csv(elem_df, file.path(out_dir, elem_fname), row.names = FALSE)
+    cat(sprintf('  %s written (%d×%d = %d elements)\n',
+                elem_fname, n_str, n_str, nrow(elem_df)))
   }
 
   cat(sprintf('  %d chromosomes summarised\n', nrow(k_summary)))
@@ -479,12 +482,13 @@ if (run(3)) {
 # S4 — LMM scan (ROP, LOCO) — full genome, all genes, timed per-chr + genome-wide
 # ─────────────────────────────────────────────────────────────────────────────
 lod_genome_path    <- file.path(out_dir, 'lod_genome.csv')
-effects_path       <- file.path(out_dir, 'allele_effects_chr8.csv')
+effects_path       <- file.path(out_dir, sprintf('allele_effects_chr%s.csv',
+                                                  paste(target_chrs, collapse = '-')))
 timing_chr_path    <- file.path(out_dir, 'timing_chr.csv')
 timing_genome_path <- file.path(out_dir, 'timing_genome.csv')
 
-peak_lod_df       <- NULL
-chr8_scan_results <- list()
+peak_lod_df        <- NULL
+chr_scan_results   <- list()
 
 if (run(4)) {
   scan_chrs <- target_chrs
@@ -503,7 +507,7 @@ if (run(4)) {
   chr_t <- system.time({
     for (ch in scan_chrs) {
       K_ch    <- kinship_loco[[ch]]
-      on_chr8 <- ch == '8'
+      collect_effects <- TRUE   # collect allele effects for every scanned chromosome
       rd_ch_pre  <- DiploprobReader$new(genomecache)
       loci_ch    <- rd_ch_pre$getLoci(ch)
       n_loci_ch  <- length(loci_ch)
@@ -561,12 +565,12 @@ if (run(4)) {
           formula               = f,
           K                     = K_ch,
           use.multi.impute      = FALSE,
-          return.allele.effects = on_chr8,
+          return.allele.effects = collect_effects,
           chr                   = ch,
           just.these.loci       = just_loci
         )
 
-        if (on_chr8) chr8_scan_results[[gene]] <- res
+        if (collect_effects) chr_scan_results[[gene]] <- res
 
         lod_vec <- res$LOD
         all_lod_rows[[length(all_lod_rows) + 1]] <- data.frame(
@@ -578,7 +582,7 @@ if (run(4)) {
           stringsAsFactors = FALSE
         )
 
-        if (on_chr8 && !is.null(res$allele.effects)) {
+        if (collect_effects && !is.null(res$allele.effects)) {
           eff_mat  <- res$allele.effects          # [8 founders × n_loci]
           founders <- rownames(eff_mat)
           loci_ae  <- colnames(eff_mat)
@@ -741,12 +745,13 @@ if (run(4)) {
     dev.off()
 
     # allele effects plot (chr 8 scan)
-    if (!is.null(chr8_scan_results[[top_gene]]) &&
-        !is.null(chr8_scan_results[[top_gene]]$allele.effects)) {
+    if (!is.null(chr_scan_results[[top_gene]]) &&
+        !is.null(chr_scan_results[[top_gene]]$allele.effects)) {
       png(file.path(plot_dir, sprintf('allele_effects_%s.png', top_gene)),
           width = 3000L, height = 1200L, res = 300L)
-      allele.plotter.whole(scan.object = chr8_scan_results[[top_gene]],
-                           main        = sprintf('%s — chr 8', top_gene))
+      allele.plotter.whole(scan.object = chr_scan_results[[top_gene]],
+                           main        = sprintf('%s — chr %s', top_gene,
+                                                 paste(scan_chrs, collapse = ',')))
       dev.off()
     }
 

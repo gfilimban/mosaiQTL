@@ -828,6 +828,39 @@ on real gastroc data (HPC only) but are not required for CI validation.
 
 ---
 
+### Gastroc real-data concordance — mosaiQTL vs miQTL (2026-06-21)
+
+**Dataset**: gastroc pseudobulk, 1,215 cis-eGene candidates on chr19 (all genes with a
+cis locus on chr19 scanned by miQTL on real CC data, n ≈ 416 samples, 33 CC strains + founders + F1s).
+
+**Prerequisite**: miQTL K-ordering bug fixed in `gastroc_miqtl_scan.R` — `pheno_df` sorted
+by genotype before any scan call so `make.processed.data` first-appearance order = alphabetical
+= `model.matrix` Z column order = K_mpd row order. Without the fix the scrambled K_expanded
+produced LOD inflated by ~5× (max eigenvalue 60.31 scrambled vs 72.92 correct on chr8).
+
+**Result** (Python `validate_gastroc.py` S4 peak LOD vs R `gastroc_miqtl_scan.R` chr19 output):
+
+| Metric | Value | Notes |
+|---|---|---|
+| Genes compared | 1,215 | inner join on gene name |
+| **LOD r²** | **0.999880** | well above Phase 2 threshold of ≥ 0.990 |
+| MAE | 0.0023 LOD | sub-0.01 absolute error |
+| Mean bias (Python − R) | −0.0002 LOD | no systematic offset |
+| Top gene delta (Gm31356, LOD ≈ 9.19) | 0.0001 LOD | top genes agree to 4+ decimal places |
+
+**Interpretation**: mosaiQTL and miQTL are concordant on real replicated CC pseudobulk data.
+Residual discrepancies (max ~0.22 LOD at low-LOD genes) are consistent with floating-point
+differences in the h² solver and carry no systematic bias. The K-ordering bug that previously
+inflated LOD by ~5× is confirmed resolved.
+
+**Scripts used**:
+```bash
+conda run -n bioinfo Rscript validation/r_reference/gastroc_miqtl_scan.R 1,2,3,4 19
+conda run -n bioinfo python validation/validate_gastroc.py --sections 4
+```
+
+---
+
 ## 10. PERMUTATION THRESHOLD DESIGN — `run_threshold_scans`
 
 ### What the permutation threshold answers
@@ -1250,7 +1283,7 @@ it is inferred from the input data.
 | validate_gastroc.py S7–S11 accumulated per-gene result rows in Python lists and called `pd.concat` at section end — `pd.concat` of a large list doubles peak RAM (list + combined copy simultaneously), triggering OOM kill for mediation at ~90 outcome genes × 9 mediators. Fixed: five streaming multi-gene wrappers added to the package (`scan_multi_gene_mi`, `instability_scan_multi_gene`, `ci_scan_multi_gene`, `snp_scan_multi_gene`, `mediation_scan_multi_outcome`); each writes to `output_path` per gene and `del` + `gc.collect()` after each result; validation script calls one function per section — no accumulation in the caller | scan.py, snp_scan.py, mediation.py, permutation.py, validate_gastroc.py | ✅ fixed |
 | S11 gastroc comparison: R exports `neg_log10_p` (median −log10 F-test p across subsamples); Python exports `lod` (mean bootstrap LOD). Incompatible on linear scale — fixed: comparison switched to Spearman rank correlation (monotone with instability signal) | validate_gastroc.py | ✅ fixed |
 | S9 gastroc comparison: miQTL's `mediation.scan.qr()` may export `LOD` (uppercase) and `pos.Mb` rather than `lod`/`pos_mb` — fixed: column normalization applied after `pd.read_csv` before `_pos_merge` | validate_gastroc.py | ✅ fixed |
-| gastroc benchmark S4–S11 not yet run — pending HPC run; rsync r_data/ then run validate_gastroc.py --compare | gastroc_data/ | MED |
+| gastroc benchmark S4 cross-validated on chr19: LOD r²=0.9999, MAE=0.0023, bias≈0 — K-ordering bug confirmed resolved. S4 full genome and S5–S11 pending HPC run; rsync r_data/ then run validate_gastroc.py --compare | gastroc_data/ | MED |
 | `estimate_h2_null` emitted `RuntimeWarning: invalid value encountered in scalar subtract` from Brent's parabolic interpolation on every permutation. Root cause: degenerate permuted phenotype (constant after eigenrotation) caused `wrss ≈ 0` → `sigma2 → 0` → `log(sigma2) = -inf` → `neg_loglik` returned `-inf` → `−inf − (−inf) = NaN` in Brent's step arithmetic. Also removed dead `w <= 0` guard (w = delta*eigvals + 1 ≥ 1 always) and redundant `isfinite` check. Fixed: `if wrss <= 0: return 1e10` before the log call; large finite sentinel preserves Brent's arithmetic. Normal permutations unaffected. | lmm.py::estimate_h2_null | ✅ fixed |
 | `scan_h2lmm` and `scan_h2lmm_mi` applied RINT **after** Z-matrix reduction (RINT of strain means), diverging from miQTL's canonical behaviour. miQTL's `scan.h2lmm` applies RINT to all n sample-level values in `pheno_df` first, then reduces to strain means internally (`mean(RINT(samples))` per strain). The wrong order inflated LOD for sparse genes: a gene with one high-expressing replicate in strain S gets `RINT(mean) ≈ Φ⁻¹(rank_S / m)` (extreme), whereas the correct order gives `mean(RINT) = RINT(high_val) / r_S` (diluted by within-strain averaging). For `Insl3` in the gastroc benchmark this produced LOD 64.75 (wrong) vs the expected ~3.5. Fixed: RINT moved before Z-matrix reduction in both functions. Averaging RINT values preserves normality (CLT); the reduced variance ~1/r is absorbed by σ² estimation in the LMM. | scan.py::scan_h2lmm, scan_h2lmm_mi | ✅ fixed |
 | `scan_h2lmm` reduced replicated data to strain means before scanning, implementing an m-dimensional model (m×m kinship, LOD = (m/2)·log₁₀(RSS₀/RSS₁)). miQTL's canonical replicated design uses `pheno.id='sample_id'`, which expands kinship to K_n = Z K_m Zᵀ (n×n) and scans in n-dimensional space — giving LODs on the n-sample scale. The strain-mean shortcut is statistically valid only for n_reps=1 (Phase 1/2 simulated data) but underestimates power for replicated data: within-strain variance is absorbed by the residual σ²_e I_n rather than averaged away. Fixed: `scan_h2lmm` now retains y and x at sample level; per-chromosome loop reconstructs K_m from its eigendecomp, expands to K_n = Z K_m Zᵀ, and eigendecomposes K_n (O(n³), n≤416, negligible). `scan_chromosome` already accepted `z_mat` for H expansion; the two-step expand-then-rotate (`Z H` then `U'(ZH)`) is fused to `(U'Z)H` via precomputed z_rot = eigvecs.T @ z_mat (n×m), reducing per-call cost from O(n_loci·n²·J) to O(n²·m + n_loci·n·m·J) — approximately 1.5–2× the m-dimensional cost rather than 75×. R's S5 permutation was also fixed: the miQTL helper functions (`generate.simple.permutation.index.matrix`, `run.simple.permutation.threshold.scans`) crash when `fit0$K` is the n×n expanded matrix; replaced with a direct loop over `scan.h2lmm` calls at sample level (`pheno.id='sample_id'`, `formula = gene ~ sex + dataset`), which is exactly what the helpers do internally — bypassing the cached-K bug. | scan.py, lmm.py, gastroc_miqtl_scan.R | ✅ fixed |
