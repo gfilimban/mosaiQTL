@@ -482,6 +482,7 @@ if (run(3)) {
 # S4 — LMM scan (ROP, LOCO) — full genome, all genes, timed per-chr + genome-wide
 # ─────────────────────────────────────────────────────────────────────────────
 lod_genome_path    <- file.path(out_dir, 'lod_genome.csv')
+peak_lod_path      <- file.path(out_dir, 'peak_lod.csv')
 effects_path       <- file.path(out_dir, sprintf('allele_effects_chr%s.csv',
                                                   paste(target_chrs, collapse = '-')))
 timing_chr_path    <- file.path(out_dir, 'timing_chr.csv')
@@ -646,6 +647,7 @@ if (run(4)) {
   if (!hpc_mode) {
     # sequential: also write to top-level paths used by S5-S11
     write.csv(lod_df,     lod_genome_path, row.names = FALSE)
+    if (!is.null(peak_lod_df)) write.csv(peak_lod_df, peak_lod_path, row.names = FALSE)
     write.csv(effects_df, effects_path,    row.names = FALSE)
     write.csv(timing_row, timing_chr_path, row.names = FALSE)
     # genome-wide timing is identical to chr timing when sequential
@@ -683,6 +685,7 @@ if (run(4)) {
       sub[which.max(sub$lod), ]
     }))
     peak_lod_df <- peak_lod_df[order(-peak_lod_df$lod), ]
+    write.csv(peak_lod_df, file.path(s4_out_dir, 'peak_lod.csv'), row.names = FALSE)
   } else {
     peak_lod_df <- NULL
     cat('  [warn] no LOD rows — check cis filter\n')
@@ -1313,7 +1316,7 @@ write.csv(data.frame(
   n_egenes        = n_egene,
   n_eqtl          = n_egene,
   scan_type       = scan_type,
-  n_chrs          = length(scan_chrs),
+  n_chrs          = length(target_chrs),
   timestamp       = format(Sys.time(), '%Y-%m-%dT%H:%M:%S'),
   stringsAsFactors = FALSE
 ), file.path(out_dir, 'run_summary.csv'), row.names = FALSE)
