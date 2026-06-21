@@ -140,7 +140,6 @@ from mosaiqtl.qtl.mediation import (
     mediation_scan_multi_outcome,
 )
 from mosaiqtl.qtl.snp_scan import imputed_snp_scan_from_db, snp_scan_multi_gene
-from mosaiqtl.qtl.fdr import storey_qvalue
 from mosaiqtl.qtl.effects import qtl_gxe_lrt
 from mosaiqtl.io.covariates import encode_sex
 from mosaiqtl.pipeline import call_egenes
@@ -560,13 +559,44 @@ def _make_descriptive_plots(
             log.warning('  s3_kinship_heatmap: %s', exc)
 
     # ── S4: read lod_df once (reused for profile, Manhattan) ─────────────────
+    # s4_lod.csv is the full genome-wide (genes × loci) LOD table — at gastroc
+    # scale this is multi-GB / 100M+ rows. Loading it whole here would
+    # re-materialise the matrix MEM-05 forbids and was the source of a severe
+    # plotting-stage stall. Every consumer below only needs the LOD profile
+    # for a handful of named genes (top gene per chromosome + priority genes),
+    # so we determine that gene set first and stream-filter the CSV in
+    # chunks, keeping only matching rows.
     s4_lod_path = py_dir / 's4_lod.csv'
     s4_pk_path  = py_dir / 's4_peak_lod.csv'
+    s4_eff_path = py_dir / 's4_allele_effects.csv'
     _lod_df: 'pd.DataFrame | None' = None
-    if s4_lod_path.exists():
+    if s4_lod_path.exists() and s4_pk_path.exists():
         try:
-            _lod_df = pd.read_csv(s4_lod_path, low_memory=False)
+            _pk_for_filter = pd.read_csv(s4_pk_path)
+            _pk_for_filter['chr'] = _pk_for_filter['chr'].astype(str)
+            _needed_genes: set[str] = set(
+                _pk_for_filter.loc[_pk_for_filter.groupby('chr')['peak_lod'].idxmax(),
+                                   'gene'].astype(str))
+            _needed_genes.update(PRIORITY_GENE.values())
+            if s4_eff_path.exists():
+                _eff_for_filter = pd.read_csv(s4_eff_path, usecols=['chr', 'gene', 'peak_lod'])
+                _eff_for_filter['chr'] = _eff_for_filter['chr'].astype(str)
+                _needed_genes.update(
+                    _eff_for_filter.loc[_eff_for_filter.groupby('chr')['peak_lod'].idxmax(),
+                                        'gene'].astype(str))
+
+            _chunks: 'list[pd.DataFrame]' = []
+            for _chunk in pd.read_csv(s4_lod_path, low_memory=False, chunksize=2_000_000):
+                _hit = _chunk[_chunk['gene'].isin(_needed_genes)]
+                if len(_hit) > 0:
+                    _chunks.append(_hit.copy())
+            _lod_df = (pd.concat(_chunks, ignore_index=True)
+                       if _chunks else pd.DataFrame(columns=['gene', 'chr', 'locus', 'pos_mb', 'lod']))
             _lod_df['chr'] = _lod_df['chr'].astype(str)
+            del _chunks
+            gc.collect()
+            log.info('  s4_lod.csv filtered to %d genes  (%d rows)',
+                     len(_needed_genes), len(_lod_df))
         except Exception as exc:
             log.warning('  s4_lod.csv read failed: %s', exc)
 
@@ -629,7 +659,6 @@ def _make_descriptive_plots(
             log.warning('  s4_lod_profile: %s', exc)
 
     # ── S4: founder coef bar — top gene per chromosome ───────────────────────
-    s4_eff_path = py_dir / 's4_allele_effects.csv'
     if s4_eff_path.exists():
         try:
             eff_df    = pd.read_csv(s4_eff_path)
@@ -713,13 +742,17 @@ def _make_descriptive_plots(
             log.warning('  s4_grid: %s', exc)
 
     # ── S4: Manhattan — peak LOD per gene across all scanned chr ──────────────
+    # s4_peak_lod.csv already holds the genome-wide peak-per-gene reduction
+    # computed during the streaming S4 scan — read it directly rather than
+    # rederiving it from _lod_df, which (above) is now filtered to only the
+    # per-chromosome top genes and would silently drop every other gene.
     peak_lod_path = py_dir / 's4_peak_lod.csv'
-    if peak_lod_path.exists() and _lod_df is not None:
+    if peak_lod_path.exists():
         try:
             _pk2     = pd.read_csv(peak_lod_path)
-            idx_pk   = _lod_df.groupby('gene')['lod'].idxmax()
-            peak_pos = _lod_df.loc[idx_pk, ['gene', 'chr', 'pos_mb', 'lod']]
-            peak_pos = peak_pos.merge(_pk2[['gene']], on='gene')
+            _pk2['chr'] = _pk2['chr'].astype(str)
+            peak_pos = _pk2[['gene', 'chr', 'peak_mb', 'peak_lod']].rename(
+                columns={'peak_mb': 'pos_mb', 'peak_lod': 'lod'})
             chrs_sorted = sorted(peak_pos['chr'].unique(), key=_chr_sort_key)
             scans_dict  = {
                 ch: (peak_pos[peak_pos['chr'] == ch]['pos_mb'].values,
@@ -840,10 +873,6 @@ def _make_descriptive_plots(
                 'top_gene': (str(_pk6.loc[_pk6['peak_lod'].idxmax(), 'gene'])
                              if len(_pk6) > 0 else ''),
             }
-            if _sum6_path.exists():
-                _sum6 = pd.read_csv(_sum6_path)
-                if 'pi0' in _sum6.columns and len(_sum6) > 0:
-                    _scan_stats6['pi0'] = float(_sum6['pi0'].iloc[0])
             fig_gs = _viz_genome_summary(_pk6, _is_eg6, _thr6 or None,
                                          scan_stats=_scan_stats6)
             fig_gs.savefig(plt_dir / 's6_genome_summary.png', dpi=300,
@@ -1918,12 +1947,14 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                      scan_type, chrs_to_scan)
 
             h5_path = data_dir / 'counts_lognorm.h5'
-            all_lod_rows:    list[pd.DataFrame] = []
-            all_effect_rows: list[dict]          = []
+            all_effect_rows: list[dict] = []
+            _s4_lod_header_written = False
             _rss_s4 = _get_rss_mb()
             tracemalloc.start()
             t_scan = time.perf_counter()
             n_genes_total = 0
+            # truncate output file so we start fresh on re-runs within a forced section
+            py_lod_path.write_text('')
 
             for ch in chrs_to_scan:
                 # select genes for this chromosome
@@ -2046,7 +2077,11 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             window_mb=window_mb,
                         )
                     df = _scan_to_df(scan, gene_name)
-                    all_lod_rows.append(df)
+                    df.to_csv(py_lod_path,
+                              mode='a',
+                              header=not _s4_lod_header_written,
+                              index=False)
+                    _s4_lod_header_written = True
 
                     # collect peak-locus betas and h2 for allele effects + threshold gene selection
                     if hasattr(scan, 'betas') and scan.betas is not None:
@@ -2082,17 +2117,18 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 gc.collect()
 
             elapsed_s = time.perf_counter() - t_scan
-            if all_lod_rows:
-                log.info('  writing scan results ...')
-                lod_df = pd.concat(all_lod_rows, ignore_index=True)
-                lod_df.to_csv(py_lod_path, index=False)
+            _, _s4_peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            if _s4_lod_header_written:
                 genes_per_min = n_genes_total / elapsed_s * 60 if elapsed_s > 0 else 0
-                log.info('  scan complete: %d genes  %d rows  %.1fs  %.1f genes/min',
-                         n_genes_total, len(lod_df), elapsed_s, genes_per_min)
-                _, _s4_peak = tracemalloc.get_traced_memory()
-                tracemalloc.stop()
+                log.info('  scan complete: %d genes  %.1fs  %.1f genes/min',
+                         n_genes_total, elapsed_s, genes_per_min)
                 _record_stats('S4', 'lmm_scan', n_genes_total, elapsed_s,
                               _s4_peak / 1e6, max(0.0, _get_rss_mb() - _rss_s4))
+                # read back only the columns needed for peak reduction — avoids
+                # holding the full (genes × loci) LOD matrix in RAM twice
+                log.info('  computing peak LOD per gene ...')
+                lod_df = pd.read_csv(py_lod_path, usecols=['gene', 'chr', 'locus', 'pos_mb', 'lod'])
             else:
                 log.warning('  no LOD rows produced — check chr/gene_info alignment')
                 lod_df = pd.DataFrame(columns=['gene', 'chr', 'locus', 'pos_mb', 'lod'])
@@ -2111,6 +2147,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                                             'locus': 'peak_locus',
                                             'pos_mb': 'peak_mb'})
                            .reset_index(drop=True))
+                del lod_df; gc.collect()
                 peak_py.to_csv(peak_lod_path, index=False)
 
                 # ── compare to R reference (per-chr) ─────────────────────────
@@ -2219,23 +2256,87 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             _rss_s5 = _get_rss_mb()
             tracemalloc.start()
             _t_s5 = time.perf_counter()
-            eff_path_s5 = py_dir / 's4_allele_effects.csv'
-            if not eff_path_s5.exists():
-                log.info('  %s s4_allele_effects.csv not found — run S4 first', SKIP)
+            if not peak_lod_path.exists():
+                log.info('  %s s4_peak_lod.csv not found — run S4 first', SKIP)
                 results['S5_perm_threshold'] = None
             else:
-                eff_s5   = pd.read_csv(eff_path_s5, usecols=['gene', 'gene_id', 'chr', 'h2'])
-                h5_path  = data_dir / 'counts_lognorm.h5'
+                h5_path = data_dir / 'counts_lognorm.h5'
 
-                # pick the gene whose h² is closest to the population median
-                _h2_valid = eff_s5['h2'].dropna()
-                _h2_med   = float(_h2_valid.median())
-                _med_row  = eff_s5.iloc[(_h2_valid - _h2_med).abs().values.argmin()]
-                _perm_gene = str(_med_row['gene'])
-                _perm_id   = str(_med_row['gene_id']) if pd.notna(_med_row.get('gene_id')) \
-                             else gene_name_to_id.get(_perm_gene, _perm_gene)
-                log.info('  median h²=%.3f  representative gene: %s (h²=%.3f)',
-                         _h2_med, _perm_gene, float(_med_row['h2']))
+                # ── pick median-h² gene as representative for permutation ──────
+                # Prefer h² from s4_allele_effects.csv if the column exists
+                # (written when S4 was run with the current code).  When the
+                # on-disk file predates the h² column, estimate h² independently
+                # using estimate_h2_null on a random gene sample — fast (Brent's
+                # 1D optimisation, no scan) and makes S5 self-contained.
+                _perm_gene: str
+                _perm_id:   str
+                _h2_med:    float
+
+                eff_path_s5 = py_dir / 's4_allele_effects.csv'
+                _h2_from_effects = False
+                if eff_path_s5.exists():
+                    _eff_cols = pd.read_csv(eff_path_s5, nrows=0).columns.tolist()
+                    if 'h2' in _eff_cols:
+                        _h2_from_effects = True
+
+                if _h2_from_effects:
+                    _eff_s5    = pd.read_csv(eff_path_s5, usecols=['gene', 'gene_id', 'h2'])
+                    _h2_valid  = _eff_s5['h2'].dropna()
+                    _h2_med    = float(_h2_valid.median())
+                    _best_row  = _eff_s5.iloc[(_h2_valid - _h2_med).abs().values.argmin()]
+                    _perm_gene = str(_best_row['gene'])
+                    _perm_id   = (str(_best_row['gene_id'])
+                                  if pd.notna(_best_row.get('gene_id', float('nan')))
+                                  else gene_name_to_id.get(_perm_gene, _perm_gene))
+                    log.info('  h² from effects file  median=%.3f  gene: %s (h²=%.3f)',
+                             _h2_med, _perm_gene, float(_best_row['h2']))
+                else:
+                    # estimate h² on-the-fly from a random sample of peak_lod genes
+                    log.info('  estimating h² for representative gene selection ...')
+                    _pk_s5     = pd.read_csv(peak_lod_path)
+                    _sub_s5    = _pk_s5[_pk_s5['chr'].astype(str) == str(peak_chr)]
+                    _samp_s5   = (_sub_s5['gene']
+                                  .sample(min(500, len(_sub_s5)), random_state=1)
+                                  .tolist())
+                    _samp_ids  = [gene_name_to_id.get(g, g) for g in _samp_s5]
+                    _cts_s5, _lds_s5, _sids_s5 = _load_expression(h5_path, _samp_ids)
+                    _gids_s5   = [meta_geno_map.get(s, s) for s in _sids_s5]
+                    _kd_ref    = kinship_decomp[peak_chr]
+                    _ev_ref    = _kd_ref['values']
+                    _evc_ref   = _kd_ref['vectors']
+                    # restrict to samples present in cache
+                    _vsid_s5   = np.array([i for i, g in enumerate(_gids_s5)
+                                           if g in cache.sample_ids])
+                    _h2_pairs: list[tuple[str, float]] = []
+                    for _gi5, _gn5 in enumerate(_lds_s5):
+                        _y5 = rint(_cts_s5[_gi5].astype(float))
+                        if np.any(np.isnan(_y5[_vsid_s5])):
+                            continue
+                        try:
+                            _cov5 = _build_covariates(meta, [_sids_s5[j]
+                                                              for j in _vsid_s5])
+                            _x5   = np.hstack([np.ones((_cov5.shape[0], 1)), _cov5])
+                            _h5, _ = estimate_h2_null(
+                                _evc_ref.T @ _y5[_vsid_s5],
+                                _evc_ref.T @ _x5,
+                                _ev_ref)
+                            _h2_pairs.append((_gn5, float(_h5)))
+                        except Exception:
+                            pass
+                    del _cts_s5; gc.collect()
+                    if not _h2_pairs:
+                        log.warning('  h² estimation failed for all sampled genes; '
+                                    'falling back to highest-LOD gene on chr%s', peak_chr)
+                        _perm_gene = str(
+                            _sub_s5.loc[_sub_s5['peak_lod'].idxmax(), 'gene'])
+                        _h2_med    = float('nan')
+                    else:
+                        _h2_arr    = np.array([h for _, h in _h2_pairs])
+                        _h2_med    = float(np.median(_h2_arr))
+                        _best_idx  = int(np.argmin(np.abs(_h2_arr - _h2_med)))
+                        _perm_gene = _h2_pairs[_best_idx][0]
+                    _perm_id = gene_name_to_id.get(_perm_gene, _perm_gene)
+                    log.info('  median h²=%.3f  representative gene: %s', _h2_med, _perm_gene)
 
                 _cts, _lds, _sids = _load_expression(h5_path, [_perm_id])
                 if _cts.shape[0] == 0:
@@ -2301,7 +2402,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             _mark_done(py_dir, str(sec))
 
     # ── eGene calling (after S5 — genome-wide threshold from s5_threshold.csv)
-    if peak_lod_path.exists():
+    sec = 6
+    eqtl_summary_path = py_dir / 'eqtl_summary.csv'
+    if peak_lod_path.exists() and not _checkpoint(py_dir, str(sec), force):
         log.info('\n── eGene calling + GxE/PxG ──────────────────────────────────────')
         peak_py_loaded = pd.read_csv(peak_lod_path)
         py_thr_path = py_dir / 's5_threshold.csv'
@@ -2351,28 +2454,20 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     if not chr_null_lods_s5:
                         chr_null_lods_s5 = {peak_chr: perm_max_lods_s5}
 
-            # ── per-gene empirical p-values and Storey q-values ─────────────────
+            # ── genome-wide FWER calling only (Storey q-value disabled) ─────────
+            # Storey q-value requires each gene's p-value to be valid under its
+            # own null. S5 derives the permutation null (and every per-chromosome
+            # null) from ONE representative gene's variance components, shared
+            # across all 43k genes — a fine simplification for a single global
+            # FWER threshold, but invalid as a per-gene null for FDR: pi0_hat(λ)
+            # climbed past 1.0 monotonically to 2.58 at λ=0.95 instead of
+            # plateauing, and 12.9% of genes had p>0.95 vs the 5% a true uniform
+            # null implies. Disabled until S5 produces a per-gene-calibrated null.
+            # eGene calling above already uses the genome-wide GEV threshold
+            # (`thr` from s5_threshold.csv) — that FWER gate is unaffected.
             if perm_max_lods_s5 is not None:
-                p_chr_list: list[float] = []
-                p_gnm_list: list[float] = []
-                for _, grow in peak_py_loaded.iterrows():
-                    lod_g    = float(grow['peak_lod'])
-                    gene_ch  = str(grow.get('chr', peak_chr))
-                    # use each gene's own chromosome null; fall back to peak_chr null
-                    null_chr = chr_null_lods_s5.get(gene_ch, perm_max_lods_s5)
-                    p_chr_list.append(float((null_chr         >= lod_g).sum()) / len(null_chr))
-                    p_gnm_list.append(float((perm_max_lods_s5 >= lod_g).sum()) / len(perm_max_lods_s5))
-                p_chr_arr = np.array(p_chr_list, dtype=float)
-                p_gnm_arr = np.array(p_gnm_list, dtype=float)
-                q_arr, pi0_val = storey_qvalue(p_chr_arr)
-                genes_all = peak_py_loaded['gene'].values
-                egenes_df['p_permtest_chr']  = egenes_df['gene'].map(dict(zip(genes_all, p_chr_arr)))
-                egenes_df['q_fdr_storey']    = egenes_df['gene'].map(dict(zip(genes_all, q_arr)))
-                egenes_df['pi0']               = pi0_val
-                egenes_df['perm_n']            = perm_n_s5
-                egenes_df['perm_chr']          = peak_chr
-                log.info('[Storey] pi0=%.4f  eGenes at q<0.05: %d',
-                         pi0_val, int((egenes_df['q_fdr_storey'] < 0.05).sum()))
+                egenes_df['perm_n']   = perm_n_s5
+                egenes_df['perm_chr'] = peak_chr
 
             # ── LMM GxE (haplotype × sex) at peak locus via qtl_gxe_lrt ────────
             # kinship-corrected: qtl_gxe_lrt uses LOCO eigendecomp
@@ -2416,45 +2511,42 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
 
                     r_cnt_a   = z_sub_a.sum(axis=0)
                     active_a  = r_cnt_a > 0
-                    z_act_a   = z_sub_a[:, active_a]
-                    r_act_a   = r_cnt_a[active_a]
+                    active_idx_a = np.where(active_a)[0]
 
-                    y_str_a   = (z_act_a.T @ y_sub_a)  / r_act_a
-                    cov_str_a = (z_act_a.T @ cov_sub_a) / r_act_a[:, None]
+                    # ── sample-level GxE test ────────────────────────────────
+                    # qtl_gxe_lrt requires a true binary sex contrast (0/1 per
+                    # row) to detect haplotype × sex interaction. Collapsing to
+                    # strain means destroys that contrast: a CC strain with one
+                    # male + one female replicate averages to sex=0.5, identical
+                    # to every other mixed-sex strain — the model sees no sex
+                    # variation to interact with. Run the test at sample level
+                    # (expanded K_n = Z K_m Z^T, same approach used to fix the
+                    # main S4 scan for replicate-awareness) so it matches the
+                    # sample-level data shown in the PxG/profile plots below.
+                    # Phenotype is RINT'd before any reduction, matching the
+                    # scan_h2lmm fix (RINT-then-reduce, not reduce-then-RINT).
+                    sex_samp_a = np.array([int(round(float(
+                        _sex_by_sid.get(s, 0.0)))) for s in sids_v_a])
+                    h_samp_a   = z_sub_a[:, active_a] @ hap_probs_all[active_idx_a]
+                    y_pxg_a    = rint(y_sub_a.astype(float))
+                    cov_gxe_a  = np.column_stack([cov_sub_a, sex_samp_a[:, None]])
 
-                    sex_sub_a = np.array(
-                        [float(_sex_by_sid.get(s, 0.0)) for s in sids_v_a])
-                    sex_str_a = (z_act_a.T @ sex_sub_a) / r_act_a
-
-                    active_idx_a  = np.where(active_a)[0]
-                    h_locus_a     = hap_probs_all[active_idx_a]  # (n_act, J)
-
-                    # sex as main-effect covariate for GxE model
-                    cov_gxe_a = np.column_stack([cov_str_a, sex_str_a[:, None]])
-
-                    # subset LOCO kinship to active strains and re-eigendecomp (~40×40)
                     ev_f  = kinship_decomp[gene_chr_a]['values']
                     evc_f = kinship_decomp[gene_chr_a]['vectors']
                     K_f   = evc_f @ np.diag(ev_f) @ evc_f.T
                     K_a   = K_f[np.ix_(active_idx_a, active_idx_a)]
-                    K_a   = (K_a + K_a.T) / 2
-                    ev_a, evc_a = np.linalg.eigh(K_a)
+                    z_act_a = z_sub_a[:, active_a]
+                    K_n   = z_act_a @ K_a @ z_act_a.T          # (n_valid, n_valid)
+                    K_n   = (K_n + K_n.T) / 2
+                    ev_n, evc_n = np.linalg.eigh(K_n)
 
                     gxe_res = qtl_gxe_lrt(
-                        y_str_a, h_locus_a, sex_str_a, cov_gxe_a,
-                        ev_a, evc_a, lod_add_a,
+                        y_pxg_a, h_samp_a, sex_samp_a, cov_gxe_a,
+                        ev_n, evc_n, lod_add_a,
                     )
                     gxe_res['gene'] = gene_n
                     gxe_rows.append(gxe_res)
 
-                    # PxG sex-faceted plot — sample level so M/F are binary per dot
-                    # (strain-mean sex = 0.5 for 1M+1F strains rounds to 0=male via
-                    # banker's rounding, hiding all female data; use per-sample instead)
-                    sex_samp_a = np.array([int(round(float(
-                        _sex_by_sid.get(s, 0.0)))) for s in sids_v_a])
-                    h_samp_a   = (z_sub_a[:, active_a]
-                                  @ hap_probs_all[active_idx_a])  # (n_valid, J)
-                    y_pxg_a    = rint(y_sub_a.astype(float))
                     try:
                         fig_pxg = pxg_sex_facet(
                             y_pxg_a, h_samp_a, sex_samp_a,
@@ -2539,15 +2631,19 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             _row['lod_r'] / _row['lod_py'],
                         )
             col_order = ['gene', 'chr', 'peak_locus', 'peak_mb', 'peak_lod',
-                         'p_permtest_chr', 'q_fdr_storey',
-                         'pi0', 'perm_n',
+                         'perm_n', 'perm_chr',
                          'chi2_haplotype', 'p_haplotype', 'lod_gxe_sex', 'p_gxe_sex',
                          'in_r_egenes']
             eqtl_sum = eqtl_sum[[c for c in col_order if c in eqtl_sum.columns]]
-            eqtl_sum.to_csv(py_dir / 'eqtl_summary.csv', index=False)
+            eqtl_sum.to_csv(eqtl_summary_path, index=False)
             log.info('[eqtl_summary] %d eGenes → eqtl_summary.csv', len(eqtl_sum))
+            _mark_done(py_dir, str(sec))
         else:
             log.info('[eGenes] no threshold available — run S5 first')
+    elif eqtl_summary_path.exists():
+        egenes_df = pd.read_csv(eqtl_summary_path)
+        log.info('[eGenes] loaded %d eGenes from checkpoint (%s)',
+                 len(egenes_df), eqtl_summary_path.name)
 
     # ─────────────────────────────────────────────────────────────────────────
     # S7 — MI scan (significant genes on peak_chr)

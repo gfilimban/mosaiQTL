@@ -103,8 +103,10 @@ Baseline must be committed to benchmarks/baseline/ before marking any goal curre
 | SPEED-04 | Speedup vs limix (CC48, 1 cell type) | limix: TBD | >= 3× | — | — | — |
 | SPEED-05 | Permutation throughput (1000 perms, 1 CT) | miQTL: TBD | <= 4h | — | — | — |
 | SPEED-06 | scan_chromosome genes/min | TBD | > 100/min | — | — | — |
+| SPEED-07 | GPU-accelerated scan_chromosome_batch via PyTorch: move `precompute_chromosome` H_t_raw einsum and `scan_chromosome_batch` permutation matmul to `torch.cuda`; CPU numpy path preserved as fallback; toggled via `ScanConfig.device='cuda'\|'cpu'`. Integration points: `lmm.py::precompute_chromosome`, `lmm.py::scan_chromosome_batch`, `lmm.py::scan_chromosome_mi`. Prerequisite: SPEED-01–06 baselines measured so GPU speedup is quantifiable. | CPU baseline | >= 10× on permutation batch | — | — | 🔴 |
 
 Amdahl ceiling: ~5.5× (serial fraction f≈0.15, n_chr=20). Gustafson weak-scaling target: R² > 0.95 (1→8 cores).
+GPU note (SPEED-07): permutation batch (`scan_chromosome_batch`) and MI batch (`scan_chromosome_mi`) are the highest-value GPU targets — both pass an explicit batch dimension (n_perms or n_imp) through einsum ops that map directly to batched CUDA matmuls. Use PyTorch (`torch.linalg.eigh`, `torch.einsum`, `torch.vmap`) over JAX: mosaiQTL's imperative scan loop and checkpoint I/O are incompatible with JAX's pure-function requirement; PyTorch's `torch.from_numpy` zero-copy interop preserves the numpy pipeline outside the hot path.
 Run comparison: `python -m mosaiqtl.bench.compare_tools --tools mosaiqtl miqtl tensorqtl limix`
 
 ---
@@ -334,4 +336,5 @@ Correct design: Stage 2 is PQL NB-GLMM score test for dispersion effects, mirror
 | v0.1 Foundation | SWE-01–07, DESIGN-01–07, BIO-A4 | structure, tests, CI, derivations |
 | v0.2 Validation | VAL-S1–S11, BIO-P1–P7, BIO-A1–A5 | all validation passing |
 | v0.3 Speed+Mem | SPEED-01–06, MEM-01–05, HPC-01–05 | HPC pipeline, benchmarking |
+| v0.5 GPU | SPEED-07 | PyTorch GPU path for permutation + MI batch scans |
 | v0.4 Multiomics | first new modality (caQTL or sQTL) | ATAC or splicing extension |
