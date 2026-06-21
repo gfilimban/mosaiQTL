@@ -797,124 +797,109 @@ top_gene <- if (!is.null(peak_lod_df) && focal_gene %in% peak_lod_df$gene) focal
 top_chr  <- if (!is.null(peak_lod_df)) as.character(peak_lod_df$chr[1]) else all_chrs[1]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# S5 — permutation threshold: one per chromosome, using that chr's top gene
+# S5 — genome-wide permutation threshold
+# 1000 permutations of the top gene scanned across ALL chromosomes.
+# max-LOD taken across all chromosomes per permutation → GEV fit → single
+# genome-wide FWER threshold at alpha=0.05.
 # ─────────────────────────────────────────────────────────────────────────────
-thresholds_chr_path <- file.path(out_dir, 'thresholds_chr.csv')
+thresholds_chr_path <- file.path(r_data_dir, 'thresholds_genome.csv')
 n_genes_s5 <- NA_integer_; n_loci_s5 <- NA_integer_
 gc(reset = TRUE, verbose = FALSE)
 t_s5 <- proc.time()
 
 if (run(5)) {
   stopifnot(!is.null(peak_lod_df))
-  cat(sprintf('\n[S5] permutation thresholds — all chromosomes (top gene per chr)\n'))
+  n_perm_s5 <- 1000L
+  cat(sprintf('\n[S5] genome-wide permutation threshold  %d perms × %d chr\n',
+              n_perm_s5, length(all_chrs)))
 
-  thr_rows <- list()
-  for (ch in target_chrs) {
-    # try genes in descending LOD order until one produces a valid perm run
-    sub_ch <- peak_lod_df[as.character(peak_lod_df$chr) == ch, ]
-    if (nrow(sub_ch) == 0L) next
-    sub_ch <- sub_ch[order(-sub_ch$lod), ]
+  # Representative gene: genome-wide top hit — highest LOD gives most stable h²
+  rep_gene <- peak_lod_df$gene[1]
+  rep_chr  <- as.character(peak_lod_df$chr[1])
+  cat(sprintf('  representative gene: %s  chr%s  LOD=%.2f\n',
+              rep_gene, rep_chr, peak_lod_df$lod[1]))
 
-    perm_max_lods <- NULL
-    thr_gene      <- NULL
-    for (gi in seq_len(nrow(sub_ch))) {
-      cand_gene <- sub_ch$gene[gi]
-      n_obs <- sum(!is.na(pheno_df[[cand_gene]]))
-      if (n_obs < 20L) next   # too few observations for a stable null fit
+  # PSD guard — skip chromosomes with near-singular LOCO kinship
+  valid_chrs <- Filter(function(ch) {
+    K  <- kinship_loco[[ch]]
+    ev <- eigen(K, symmetric = TRUE, only.values = TRUE)$values
+    min(ev) >= -max(abs(ev)) * nrow(K)^2 * .Machine$double.eps
+  }, all_chrs)
+  cat(sprintf('  scanning %d / %d chromosomes (rest near-singular)\n',
+              length(valid_chrs), length(all_chrs)))
 
-      # Permutation at strain-mean level using scan.h2lmm with pheno.id='genotype'.
-      # miQTL scans at m=48 strain-mean resolution; LODs on m-scale match the S4
-      # scan which also uses K (m×m) with strain-mean phenotype internally.
-      # miQTL's helper functions crash when passed the expanded K; direct loop used.
-      K_ch <- kinship_loco[[ch]]
-      # PSD guard on m×m K_ch
-      K_eigs    <- eigen(K_ch, symmetric = TRUE, only.values = TRUE)$values
-      K_min_eig <- min(K_eigs)
-      K_psd_tol <- max(abs(K_eigs)) * nrow(K_ch)^2 * .Machine$double.eps
-      if (K_min_eig < -K_psd_tol) {
-        cat(sprintf('  chr%s  gene=%s  [skip] near-singular LOCO kinship (min_eig=%.2e)\n',
-                    ch, cand_gene, K_min_eig))
-        next
-      }
+  y_rep <- strain_means[[rep_gene]]
+  max_lods <- numeric(n_perm_s5)
+  f_rep <- as.formula(paste(rep_gene, '~ 1'))
 
-      n_perm_s5      <- 250L
-      perm_max_lods_ <- numeric(n_perm_s5)
-      y_gene         <- strain_means[[cand_gene]]   # RINT(mean(raw)) — strain-level
-      set.seed(1)
-      for (pi in seq_len(n_perm_s5)) {
-        pheno_perm              <- strain_means
-        pheno_perm[[cand_gene]] <- sample(y_gene)
-        scan_perm <- scan.h2lmm(
-          genomecache           = genomecache,
-          data                  = pheno_perm,
-          pheno.id              = 'genotype',
-          geno.id               = 'genotype',
-          formula               = as.formula(paste(cand_gene, '~ 1')),
-          K                     = K_ch,
-          use.multi.impute      = FALSE,
-          return.allele.effects = FALSE,
-          chr                   = ch,
-          use.fix.par           = TRUE
-        )
-        perm_max_lods_[pi] <- max(scan_perm$LOD, na.rm = TRUE)
-        if (pi %% 50L == 0L)
-          cat(sprintf('    perm %d/%d\n', pi, n_perm_s5))
-      }
-      perm_max_lods <- perm_max_lods_
-      thr_gene      <- cand_gene
-      break
+  set.seed(1)
+  for (pi in seq_len(n_perm_s5)) {
+    pheno_perm <- strain_means
+    pheno_perm[[rep_gene]] <- sample(y_rep)
+    chr_max <- -Inf
+    for (ch in valid_chrs) {
+      res_perm <- scan.h2lmm(
+        genomecache           = genomecache,
+        data                  = pheno_perm,
+        pheno.id              = 'genotype',
+        geno.id               = 'genotype',
+        formula               = f_rep,
+        K                     = kinship_loco[[ch]],
+        use.multi.impute      = FALSE,
+        return.allele.effects = FALSE,
+        chr                   = ch,
+        use.fix.par           = TRUE
+      )
+      chr_max <- max(chr_max, max(res_perm$LOD, na.rm = TRUE))
     }
-
-    if (is.null(thr_gene)) {
-      cat(sprintf('  chr%s  [warn] no valid gene found for permutation — skipping\n', ch))
-      next
-    }
-
-    cat(sprintf('  chr%s  gene=%s\n', ch, thr_gene))
-    # get.gev.thresholds uses evir::qgev(1-percentile) → lower 5th percentile (wrong
-    # direction for LOD thresholds). Use evir directly: qgev(0.95) = upper 95th pct,
-    # matching Python's genextreme.ppf(0.95).
-    max_lods_ch   <- perm_max_lods[is.finite(perm_max_lods)]
-    gev_fit_ch    <- evir::gev(max_lods_ch)
-    threshold     <- evir::qgev(0.95, xi    = gev_fit_ch$par.est[['xi']],
-                                      sigma = gev_fit_ch$par.est[['sigma']],
-                                      mu    = gev_fit_ch$par.est[['mu']])
-    empirical_p95 <- as.numeric(quantile(perm_max_lods, 0.95, na.rm = TRUE))
-
-    write.csv(data.frame(perm_index = seq_along(perm_max_lods),
-                         max_lod    = perm_max_lods),
-              file.path(out_dir, sprintf('perm_max_lods_chr%s.csv', ch)), row.names = FALSE)
-    thr_rows[[ch]] <- data.frame(chr = ch, gene = thr_gene,
-                                 threshold = threshold, empirical_p95 = empirical_p95,
-                                 stringsAsFactors = FALSE)
-    cat(sprintf('    GEV=%.3f  empirical=%.3f\n', threshold, empirical_p95))
+    max_lods[pi] <- chr_max
+    if (pi %% 100L == 0L)
+      cat(sprintf('    perm %d/%d  running_p95=%.3f\n', pi, n_perm_s5,
+                  as.numeric(quantile(max_lods[seq_len(pi)], 0.95))))
   }
-  thr_df <- do.call(rbind, thr_rows)
+
+  # GEV fit on genome-wide max-LOD distribution
+  max_lods_fin  <- max_lods[is.finite(max_lods)]
+  gev_fit       <- evir::gev(max_lods_fin)
+  threshold_gev <- evir::qgev(0.95,
+                               xi    = gev_fit$par.est[['xi']],
+                               sigma = gev_fit$par.est[['sigma']],
+                               mu    = gev_fit$par.est[['mu']])
+  empirical_p95 <- as.numeric(quantile(max_lods, 0.95, na.rm = TRUE))
+
+  write.csv(data.frame(perm_index = seq_along(max_lods), max_lod = max_lods),
+            file.path(r_data_dir, 'perm_max_lods_genome.csv'), row.names = FALSE)
+
+  thr_df <- data.frame(
+    scope         = 'genome',
+    gene          = rep_gene,
+    n_perms       = n_perm_s5,
+    n_chrs        = length(valid_chrs),
+    threshold_gev = threshold_gev,
+    empirical_p95 = empirical_p95,
+    stringsAsFactors = FALSE
+  )
   write.csv(thr_df, thresholds_chr_path, row.names = FALSE)
-  cat(sprintf('  thresholds written for %d chromosomes\n', nrow(thr_df)))
-  n_genes_s5 <- nrow(thr_df)
-  n_loci_s5  <- if (!is.null(chr_nloci)) sum(chr_nloci[as.character(thr_df$chr)], na.rm = TRUE) else NA_integer_
+  cat(sprintf('  genome-wide GEV threshold: %.3f  empirical p95: %.3f\n',
+              threshold_gev, empirical_p95))
+  n_genes_s5 <- 1L
+  n_loci_s5  <- NA_integer_
 }
 
-# ── significant genes: peak LOD > per-chr threshold ──────────────────────────
+# ── significant genes: peak LOD > genome-wide threshold ──────────────────────
 sig_genes_df <- NULL
 if (!is.null(peak_lod_df) && file.exists(thresholds_chr_path)) {
-  thr_df  <- read.csv(thresholds_chr_path, stringsAsFactors = FALSE)
-  thr_map <- setNames(thr_df$threshold, as.character(thr_df$chr))
-  sig_genes_df <- peak_lod_df[
-    mapply(function(lod, ch) {
-      thr <- thr_map[as.character(ch)]
-      !is.na(thr) && lod > thr
-    }, peak_lod_df$lod, peak_lod_df$chr), ]
-  cat(sprintf('[sig] %d / %d genes pass per-chr threshold\n',
-              nrow(sig_genes_df), nrow(peak_lod_df)))
-  write.csv(sig_genes_df, file.path(out_dir, 'egenes.csv'), row.names = FALSE)
+  thr_df    <- read.csv(thresholds_chr_path, stringsAsFactors = FALSE)
+  threshold <- thr_df$threshold_gev[1]
+  sig_genes_df <- peak_lod_df[peak_lod_df$lod > threshold, ]
+  cat(sprintf('[sig] %d / %d genes pass genome-wide threshold (%.3f)\n',
+              nrow(sig_genes_df), nrow(peak_lod_df), threshold))
+  write.csv(sig_genes_df, file.path(r_data_dir, 'egenes.csv'), row.names = FALSE)
   cat(sprintf('[sig] egenes.csv written (%d rows)\n', nrow(sig_genes_df)))
 } else if (!is.null(peak_lod_df)) {
   sig_genes_df <- peak_lod_df   # no threshold yet — use all
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
 # S6 — cache collapse (genome-wide, unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
 peak_mb_s5 <- peak_heap_mb()
