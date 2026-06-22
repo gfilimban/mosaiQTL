@@ -500,6 +500,7 @@ if (run(4)) {
 
   all_lod_rows       <- list()
   all_effect_rows    <- list()
+  gene_h2_map        <- list()   # gene -> h2 from null fit; joined onto peak_lod_df after scan
   total_genes_scanned <- 0L   # cumulative cis-genes across all scanned chromosomes
 
   progress_every <- 25L   # print a progress line every N genes
@@ -573,7 +574,8 @@ if (run(4)) {
 
         if (collect_effects) chr_scan_results[[gene]] <- res
 
-        lod_vec <- res$LOD
+        lod_vec             <- res$LOD
+        gene_h2_map[[gene]] <- if (!is.null(res$fit0$h2)) as.numeric(res$fit0$h2) else NA_real_
         all_lod_rows[[length(all_lod_rows) + 1]] <- data.frame(
           gene   = gene,
           chr    = ch,
@@ -685,6 +687,7 @@ if (run(4)) {
       sub[which.max(sub$lod), ]
     }))
     peak_lod_df <- peak_lod_df[order(-peak_lod_df$lod), ]
+    peak_lod_df$h2 <- unlist(gene_h2_map[peak_lod_df$gene])
     write.csv(peak_lod_df, file.path(s4_out_dir, 'peak_lod.csv'), row.names = FALSE)
   } else {
     peak_lod_df <- NULL
@@ -813,11 +816,18 @@ if (run(5)) {
   cat(sprintf('\n[S5] genome-wide permutation threshold  %d perms × %d chr\n',
               n_perm_s5, length(all_chrs)))
 
-  # Representative gene: genome-wide top hit — highest LOD gives most stable h²
-  rep_gene <- peak_lod_df$gene[1]
-  rep_chr  <- as.character(peak_lod_df$chr[1])
-  cat(sprintf('  representative gene: %s  chr%s  LOD=%.2f\n',
-              rep_gene, rep_chr, peak_lod_df$lod[1]))
+  # Representative gene: gene with h² closest to median across all scanned genes.
+  # Median-h² minimises calibration error for the genome-wide threshold: genes near
+  # the median are well-calibrated; top-LOD genes are biased toward high h² and
+  # would produce an overly conservative threshold for the majority of genes.
+  h2_vals  <- peak_lod_df$h2[!is.na(peak_lod_df$h2)]
+  h2_med   <- median(h2_vals)
+  best_idx <- which.min(abs(peak_lod_df$h2 - h2_med))
+  rep_gene <- peak_lod_df$gene[best_idx]
+  rep_chr  <- as.character(peak_lod_df$chr[best_idx])
+  cat(sprintf('  median h²=%.3f  representative gene: %s  chr%s  gene h²=%.3f  LOD=%.2f\n',
+              h2_med, rep_gene, rep_chr,
+              peak_lod_df$h2[best_idx], peak_lod_df$lod[best_idx]))
 
   # PSD guard — skip chromosomes with near-singular LOCO kinship
   valid_chrs <- Filter(function(ch) {
@@ -873,6 +883,8 @@ if (run(5)) {
   thr_df <- data.frame(
     scope         = 'genome',
     gene          = rep_gene,
+    h2_median     = h2_med,
+    h2_rep        = peak_lod_df$h2[best_idx],
     n_perms       = n_perm_s5,
     n_chrs        = length(valid_chrs),
     threshold_gev = threshold_gev,
