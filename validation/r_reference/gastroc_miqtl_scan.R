@@ -10,7 +10,7 @@
 #   3.  LOCO kinship summary    → kinship_summary.csv, kinship_chr8_elements.csv
 #                                 plots/kinship_chr8.png
 #   S1–S3 combined timing       → timing_setup.csv
-#   4.  LMM scan (ROP, LOCO)    → lod_genome.csv, allele_effects_chr8.csv
+#   4.  LMM scan (ROP, LOCO)    → peak_lod.csv (per-chr), allele_effects.csv (per-chr)
 #                                 timing_chr.csv, timing_genome.csv
 #                                 plots/lod_profile_<gene>.png
 #                                 plots/allele_effects_<gene>.png
@@ -481,12 +481,11 @@ if (run(3)) {
 # ─────────────────────────────────────────────────────────────────────────────
 # S4 — LMM scan (ROP, LOCO) — full genome, all genes, timed per-chr + genome-wide
 # ─────────────────────────────────────────────────────────────────────────────
-lod_genome_path    <- file.path(out_dir, 'lod_genome.csv')
-peak_lod_path      <- file.path(out_dir, 'peak_lod.csv')
-effects_path       <- file.path(out_dir, sprintf('allele_effects_chr%s.csv',
-                                                  paste(target_chrs, collapse = '-')))
-timing_chr_path    <- file.path(out_dir, 'timing_chr.csv')
-timing_genome_path <- file.path(out_dir, 'timing_genome.csv')
+peak_lod_path      <- file.path(r_data_dir, 'peak_lod.csv')
+effects_path       <- file.path(r_data_dir, sprintf('allele_effects_chr%s.csv',
+                                                     paste(target_chrs, collapse = '-')))
+timing_chr_path    <- file.path(r_data_dir, 'timing_chr.csv')
+timing_genome_path <- file.path(r_data_dir, 'timing_genome.csv')
 
 peak_lod_df        <- NULL
 chr_scan_results   <- list()
@@ -647,8 +646,7 @@ if (run(4)) {
   write.csv(timing_row, file.path(s4_out_dir, 'timing.csv'),  row.names = FALSE)
 
   if (!hpc_mode) {
-    # sequential: also write to top-level paths used by S5-S11
-    write.csv(lod_df,     lod_genome_path, row.names = FALSE)
+    # sequential: also write merged outputs used by S5-S11
     if (!is.null(peak_lod_df)) write.csv(peak_lod_df, peak_lod_path, row.names = FALSE)
     write.csv(effects_df, effects_path,    row.names = FALSE)
     write.csv(timing_row, timing_chr_path, row.names = FALSE)
@@ -680,10 +678,9 @@ if (run(4)) {
     cat('  genome-wide wall-clock computed by merge_chr_outputs.R\n')
   }
 
-  lod_genome  <- lod_df
-  if (nrow(lod_genome) > 0L) {
-    peak_lod_df <- do.call(rbind, lapply(unique(lod_genome$gene), function(g) {
-      sub <- lod_genome[lod_genome$gene == g, ]
+  if (nrow(lod_df) > 0L) {
+    peak_lod_df <- do.call(rbind, lapply(unique(lod_df$gene), function(g) {
+      sub <- lod_df[lod_df$gene == g, ]
       sub[which.max(sub$lod), ]
     }))
     peak_lod_df <- peak_lod_df[order(-peak_lod_df$lod), ]
@@ -777,22 +774,15 @@ if (run(4)) {
     dev.off()
   }
 
-} else if (file.exists(lod_genome_path)) {
-  cat('[S4] loading cached lod_genome.csv\n')
-  lod_genome  <- read.csv(lod_genome_path, stringsAsFactors = FALSE)
-  peak_lod_df <- do.call(rbind, lapply(unique(lod_genome$gene), function(g) {
-    sub <- lod_genome[lod_genome$gene == g, ]
-    sub[which.max(sub$lod), ]
-  }))
+} else if (file.exists(peak_lod_path)) {
+  # genome-wide peak_lod.csv written by merge_chr_outputs.R (HPC) or previous sequential run
+  cat('[S4] loading cached peak_lod.csv\n')
+  peak_lod_df <- read.csv(peak_lod_path, stringsAsFactors = FALSE)
   peak_lod_df <- peak_lod_df[order(-peak_lod_df$lod), ]
-} else if (!is.null(chr_arg) && file.exists(file.path(s4_out_dir, 'lod.csv'))) {
-  # single-chr restart: S4 wrote chr{N}/lod.csv but not the genome-wide CSV
-  cat(sprintf('[S4] loading cached chr%s/lod.csv\n', chr_arg))
-  lod_genome  <- read.csv(file.path(s4_out_dir, 'lod.csv'), stringsAsFactors = FALSE)
-  peak_lod_df <- do.call(rbind, lapply(unique(lod_genome$gene), function(g) {
-    sub <- lod_genome[lod_genome$gene == g, ]
-    sub[which.max(sub$lod), ]
-  }))
+} else if (!is.null(chr_arg) && file.exists(file.path(s4_out_dir, 'peak_lod.csv'))) {
+  # single-chr restart: load that chromosome's peak_lod.csv (has h2 from active scan)
+  cat(sprintf('[S4] loading cached chr%s/peak_lod.csv\n', chr_arg))
+  peak_lod_df <- read.csv(file.path(s4_out_dir, 'peak_lod.csv'), stringsAsFactors = FALSE)
   peak_lod_df <- peak_lod_df[order(-peak_lod_df$lod), ]
 }
 
@@ -829,6 +819,36 @@ if (run(5)) {
               h2_med, rep_gene, rep_chr,
               peak_lod_df$h2[best_idx], peak_lod_df$lod[best_idx]))
 
+  # S5 scans all 20 chromosomes per permutation.  When the genomecache lives on
+  # NFS (CRSP), each scan.h2lmm call reads ~3700 .RData files per chromosome
+  # from NFS (~6 ms/file) → 22 s/chromosome × 20 chr = 7 min/permutation.
+  # Stage the FULL genome to local tmpdir so all reads hit local disk instead.
+  compute_node <- Sys.info()[['nodename']]
+  gc_s5 <- genomecache_orig   # start from CRSP path (not the single-chr staged copy)
+  local_gc_s5 <- file.path(tempdir(), 'genomecache_s5')
+  if (!dir.exists(local_gc_s5)) {
+    cat(sprintf('[S5] staging full genomecache to local tmpdir: %s  (node: %s)\n',
+                local_gc_s5, compute_node))
+    dir.create(local_gc_s5, recursive = TRUE, showWarnings = FALSE)
+    t0_stage <- proc.time()[['elapsed']]
+    exit_code <- system(sprintf("cp -r '%s/.' '%s/'", genomecache_orig, local_gc_s5))
+    n_rdata <- length(list.files(local_gc_s5, pattern = '\\.RData$', recursive = TRUE))
+    staged_ok <- exit_code == 0L && n_rdata > 100L
+    if (staged_ok) {
+      cat(sprintf('[S5] staging done in %.0fs  (%d .RData files)\n',
+                  proc.time()[['elapsed']] - t0_stage, n_rdata))
+      gc_s5 <- local_gc_s5
+    } else {
+      cat(sprintf('[S5] staging failed (exit=%d, .RData files=%d) — falling back to NFS\n',
+                  exit_code, n_rdata))
+    }
+  } else {
+    n_rdata <- length(list.files(local_gc_s5, pattern = '\\.RData$', recursive = TRUE))
+    cat(sprintf('[S5] using cached local genomecache: %s  (%d .RData files)\n',
+                local_gc_s5, n_rdata))
+    gc_s5 <- local_gc_s5
+  }
+
   # PSD guard — skip chromosomes with near-singular LOCO kinship
   valid_chrs <- Filter(function(ch) {
     K  <- kinship_loco[[ch]]
@@ -838,18 +858,34 @@ if (run(5)) {
   cat(sprintf('  scanning %d / %d chromosomes (rest near-singular)\n',
               length(valid_chrs), length(all_chrs)))
 
-  y_rep <- strain_means[[rep_gene]]
-  max_lods <- numeric(n_perm_s5)
-  f_rep <- as.formula(paste(rep_gene, '~ 1'))
+  y_rep     <- strain_means[[rep_gene]]
+  f_rep     <- as.formula(paste(rep_gene, '~ 1'))
+  ckpt_path <- file.path(r_data_dir, 'perm_max_lods_genome_ckpt.csv')
+
+  # Resume from checkpoint if present (allows kill + restart without losing perms)
+  if (file.exists(ckpt_path)) {
+    ckpt      <- read.csv(ckpt_path, stringsAsFactors = FALSE)
+    start_pi  <- nrow(ckpt) + 1L
+    max_lods  <- numeric(n_perm_s5)
+    max_lods[seq_len(nrow(ckpt))] <- ckpt$max_lod
+    cat(sprintf('[S5] resuming from checkpoint — %d perms already done\n', nrow(ckpt)))
+  } else {
+    max_lods <- numeric(n_perm_s5)
+    start_pi <- 1L
+  }
+
+  # t_s5_loop: wall-clock for the permutation loop only (excludes staging).
+  # Used to compute perms/hr for comparison with Python scan_chromosome_batch.
+  t_s5_loop <- proc.time()
 
   set.seed(1)
-  for (pi in seq_len(n_perm_s5)) {
+  for (pi in seq(start_pi, n_perm_s5)) {
     pheno_perm <- strain_means
     pheno_perm[[rep_gene]] <- sample(y_rep)
     chr_max <- -Inf
     for (ch in valid_chrs) {
       res_perm <- scan.h2lmm(
-        genomecache           = genomecache,
+        genomecache           = gc_s5,
         data                  = pheno_perm,
         pheno.id              = 'genotype',
         geno.id               = 'genotype',
@@ -863,10 +899,21 @@ if (run(5)) {
       chr_max <- max(chr_max, max(res_perm$LOD, na.rm = TRUE))
     }
     max_lods[pi] <- chr_max
-    if (pi %% 100L == 0L)
+    if (pi %% 10L == 0L) {
+      # checkpoint every 10 perms — survives kill + restart
+      write.csv(data.frame(perm_index = seq_len(pi), max_lod = max_lods[seq_len(pi)]),
+                ckpt_path, row.names = FALSE)
+    }
+    if (pi %% 50L == 0L)
       cat(sprintf('    perm %d/%d  running_p95=%.3f\n', pi, n_perm_s5,
                   as.numeric(quantile(max_lods[seq_len(pi)], 0.95))))
   }
+
+  scan_elapsed_s <- (proc.time() - t_s5_loop)[['elapsed']]
+  perms_done     <- n_perm_s5 - start_pi + 1L   # perms actually run this session
+  perms_per_hr   <- round(perms_done / scan_elapsed_s * 3600, 1)
+  cat(sprintf('  scan loop: %.0fs for %d perms  (%.1f perms/hr)\n',
+              scan_elapsed_s, perms_done, perms_per_hr))
 
   # GEV fit on genome-wide max-LOD distribution
   max_lods_fin  <- max_lods[is.finite(max_lods)]
@@ -879,16 +926,20 @@ if (run(5)) {
 
   write.csv(data.frame(perm_index = seq_along(max_lods), max_lod = max_lods),
             file.path(r_data_dir, 'perm_max_lods_genome.csv'), row.names = FALSE)
+  # remove checkpoint now that the final file is written
+  if (file.exists(ckpt_path)) file.remove(ckpt_path)
 
   thr_df <- data.frame(
-    scope         = 'genome',
-    gene          = rep_gene,
-    h2_median     = h2_med,
-    h2_rep        = peak_lod_df$h2[best_idx],
-    n_perms       = n_perm_s5,
-    n_chrs        = length(valid_chrs),
-    threshold_gev = threshold_gev,
-    empirical_p95 = empirical_p95,
+    scope          = 'genome',
+    gene           = rep_gene,
+    h2_median      = h2_med,
+    h2_rep         = peak_lod_df$h2[best_idx],
+    n_perms        = n_perm_s5,
+    n_chrs         = length(valid_chrs),
+    threshold_gev  = threshold_gev,
+    empirical_p95  = empirical_p95,
+    scan_elapsed_s = round(scan_elapsed_s, 1),
+    perms_per_hr   = perms_per_hr,
     stringsAsFactors = FALSE
   )
   write.csv(thr_df, thresholds_chr_path, row.names = FALSE)
@@ -1077,8 +1128,8 @@ if (run(9)) {
     gene <- sig_genes_df$gene[i]
     ch   <- as.character(sig_genes_df$chr[i])
     # peak locus for this gene on its peak chromosome
-    sub_g      <- lod_genome[lod_genome$gene == gene & lod_genome$chr == ch, ]
-    peak_locus <- sub_g$locus[which.max(sub_g$lod)]
+    sub_g      <- peak_lod_df[peak_lod_df$gene == gene, ]
+    peak_locus <- sub_g$locus[1]
     cat(sprintf('  [%d/%d] %s  chr%s  locus=%s\n', i, nrow(sig_genes_df), gene, ch, peak_locus))
 
     med_qr <- extract.mediation.expression.qr(
