@@ -12,6 +12,7 @@
 pkg_dir  <- Sys.getenv('MOSAIQTL_DIR',
              unset = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl')
 out_dir  <- file.path(pkg_dir, 'validation', 'gastroc_data')
+r_data   <- file.path(out_dir, 'r_data')
 
 chrs <- c(as.character(1:19), 'X')
 
@@ -19,7 +20,7 @@ chrs <- c(as.character(1:19), 'X')
 sentinel <- 'lod.csv'
 missing_chrs <- c()
 for (chr in chrs) {
-  p <- file.path(out_dir, paste0('chr', chr), sentinel)
+  p <- file.path(r_data, paste0('chr', chr), sentinel)
   if (!file.exists(p) || file.size(p) == 0) {
     message('  [sentinel] chr', chr, ': MISSING ', sentinel)
     missing_chrs <- c(missing_chrs, as.character(chr))
@@ -34,28 +35,34 @@ if (length(missing_chrs)) {
 }
 message('[merge] all ', length(chrs), ' chromosomes complete — proceeding\n')
 
-# ── merge LOD scores → lod_genome.csv ────────────────────────────────────────
-message('[merge] lod.csv → lod_genome.csv')
-lod_parts <- list()
+# ── merge peak LOD → peak_lod.csv (one row per gene, genome-wide top hit) ────
+# lod_genome.csv (full locus-level) is NOT merged here — too large (3.5M rows × 20 chr).
+# allele_effects_genome.csv is NOT merged here — ~6 GB per chr, structure not yet optimised.
+# Both remain in per-chr r_data/chr{N}/ for downstream use.
+message('[merge] peak_lod.csv → peak_lod.csv (genome-wide)')
+peak_parts <- list()
 for (chr in chrs) {
-  p  <- file.path(out_dir, paste0('chr', chr), 'lod.csv')
-  df <- read.csv(p, stringsAsFactors=FALSE)
-  lod_parts[[chr]] <- df
+  p <- file.path(r_data, paste0('chr', chr), 'peak_lod.csv')
+  if (file.exists(p) && file.size(p) > 0) {
+    peak_parts[[chr]] <- read.csv(p, stringsAsFactors=FALSE)
+  }
 }
-lod_genome <- do.call(rbind, lod_parts)
-rownames(lod_genome) <- NULL
-write.csv(lod_genome, file.path(out_dir, 'lod_genome.csv'), row.names=FALSE)
-message('  lod_genome.csv: ', nrow(lod_genome), ' rows from ', length(chrs), ' chromosomes')
-
-# ── merge allele effects (chr 8 only) → allele_effects_chr8.csv ──────────────
-message('[merge] allele_effects.csv → allele_effects_chr8.csv')
-eff_path <- file.path(out_dir, 'chr8', 'allele_effects.csv')
-if (file.exists(eff_path) && file.size(eff_path) > 0) {
-  eff_df <- read.csv(eff_path, stringsAsFactors=FALSE)
-  write.csv(eff_df, file.path(out_dir, 'allele_effects_chr8.csv'), row.names=FALSE)
-  message('  allele_effects_chr8.csv: ', nrow(eff_df), ' rows')
+if (length(peak_parts) > 0) {
+  peak_all <- do.call(rbind, peak_parts)
+  rownames(peak_all) <- NULL
+  # keep best locus per gene (cis scan → one chr per gene, but be safe)
+  peak_lod_df <- do.call(rbind, lapply(unique(peak_all$gene), function(g) {
+    sub <- peak_all[peak_all$gene == g, ]
+    sub[which.max(sub$lod), ]
+  }))
+  peak_lod_df <- peak_lod_df[order(-peak_lod_df$lod), ]
+  rownames(peak_lod_df) <- NULL
+  write.csv(peak_lod_df, file.path(r_data, 'peak_lod.csv'), row.names=FALSE)
+  message('  peak_lod.csv: ', nrow(peak_lod_df), ' genes  top=',
+          peak_lod_df$gene[1], ' LOD=', round(peak_lod_df$lod[1], 2))
 } else {
-  message('  allele_effects_chr8.csv: MISSING — chr 8 job may not have run with return.allele.effects=TRUE')
+  message('  peak_lod.csv: no per-chr peak_lod.csv found — skipping')
+  peak_lod_df <- NULL
 }
 
 # ── merge + summarise timing ──────────────────────────────────────────────────

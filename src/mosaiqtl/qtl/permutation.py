@@ -117,8 +117,7 @@ def _null_fit_params(
     if x_rot.ndim == 1:
         x_rot = x_rot[:, None]
     n, p = len(y_rot), x_rot.shape[1]
-    delta = h2 / (1.0 - h2)
-    w_inv = 1.0 / (delta * eigvals + 1.0)
+    w_inv = 1.0 / (h2 * eigvals + (1.0 - h2))
     xw    = x_rot * w_inv[:, None]
     beta  = np.linalg.solve(xw.T @ x_rot, xw.T @ y_rot)
     resid = y_rot - x_rot @ beta
@@ -257,6 +256,7 @@ def run_threshold_scans(null_outcomes, genomecache,
                         permutation_method='parametric',
                         use_rint=True, use_reml=True,
                         sample_ids=None,
+                        z_mat=None,
                         seed=1,
                         batch_size=500):
     """scan null phenotype columns to build the peak-LOD null distribution.
@@ -306,7 +306,20 @@ def run_threshold_scans(null_outcomes, genomecache,
         replicate sample IDs (length n).  when provided, each permuted
         phenotype is averaged to strain means via the Z-matrix before
         scanning; kinship_decomp must be at strain level (m×m).
-    seed           : int  rng seed (used only for 'parametric' mode)
+        Mutually exclusive with z_mat: use one or the other, not both.
+    z_mat          : np.ndarray (n, m) or None
+        sample-to-strain design matrix for n-level scanning.  when provided,
+        null_outcomes and kinship_decomp must already be at n-level (i.e.
+        kinship_decomp holds eigdecomp of K_n = Z K_m Z^T).  z_mat is passed
+        through to scan_chromosome_batch so haplotype probs are expanded from
+        m cache strains to n samples inside each scan.  this ensures the null
+        LOD scale matches a sample-level scan (LOD = (n/2)·log10(rss0/rss1))
+        rather than a strain-mean scan (LOD = (m/2)·log10(rss0/rss1)).
+        sample_ids must be None when z_mat is provided.
+    seed           : int  rng seed for all internal random draws.
+        'parametric' — seeds the null-draw rng inside _draw_parametric_batch.
+        'plain'      — seed is unused here; reproducibility is controlled by
+                       the seed passed to generate_null_outcomes by the caller.
     batch_size     : int  mini-batch size for the fast vectorised path
         (fix_h2=True + plain).  500 balances memory and loop overhead;
         reduce if RAM is tight.
@@ -364,25 +377,41 @@ def run_threshold_scans(null_outcomes, genomecache,
     if not np.allclose(x[:, 0], 1.0):            # ensure intercept present
         x = np.hstack([np.ones((n, 1)), x])
 
-    # replicate path: reduce y/x to strain means; scan and parametric draws at m-level.
-    # K_n = Z K_m Z^T has n-m zero eigenvalues (within-strain directions) that inflate
-    # sigma2_e in _null_fit_params → null draws dominated by noise → LOD ≈ 0.
-    # Fix: reduce to strain means; use K_m (m×m, full rank) throughout.
+    # sample_ids path: reduce phenotype/covariates to strain means; scan at m-level.
+    # use when no z_mat is supplied (no replicated design or single-level data).
     _z_red: 'np.ndarray | None' = None
     _r_counts: 'np.ndarray | None' = None
     x_scan = x
-    if sample_ids is not None:
+    if sample_ids is not None and z_mat is None:
         from ..utils import build_z_matrix
         _z_red, _ = build_z_matrix(list(sample_ids), list(genomecache.sample_ids))
         _r_counts = _z_red.sum(axis=0)                   # (m,) replicates per strain
         x_scan = (_z_red.T @ x) / _r_counts[:, None]     # (m, p) strain-mean covariates
 
+    # z_mat path: expand from m cache strains to n samples at n-level.
+    # build K_n = z_mat @ K_m @ z_mat.T per chromosome; use n-level eigendecomps
+    # so null LOD scale matches sample-level scan: LOD = (n/2)·log10(rss0/rss1).
+    _n_kd: 'dict | None' = None
+    if z_mat is not None:
+        _n_kd = {}
+        for c in chrs:
+            ev_m = kinship_decomp[c]['values']
+            evc_m = kinship_decomp[c]['vectors']
+            K_m = (evc_m * ev_m) @ evc_m.T
+            K_n = z_mat @ K_m @ z_mat.T
+            ev_n, evc_n = np.linalg.eigh(K_n)
+            _n_kd[c] = {'values': ev_n, 'vectors': evc_n, 'K_n': K_n}
+
     def _ev_evc(c: str) -> 'tuple[np.ndarray, np.ndarray]':
-        """return m-level eigendecomp from kinship_decomp."""
+        """return eigendecomp: n-level when z_mat provided, else m-level."""
+        if _n_kd is not None:
+            return _n_kd[c]['values'], _n_kd[c]['vectors']
         return kinship_decomp[c]['values'], kinship_decomp[c]['vectors']
 
     def _K_raw(c: str) -> np.ndarray:
-        """return m×m raw kinship for parametric draws."""
+        """return raw kinship for parametric draws: K_n when z_mat, else K_m."""
+        if _n_kd is not None:
+            return _n_kd[c]['K_n']
         return kinship_loco[c]
 
     # pre-compute per-chrom h² from original phenotype (fix_h2=True mode)
@@ -410,11 +439,6 @@ def run_threshold_scans(null_outcomes, genomecache,
     max_lods = np.zeros(n_perms)
     rng      = np.random.default_rng(seed) if permutation_method == 'parametric' else None
 
-    # ── fast vectorised path: fix_h2=True ────────────────────────────────────
-    # precomputes H_perp / G_pinv once per chromosome; only e0 varies per perm.
-    # plain:      builds one Y_mat for all chromosomes (no kinship draw per perm)
-    # parametric: rebuilds Y_mat per chromosome using that chr's K_loco
-    # ~100–500× faster than the slow path on large n_loci.
     if fix_h2 and permutation_method in ('plain', 'parametric'):
         plain_mat = None
         if permutation_method == 'plain':
@@ -456,7 +480,7 @@ def run_threshold_scans(null_outcomes, genomecache,
 
             chr_max = lmm_module.scan_chromosome_batch(
                 null_mat_gw, genomecache, c, x_scan, ev, evc, h2,
-                z_mat=None, batch_size=batch_size)
+                z_mat=z_mat, batch_size=batch_size)
             chr_null_lods[c] = chr_max
             max_lods = np.maximum(max_lods, chr_max)
             logger.info('  [batch] chr%s  max_lod=%.3f', c, float(chr_max.max()))

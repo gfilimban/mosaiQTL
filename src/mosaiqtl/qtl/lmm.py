@@ -314,7 +314,8 @@ def _scan_chromosome_core(
         pval_arr = np.where(df2_arr > 0, 1.0 - stats.f.cdf(f_stat, q_eff, df2_arr), 1.0)
 
     return {'locus_ids': locus_ids, 'positions': positions,
-            'lod': lod_arr, 'p_value': pval_arr, 'betas': beta_h}
+            'lod': lod_arr, 'p_value': pval_arr, 'betas': beta_h,
+            'rss0': rss0, 'rss1': rss1}
 
 
 def scan_chromosome(

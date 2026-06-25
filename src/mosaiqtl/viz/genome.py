@@ -1334,12 +1334,16 @@ def locus_panels_per_chr(
     thr_by_chr: Optional[dict[str, Optional[float]]] = None,
     *,
     priority_genes: Optional[dict[str, str]] = None,
+    tss_mb_map: Optional[dict[str, float]] = None,
+    zoom_window_mb: float = 1.0,
 ) -> dict[str, plt.Figure]:
-    """Per-chromosome qtl2-style locus panels (founder effects + LOD profile).
+    """Per-chromosome qtl2-style locus panels (founder effects + LOD profile + zoom).
 
     qtl2 equivalent: ``plot_coefCC`` at peak locus stacked above ``plot_scan1``.
     The effect bar uses peak-locus betas from *eff_df* rather than a per-locus
     coefficient profile, because mosaiqtl stores only peak-locus betas per gene.
+    When *tss_mb_map* is provided, a third panel shows a zoomed cis-window view
+    with TSS and peak annotated relative to each other.
 
     Parameters
     ----------
@@ -1354,6 +1358,10 @@ def locus_panels_per_chr(
         Per-chromosome GEV threshold.
     priority_genes : dict, optional
         {chr: gene_name}.
+    tss_mb_map : dict, optional
+        {gene_name: tss_mb}. When provided, adds a zoomed LOD panel per figure.
+    zoom_window_mb : float
+        Margin around the [TSS, peak] interval in the zoom panel. Default 1.0 Mb.
 
     Returns
     -------
@@ -1409,12 +1417,15 @@ def locus_panels_per_chr(
                 peak_pos = float(row0.get('peak_mb', lod_top['pos_mb'].iloc[0]))
 
         thr_val: Optional[float] = thr.get(c)
+        tss = (tss_mb_map or {}).get(top_gene)
         fig = locus_panel(
             lod_top['pos_mb'].values,
             lod_top['lod'].values,
             founders or [],
             peak_betas=peak_betas,
             peak_pos=peak_pos,
+            tss_mb=tss,
+            zoom_window_mb=zoom_window_mb,
             threshold=thr_val,
             chrom=c,
             highlight_gene=top_gene,
@@ -1435,13 +1446,19 @@ def locus_panel(
     *,
     peak_betas: Optional[np.ndarray] = None,
     peak_pos: Optional[float] = None,
+    tss_mb: Optional[float] = None,
+    zoom_window_mb: float = 1.0,
     threshold: Optional[float] = None,
     chrom: str = '',
     highlight_gene: Optional[str] = None,
 ) -> plt.Figure:
-    """qtl2-style two-panel locus view: founder effect bars (top) + LOD profile.
+    """qtl2-style locus view: founder effect bars + full LOD profile + zoom panel.
 
-    The top panel is omitted when *peak_betas* is None, yielding a single LOD panel.
+    Panels present depend on which optional arguments are supplied:
+    - *peak_betas* adds the founder effect bar panel at the top.
+    - *tss_mb* adds a zoomed LOD panel showing TSS and peak positions relative
+      to each other, replacing the chromosome-wide view with a cis-window close-up.
+    - Neither → single full-chromosome LOD panel.
 
     Parameters
     ----------
@@ -1452,11 +1469,17 @@ def locus_panel(
     founders : list[str]
         Display-name founders in FOUNDER_ORDER for the effect bar axis labels.
     peak_betas : np.ndarray, optional
-        Per-founder betas at the peak locus (shape (J,)); adds the top panel.
+        Per-founder betas at the peak locus (shape (J,)); adds the effect bar panel.
     peak_pos : float, optional
-        Peak locus position in Mb; passed to lod_profile for annotation.
+        Peak locus position in Mb; annotated on both LOD panels.
+    tss_mb : float, optional
+        Gene TSS position in Mb; when provided, adds a zoomed cis-window panel
+        showing TSS (dashed) and peak (dotted) relative to each other.
+    zoom_window_mb : float
+        Half-width of margin on each side of the [TSS, peak] interval in the zoom
+        panel. Default 1.0 Mb.
     threshold : float, optional
-        Permutation threshold; drawn as a dashed line on the LOD panel.
+        Permutation threshold; drawn as a dashed line on the LOD panels.
     chrom : str
         Chromosome label for the x-axis.
     highlight_gene : str, optional
@@ -1466,35 +1489,68 @@ def locus_panel(
     -------
     plt.Figure
     """
-    if peak_betas is not None:
-        fig, (ax_top, ax_bot) = plt.subplots(
-            2, 1, figsize=(10, 5), dpi=300,
-            gridspec_kw={'height_ratios': [2, 1]},
-        )
+    has_betas = peak_betas is not None
+    has_zoom  = tss_mb is not None
 
-        _effect_bars(peak_betas, founders, ax=ax_top)
-        ax_top.set_xlabel('')
-        title = highlight_gene or ''
-        if chrom:
-            title = f'{title}  chr{chrom}' if title else f'chr{chrom}'
+    # ── build panel layout ────────────────────────────────────────────────────
+    n_panels = (1 if has_betas else 0) + 1 + (1 if has_zoom else 0)
+    ratios   = ([2] if has_betas else []) + [1] + ([1] if has_zoom else [])
+    fig_h    = 2.5 * sum(ratios)
+
+    fig, axes = plt.subplots(
+        n_panels, 1, figsize=(10, fig_h), dpi=300,
+        gridspec_kw={'height_ratios': ratios},
+        squeeze=False,
+    )
+    axes_flat = axes.ravel()
+    ax_idx = 0
+
+    title = highlight_gene or ''
+    if chrom:
+        title = f'{title}  chr{chrom}' if title else f'chr{chrom}'
+
+    # ── panel 1: founder effect bars ─────────────────────────────────────────
+    if has_betas:
+        ax_eff = axes_flat[ax_idx]; ax_idx += 1
+        _effect_bars(peak_betas, founders, ax=ax_eff)
+        ax_eff.set_xlabel('')
         if title:
-            ax_top.set_title(title, fontsize=9)
-        sns.despine(ax=ax_top)
+            ax_eff.set_title(title, fontsize=9)
+        sns.despine(ax=ax_eff)
 
-        lod_profile(positions, lod, ax=ax_bot, chrom=chrom,
-                    threshold=threshold, peak_pos=peak_pos, fill=True)
-        ax_bot.set_title('')
-        sns.despine(ax=ax_bot)
-    else:
-        fig, ax_bot = plt.subplots(figsize=(10, 3), dpi=300)
-        lod_profile(positions, lod, ax=ax_bot, chrom=chrom,
-                    threshold=threshold, peak_pos=peak_pos, fill=True)
-        if highlight_gene or chrom:
-            label = highlight_gene or ''
-            if chrom:
-                label = f'{label}  chr{chrom}' if label else f'chr{chrom}'
-            ax_bot.set_title(label, fontsize=9)
-        sns.despine(ax=ax_bot)
+    # ── panel 2: full-chromosome LOD profile ─────────────────────────────────
+    ax_full = axes_flat[ax_idx]; ax_idx += 1
+    lod_profile(positions, lod, ax=ax_full, chrom=chrom,
+                threshold=threshold, peak_pos=peak_pos, fill=True)
+    ax_full.set_title('')
+    if not has_betas and title:
+        ax_full.set_title(title, fontsize=9)
+    sns.despine(ax=ax_full)
+
+    # ── panel 3: zoomed cis-window ────────────────────────────────────────────
+    if has_zoom:
+        ax_zoom = axes_flat[ax_idx]
+        anchor  = peak_pos if peak_pos is not None else tss_mb
+        lo = min(tss_mb, anchor) - zoom_window_mb       # type: ignore[arg-type]
+        hi = max(tss_mb, anchor) + zoom_window_mb       # type: ignore[arg-type]
+
+        mask = (positions >= lo) & (positions <= hi)
+        pos_z = positions[mask]
+        lod_z = lod[mask]
+
+        if pos_z.size > 0:
+            lod_profile(pos_z, lod_z, ax=ax_zoom, chrom=chrom,
+                        threshold=threshold, peak_pos=None, fill=True)
+        ax_zoom.set_xlim(lo, hi)
+
+        ax_zoom.axvline(tss_mb, color=COLOR_NEUTRAL_DARK,
+                        linewidth=0.9, linestyle='--', zorder=2, label='TSS')
+        if peak_pos is not None:
+            ax_zoom.axvline(peak_pos, color=FOUNDER_COLORS['PWKJ'],
+                            linewidth=0.9, linestyle=':', zorder=2, label='peak')
+        ax_zoom.set_xlabel(f'chr{chrom} position (Mb)')
+        ax_zoom.legend(fontsize=7, frameon=False)
+        sns.despine(ax=ax_zoom)
 
     fig.tight_layout()
     return fig
