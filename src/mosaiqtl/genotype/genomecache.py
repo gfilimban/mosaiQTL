@@ -26,6 +26,104 @@ logger = logging.getLogger('mosaiqtl')
 CC_FOUNDERS = ['aj', 'b6j', '129s1j', 'nodj', 'nzoj', 'castj', 'pwkj', 'wsbj']
 
 
+def _encode_abh_vec(
+    geno: np.ndarray,
+    a1: np.ndarray,
+    a2: np.ndarray,
+    poly: np.ndarray,
+    miss_codes: list,
+) -> np.ndarray:
+    """Vectorized A/B/H/- encoding over a (n_markers, n_col) string array.
+
+    Parameters
+    ----------
+    geno : np.ndarray of dtype object, shape (n_m, n_col)
+    a1, a2 : (n_m,) reference allele arrays (from founder-derived allele codes)
+    poly : (n_m,) bool — markers with two distinct founder alleles
+    miss_codes : list of strings treated as missing ('N', '-', 'nan', '')
+    """
+    miss = np.isin(geno, miss_codes)
+    h    = geno == 'H'
+    out  = np.full(geno.shape, '-', dtype=object)
+    a1e, a2e, pe = a1[:, None], a2[:, None], poly[:, None]
+    valid = pe & ~miss
+    out = np.where(valid & ~h & (geno == a1e), 'A', out)
+    out = np.where(valid & ~h & (geno == a2e), 'B', out)
+    out = np.where(valid & h,                  'H', out)
+    return out
+
+
+def _gigamuga_chr_worker(task: dict) -> dict:
+    """ProcessPoolExecutor worker: run the diplotype HMM on one chromosome.
+
+    Receives pre-encoded A/B/H/- genotype arrays and returns the
+    per-chromosome probs dict ready for GenomeCache. Population-agnostic:
+    n_gen and inbred come from the task dict set by from_gigamuga.
+    """
+    from .hmm import calc_genoprob_cc  # imported in worker process
+
+    chrom        = task['chrom']
+    geno_cc      = task['geno_cc']       # (n_m, n_samples) object
+    geno_f       = task['geno_f']        # (n_m, J) object
+    gmap_pos     = task['gmap_pos']      # (n_m,) cM
+    pmap_pos     = task['pmap_pos']      # (n_m,) Mb
+    locus_ids    = task['locus_ids']     # (n_m,) str
+    n_founders   = task['n_founders']
+    n_gen        = task['n_gen']
+    inbred       = task['inbred']
+    error_prob   = task['error_prob']
+    cc_cols      = task['cc_cols']
+    founder_cols = task['founder_cols']
+    f1_crosses   = task['f1_crosses']
+    all_48       = task['all_48']
+    step_cM      = task['step_cM']
+
+    result = calc_genoprob_cc(
+        geno_cc, geno_f, gmap_pos,
+        n_founders=n_founders, n_gen=n_gen,
+        error_prob=error_prob,
+        return_additive=True, cc_inbred=inbred,
+        step_cM=step_cM,
+    )
+
+    if step_cM is not None:
+        probs_cc, aug_gmap_cM, is_real = result
+        aug_pmap_pos = np.interp(aug_gmap_cM, gmap_pos, pmap_pos)
+        _digits = max(0, int(np.ceil(-np.log10(step_cM))))
+        real_iter = iter(locus_ids)
+        aug_locus_ids = np.array([
+            next(real_iter) if ir else f'c{chrom}.loc{aug_gmap_cM[k]:.{_digits}f}'
+            for k, ir in enumerate(is_real)
+        ])
+        n_aug = len(aug_gmap_cM)
+    else:
+        probs_cc      = result
+        aug_pmap_pos  = pmap_pos
+        aug_locus_ids = locus_ids
+        n_aug         = len(locus_ids)
+
+    n_strains = len(all_48)
+    probs_chr = np.zeros((n_strains, n_founders, n_aug), dtype=np.float32)
+
+    for i, col in enumerate(cc_cols):
+        probs_chr[all_48.index(col)] = probs_cc[i].astype(np.float32)
+    for fi, fcol in enumerate(founder_cols):
+        probs_chr[all_48.index(fcol), fi, :] = 1.0
+    for sample_id, pi1, pi2 in f1_crosses:
+        probs_chr[all_48.index(sample_id), pi1, :] = 0.5
+        probs_chr[all_48.index(sample_id), pi2, :] = 0.5
+
+    return {
+        'chrom': chrom,
+        'data': {
+            'locus_ids': aug_locus_ids,
+            'positions': aug_pmap_pos,
+            # (n_loci, n_strains, J) C-contiguous
+            'probs': np.ascontiguousarray(np.transpose(probs_chr, (2, 0, 1))),
+        },
+    }
+
+
 class GenomeCache:
     """in-memory or lazy-loaded haplotype probability store.
 
@@ -276,21 +374,23 @@ class GenomeCache:
 
     @staticmethod
     def from_gigamuga(gigamuga_path, gmap_dir, pmap_dir,
-                      cc_cols, founder_cols, f1_crosses,
+                      cc_cols, founder_cols, f1_crosses=None,
                       n_founders=8, n_gen=1, error_prob=0.002,
+                      inbred=True,
                       just_these_loci=None, qc=None,
                       crossinfo_path=None, step_cM=None):
         """build genome cache from raw GigaMUGA genotype data.
-        this is the fully Python-native path: reads the GigaMUGA consensus
-        matrix CSV, runs the CC diplotype HMM (hmm.py), builds deterministic
-        founder and F1 arrays, merges all 48 genotypes, and returns a
-        GenomeCache with additive (8-founder) haplotype probabilities.
+
+        population-agnostic: works for CC (inbred=True, n_gen=1), DO
+        (inbred=False, n_gen=<breeding_gen>), and custom MPPs. the caller
+        supplies sample_cols, founder_cols, and optionally f1_crosses; the
+        HMM parameters n_gen and inbred are passed through to calc_genoprob_cc.
 
         pipeline:
-          gigamuga CSV → encode A/H/B → CC HMM (forward-backward) → additive probs
-                       → deterministic founder arrays (homozygous, prob=1)
-                       → deterministic F1 arrays (heterozygous, prob=1 each parent 0.5)
-                       → GenomeCache(48 strains × 8 founders × n_loci)
+          gigamuga CSV → encode A/H/B (vectorised, J passes) → HMM (forward-backward,
+          parallel per chromosome) → additive probs → deterministic founder arrays
+          (homozygous, prob=1) → deterministic F1 arrays (prob=0.5 each parent)
+          → GenomeCache(n_samples × n_founders × n_loci)
 
         this is the Python equivalent of founders_f1_genomecache.ipynb
         steps 1-7 without calling any R functions.
@@ -336,9 +436,8 @@ class GenomeCache:
         """
         import glob
         import pandas as pd
-        from .hmm import calc_genoprob_cc
 
-        logger.info('building genome cache from raw GigaMUGA (no R)...')
+        logger.info('building genome cache from raw GigaMUGA...')
 
         # load per-strain crossinfo if provided
         # columns A-H = funnel position (1-8) per founder per CC strain
@@ -447,128 +546,85 @@ class GenomeCache:
             key=chr_sort_key,
         )
 
-        # ── process per chromosome ────────────────────────────────────────────
-        data   = {}
+        if f1_crosses is None:
+            f1_crosses = []
+
+        # ── vectorised encoding (all chromosomes at once) ─────────────────────
+        # find_unique_geno + encode_geno over the full sorted marker set,
+        # replacing the per-marker Python loop with J-pass numpy broadcasting.
+        # a1/a2 derived from founder columns; sample columns encoded identically.
+        # Canonical qtl2convert workflow (kbroman.org/qtl2/pages/prep_do_data.html):
+        #   allele_codes  <- find_unique_geno(geno = geno_founders_clean)
+        #   geno_founders_encoded <- encode_geno(geno_founders_clean, allele_codes)
+        #   geno_samples_encoded  <- encode_geno(geno_samples_clean,  allele_codes)
         all_48 = cc_cols + list(founder_cols) + [f[0] for f in f1_crosses]
 
+        MISS_CODES = {'N', '-', 'nan', ''}
+        MISS_LIST  = list(MISS_CODES | {'H'})     # excluded when finding a1/a2
+
+        f_str  = gm[list(founder_cols)].values.astype(str)  # (n_total, J)
+        cc_str = gm[cc_cols].values.astype(str)             # (n_total, n_cc)
+
+        # J passes over all markers — O(J · n_total) vs O(n_total · J · n_cc) per-marker loop
+        valid_f = ~np.isin(f_str, MISS_LIST)    # (n_total, J)
+        a1_all  = np.full(len(shared), '', dtype=object)
+        a2_all  = np.full(len(shared), '', dtype=object)
+        for fi in range(n_founders):
+            col   = f_str[:, fi]
+            need1 = valid_f[:, fi] & (a1_all == '')
+            a1_all = np.where(need1, col, a1_all)
+            need2 = valid_f[:, fi] & (a1_all != '') & (a2_all == '') & (col != a1_all)
+            a2_all = np.where(need2, col, a2_all)
+        poly_all = (a1_all != '') & (a2_all != '')
+
+        miss_list    = list(MISS_CODES)
+        geno_f_all   = _encode_abh_vec(f_str,  a1_all, a2_all, poly_all, miss_list)
+        geno_cc_all  = _encode_abh_vec(cc_str, a1_all, a2_all, poly_all, miss_list)
+
+        # ── build per-chromosome task dicts ───────────────────────────────────
+        gmap_chr_col   = gmap['chr']
+        gmap_pos_all   = gmap['pos_cM'].values.astype(float)
+        gmap_index_arr = np.array(gmap.index.tolist())
+
+        tasks = []
         for chrom in chrs:
-            # gmap['chr'] is already str; chrom is str from chrs list
-            chr_mask  = gmap['chr'] == chrom
-            chr_loci   = gmap[chr_mask].index.tolist()
-            if not chr_loci:
+            mask = (gmap_chr_col == chrom).values
+            if not mask.any():
                 continue
+            loci = gmap_index_arr[mask]
+            tasks.append({
+                'chrom':        chrom,
+                'geno_cc':      geno_cc_all[mask],
+                'geno_f':       geno_f_all[mask],
+                'gmap_pos':     gmap_pos_all[mask],
+                'pmap_pos':     pmap_idx.loc[loci, 'pos_mb'].values.astype(float),
+                'locus_ids':    loci,
+                'n_founders':   n_founders,
+                'n_gen':        n_gen,
+                'inbred':       inbred,
+                'error_prob':   error_prob,
+                'cc_cols':      cc_cols,
+                'founder_cols': list(founder_cols),
+                'f1_crosses':   f1_crosses,
+                'all_48':       all_48,
+                'step_cM':      step_cM,
+            })
 
-            gmap_pos = gmap.loc[chr_loci, 'pos_cM'].values.astype(float)
-            pmap_pos = pmap_idx.loc[chr_loci, 'pos_mb'].values.astype(float)
-            locus_ids = np.array(chr_loci)
+        # ── parallel per-chromosome HMM (one worker per chr) ──────────────────
+        import os
+        from concurrent.futures import ProcessPoolExecutor
+        n_proc = min(len(tasks), os.cpu_count() or 4)
+        logger.info(
+            f'running HMM on {len(tasks)} chromosomes '
+            f'(n_gen={n_gen}, inbred={inbred}, {n_proc} workers)...'
+        )
+        if n_proc > 1:
+            with ProcessPoolExecutor(max_workers=n_proc) as pool:
+                results = list(pool.map(_gigamuga_chr_worker, tasks))
+        else:
+            results = [_gigamuga_chr_worker(t) for t in tasks]
 
-            geno_cc       = gm.loc[chr_loci, cc_cols].values         # (n_m, n_cc) nucleotides
-            geno_founders = gm.loc[chr_loci, list(founder_cols)].values  # (n_m, J) nucleotides
-
-            # ── find_unique_geno + encode_geno equivalent (founder-first, qtl2 ground truth) ──
-            # Canonical qtl2convert workflow (kbroman.org/qtl2/pages/prep_do_data.html):
-            #   allele_codes  <- find_unique_geno(geno = geno_founders_clean)
-            #   geno_founders_encoded <- encode_geno(geno_founders_clean, allele_codes)
-            #   geno_cc_encoded       <- encode_geno(geno_cc_clean,       allele_codes)
-            #
-            # Allele codes (a1/a2) are derived from the 8 FOUNDER columns, not CC strains.
-            # Markers where founders are monomorphic or all-missing have no haplotype-
-            # discrimination power for the HAPPY HMM and are skipped (encoded as all '-').
-            # CC strains are then encoded using the same founder-derived codes.
-            n_m = len(chr_loci)
-            MISS_CODES = {'N', '-', 'nan', ''}
-
-            cc_str = geno_cc.astype(str)        # (n_m, n_cc)
-            f_str  = geno_founders.astype(str)  # (n_m, J)
-
-            geno_cc_abh = np.full(cc_str.shape, '-', dtype=object)
-            geno_f_abh  = np.full(f_str.shape,  '-', dtype=object)
-
-            for m in range(n_m):
-                # find_unique_geno on founders: two alleles from 8 founder calls
-                f_valid  = [g for g in f_str[m] if g not in MISS_CODES and g != 'H']
-                unique_f = list(dict.fromkeys(f_valid))  # order of first appearance
-                if len(unique_f) < 2:
-                    # monomorphic or all-missing across 8 founders: zero haplotype-
-                    # discrimination power; gmap/pmap exclude these via R step 3
-                    continue
-                a1, a2 = unique_f[0], unique_f[1]
-
-                # encode_geno on founders using founder-derived allele codes
-                for fi in range(geno_f_abh.shape[1]):
-                    g = f_str[m, fi]
-                    if g in MISS_CODES:    geno_f_abh[m, fi] = '-'
-                    elif g == 'H':         geno_f_abh[m, fi] = 'H'
-                    elif g == a1:          geno_f_abh[m, fi] = 'A'
-                    elif g == a2:          geno_f_abh[m, fi] = 'B'
-
-                # encode_geno on CC strains with the same founder-derived codes
-                for si in range(geno_cc_abh.shape[1]):
-                    g = cc_str[m, si]
-                    if g in MISS_CODES:    geno_cc_abh[m, si] = '-'
-                    elif g == 'H':         geno_cc_abh[m, si] = 'H'
-                    elif g == a1:          geno_cc_abh[m, si] = 'A'
-                    elif g == a2:          geno_cc_abh[m, si] = 'B'
-
-            n_markers  = len(chr_loci)
-            n_strains  = len(all_48)
-            # CC strains: HMM forward-backward on A/H/B encoded calls
-            logger.info(f'  chr{chrom}: running CC HMM ({len(cc_cols)} strains, ' +
-                        f'{n_markers} markers)...')
-            result = calc_genoprob_cc(
-                geno_cc_abh, geno_f_abh, gmap_pos,
-                n_founders=n_founders, n_gen=1,   # consensus map encodes recombination history
-                error_prob=error_prob,
-                return_additive=True,
-                cc_inbred=True,   # homozygous-only prior for fully inbred CC strains
-                step_cM=step_cM,
-            )
-
-            if step_cM is not None:
-                # unpack augmented (real + pseudo) positions
-                probs_cc, aug_gmap_cM, is_real = result
-                n_aug = len(aug_gmap_cM)
-                # interpolate physical positions at pseudomarker cM positions
-                aug_pmap_pos  = np.interp(aug_gmap_cM, gmap_pos, pmap_pos)
-                # real markers keep their IDs; pseudomarkers get generated IDs
-                # qtl2 pseudomarker naming: c{chr}.loc{pos} with digits = ceil(-log10(step))
-                _digits = max(0, int(np.ceil(-np.log10(step_cM))))
-                real_iter = iter(locus_ids)
-                aug_locus_ids = np.array([
-                    next(real_iter) if is_r else f'c{chrom}.loc{aug_gmap_cM[k]:.{_digits}f}'
-                    for k, is_r in enumerate(is_real)
-                ])
-                logger.info(f'  chr{chrom}: {n_markers} real + {n_aug - n_markers} '
-                            f'pseudo = {n_aug} total loci')
-            else:
-                probs_cc      = result
-                n_aug         = n_markers
-                aug_pmap_pos  = pmap_pos
-                aug_locus_ids = locus_ids
-
-            probs_chr = np.zeros((n_strains, n_founders, n_aug), dtype=np.float64)
-
-            for i, col in enumerate(cc_cols):
-                si = all_48.index(col)
-                probs_chr[si] = probs_cc[i]
-
-            # founders: deterministic homozygous at all positions (real + pseudo)
-            for fi, fcol in enumerate(founder_cols):
-                si = all_48.index(fcol)
-                probs_chr[si, fi, :] = 1.0
-
-            # F1s: deterministic heterozygous at all positions (real + pseudo)
-            for sample_id, pi1, pi2 in f1_crosses:
-                si = all_48.index(sample_id)
-                probs_chr[si, pi1, :] = 0.5
-                probs_chr[si, pi2, :] = 0.5
-
-            # store as (n_loci, n_strains, n_founders) — mosaiqtl convention
-            data[str(chrom)] = {
-                'locus_ids': aug_locus_ids,
-                'positions': aug_pmap_pos,
-                'probs':     np.transpose(probs_chr, (2, 0, 1)),
-            }
+        data = {r['chrom']: r['data'] for r in results}
 
         cache = GenomeCache(all_48, list(founder_cols), data)
         cache.crossinfo = _crossinfo   # None if crossinfo_path not provided

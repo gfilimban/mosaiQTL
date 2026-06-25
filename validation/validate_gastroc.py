@@ -19,7 +19,7 @@ Prerequisites (optional, for R comparison gates):
   Rscript validation/r_reference/gastroc_miqtl_scan.R [sections] [chr] [scan_type]
 
 Outputs (all in validation/gastroc_data/):
-  py_data/    scan CSVs, checkpoint .done files, run_summary.csv, egenes.csv
+  py_data/    scan CSVs, checkpoint .done files, run_summary.csv, eqtl_summary.csv
   plots/      descriptive + optional R-comparison figures
   compare/    py-vs-R merged CSVs (written only when R data present)
 
@@ -731,10 +731,18 @@ def _make_descriptive_plots(
                             bbox_inches='tight')
             plt.close(fig_lcg)
             log.info('  s4_locus_panel_grid.png')
+            _tss_mb_map4 = None
+            if 'tss_mb' in _eff4.columns:
+                _tss_mb_map4 = {
+                    str(g): float(t)
+                    for g, t in zip(_eff4['gene'], _eff4['tss_mb'])
+                    if pd.notna(t)
+                }
             _lp_figs = _viz_locus_panels_per_chr(
                 _lod_df, _eff4, _fnames4,
                 _thr_by_chr or None,
                 priority_genes=PRIORITY_GENE,
+                tss_mb_map=_tss_mb_map4,
             )
             for _lp_c, _lp_fig in _lp_figs.items():
                 _lp_fig.savefig(_s4_lp_dir / f's4_locus_panel_chr{_lp_c}.png', dpi=300)
