@@ -28,9 +28,9 @@ Data: sparcc_cache + phenotypes.csv (from port_sim_validation.R export)
 
 | ID | Section | R function | Threshold | Current | Status |
 |---|---|---|---|---|---|
-| P1-S1 | ROP scan LOD r² | scan.h2lmm (ROP) | 0.9975 | 🟢 | 🟢 |
-| P1-S2 | MI scan LOD r | scan.h2lmm (MI, num.imp=11) | 0.9718 | 🟢 | 🟢 |
-| P1-S3 | GEV threshold delta | get.gev.thresholds (95th pct) | 0.1543 | 🟢 | 🟢 |
+| P1-S1 | ROP scan LOD r² | scan.h2lmm (ROP) | ≥ 0.990 | 0.9975 | 🟢 |
+| P1-S2 | MI scan LOD r | scan.h2lmm (MI, num.imp=11) | ≥ 0.75 | 0.9718 | 🟢 |
+| P1-S3 | GEV threshold delta | get.gev.thresholds (95th pct) | < 0.5 LOD | 0.1543 | 🟢 |
 
 Run: `python validation/validate_sim.py`
 Pass = all three gates green simultaneously.

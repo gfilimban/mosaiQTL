@@ -23,9 +23,10 @@ TODAY = date.today().isoformat()
 # SPEED table:      | ID | Desc | Baseline | Target | Current | Delta | Last tested |
 # MEM table:        | ID | Desc | Target | Current | Assessment |
 COLS: dict[str, tuple[str, int]] = {
-    'P1-S1-cur': ('P1-S1', 4), 'P1-S1-sta': ('P1-S1', 5),
-    'P1-S2-cur': ('P1-S2', 4), 'P1-S2-sta': ('P1-S2', 5),
-    'P1-S3-cur': ('P1-S3', 4), 'P1-S3-sta': ('P1-S3', 5),
+    # Phase 1 table: | ID | Section | R function | Threshold | Current | Status |
+    'P1-S1-cur': ('P1-S1', 5), 'P1-S1-sta': ('P1-S1', 6),
+    'P1-S2-cur': ('P1-S2', 5), 'P1-S2-sta': ('P1-S2', 6),
+    'P1-S3-cur': ('P1-S3', 5), 'P1-S3-sta': ('P1-S3', 6),
     'SPEED-01-cur': ('SPEED-01', 5), 'SPEED-01-dt': ('SPEED-01', 7),
     'SPEED-02-cur': ('SPEED-02', 5), 'SPEED-02-dt': ('SPEED-02', 7),
     'SPEED-05-cur': ('SPEED-05', 5), 'SPEED-05-dt': ('SPEED-05', 7),
