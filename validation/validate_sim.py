@@ -233,9 +233,13 @@ def run(sparcc_cache, r_data, out_dir):
     #                                       return.allele.effects=TRUE)
     # ─────────────────────────────────────────────────────────────────────────
     log.info('\nROP scan...')
+    # use_rint=False: R collapses replicates → strain means BEFORE rank.normalize
+    # (pheno.id=geno.id in scan.h2lmm triggers make.processed.data averaging).
+    # Python sample-level RINT diverges from R post-averaging RINT; sparc
+    # phenotypes are ~normal so skipping RINT here is the correct match.
     rop_scan = scan_h2lmm(y, cache, sample_ids=sample_ids,
                           kinship_decomp=ols_kd, fixed_h2_dict=ols_h2,
-                          phenotype_id='sim.y.1',
+                          use_rint=False, phenotype_id='sim.y.1',
                           scan_window='genome')
     log.info('  peak LOD = %.3f at locus %s',
              float(rop_scan.lod.max()), rop_scan.peak_locus()['locus_id'])
@@ -288,6 +292,7 @@ def run(sparcc_cache, r_data, out_dir):
     log.info('\nMI scan (num_imp=11)...')
     mi_scan = scan_h2lmm_mi(y, cache, sample_ids=sample_ids,
                             kinship_decomp=ols_kd,
+                            use_rint=False,  # same reason as ROP scan above
                             n_imp=11, seed=1,
                             phenotype_id='sim.y.1',
                             scan_window='genome')
