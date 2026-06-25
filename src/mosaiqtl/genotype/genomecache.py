@@ -169,7 +169,7 @@ class GenomeCache:
         if h is not None:
             try:
                 h.close()
-            except Exception:
+            except OSError:
                 pass
 
     def get_locus(self, chrom, locus_idx):
@@ -1029,9 +1029,11 @@ def pheno_df(h5ad_path, strain_col='strain', layer=None, strains=None,
         raise ValueError(f'strain_col {strain_col!r} not found in adata.obs. '
                          f'Available: {list(adata.obs.columns)[:10]}')
 
-    # extract expression matrix as dense numpy
+    # extract expression matrix as dense numpy — raw.X for NB correctness
     if layer is not None:
         X = adata.layers[layer]
+    elif adata.raw is not None:
+        X = adata.raw.X
     else:
         X = adata.X
     if hasattr(X, 'toarray'):

@@ -31,7 +31,7 @@ class MissingCovariateError(ValueError):
 
 def build_covariate_matrix(
     sample_metadata: pd.DataFrame,
-    covariates: list[str] = [],
+    covariates: list[str] | None = None,
     n_expression_pcs: int = 0,
     n_genotype_pcs: int = 0,
     population: Optional[Union[str, Population]] = None,
@@ -114,6 +114,9 @@ def build_covariate_matrix(
                 f"population={pop_label!r}: LOCO kinship already captures all "
                 f'population structure. Set n_genotype_pcs=0.'
             )
+
+    if covariates is None:
+        covariates = []
 
     meta = sample_metadata.set_index('sample_id').sort_index()
     parts: list[pd.DataFrame] = []

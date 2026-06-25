@@ -734,7 +734,7 @@ def fixef_eqtl_scan(
                 beta = np.linalg.lstsq(z_, y, rcond=1e-10)[0]
                 e1 = y - z_ @ beta
                 rss1 = float(e1 @ e1)
-            except Exception:
+            except np.linalg.LinAlgError:
                 all_lod.append(0.0)
                 all_pval.append(1.0)
                 all_betas.append(np.zeros(nf))
@@ -1026,9 +1026,7 @@ def scan_h2lmm_mi(
         x_base = np.hstack([np.ones((len(x_base), 1)), x_base])
     _zsub_mi = _z_mi[valid_mi] if _z_mi is not None else None
     if use_rint:
-        from ..utils import rint as _rint_mi
-
-        y_base = _rint_mi(y_base)
+        y_base = rint(y_base)
     if _zsub_mi is not None:
         _r_mi = _zsub_mi.sum(axis=0)
         y_base = (_zsub_mi.T @ y_base) / _r_mi

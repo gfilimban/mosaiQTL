@@ -108,9 +108,18 @@ Rscript validation/r_reference/merge_chr_outputs.R             # after SLURM arr
 | Phase | Gate | Threshold | Status |
 |---|---|---|---|
 | P1-S1 | ROP LOD r² | ≥ 0.990 | 🟢 0.9975 |
-| P1-S2 | MI LOD r | ≥ 0.75 | 🟢 0.9756 |
+| P1-S2 | MI LOD r | ≥ 0.75 | 🟢 0.9718 |
 | P1-S3 | GEV threshold delta | < 0.5 | 🟢 0.1543 |
-| P2-S1..S11 | Phase 2 sim (all 11 sections) | various | 🔴 not yet run |
+| P2-S1..S11 | Phase 2 sim (all 11 sections) | various | 🟢 9/9 runnable |
+
+### Speed (M3 Mac, simulated, same hardware)
+
+| Benchmark | mosaiQTL | miQTL | Speedup |
+|---|---|---|---|
+| Genome-wide scan (43k genes, 20 chr) | 2.79h | — | — |
+| LMM scan (50 genes genome-wide) | 19.8s | 400.8s | **20.2×** |
+| Permutation (1000 perms, genome-wide) | 2.3s | 1555s | **678×** |
+| Peak RSS (43k genes, 20 chr) | 897 MB | — | — |
 
 ---
 

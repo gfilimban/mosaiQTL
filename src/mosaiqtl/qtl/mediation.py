@@ -245,8 +245,7 @@ def mediation_scan_qr(outcome, mediator, genomecache,
 
         def _rot_wt(x_cov, h2):
             """Rotate and weight x_cov by eigendecomp of kinship for given h2."""
-            delta = h2 / max(1 - h2, 1e-10)
-            w_inv = 1.0 / (delta * ev + 1.0)
+            w_inv = 1.0 / (h2 * ev + (1.0 - h2))
             w_sqrt = np.sqrt(w_inv)
             return (ev_v.T @ y) * w_sqrt, (ev_v.T @ x_cov) * w_sqrt[:, None], w_inv, w_sqrt
 
@@ -401,8 +400,7 @@ def mediation_scan_qr_batch(
 
         # fix h2 from base model
         h2, _ = lmm_module.estimate_h2_null(ev_v.T @ y, ev_v.T @ x_base, ev)
-        delta  = h2 / max(1 - h2, 1e-10)
-        w_inv  = 1.0 / (delta * ev + 1.0)
+        w_inv  = 1.0 / (h2 * ev + (1.0 - h2))
         w_sqrt = np.sqrt(w_inv)
 
         y_rot  = (ev_v.T @ y)      * w_sqrt                     # (n,)
