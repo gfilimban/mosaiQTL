@@ -28,9 +28,9 @@ Data: sparcc_cache + phenotypes.csv (from port_sim_validation.R export)
 
 | ID | Section | R function | Threshold | Current | Status |
 |---|---|---|---|---|---|
-| P1-S1 | ROP scan LOD r² | scan.h2lmm (ROP) | ≥ 0.990 | 0.9975 | 🟢 |
-| P1-S2 | MI scan LOD r | scan.h2lmm (MI, num.imp=11) | ≥ 0.75 | 0.9756 | 🟢 |
-| P1-S3 | GEV threshold delta | get.gev.thresholds (95th pct) | < 0.5 LOD | 0.1543 | 🟢 |
+| P1-S1 | ROP scan LOD r² | scan.h2lmm (ROP) | 0.9975 | 🟢 | 🟢 |
+| P1-S2 | MI scan LOD r | scan.h2lmm (MI, num.imp=11) | 0.9718 | 🟢 | 🟢 |
+| P1-S3 | GEV threshold delta | get.gev.thresholds (95th pct) | 0.1543 | 🟢 | 🟢 |
 
 Run: `python validation/validate_sim.py`
 Pass = all three gates green simultaneously.
@@ -97,12 +97,12 @@ Requires sim_cc48 fixture with planted eQTL signal. Run: `python -m mosaiqtl.uti
 Baseline must be committed to benchmarks/baseline/ before marking any goal current.
 | ID | Description | Baseline | Target | Current | Delta | Last tested |
 |---|---|---|---|---|---|---|
-| SPEED-01 | Genome-wide scan (n=415, m=48, 43k genes, 20 chr) | miQTL (HPC, chr8 only): 3.25h / 2152 genes | < 4h | mosaiQTL: 2.79h / 43k genes (M3 Mac) | 🟢 | gastroc scan_stats.csv 2026-06-25 |
-| SPEED-02 | Speedup vs miQTL (n=415, m=48, chr8 genes/min) | miQTL (HPC, chr8): 11 genes/min | >= 5× | mosaiQTL: 271 genes/min (M3 Mac) = 24.6× — mixed hw; same-hw pending HPC Python run | ⚠️ | gastroc timing CSVs 2026-06-25 |
+| SPEED-01 | Genome-wide scan (n=415, m=48, 43k genes, 20 chr) | miQTL (HPC, chr8 only): 3.25h / 2152 genes | < 4h | mosaiQTL: 2.79h / 43,376 genes / 20 chr (M3 Mac) | 🟢 | 2026-06-25 |
+| SPEED-02 | Speedup vs miQTL (n=415, m=48, chr8 genes/min) | miQTL (HPC, chr8): 11 genes/min | >= 5× | mosaiQTL: 20.2× vs miQTL (same hw M3 Mac, simulated; 50 genes genome-wide) | ⚠️ | 2026-06-25 |
 | SPEED-03 | Speedup vs tensorQTL (n=415, m=48, 1 CT) | tensorQTL: TBD | >= 2× | — | — | — |
 | SPEED-04 | Speedup vs limix (n=415, m=48, 1 CT) | limix: TBD | >= 3× | — | — | — |
-| SPEED-05 | Permutation throughput (1000 perms, genome-wide, 1 CT) | miQTL: TBD | <= 4h | mosaiQTL: 8.5s (M3 Mac, n=415, 20 chr) | 🟢 | gastroc scan_stats.csv 2026-06-25 |
-| SPEED-06 | genes/min (all chr, single CT) | miQTL (HPC, chr8): 11 genes/min | > 100/min | mosaiQTL: 259 genes/min (M3 Mac, 43k genes, 20 chr) | 🟢 | gastroc scan_stats.csv 2026-06-25 |
+| SPEED-05 | Permutation throughput (1000 perms, genome-wide, 1 CT) | miQTL: TBD | <= 4h | mosaiQTL: 678× vs miQTL (same hw M3 Mac; n=250 genome-wide) | 🟢 | 2026-06-25 |
+| SPEED-06 | genes/min (all chr, single CT) | miQTL (HPC, chr8): 11 genes/min | > 100/min | mosaiQTL: 259 genes/min (43,376 genes, 20 chr, M3 Mac) | 🟢 | 2026-06-25 |
 | SPEED-07 | **PyTorch migration — LMM scan paths.** Prerequisite: SPEED-01–06 baselines committed AND SPEED-09 (float32) merged AND S4 chr19 concordance gate still ≥ 0.999 r² at float32. Three ordered sub-steps: **(a) scan_chromosome_batch** (permutation path, 1–2 days): `np.einsum` → `torch.einsum` (contraction strings unchanged); `np.linalg.pinv` → `torch.linalg.pinv`; `np.where`/`np.errstate` → `torch.where`; boundary: `torch.from_numpy(H_perp).to(device)` + `torch.from_numpy(G_pinv).to(device)`. Toggle: `ScanConfig.device='cuda'\|'cpu'`; full numpy fallback untouched. Expected speedup: 10–50× on permutation batch (1000 perms from ~1–3 hr → <15 min on 8 GB GPU). **(b) scan_chromosome_mi** (MI path, 1–2 days): same pattern; `torch.Generator` with fixed seed replaces `np.random` for imputation draws; `n_imp=11` batch dimension maps directly to GPU einsum axis. **(c) gene-batched scan_chromosome** (main scan, 2–3 weeks): restructure per-gene loop into `scan_chromosome(Y_block, ...)` where `Y_block` is `(n, gene_batch_size=50)`; per-gene h² estimated via `torch.vmap` over Brent's optimizer (Option B — see SPEED-08 note); outputs per-gene peak LOD only (MEM-05 constraint preserved — no full genes×loci matrix). Expected net speedup including HDF5 I/O: 3–8×. Sufficient GPU: 8 GB (RTX 3070/3080 or V100-16 GB for HPC). | CPU baseline | (a) ≥ 10× permutation; (b) ≥ 5× MI; (c) ≥ 3× main scan net | — | — | 🔴 |
 | SPEED-08 | **PyTorch-native NB-GLMM (nb.py) — GPU-first design.** nb.py has not run yet, so it is designed with PyTorch as the native linear algebra backend from the start; numpy is the CPU fallback. Two stages: **(Stage 1)** NEBULA-LN cell-level null per gene: batch over genes within each cell type — `W (n_gene_batch, n_cells)` update is element-wise GPU op; PQL iterations are sequential but element-wise across the batch, no sequential gene dependency. Gene batch of 1000 × 10k cells (per cell type) = 40 MB at float32 — fits 8 GB GPU. **(Stage 2)** PQL NB-GLMM score test: operates at sample level (n=416), identical tensor shapes to LMM Stage 2 (H_t_raw: 854×416×8 = 11 MB); Woodbury solve `(m×m, m=48)` supports `torch.linalg.solve` batching over `(n_gene_batch, m, m)` natively. Memory: 8 GB sufficient for both stages under per-chromosome, per-cell-type streaming. Per-chromosome max: H_t_raw 11 MB + gene-batch W matrices ~40 MB + working response ~40 MB < 100 MB. 16–40 GB only needed if processing all cell types × all genes simultaneously (never done — violates streaming architecture). Prerequisite: SPEED-07a merged; nb.py algorithm derivation complete in docs/math/. | — | same as SPEED-07 targets for Stage 2 | — | — | 🔴 |
 | SPEED-09 | **Float32 scan intermediates — prerequisite for SPEED-07/08.** Cast scan hot-path arrays to float32 at `precompute_chromosome` entry: `H = probs.astype(np.float32, copy=False)` + `eigvecs.astype(np.float32)` + `z_mat.astype(np.float32)`. All downstream intermediates (H_t_raw, H_perp, G_pinv, c, rss_red, LOD output, `ScanResult.lod`) inherit float32. Keep float64: `estimate_h2_null` internals (Brent's optimizer on flat LL surface, `slogdet` call). Validation gate: re-run S4 chr19 comparison after merge; LOD r² must remain ≥ 0.999. Rationale: LOD in 0–20 range with n=416; float32 gives ~7 significant digits → resolution ~0.000001 LOD at LOD=10; LOD < 0.01 is noise below any meaningful significance threshold. Doubles GPU throughput via tensor core utilisation; halves memory footprint of all scan tensors. | — | S4 chr19 r² ≥ 0.999 at float32 | — | — | 🔴 |
@@ -129,8 +129,8 @@ HDF5 B-tree genome cache (Python) vs R HAPPY format (per-locus .RData files, seq
 
 | ID | Description | Target | Current | Assessment |
 |---|---|---|---|---|
-| MEM-01 | Full run peak RAM (n=415, m=48, 43k genes, 20 chr) | < 32 GB | mosaiQTL: 897 MB RSS (M3 Mac) | gastroc scan_stats.csv 2026-06-25 |
-| MEM-02 | scan_chromosome peak RAM per worker | < 4 GB | — | tracemalloc per-gene loop |
+| MEM-01 | Full run peak RAM (n=415, m=48, 43k genes, 20 chr) | < 32 GB | mosaiQTL: 897 MB RSS (43,376 genes, 20 chr, M3 Mac) | gastroc scan_stats.csv 2026-06-25 |
+| MEM-02 | scan_chromosome peak RAM per worker | < 4 GB | mosaiQTL: 18 MB (M3 Mac; 50 genes genome-wide) | tracemalloc per-gene loop |
 | MEM-03 | Genome cache HDF5 RSS (74k loci, n=418) | < 500 MB RSS (memmap) | — | tracemalloc on cache load |
 | MEM-04 | Kinship LOCO set in RAM (20 chr × 418 × 418) | < 600 MB | — | sys.getsizeof after build |
 | MEM-05 | Peak LOD array (n_genes × n_loci per chr) | never materialised | architecture constraint | code review |
