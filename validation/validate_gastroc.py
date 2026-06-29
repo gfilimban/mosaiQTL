@@ -133,7 +133,7 @@ from mosaiqtl.qtl.permutation import (
 )
 from mosaiqtl.qtl.mediation import (
     mediation_scan_qr,
-    mediation_scan_qr_batch,
+    mediation_scan_qr,
     select_cis_mediation_pairs,
     mediation_scan_multi_outcome,
 )

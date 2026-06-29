@@ -23,7 +23,8 @@ from ..utils import chr_sort_key
 logger = logging.getLogger('mosaiqtl')
 
 # default cc founder strain names (in standard order)
-CC_FOUNDERS = ['aj', 'b6j', '129s1j', 'nodj', 'nzoj', 'castj', 'pwkj', 'wsbj']
+from .founders import FOUNDER_ORDER as _FOUNDER_ORDER
+CC_FOUNDERS: list[str] = list(_FOUNDER_ORDER)
 
 
 def _encode_abh_vec(
@@ -1035,6 +1036,10 @@ def pheno_df(h5ad_path, strain_col='strain', layer=None, strains=None,
     elif adata.raw is not None:
         X = adata.raw.X
     else:
+        logger.warning(
+            'adata.raw is None — falling back to adata.X. '
+            'Ensure adata.X contains raw counts; normalized values will corrupt LOD scores.'
+        )
         X = adata.X
     if hasattr(X, 'toarray'):
         X = X.toarray()

@@ -67,7 +67,7 @@ class TestScanEpistasis:
         result = scan_epistasis(
             tiny_strain_phenotype, tiny_cache, la, lb,
             kinship_decomp=kd,
-            use_rint=False,
+            
         )
         assert isinstance(result, dict)
 
@@ -78,7 +78,7 @@ class TestScanEpistasis:
         la, lb = self._get_two_loci(tiny_cache)
         result = scan_epistasis(
             tiny_strain_phenotype, tiny_cache, la, lb,
-            kinship_decomp=kd, use_rint=False,
+            kinship_decomp=kd, 
         )
         for key in ('lod_additive', 'lod_interaction', 'lod_epistasis',
                     'p_epistasis', 'betas_a', 'betas_b', 'betas_int'):
@@ -91,7 +91,7 @@ class TestScanEpistasis:
         la, lb = self._get_two_loci(tiny_cache)
         result = scan_epistasis(
             tiny_strain_phenotype, tiny_cache, la, lb,
-            kinship_decomp=kd, use_rint=False,
+            kinship_decomp=kd, 
         )
         assert result['lod_additive'] >= -1e-8
 
@@ -102,7 +102,7 @@ class TestScanEpistasis:
         la, lb = self._get_two_loci(tiny_cache)
         result = scan_epistasis(
             tiny_strain_phenotype, tiny_cache, la, lb,
-            kinship_decomp=kd, use_rint=False,
+            kinship_decomp=kd, 
         )
         assert result['lod_epistasis'] >= -1e-8
 
@@ -113,7 +113,7 @@ class TestScanEpistasis:
         la, lb = self._get_two_loci(tiny_cache)
         result = scan_epistasis(
             tiny_strain_phenotype, tiny_cache, la, lb,
-            kinship_decomp=kd, use_rint=False,
+            kinship_decomp=kd, 
         )
         assert 0.0 <= result['p_epistasis'] <= 1.0 + 1e-8
 
@@ -125,7 +125,7 @@ class TestScanEpistasis:
             scan_epistasis(
                 tiny_strain_phenotype, tiny_cache,
                 'nonexistent_locus_a', 'nonexistent_locus_b',
-                kinship_decomp=kd, use_rint=False,
+                kinship_decomp=kd, 
             )
 
 
@@ -162,13 +162,13 @@ class TestScanConditional:
         kd = decomp_kinship(tiny_kinship)
         base_scan = scan_h2lmm(
             tiny_strain_phenotype, tiny_cache,
-            kinship_decomp=kd, use_rint=False,
+            kinship_decomp=kd, 
             scan_window='genome',
         )
         signals = scan_conditional(
             base_scan, tiny_cache,
             kinship_decomp=kd,
-            use_rint=False,
+            
         )
         assert isinstance(signals, list)
         assert isinstance(signals[0], ScanResult)
@@ -180,13 +180,13 @@ class TestScanConditional:
         kd = decomp_kinship(tiny_kinship)
         base_scan = scan_h2lmm(
             tiny_strain_phenotype, tiny_cache,
-            kinship_decomp=kd, use_rint=False,
+            kinship_decomp=kd, 
             scan_window='genome',
         )
         signals = scan_conditional(
             base_scan, tiny_cache,
             kinship_decomp=kd,
-            use_rint=False,
+            
         )
         assert signals[0].lod.shape[0] > 0
         assert (signals[0].lod >= -1e-8).all()
@@ -202,13 +202,13 @@ class TestScanConditionalWithY:
         kd = decomp_kinship(tiny_kinship)
         base_scan = scan_h2lmm(
             tiny_strain_phenotype, tiny_cache,
-            kinship_decomp=kd, use_rint=False,
+            kinship_decomp=kd, 
             scan_window='genome',
         )
         signals = scan_conditional_with_y(
             tiny_strain_phenotype, base_scan, tiny_cache,
             kinship_decomp=kd,
-            use_rint=False,
+            
         )
         assert isinstance(signals, list)
         assert isinstance(signals[0], ScanResult)

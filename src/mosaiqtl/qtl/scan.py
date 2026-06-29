@@ -127,14 +127,13 @@ def scan_h2lmm(
     kinship_decomp=None,
     sample_ids=None,
     use_rint=True,
-    use_reml=True,
     phenotype_id="unknown",
     fixed_h2_dict=None,
     model="additive",
     scan_window="cis",
     gene_chr=None,
     gene_pos_mb=None,
-    window_mb=1.0,
+    window_mb=10.0,
 ):
     """haplotype-based genome-wide scan with LOCO LMM.
 
@@ -156,7 +155,6 @@ def scan_h2lmm(
         phenotype-level sample identifiers. if None, assumed to match
         genomecache.sample_ids in order (1:1 case).
     use_rint        : bool  apply rank-inverse normal transformation
-    use_reml        : bool  REML for h² estimation (ML for LOD)
     phenotype_id    : str
     model           : str  'additive' (default) or 'full'
         'additive' — 8 haplotype columns per locus (J founders).
@@ -171,7 +169,7 @@ def scan_h2lmm(
                    gene TSS (gene_chr and gene_pos_mb required).
     gene_chr        : str or None  chromosome of the gene (required for cis/local)
     gene_pos_mb     : float or None  TSS position in Mb (required for local)
-    window_mb       : float  half-window in Mb for local mode (default 1.0)
+    window_mb       : float  half-window in Mb for local mode (default 10.0)
 
     returns
     -------
@@ -255,7 +253,7 @@ def scan_h2lmm(
             h2 = fixed_h2_dict[chrom]
         else:
             h2, _ = lmm_module.estimate_h2_null(
-                y_rot, x_rot, evals, method="reml" if use_reml else "ml"
+                y_rot, x_rot, evals, method="ml"
             )
         h2_null_dict[chrom] = h2
 
@@ -310,7 +308,7 @@ def scan_multi_gene(
     use_rint: bool = True,
     scan_window: str = "genome",
     gene_pos_mb_map: "dict[str, float] | None" = None,
-    window_mb: float = 1.0,
+    window_mb: float = 10.0,
     output_dir: "Path | None" = None,
     model: str = "additive",
 ) -> "dict[str, ScanResult]":
@@ -343,7 +341,7 @@ def scan_multi_gene(
     use_rint         : bool   apply rank-inverse normal transformation
     scan_window      : str   'genome' | 'cis' | 'local'  (default 'genome')
     gene_pos_mb_map  : dict[str, float] | None   TSS in Mb; required for 'local'
-    window_mb        : float   half-window for local mode (default 1.0)
+    window_mb        : float   half-window for local mode (default 10.0)
     output_dir       : Path | None   write lod_chr{ch}.csv per chromosome
     model            : str   'additive' (default) or 'full'
 
@@ -961,12 +959,11 @@ def scan_h2lmm_mi(
     n_imp=11,
     seed=1,
     use_rint=True,
-    use_reml=True,
     phenotype_id="unknown",
     scan_window="cis",
     gene_chr=None,
     gene_pos_mb=None,
-    window_mb=1.0,
+    window_mb=10.0,
 ):
     """multiple-imputation haplotype scan.
 
@@ -982,12 +979,11 @@ def scan_h2lmm_mi(
     n_imp          : int   number of imputations (default 11)
     seed           : int
     use_rint       : bool
-    use_reml       : bool
     phenotype_id   : str
     scan_window    : str  'cis' | 'genome' | 'local'  (default 'cis')
     gene_chr       : str or None  chromosome of the gene (required for cis/local)
     gene_pos_mb    : float or None  TSS position in Mb (required for local)
-    window_mb      : float  half-window for local mode (default 1.0)
+    window_mb      : float  half-window for local mode (default 10.0)
 
     returns
     -------
@@ -1042,7 +1038,7 @@ def scan_h2lmm_mi(
         _yr = _evc.T @ y_base
         _xr = _evc.T @ x_base
         _h2, _ = lmm_module.estimate_h2_null(
-            _yr, _xr, _ev, method="reml" if use_reml else "ml"
+            _yr, _xr, _ev, method="ml"
         )
         fixed_h2[_c] = _h2
 

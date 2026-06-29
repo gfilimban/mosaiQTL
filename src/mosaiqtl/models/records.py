@@ -23,7 +23,7 @@ axis coverage:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 import numpy as np
@@ -151,10 +151,10 @@ class VQTLResult:
     phi_estimates:    np.ndarray
     phi_method:       str
     gene_id:          str
-    cell_type:        Optional[str]
-    data_granularity: DataGranularity
-    model:            ScanModel
-    n_samples:        int
+    cell_type:        Optional[str]          = field(default=None)
+    data_granularity: Optional[DataGranularity] = field(default=None)
+    model:            Optional[ScanModel]    = field(default=None)
+    n_samples:        int                    = field(default=0)
 
 
 @dataclass(slots=True)

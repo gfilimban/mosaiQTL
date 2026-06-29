@@ -126,7 +126,7 @@ def plot_lod_profile(scan_result, true_params=None, save_path=None):
     ax.set_xlabel('')
     ax.set_title('genome-wide LOD profile')
     ax.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
-    sns.despine(bottom=True)
+    sns.despine(ax=ax, bottom=True)
 
     plt.tight_layout()
     if save_path:

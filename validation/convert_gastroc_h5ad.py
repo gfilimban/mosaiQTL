@@ -53,14 +53,43 @@ def _ct_safe(cell_type: str) -> str:
     return re.sub(r'[^a-z0-9]+', '_', cell_type.lower()).strip('_')
 
 
+def _cpm_filter(X: np.ndarray, lib_sizes: np.ndarray, var: pd.DataFrame,
+                min_cpm: float = 1.0,
+                min_frac: float = 0.2) -> tuple[np.ndarray, pd.DataFrame]:
+    """Return (bool mask, report DataFrame) for CPM > min_cpm in >= min_frac of samples.
+
+    lib_sizes: (n_samples,) total UMI per sample from adata.obs['psbulk_counts'].
+    """
+    n_samples = X.shape[0]
+    cpm = X / lib_sizes[:, None] * 1e6
+    n_pass = (cpm > min_cpm).sum(axis=0)
+    threshold = int(np.ceil(min_frac * n_samples))
+    keep = n_pass >= threshold
+
+    report = pd.DataFrame({'gene_name': var.index})
+    if 'gene_id' in var.columns:
+        report['gene_id'] = var['gene_id'].values
+    for col in ('chr', 'start', 'end', 'total_counts', 'mean_counts',
+                'n_cells_by_counts', 'pct_dropout_by_counts'):
+        if col in var.columns:
+            report[col] = var[col].values
+    report['n_samples_cpm_gt1'] = n_pass
+    report['frac_samples_cpm_gt1'] = (n_pass / n_samples).round(4)
+    report['mean_cpm'] = cpm.mean(axis=0).round(4)
+    report['median_cpm'] = np.median(cpm, axis=0).round(4)
+    report['passes_filter'] = keep
+    return keep, report
+
+
 def _write_counts_h5(adata: anndata.AnnData, sorted_idx: 'pd.Index',
                      out_path: pathlib.Path) -> None:
-    X = adata[sorted_idx].X
+    sub = adata[sorted_idx]
+    X = sub.X
     if hasattr(X, 'toarray'):
         X = X.toarray()
     X = X.astype(np.float32)
-    lib_sizes = X.sum(axis=1, keepdims=True)
-    lognorm   = np.log2(X / lib_sizes * 1e6 + 1.0)
+    lib_sizes = sub.obs['psbulk_counts'].values.astype(np.float32)
+    lognorm   = np.log2(X / lib_sizes[:, None] * 1e6 + 1.0)
     genes   = np.array(adata.var_names, dtype='S')
     samples = adata[sorted_idx].obs['sample_id'].values.astype('S')
     log.info('writing %s', out_path)
@@ -83,6 +112,15 @@ def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path) -> None:
     obs = adata.obs[['sample_id', 'genotype', 'sex', 'dataset']].copy()
     obs['_sort'] = obs['genotype'].astype(str).map(_strain_sort_key)
     obs = obs.sort_values(['_sort', 'sample_id']).drop(columns='_sort')
+
+    X = adata.X if not hasattr(adata.X, 'toarray') else adata.X.toarray()
+    lib_sizes = adata.obs['psbulk_counts'].values.astype(np.float32)
+    keep, report = _cpm_filter(X.astype(np.float32), lib_sizes, adata.var)
+    log.info('  CPM filter: %d / %d genes pass (CPM>1 in ≥20%% of samples)',
+             int(keep.sum()), adata.n_vars)
+    report.to_csv(out_dir / 'gene_filter_report.csv', index=False)
+    log.info('  gene_filter_report.csv: %d genes total', len(report))
+    adata = adata[:, keep].copy()
 
     _write_counts_h5(adata, obs.index, out_dir / 'counts_lognorm.h5')
 
@@ -132,8 +170,21 @@ def convert_celltype(h5ad_path: pathlib.Path, cell_type: str,
                      out_root: pathlib.Path) -> None:
     """Cell-type conversion: subsets gastroc_all_pb.h5ad and writes counts_lognorm.h5 only.
 
-    metadata.csv and gene_info.csv are shared from out_root/../ (same across all cell types).
+    Gene set is inherited from the whole-tissue gene_filter_report.csv in out_root.parent
+    so all cell types share the same genes — genes absent in a cell type remain as zeros,
+    enabling detection of cell-type-specific eQTLs.
+    metadata.csv and gene_info.csv are shared from out_root.parent (same samples, same genes).
     """
+    # ── load whole-tissue gene set ─────────────────────────────────────────────
+    wt_report_path = out_root.parent / 'gene_filter_report.csv'
+    if not wt_report_path.exists():
+        raise FileNotFoundError(
+            f'whole-tissue gene_filter_report.csv not found at {wt_report_path} — '
+            f'run convert() (whole-tissue mode) first')
+    wt_report = pd.read_csv(wt_report_path)
+    passing_genes = set(wt_report.loc[wt_report['passes_filter'], 'gene_name'])
+    log.info('  whole-tissue gene set: %d genes', len(passing_genes))
+
     log.info('reading %s', h5ad_path)
     adata_full = anndata.read_h5ad(h5ad_path)
 
@@ -141,11 +192,14 @@ def convert_celltype(h5ad_path: pathlib.Path, cell_type: str,
         raise ValueError(f'obs has no "celltype" column; found: {list(adata_full.obs.columns)}')
 
     # ── subset to requested cell type ─────────────────────────────────────────
-    # gastroc_all_pb.h5ad is already pseudobulked: one obs per (sample_id × celltype)
     adata = adata_full[adata_full.obs['celltype'] == cell_type].copy()
     if adata.n_obs == 0:
         available = sorted(adata_full.obs['celltype'].unique())
         raise ValueError(f'cell type {cell_type!r} not found. available: {available}')
+
+    # ── restrict to whole-tissue passing genes (preserve zeros for absent genes) ──
+    ct_genes = [g for g in adata.var_names if g in passing_genes]
+    adata = adata[:, ct_genes].copy()
     log.info('  cell_type=%r  %d samples × %d genes', cell_type, adata.n_obs, adata.n_vars)
 
     obs = adata.obs[['sample_id', 'genotype', 'sex', 'dataset']].copy()
@@ -155,10 +209,29 @@ def convert_celltype(h5ad_path: pathlib.Path, cell_type: str,
     ct_dir = out_root / _ct_safe(cell_type)
     ct_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── per-CT expression summary (no filtering — whole-tissue gene set only) ──
+    X = adata.X if not hasattr(adata.X, 'toarray') else adata.X.toarray()
+    lib_sizes = adata.obs['psbulk_counts'].values.astype(np.float32)
+    cpm = X.astype(np.float32) / lib_sizes[:, None] * 1e6
+    n_samples = adata.n_obs
+    ct_summary = pd.DataFrame({
+        'gene_name':            adata.var_names,
+        'n_samples_cpm_gt1':    (cpm > 1).sum(axis=0),
+        'frac_samples_cpm_gt1': ((cpm > 1).sum(axis=0) / n_samples).round(4),
+        'mean_cpm':             cpm.mean(axis=0).round(4),
+        'median_cpm':           np.median(cpm, axis=0).round(4),
+        'n_samples_zero':       (X == 0).sum(axis=0),
+        'frac_samples_zero':    ((X == 0).sum(axis=0) / n_samples).round(4),
+    })
+    ct_summary.to_csv(ct_dir / 'gene_expression_summary.csv', index=False)
+    log.info('  gene_expression_summary.csv: %d genes  zeros_any=%d',
+             len(ct_summary),
+             int((ct_summary['n_samples_zero'] > 0).sum()))
+
     _write_counts_h5(adata, obs.index, ct_dir / 'counts_lognorm.h5')
 
-    log.info('done — %d samples  (metadata.csv / gene_info.csv shared from %s)',
-             adata.n_obs, out_root.parent)
+    log.info('done — %d samples  %d genes  (metadata.csv / gene_info.csv shared from %s)',
+             adata.n_obs, adata.n_vars, out_root.parent)
     for ds, grp in obs.groupby('dataset', sort=True):
         log.info('  dataset=%-12s  %d samples', ds, len(grp))
 

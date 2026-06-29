@@ -22,7 +22,7 @@ logger = logging.getLogger('mosaiqtl')
 
 def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
                             covariates=None, kinship_decomp=None,
-                            use_rint=True, use_reml=True,
+                            use_rint=True,
                             phenotype_id='unknown',
                             just_these_snps=None):
     """snp association scan using haplotype-imputed dosages.
@@ -30,9 +30,7 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
     each snp dosage is estimated as the expected number of alt alleles:
       d_i = 2 * sum_f P(f_i) * I(founder f carries alt allele)
 
-    founder haplotype probs used as weights over known founder genotypes —
-    haplotype probs are used as weights over the known founder genotypes.
-
+    founder haplotype probs used as weights over known founder genotypes.
 
     parameters
     ----------
@@ -45,14 +43,14 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
         must include 'chr' and 'pos_mb' columns for locus lookup.
     covariates : np.ndarray (n, p) or None
     kinship_decomp : dict or None
-    use_rint : bool
-    use_reml : bool
-    phenotype_id : str
+    use_rint : bool  apply RINT to phenotype (default True)
+    phenotype_id : str  stored in 'gene' column of output
     just_these_snps : list or None  restrict to these snp ids
 
     returns
     -------
-    pd.DataFrame  columns: snp, chr, pos_mb, lod, p_value, beta_dosage
+    pd.DataFrame  columns: gene, snp, chr, pos_mb, lod, p_value, f_stat,
+                           h2, n, rss0, rss1, beta_dosage
         NOT a ScanResult — SNP scan output is per-SNP dosage effects, not
         per-founder haplotype effects.  Do not pass to _scan_to_df or any
         ScanResult consumer.
@@ -135,14 +133,20 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
             h_rot   = (ev_v.T @ d_std).reshape(-1, 1)
 
             res = lmm_module.fit_lmm_at_locus(
-                y_rot, h_rot, x_rot, eigvals, h2, use_reml)
+                y_rot, h_rot, x_rot, eigvals, h2)
 
             results.append({
-                'snp':        snp_id,
-                'chr':        chrom,
-                'pos_mb':     snp_pos,
-                'lod':        res.lod,
-                'p_value':    res.p_value,
+                'gene':        phenotype_id,
+                'snp':         snp_id,
+                'chr':         chrom,
+                'pos_mb':      snp_pos,
+                'lod':         res.lod,
+                'p_value':     res.p_value,
+                'f_stat':      res.f_stat,
+                'h2':          res.h2,
+                'n':           n,
+                'rss0':        res.rss_null,
+                'rss1':        res.rss_alt,
                 'beta_dosage': float(res.betas[0]),
             })
 
@@ -158,7 +162,6 @@ def imputed_snp_scan_from_db(
     chrom: 'str | None' = None,
     founder_col_map: 'dict[str, str] | None' = None,
     use_rint: bool = True,
-    use_reml: bool = True,
     phenotype_id: str = 'unknown',
     just_these_snps: 'list | None' = None,
     sample_ids: 'list | None' = None,
@@ -183,7 +186,6 @@ def imputed_snp_scan_from_db(
                   GM_fo_mm39.csv was built with abbreviated founder names
                   but the cache uses single-letter codes.  None = no rename.
     use_rint    : bool
-    use_reml    : bool
     phenotype_id : str
     just_these_snps : list or None  restrict to these SNP ids
     sample_ids  : list of genotype IDs (one per row of phenotype/covariates);
@@ -193,7 +195,8 @@ def imputed_snp_scan_from_db(
 
     returns
     -------
-    pd.DataFrame  columns: snp, chr, pos_mb, lod, p_value, beta_dosage
+    pd.DataFrame  columns: gene, snp, chr, pos_mb, lod, p_value, f_stat,
+                           h2, n, rss0, rss1, beta_dosage
         NOT a ScanResult — use the DataFrame directly; do not pass to
         _scan_to_df or any ScanResult consumer.
     """
@@ -202,7 +205,8 @@ def imputed_snp_scan_from_db(
     alleles_df = load_founder_alleles(alleles_h5, chrom=chrom)
     if alleles_df.empty:
         return pd.DataFrame(
-            columns=['snp', 'chr', 'pos_mb', 'lod', 'p_value', 'beta_dosage'])
+            columns=['gene', 'snp', 'chr', 'pos_mb', 'lod', 'p_value',
+                     'f_stat', 'h2', 'n', 'rss0', 'rss1', 'beta_dosage'])
 
     meta_cols = {'marker', 'chr', 'pos_mb', 'pos_bp', 'locus_id'}
     hdf5_fcols = [c for c in alleles_df.columns if c not in meta_cols]
@@ -235,7 +239,8 @@ def imputed_snp_scan_from_db(
 
     if not rows:
         return pd.DataFrame(
-            columns=['snp', 'chr', 'pos_mb', 'lod', 'p_value', 'beta_dosage'])
+            columns=['gene', 'snp', 'chr', 'pos_mb', 'lod', 'p_value',
+                     'f_stat', 'h2', 'n', 'rss0', 'rss1', 'beta_dosage'])
 
     snp_genos = pd.DataFrame(rows, index=snp_ids)
     snp_genos.index.name = None
@@ -267,7 +272,6 @@ def imputed_snp_scan_from_db(
         covariates=covariates,
         kinship_decomp=kinship_decomp,
         use_rint=use_rint,
-        use_reml=use_reml,
         phenotype_id=phenotype_id,
         just_these_snps=just_these_snps,
     )
@@ -580,10 +584,9 @@ def snp_scan_multi_gene(
                 kinship_decomp=_kd_g,
                 sample_ids=sample_ids,
                 founder_col_map=founder_col_map,
+                phenotype_id=gene_id,
             )
             if not _df.empty:
-                _df = _df.copy()
-                _df.insert(0, 'gene', gene_id)
                 if output_path is not None:
                     _df.to_csv(output_path, mode='a', header=_first, index=False)
                     _first = False

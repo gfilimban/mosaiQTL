@@ -175,7 +175,8 @@ def _load_counts(mtx_path, genes_path, allele_name):
         return None
     from scipy.io import mmread
     mat   = mmread(mtx_path).toarray()
-    genes = [ln.strip() for ln in open(genes_path)]
+    with open(genes_path) as _fh:
+        genes = [ln.strip() for ln in _fh]
     counts = mat.sum(axis=0)   # sum across cells
     return pd.DataFrame({'gene_id': genes,
                           f'{allele_name.lower()}_counts': counts}).rename(

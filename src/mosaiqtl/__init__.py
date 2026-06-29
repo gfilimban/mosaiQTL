@@ -33,7 +33,7 @@ from .qtl.nb import (scan_nb, scan_nb_gene,                         # noqa: F401
 # gaussian lmm scan
 from .qtl.scan import (scan_h2lmm, scan_h2lmm_mi, scan_multi_gene,  # noqa: F401
                         ScanResult, grab_locus_from_scan, lod_drop_ci,
-                        fixef_eqtl_scan, instability_lm_scan,
+                        find_peaks, fixef_eqtl_scan, instability_lm_scan,
                         scan_multi_gene_mi, instability_scan_multi_gene)
 
 # permutation thresholds
@@ -49,7 +49,7 @@ from .qtl.snp_scan import (build_snp_catalogue,                      # noqa: F40
                              snp_scan_multi_gene)
 
 # mediation
-from .qtl.mediation import (mediation_scan_qr, mediation_scan_qr_batch,  # noqa: F401
+from .qtl.mediation import (mediation_scan_qr, fixef_mediation_scan,    # noqa: F401
                               select_cis_mediation_pairs,
                               mediation_scan_multi_outcome)
 

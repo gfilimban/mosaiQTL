@@ -128,7 +128,7 @@ class TestP1Permutation:
         # Phase 1 uses plain shuffle (no LOCO kinship — OLS baseline)
         max_lods, _ = run_threshold_scans(null, tiny_cache,
                                           phenotype=tiny_strain_phenotype,
-                                          fix_h2=True, use_rint=True,
+                                           use_rint=True,
                                           permutation_method='plain')
         assert max_lods.shape == (5,)
         assert np.all(max_lods >= 0)
@@ -138,7 +138,7 @@ class TestP1Permutation:
                                       n_perms=15, method='permutation', seed=1)
         max_lods, _ = run_threshold_scans(null, tiny_cache,
                                           phenotype=tiny_strain_phenotype,
-                                          fix_h2=True, use_rint=True,
+                                           use_rint=True,
                                           permutation_method='plain')
         threshold, params = get_gev_thresholds(max_lods, percentile=0.95)
         assert np.isfinite(threshold)
@@ -152,7 +152,7 @@ class TestP1Permutation:
                                           n_perms=15, method='permutation', seed=42)
             max_lods, _ = run_threshold_scans(null, tiny_cache,
                                               phenotype=tiny_strain_phenotype,
-                                              fix_h2=True, use_rint=True,
+                                               use_rint=True,
                                               permutation_method='plain')
             t, _ = get_gev_thresholds(max_lods, percentile=0.95)
             return t
@@ -166,7 +166,7 @@ class TestP1Permutation:
                                       n_perms=20, method='permutation', seed=1)
         max_lods, _ = run_threshold_scans(null, tiny_cache,
                                           phenotype=tiny_strain_phenotype,
-                                          fix_h2=True, use_rint=True,
+                                           use_rint=True,
                                           permutation_method='plain')
         threshold, _ = get_gev_thresholds(max_lods, percentile=0.95)
         rop = scan_h2lmm(tiny_strain_phenotype, tiny_cache, scan_window='genome')
@@ -188,7 +188,7 @@ class TestP1EndToEnd:
                                           n_perms=15, method='permutation', seed=1)
         max_lods, _ = run_threshold_scans(null, tiny_cache,
                                           phenotype=tiny_strain_phenotype,
-                                          fix_h2=True, use_rint=True,
+                                           use_rint=True,
                                           permutation_method='plain')
         threshold, _ = get_gev_thresholds(max_lods, percentile=0.95)
 

@@ -492,47 +492,6 @@ def _pql_tau_reml_wb(z, x, K_m, Z, W, tau_init=0.1):
     return float(max(np.exp(res.x), 1e-8))
 
 
-def _pql_tau_reml(z, x, k_mat, w_vec, tau_init=0.1):
-    """REML estimate of kinship variance component tau in the PQL working LMM.
-
-    working model: z ~ N(X*beta, diag(1/w) + tau*K)
-    with n=48 strains a direct Cholesky is cheap — no eigendecomp trick needed.
-
-    parameters
-    ----------
-    z       : (n,)    working response
-    x       : (n, p)  covariate matrix
-    k_mat   : (n, n)  LOCO kinship matrix for current chromosome
-    w_vec   : (n,)    NB working weights W_ii = mu_i/(1 + phi*mu_i)
-    tau_init: float   initial value for warm start
-
-    returns
-    -------
-    tau : float  REML estimate, clipped to [1e-8, inf)
-    """
-    def _neg_reml(log_tau):
-        """Negative REML log-likelihood (dense form) as a function of log(tau)."""
-        tau = np.exp(log_tau)
-        V   = np.diag(1.0 / w_vec) + tau * k_mat
-        try:
-            chol = np.linalg.cholesky(V)          # raises if not PD
-        except np.linalg.LinAlgError:
-            return 1e10
-        V_inv              = np.linalg.inv(V)      # cheap at n<=48
-        VX                 = V_inv @ x
-        A                  = x.T @ VX              # (p, p)
-        sign, logdet_xtVx  = np.linalg.slogdet(A)
-        if sign <= 0:
-            return 1e10
-        P      = V_inv - VX @ np.linalg.solve(A, VX.T)
-        logdet = 2.0 * np.sum(np.log(np.diag(chol)))
-        return 0.5 * (logdet + logdet_xtVx + float(z @ P @ z))
-
-    log_tau0 = float(np.log(max(tau_init, 1e-6)))
-    res = _minimize_scalar(_neg_reml, bounds=(log_tau0 - 6, log_tau0 + 6),
-                           method='bounded')
-    return float(max(np.exp(res.x), 1e-8))
-
 
 def fit_null_nb_glmm_loco(S, x, offsets, K_m, Z, phi, max_iter=5, tol=1e-4):
     """PQL null NB-GLMM with LOCO kinship via Woodbury identity.

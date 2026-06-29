@@ -49,18 +49,21 @@ class TestVQTLResult:
         assert vr.phi_method == 'moments'
         assert vr.mean_scan_result is None
 
-    def test_summary_runs(self, capsys):
+    def test_fields_accessible(self):
+        """VQTLResult fields are accessible and phi_estimates is stored correctly."""
         sr = _make_scan_result_stub()
+        phi = np.abs(np.random.default_rng(0).standard_normal(10))
         vr = VQTLResult(
             scan_result=sr,
-            phi_estimates=np.abs(np.random.default_rng(0).standard_normal(10)),
+            phi_estimates=phi,
             phi_method='moments',
             gene_id='Myogene',
             mean_scan_result=None,
         )
-        vr.summary()
-        captured = capsys.readouterr()
-        assert 'Myogene' in captured.out
+        assert vr.gene_id == 'Myogene'
+        assert np.allclose(vr.phi_estimates, phi)
+        assert vr.cell_type is None
+        assert vr.n_samples == 0
 
 
 # ── estimate_dispersion_per_subject ──────────────────────────────────────────
