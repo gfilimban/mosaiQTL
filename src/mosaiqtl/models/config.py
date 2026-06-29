@@ -136,7 +136,7 @@ class ScanConfig(BaseModel):
     offset:             str   = 'from_libsize'
     n_perms:            int   = Field(default=1000, ge=100)
     seed:               int   = 42
-    cis_window_mb:      float = Field(default=1.0, gt=0.0)
+    cis_window_mb:      float = Field(default=10.0, gt=0.0)
     permutation_method: str   = 'plain'
 
 

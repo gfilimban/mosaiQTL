@@ -16,7 +16,6 @@ from mosaiqtl.qtl.permutation import (
     KinshipSingularError,
     _draw_kinship_re,
     _null_fit_params,
-    _parametric_null_col,
 )
 
 
@@ -128,7 +127,7 @@ class TestRunThresholdScans:
             covariates=tiny_strain_covariates,
             kinship_decomp=kd,
             kinship_loco=tiny_kinship,
-            fix_h2=True,
+
             use_rint=False,
         )
         assert max_lods.shape == (n_perms,)
@@ -145,7 +144,7 @@ class TestRunThresholdScans:
             phenotype=tiny_strain_phenotype,
             kinship_decomp=kd,
             kinship_loco=tiny_kinship,
-            fix_h2=True,
+
             use_rint=False,
         )
         assert np.all(max_lods >= -1e-8)
@@ -162,39 +161,21 @@ class TestRunThresholdScans:
             kinship_decomp=kd,
             kinship_loco=tiny_kinship,
             chrom='1',
-            fix_h2=True,
+
             use_rint=False,
         )
         assert max_lods.shape == (3,)
         assert list(chr_nulls.keys()) == ['1']
 
-    def test_fix_h2_false_missing_phenotype_ok(self, tiny_cache, tiny_kinship,
-                                                tiny_strain_phenotype):
-        from mosaiqtl.genotype.kinship import decomp_kinship
-        kd = decomp_kinship(tiny_kinship)
-        null = generate_null_outcomes(
-            tiny_strain_phenotype, n_perms=3, seed=3)
-        # plain-shuffle path: phenotype not needed when fix_h2=False
-        max_lods, _ = run_threshold_scans(
-            null, tiny_cache,
-            kinship_decomp=kd,
-            kinship_loco=tiny_kinship,
-            fix_h2=False,
-            permutation_method='plain',
-            use_rint=False,
-        )
-        assert max_lods.shape == (3,)
-
-    def test_fix_h2_true_no_phenotype_raises(self, tiny_cache, tiny_kinship,
-                                              tiny_strain_phenotype):
+    def test_no_phenotype_raises(self, tiny_cache, tiny_kinship,
+                                 tiny_strain_phenotype):
         from mosaiqtl.genotype.kinship import decomp_kinship
         kd = decomp_kinship(tiny_kinship)
         null = generate_null_outcomes(
             tiny_strain_phenotype, n_perms=2, seed=4)
         with pytest.raises(ValueError, match='phenotype required'):
             run_threshold_scans(null, tiny_cache, kinship_decomp=kd,
-                                kinship_loco=tiny_kinship,
-                                fix_h2=True, phenotype=None)
+                                kinship_loco=tiny_kinship, phenotype=None)
 
 
 # ── run_positional_scans ──────────────────────────────────────────────────────
@@ -212,7 +193,6 @@ class TestRunPositionalScans:
             phenotype=tiny_strain_phenotype,
             covariates=tiny_strain_covariates,
             kinship_decomp=kd,
-            fix_h2=True,
             use_rint=False,
         )
         assert peak_pos.shape == (10,)
@@ -229,7 +209,6 @@ class TestRunPositionalScans:
             boot, tiny_cache,
             phenotype=tiny_strain_phenotype,
             kinship_decomp=kd,
-            fix_h2=True,
             use_rint=False,
         )
         assert ci['ci_lo'] <= ci['ci_hi']
@@ -285,23 +264,6 @@ class TestParametricHelpers:
         with pytest.raises(KinshipSingularError):
             _draw_kinship_re(K_bad, sigma2_g=1.0, rng=rng)
 
-    def test_parametric_null_col_same_values(self, tiny_cache, tiny_kinship,
-                                              tiny_strain_phenotype,
-                                              tiny_strain_covariates):
-        """rank-permuted output must contain the same values as input y."""
-        from mosaiqtl.genotype.kinship import decomp_kinship
-        rng = np.random.default_rng(7)
-        kd  = decomp_kinship(tiny_kinship)
-        c   = list(tiny_cache.chromosomes)[0]
-        ev  = kd[c]['values']
-        evc = kd[c]['vectors']
-        K_c = tiny_kinship[c]
-        y   = tiny_strain_phenotype.copy()
-        y_p = _parametric_null_col(y, tiny_strain_covariates, K_c, evc, ev,
-                                   h2=0.3, use_reml=True, rng=rng)
-        assert y_p.shape == y.shape
-        assert np.allclose(np.sort(y_p), np.sort(y))
-
     def test_run_threshold_scans_parametric_shape(self, tiny_cache, tiny_kinship,
                                                    tiny_strain_phenotype,
                                                    tiny_strain_covariates):
@@ -319,7 +281,6 @@ class TestParametricHelpers:
             kinship_decomp=kd,
             kinship_loco=tiny_kinship,
             chrom=c0,
-            fix_h2=True,
             permutation_method='parametric',
             use_rint=False,
             seed=99,

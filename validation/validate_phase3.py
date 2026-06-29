@@ -2,7 +2,7 @@
 validate_phase3.py — Phase 3: speed + memory benchmarking (mosaiqtl vs miQTL and R/qtl2)
 
 Builds its own GenomeCache from phase3/r_data/probs/ (exported by
-port_sim_validation_p3.R) because sim.CC.data(seed=123) selects different
+phase3_validation.R) because sim.CC.data(seed=123) selects different
 strains than Phase 2 (seed=42). The cache is saved to phase3/py_data/cache.h5
 and reused on subsequent runs.
 Loads Phase 3 phenotypes from phase3/r_data/phenotypes.csv (50 genes, seed=123,
@@ -66,7 +66,7 @@ from mosaiqtl.qtl.mediation import mediation_scan_qr
 
 # reuse Phase 2's CSV→GenomeCache builder (same probs format)
 sys.path.insert(0, str(Path(__file__).parent))
-from validate_sim_p2 import _load_cache_from_probs_csv  # noqa: E402
+from validate_phase2 import _load_cache_from_probs_csv  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 log = logging.getLogger('validate_phase3')
@@ -167,7 +167,7 @@ def run(r_data: Path, out_dir: Path,
     # ── load Phase 3 phenotypes (50 genes × 120 samples) ─────────────────────
     pheno_path = r_data / 'phenotypes.csv'
     if not pheno_path.exists():
-        log.error('phenotypes.csv not found at %s — run port_sim_validation_p3.R first',
+        log.error('phenotypes.csv not found at %s — run phase3_validation.R first',
                   pheno_path)
         sys.exit(1)
     pheno_df   = pd.read_csv(pheno_path)
@@ -200,7 +200,7 @@ def run(r_data: Path, out_dir: Path,
         log.info('  saved to %s', hdf5_p3)
     else:
         log.error(
-            'probs/ not found at %s — run port_sim_validation_p3.R --force first',
+            'probs/ not found at %s — run phase3_validation.R --force first',
             probs_dir)
         sys.exit(1)
     log.info('  %d chromosomes, %d strains', len(cache.chromosomes), len(cache.sample_ids))
@@ -394,7 +394,7 @@ def run(r_data: Path, out_dir: Path,
                         phenotype=sim_ys[1],
                         kinship_decomp=kinship_decomp,
                         kinship_loco=kinship_loco_s6,
-                        fix_h2=True, use_rint=False,
+                        use_rint=False,
                         permutation_method='parametric',
                         seed=1,
                     )
@@ -503,7 +503,7 @@ def run(r_data: Path, out_dir: Path,
                 with _Timer() as t:
                     med_scan = mediation_scan_qr(
                         outcome=sim_ys[1],
-                        mediator=sim_ys[2],
+                        mediators=sim_ys[2],
                         genomecache=cache,
                         kinship_decomp=kinship_decomp,
                     )

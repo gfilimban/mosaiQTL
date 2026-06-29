@@ -1,4 +1,4 @@
-# port_sim_validation.R — complete miQTL reference for mosaiQTL validation
+# sim_validation.R — complete miQTL reference for mosaiQTL validation
 
 # simulated dataset input
 

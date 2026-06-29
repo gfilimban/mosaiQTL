@@ -10,7 +10,7 @@
 mosaiQTL is a python package providing **multiomic, haplotype-resolved quantitative trait locus (QTL) mapping
 framework** for multiparent populations (MPPs). mosaiQTL is designed as a generalizable, multi-model hub unified by a shared genotype probability backbone. It maps genetic variants controlling gene
 expression, chromatin accessibility, splicing, and RNA modifications at **cell-type
-resolution** from single-nucleus sequencing data from $n$ repliacate observations based on scan configuration space built using user input.
+resolution** from single-nucleus sequencing data from $n$ replicate observations based on scan configuration space built using user input.
 
 
 The central biological question: *which genomic regions — and which of founder haplotypes
@@ -37,18 +37,19 @@ Project: IGVF (Impact of Genomic Variation on Function), Seyedam Lab, UCI.
 ### In scope (implemented or planned)
 | Modality        | Trait/Condition                  | QTL Code   | Omics type         | Module                  | Status            |
 | --------------- | -------------------------------- | ---------- | ------------------ | ----------------------- | ----------------- |
-| RNA-seq/DNA-seq | Gene Expression                  | cis-eQTL   | Transcriptomics    | nb.py (primary NB-GLMM) | 🔴 planned        |
+| RNA-seq/DNA-seq | Gene Expression                  | cis-eQTL   | Transcriptomics    | nb.py (primary NB-GLMM) | 🟡 implemented    |
 | RNA-seq/DNA-seq | Distal Regulation                | trans-eQTL | Transcriptomics    | trans_scan.py           | 🔴 planned        |
-| RNA-seq/DNA-seq | Dispersion Variance              | vQTL       | Transcriptomics    | vqtl.py                 | 🔴 planned        |
-| RNA-seq/DNA-seq | Epistasis / conditional QTL      |            | Transcriptomics    | epistasis.py            | 🔴 planned        |
-| RNA-seq/DNA-seq | Haplotype mediation              |            | Transcriptomics    | mediation.py            | 🔴 planned        |
+| RNA-seq/DNA-seq | Dispersion Variance              | vQTL       | Transcriptomics    | vqtl.py                 | 🟡 implemented    |
+| RNA-seq/DNA-seq | Epistasis / conditional QTL      |            | Transcriptomics    | epistasis.py            | 🟡 implemented    |
+| RNA-seq/DNA-seq | Within-transcriptomics mediation |            | Transcriptomics    | mediation.py            | 🟡 implemented    |
+| multi-omics     | Cross-omics mediation (e.g. ATAC → expression) | | Multi-omics | mediation.py       | 🔴 planned        |
 | RNA-seq/DNA-seq | Allele-specific expression (ASE) |            | Transcriptomics    | ase.py                  | 🟡 scaffold       |
 | LR-RNA-seq      | Splicing                         | sQTL       | Transcriptomics    | sqtl.py                 | 🔴 planned        |
 | RNA-seq/DNA-seq | SNP fine-mapping                 |            | Genomics           | snp_scan.py             | 🟡 marginal model |
 | ATAC-seq        | Chromatin accessibility          | caQTL      | Genomics           | atac.py                 | 🔴 planned        |
 | dRNA-seq        | RNA modification                 | rmodQTL    | Epigenomics        | mod.py                  | 🔴 planned        |
 | Fiber-seq       | DNA modification                 | dmodQTL    | Epigenomics        | mod.py                  | 🔴 planned        |
-|                 | Permutation-based thresholds     |            | All modalities     | permutation.py          | 🟡 GEV unstable   |
+|                 | Permutation-based thresholds     |            | All modalities     | permutation.py          | 🟢 P2-S6 passing  |
 |                 | Sex × genotype interaction (GxE) |            | All modalities     | gxe.py                  | 🔴 planned        |
 |                 | Multi-tissue / multi-cell-type   |            | All modalities     | pipeline.py layer       | 🔴 planned        |
 |                 | Streamlit data browser           |            | Public data access | app/                    | 🔴 planned        |
@@ -114,11 +115,6 @@ src/mosaiqtl/
 └── utils.py                # rint(), build_z_matrix(), align_samples()
 ```
 
-### edgePython NB-engine inspiration
-mosaiQTL NB-GLMM model is inspired by[edgePython](https://github.com/pachterlab/edgePython)(Pachter 2026) to implement the negative
-binomial fitting, dispersion estimation, and NEBULA-LN likelihood
-
-
 **Scope boundary enforced in structure:**
 - `preprocessing/`, `annotation/` — do not exist in mosaiQTL; these are upstream
 - `pseudobulk/aggregate.py`, `pseudobulk/normalize.py` — do not exist; aggregation is upstream
@@ -143,12 +139,10 @@ qtl/trans_scan.py # trans-eQTL with distance filter
 ## 4. DESIGN INTENTION
 
 ### Why this tool exists
-miQTL (R) is the canonical haplotype QTL package for CC/DO mice. It is correct but
-slow, R-only, bulk-data-based, and lacks replicate-awareness and cell-type resolution from single-nucleus data. 
-mosaiQTL ports and extends it to Python with:
+The canonical R haplotype QTL implementation for CC/DO mice is correct but Gaussian-only — raw UMI counts require log-normalisation before analysis, inflating false positives for lowly-expressed genes. mosaiQTL ports the validated scan engine to Python and extends it with:
 1. A **two-stage NB-GLMM model** that operates on raw counts without ad-hoc normalization
 2. **Cell-type resolution** via per-cell-type pseudobulk inputs (aggregated upstream)
-3. **Novel extensions** (vQTL, epistasis, mediation, ASE) absent from miQTL
+3. **Novel extensions**: vQTL, epistasis, mediation, ASE
 4. **HPC scalability** via Nextflow SLURM pipeline
 5. **Multiomics generalization** — same backbone for ATAC, splicing, RNA/DNA modifications
 
@@ -274,21 +268,21 @@ reducing per-gene cost from $O(L \cdot n^2 \cdot J)$ to $O(L \cdot n \cdot J)$.
 
 ---
 
-### Multi-gene scan amortization — why mosaiQTL is faster than miQTL
+### Multi-gene scan amortization
 
-**miQTL's bottleneck.** `scan.h2lmm` accepts one phenotype vector. A genome-wide scan loops
-it $G$ times:
+**Per-gene overhead when the gene loop sits outside the scan package.** Each call accepts one phenotype vector:
 
 ```r
-for (gene in genes) result[[gene]] <- scan.h2lmm(pheno[, gene], genomecache, ...)
+for (gene in genes) result[[gene]] <- scan_one_gene(pheno[, gene], genomecache, ...)
 ```
 
-Every call re-executes the full per-chromosome setup: load $H \in \mathbb{R}^{L \times n \times J}$
-from the HAPPY cache, compute the rotated haplotype tensor $H_{t} = (U^T Z)\,H$ at cost
-$O(L \cdot n^2 \cdot J)$, then project and score. $H_t$ depends only on the genome cache and
-kinship eigenvectors $U$ — **not on $y$** — yet it is rebuilt from scratch for every gene.
+Every call re-executes the full per-chromosome setup: read one locus matrix per locus from disk,
+apply the kinship rotation to it ($M \cdot H_\ell$, $O(n^2 \times J)$ per locus),
+then project and score. This rotation depends only on the genome cache and kinship eigenvectors —
+**not on $y$** — yet it is redone per locus per gene call. Over $L$ loci the total cost is
+$O(L \cdot n^2 \cdot J)$ per gene.
 For $G=2{,}000$ genes on a chromosome this repeats $\approx 4 \times 10^{10}$ FLOPs of
-pure haplotype rotation 2,000 times.
+kinship rotation 2,000 times.
 
 **mosaiQTL's fix.** The gene loop lives inside the package. `precompute_chromosome` runs once
 per chromosome and caches chromosome-constant quantities:
@@ -307,13 +301,13 @@ ratio per gene. No $O(n^2)$ work reappears per gene.
 
 | Term | miQTL (per gene) | mosaiQTL (per gene) |
 |---|---|---|
-| Haplotype rotation $O(L n^2 J)$ | ✗ repeated | ✓ precomputed once |
+| Kinship rotation of H, $O(L n^2 J)$ | ✗ repeated | ✓ precomputed once |
 | FWL + RSS $O(L n J)$ | ✗ repeated | ✗ repeated (unavoidable) |
 
 At $G=2{,}000$, $L=3{,}700$, $n=416$, $J=8$: theoretical ~2,000× reduction in dominant cost.
 Measured speedup is 20× on the gastroc benchmark — the gap closes due to I/O, BLAS threading,
-and per-gene Python overhead that miQTL's compiled R/BLAS path avoids. The speedup is an
-**API boundary decision**, not a language advantage: moving the gene loop inside the package
+and per-gene Python overhead vs compiled BLAS. The speedup is an
+**API boundary decision**: moving the gene loop inside the package
 exposes the chromosome as the natural amortization unit.
 
 ---
@@ -412,7 +406,7 @@ subsets of eGenes. See `validate_gastroc.py` S7–S11 for the reference implemen
           - Highlight which column
 
   → Genome cache (HDF5)                  [genotype/genomecache.py]
-      - haplotype probs shape (n_samples, 8, n_loci)
+      - haplotype probs shape (n_loci, n_strains, n_founders)
       - allele encoding uses CC strain calls via qtl2convert
   → LOCO kinship matrices                [genotype/kinship.py]
       - one (n_samples × n_samples) matrix per chromosome
@@ -433,7 +427,7 @@ subsets of eGenes. See `validate_gastroc.py` S7–S11 for the reference implemen
         - Woodbury: V=diag(1/W)+tau*Z K_m Z^T — ops at m×m, never n×n
         - Score stat: Q_l ~ chi2(J-1); LOD = Q_l/(2 ln 10)
   → LMM validated port                  [qtl/lmm.py, qtl/scan.py]
-      - Gaussian eigendecomp LMM (Kang 2008 / qtl2) for Phase 2 R comparison
+      - Gaussian eigendecomp LMM for Phase 2 R comparison
       - called by: scan.py, permutation.py, mediation.py, epistasis.py
 
   → Permutation thresholds               [qtl/permutation.py]
@@ -559,9 +553,9 @@ plotly >= 5.20     # interactive LOD profiles
 
 ## 9. VALIDATION APPROACH
 
-mosaiQTL uses a staged validation pipeline. All validation uses **simulated data with
-known ground truth** — no real experimental data required for any validation phase.
-This makes validation fully reproducible and decoupled from HPC data access.
+mosaiQTL uses a staged validation pipeline. Phases 1, 2, 3, and 4 use simulated data with
+known ground truth, making them fully reproducible and decoupled from HPC data access.
+The gastroc track (below) additionally validates against real CC pseudobulk data.
 
 ---
 
@@ -570,7 +564,7 @@ This makes validation fully reproducible and decoupled from HPC data access.
 Phase 2 and Phase 4 validation both use phenotypes simulated by **sparc**
 (Keele 2021, github.com/gkeele/sparcc) on the **sparcc_cache** genome cache
 (github.com/gkeele/sparcc_cache), which contains real CC haplotype probabilities
-for the CC lines. This is identical to the miQTL README.md example workflow,
+for the CC lines. This is identical to the miQTL README example workflow,
 enabling direct comparison against miQTL ground truth.
 
 ```r
@@ -601,13 +595,13 @@ The planted QTL locus (`phenotypes$locus`) provides ground truth for:
 
 ---
 
-### Phase 2 (R vs Python, S1–S11) — sparc + miQTL ground truth
+### Phase 2 (R vs Python, S1–S11) — sparc simulation
 
-Script: `validation/validate_port.py`
-R reference: `validation/r_reference/port_validation.R`
+Script: `validation/validate_phase2.py`
+R reference: `validation/r_reference/phase2_validation.R`
 Data: sparc phenotypes on sparcc_cache genome cache
 
-**Setup**: R script runs miQTL on sparc phenotypes → exports CSV reference outputs.
+**Setup**: R reference script runs miQTL on sparc phenotypes → exports CSV reference outputs.
 Python script runs mosaiQTL on the same sparcc_cache genome cache + phenotypes →
 compares against R CSVs. LOD concordance is verifiable against known ground truth
 (planted locus position and effect size).
@@ -630,7 +624,7 @@ Pass criterion for S4: planted locus recovered as peak in ≥8/10 simulated phen
 
 #### S4 diagnostic comparisons
 
-Two secondary comparisons are generated by `validate_sim_p2.py` alongside the main LOD r² gate.
+Two secondary comparisons are generated by `validate_phase2.py` alongside the main LOD r² gate.
 They do not gate validation but characterise the scan engine.
 
 **fixef vs ranef allele effects** (`compare/s4_allele_effects_ranef_vs_fixef.csv`)
@@ -671,7 +665,7 @@ even when it fits better per-df (the LOD is reported as ML, not corrected for df
 
 ---
 
-### Phase 3 (NB model consistency, P1–P4) — sparc-derived single-cell simulation
+### Phase 4 (NB model consistency, P1–P4) — sparc-derived single-cell simulation
 
 Script: `validation/validate_phase4.py`
 Data: simulated single-cell counts derived from sparc phenotypes (no real data needed)
@@ -830,8 +824,8 @@ peak chromosome is unknown, since all LOCO kinship matrices are similar.
 
 `fix_h2=True` is a hard rule (see CLAUDE.md). Under the null (no QTL), h² reflects
 the polygenic architecture — a nuisance parameter that is stable and should not change
-across permutations. miQTL's `run.threshold.scans` extracts h² from the scan object's
-null fit and holds it fixed; Python does the same.
+across permutations. h² is extracted from the real phenotype's null fit and held fixed
+for all permutations.
 
 With h² fixed, the GLS eigendecomposition (ev, evc) is identical for every permutation.
 This means the entire null matrix (n × n_perms) can be passed through
@@ -931,7 +925,7 @@ the X chromosome in sex-structured data).
 
 ---
 
-### Per-chromosome null distributions and Storey q-values
+### Per-chromosome null distributions and Storey q-values — implemented machinery, not yet in pipeline output
 
 `run_threshold_scans` always returns a second value: a `dict {chrom: np.ndarray (n_perms,)}`
 containing the per-chromosome max-LOD null distributions. These are computed as a byproduct
@@ -946,16 +940,20 @@ we need per-gene p-values. A gene whose peak LOD is 4.5 on chromosome 8 should b
 against the null LOD distribution for chromosome 8 specifically — not the genome-wide max,
 which is dominated by the chromosome with the most loci.
 
-Per-gene empirical p-value:
+Per-gene empirical p-value (design intent):
 
 ```python
 p_g = (chr_null_lods[gene_chr] >= peak_lod_g).mean()
 ```
 
 This calibrates each gene against the null for its own chromosome, avoiding the conservatism
-of genome-wide FWER thresholding.
+of genome-wide FWER thresholding. **Current limitation**: S5 derives its permutation null
+from one representative gene's variance components shared across all genes — valid for a
+single genome-wide FWER threshold, but invalid as a per-gene calibrated null (π₀ climbed
+past 1.0 to 2.58 rather than plateauing). Per-gene empirical p-values and Storey q-values
+are not included in `eqtl_summary.csv` until a per-gene-calibrated null is available.
 
-**Storey q-value (qtl/fdr.py)**
+**Storey q-value (`qtl/fdr.py::storey_qvalue`) — implemented but not yet wired to pipeline**
 
 Given a vector of per-gene empirical p-values, `storey_qvalue(pvalues)` applies the Storey
 (2002) q-value estimator:
@@ -969,29 +967,28 @@ Under complete null (no eGenes), π₀ → 1 and q ≈ BH q. When real signal is
 and q-values are less conservative than BH, recovering power lost by the BH assumption that
 all m genes are null.
 
-**eGene summary output** (`eqtl_summary.csv`)
+**eGene summary output** (`eqtl_summary.csv`) — canonical columns
 
 | Column | Description |
 |---|---|
 | `gene` | gene name |
 | `chr` | chromosome of peak locus |
+| `tss_mb` | TSS position (Mb) |
 | `peak_locus` | peak locus identifier |
 | `peak_mb` | peak locus position (Mb) |
-| `peak_lod` | peak LOD score (Python scan) |
-| `p_permtest_chr` | per-gene empirical p-value vs chromosome-specific permutation null |
-| `q_fdr_storey` | Storey (2002) q-value across all tested genes |
-| `pi0` | estimated proportion of true null genes (π₀) |
+| `cis_dist_mb` | distance from TSS to peak locus (Mb) |
+| `peak_lod` | peak LOD score |
+| `h2` | null h² (fraction of variance explained by polygenic background) |
 | `perm_n` | number of permutations used |
-| `chi2_haplotype` | LRT χ²(J−1) for 1-way haplotype effect — derived from scan LOD at zero extra compute |
-| `p_haplotype` | p-value for 1-way haplotype effect (LMM-correct, kinship-corrected) |
-| `lod_gxe_sex` | LOD_full − LOD_additive for haplotype × sex interaction (LMM-LRT) |
-| `p_gxe_sex` | p-value for haplotype × sex interaction, χ²(J−1) (LMM-correct) |
-| `in_r_egenes` | whether gene appears in R miQTL eGene list (when `r_data/egenes.csv` present) |
+| `perm_chr` | chromosome whose LOCO kinship was used for permutation null |
+| `chi2_haplotype` | LRT χ²(J−1) for haplotype effect — derived from scan LOD at zero extra compute |
+| `p_haplotype` | p-value for haplotype effect, χ²(J−1) |
+| `in_r_egenes` | whether gene appears in the miQTL eGene list (when `r_data/egenes.csv` present) |
 
-**LMM-based GxE characterization (`qtl_gxe_lrt`)**
+**LMM-based GxE characterization (`qtl_gxe_lrt`) — planned, not yet in pipeline output**
 
-At each eGene's peak locus, two statistics are computed using `qtl_gxe_lrt` from
-`qtl/effects.py`. Both are kinship-corrected via the LOCO eigendecomposition.
+`qtl_gxe_lrt` in `qtl/effects.py` computes the following statistics at a single locus.
+Neither is currently included in `eqtl_summary.csv`; both are kinship-corrected via the LOCO eigendecomposition.
 
 **1-way haplotype effect** — derived from the existing scan LOD at zero extra compute:
 ```
@@ -1000,8 +997,7 @@ p_haplotype    = 1 − chi2.cdf(chi2_haplotype, df=J−1)
 ```
 This is LMM-correct because the scan LOD itself comes from the LOCO LMM.
 
-**Haplotype × sex interaction** — single-locus LMM-LRT equivalent to
-`scan.h2lmm(intcovar=sex)` evaluated at one locus:
+**Haplotype × sex interaction** — single-locus LMM-LRT for haplotype × sex at a fixed locus:
 ```
 h_full    = [H, H ⊙ sex]          # 2J columns: additive + interaction
 LOD_full  = (n/2) log₁₀(RSS₀ / RSS₁)   # FWL-rotated, kinship-whitened
@@ -1170,6 +1166,332 @@ it is inferred from the input data.
 | S8 marginal vs diplotype model difference documented, not resolved | snp_scan.py | LOW |
 | pipeline.py BH-FDR placeholder needs replacing with Storey q-value (SWE-09) | pipeline.py | MED |
 | gastroc S4 full genome and S5–S11 pending HPC run; rsync r_data/ then `validate_gastroc.py --compare` | gastroc_data/ | MED |
+
+---
+
+## 14. GLOSSARY / ABBREVIATIONS
+
+All terms, acronyms, and single-letter symbols used across the codebase, docs, and comments.
+When a symbol appears in code it follows this definition exactly.
+
+### Statistical / Mathematical terms
+
+| Term | Full form | Meaning |
+|---|---|---|
+| LOD | Logarithm of Odds | `(n/2) × log₁₀(RSS₀/RSS₁)` — primary QTL evidence statistic; higher = stronger signal |
+| LRT | Likelihood Ratio Test | Compares nested models via `2(ℓ₁ − ℓ₀)`; LOD = LRT / (2 ln 10) |
+| RSS | Residual Sum of Squares | Unexplained variance under a model fit |
+| RSS₀ / RSS₁ | null / alternative RSS | RSS under H₀ (no QTL) vs H₁ (QTL present) |
+| h² | Heritability (narrow-sense) | `τ²/(τ²+σ²)` — fraction of phenotypic variance from polygenic background; estimated per gene per chromosome; fixed for permutations (`fix_h2=True`) |
+| τ² | Genetic variance component | Variance of polygenic random effect `u`; scales kinship K |
+| σ² | Residual variance component | Variance of i.i.d. residual ε |
+| φ (phi) | NB overdispersion parameter | Variance = μ + φμ²; estimated per gene in Stage 1; held fixed in Stage 2 |
+| π₀ | Proportion of true nulls | Storey (2002) estimate of fraction of genes with no real QTL; used to calibrate q-values |
+| λ (lambda) | Eigenvalue | Eigenvalue of the LOCO kinship matrix K; used to compute per-sample weights `w_i` |
+| w_i | Per-sample weight | `(σ² + τ²λ_i)⁻¹` after kinship rotation; converts LMM to weighted least squares |
+| J | Number of founders | 8 for CC/DO; varies by population |
+| m | Number of strains (genotypes) | Unique MPP lines in the dataset (e.g. CC strains, DO individuals, MAGIC lines); kinship and Z-matrix operate at this scale |
+| n | Number of samples (observations) | Individual biological units (animals, plants, humans, …); ≥ m because strains/lines can have replicates |
+| L / n_loci | Number of loci | Markers in the genome cache on a given chromosome (pseudomarkers excluded from scan) |
+| p | Number of covariates | Columns of the fixed-effect covariate matrix X |
+| FWL | Frisch-Waugh-Lovell | Theorem: partial regression of y on H after projecting out X yields same β as full model; mosaiQTL uses this to vectorise over loci without refitting X per locus |
+| fixef | Fixed-effects estimator | Allele-effect estimator using FWL + `np.linalg.pinv(G)` on GLS-rotated data; no kinship shrinkage; maximum-likelihood point estimates; high variance when per-founder n is small. Stored in `ScanResult.betas`. See `qtl/effects.py::get_allele_effects(method='fixef')`. |
+| ranef | Random-effects estimator | Allele-effect estimator using kinship-BLUP: solve `(H^T V⁻¹ H + λI)⁻¹ H^T V⁻¹ y`; shrinks toward zero; lower variance than fixef but biased for large effects. See `qtl/effects.py::get_allele_effects(method='ranef')`. |
+| GLS | Generalised Least Squares | Least squares accounting for non-i.i.d. errors; reduces to WLS after kinship rotation |
+| WLS | Weighted Least Squares | GLS after eigendecomposition; weights `w_i` absorb kinship structure |
+| Woodbury | Woodbury matrix identity | `(A + UCV)⁻¹ = A⁻¹ − A⁻¹U(C⁻¹ + VA⁻¹U)⁻¹VA⁻¹`; used in mediation and NB-GLMM to invert the n×n covariance V via m×m ops (m = n_strains ≪ n); also the rank-1 update that shares `H_perp` and `G_inv` across all mediators on a chromosome |
+| BLUP | Best Linear Unbiased Predictor | Optimal random-effect estimate `û = τ²KZ^T V⁻¹(y − Xβ̂)`; used in `ranef` allele-effect estimator |
+| REML | Restricted Maximum Likelihood | Variance component estimation that accounts for fixed-effect df; mosaiQTL uses ML (denominator = n, not n−p) to match miQTL/qtl2 |
+| ML | Maximum Likelihood | LOD denominator convention: `n/2 × log₁₀(RSS₀/RSS₁)` with n not n−p |
+| PQL | Penalised Quasi-Likelihood | Iterative Gaussian approximation to NB-GLMM; each iteration updates working response z and weights W, then solves a Gaussian LMM |
+| IRLS | Iteratively Reweighted Least Squares | Algorithmic core of PQL; re-weights and re-fits at each iteration |
+| GEV | Generalised Extreme Value | Distribution fitted to the empirical max-LOD null to extrapolate permutation thresholds beyond the observed quantile range |
+| FWER | Family-Wise Error Rate | P(≥1 false positive genome-wide); controlled at α=0.05 by permutation threshold |
+| FDR | False Discovery Rate | Expected proportion of false positives among discoveries; controlled by BH or Storey q-value |
+| BH | Benjamini-Hochberg | Step-up FDR procedure assuming π₀=1 (all genes null); conservative when real signal is present |
+| q-value | Storey q-value | FDR analogue of p-value calibrated to the estimated π₀; implemented in `qtl/fdr.py::storey_qvalue` |
+| RINT | Rank-based Inverse Normal Transform | Maps phenotype ranks to standard normal quantiles; applied before LMM scan to satisfy Gaussian residual assumption. Controlled by `use_rint` parameter in primary entry-point functions (`scan_h2lmm`, `scan_h2lmm_mi`, `imputed_snp_scan_h2lmm`); downstream functions (`mediation_scan_qr`, `scan_epistasis`) receive pre-transformed input and do not apply RINT internally. |
+| CI | Confidence Interval | Genomic interval around the peak locus (LOD-drop or Bayes) — not to be confused with CI = continuous integration |
+| CI (infra) | Continuous Integration | Automated test + lint pipeline run on every PR (`.github/workflows/ci.yml`) |
+| lod_drop_ci | LOD-drop confidence interval | Genomic interval where LOD ≥ peak_LOD − 1.5; implemented in `qtl/scan.py::lod_drop_ci`; standard qtl2-compatible CI method |
+| parametric null | Parametric null phenotype | Null draw from `N(0, τ²K + σ²I)` matching the real phenotype's LOCO variance components; used by `run_threshold_scans` instead of a plain label shuffle, which would be anti-conservative under non-zero kinship |
+| strain means | Strain-mean phenotype | Sample-level observations collapsed to m strain means via Z-matrix: `ȳ = (Z^T Z)⁻¹ Z^T y`; required before calling `scan_h2lmm` or `scan_h2lmm_mi` when kinship is at strain level (m×m) |
+| n_perms | Permutation count | Number of null phenotype draws used to build the max-LOD null distribution; minimum 100 for stable GEV fit, 1000 in production |
+| n_imp | Imputation count | Number of hard diplotype draws averaged in the MI scan (`scan_h2lmm_mi`); default 11, matching miQTL |
+
+### Model matrices and arrays
+
+| Symbol | Shape | Meaning |
+|---|---|---|
+| H / H_ℓ | `(n, J)` | Founder haplotype probability matrix at locus ℓ; rows sum to 1 |
+| H_t | `(n, J)` | Kinship-rotated H: `U^T Z H`; precomputed once per chromosome in `precompute_chromosome` |
+| H_perp | `(n, J)` | FWL residual of H_t after projecting out rotated covariates X_t; shared across mediators via Woodbury rank-1 update |
+| G | `(J, J)` | Gram matrix of FWL-residualised haplotypes: `G = H_perp^T H_perp`; its pseudoinverse gives fixef betas |
+| G_inv | `(J, J)` | `pinv(G, rcond=1e-10)`; used directly for fixef beta estimation and as the shared inverse in Woodbury mediation update |
+| e0 | `(n,)` | Null residual vector: `ỹ − X_t β̂` at H₀ (no haplotype); `rss0 = e0 · diag(w) · e0`; reused for all loci on the chromosome |
+| X | `(n, p)` | Fixed-effect covariate matrix (intercept, sex, batch, …) |
+| X_t / xt | `(p, n)` | Kinship-rotated X: `U^T X`; transposed for einsum efficiency |
+| Z | `(n, m)` | Sample-to-strain design matrix; one 1 per row in the column for that sample's strain |
+| K / K_loco | `(m, m)` | LOCO kinship matrix; `K_{ij} = (1/L) Σ_ℓ Σ_f H_{iℓf} H_{jℓf}` excluding test chromosome |
+| K_mpd | `(m, m)` | Mean Parental Diversity kinship from miQTL (`calc.kinship.from.genomecache.with.DOQTL`) |
+| K_n | `(n, n)` | Sample-expanded kinship: `Z K Z^T`; never materialised in hot path (Woodbury avoids it) |
+| U / eigvecs | `(m, m)` | Eigenvectors of K from `K = U Λ U^T`; used to rotate data into diagonal-covariance space |
+| Λ / eigvals | `(m,)` | Eigenvalues of K; λ_i enters per-sample weight formula |
+| u | `(m,)` | Polygenic random effect vector; `u ~ N(0, τ²K)` |
+| y / ỹ | `(n,)` | Phenotype vector / kinship-rotated phenotype `U^T y` |
+| W | `(n,)` | NB PQL working weights: `W_i = μ_i / (1 + φμ_i)` |
+| z (PQL) | `(n,)` | NB PQL working response: `(log μ − offset) + (S − μ)/μ` |
+| α | `(J,)` | Per-founder allele effects at a locus; estimated by FWL+pinv (fixef) or BLUP (ranef) |
+| β | `(p,)` | Fixed-effect covariate coefficients |
+
+### Biology / Genomics terms
+
+| Term | Full form | Meaning |
+|---|---|---|
+| QTL | Quantitative Trait Locus | Genomic region statistically associated with variation in a quantitative trait |
+| eQTL | Expression QTL | QTL for gene expression levels |
+| cis-eQTL | cis-acting eQTL | eQTL where peak locus is on the same chromosome as the gene (≤ a defined window, default ±10 Mb in local mode — matches typical CC haplotype block size) |
+| trans-eQTL | trans-acting eQTL | eQTL where peak locus is on a different chromosome from the gene |
+| vQTL | Variance QTL | QTL for phenotypic dispersion (φ in NB; variance in LMM) rather than mean |
+| caQTL | Chromatin Accessibility QTL | QTL for ATAC-seq peak height |
+| sQTL | Splicing QTL | QTL for alternative splicing ratios |
+| ASE | Allele-Specific Expression | Within-individual difference in expression from two alleles; requires phased reads |
+| GxE | Genotype × Environment interaction | Statistical interaction between haplotype and an environmental/biological covariate (e.g. sex, treatment) |
+| GxG / epistasis | Genotype × Genotype interaction | Pairwise interaction between two genomic loci |
+| eGene | eQTL gene | Gene with a significant QTL after multiple-testing correction |
+| TSS | Transcription Start Site | 5′ start of a gene's primary transcript; used as the gene position reference for cis-distance |
+| UMI | Unique Molecular Identifier | Barcode attached to each mRNA molecule before amplification; count of unique UMIs = RNA molecule count, removing PCR duplicates |
+| CPM | Counts Per Million | `count / total_counts × 1e6`; normalises for library size |
+| pseudobulk | — | Aggregated per-(sample × cell-type) count matrix summed from single-cell data; mosaiQTL's primary input |
+| snRNA-seq | Single-nucleus RNA sequencing | RNA-seq from isolated nuclei rather than whole cells; used for tissues that don't dissociate well (e.g. muscle) |
+| HMM | Hidden Markov Model | Used in `genotype/hmm.py` to compute founder haplotype probabilities from genotyping array calls |
+| GigaMUGA | Giga Mouse Universal Genotyping Array | ~143k SNP array used to genotype CC/DO mice; mosaiQTL genome = mm39 |
+| mm39 | Mouse genome assembly 39 | GRCm39; reference genome for all position coordinates in mosaiQTL |
+| IBD | Identity By Descent | Shared haplotype segments inherited from a common ancestor; basis for kinship |
+| haplotype | — | Single founder-strain chromosome strand; at any locus a CC strain carries two identical copies (inbred → homozygous), so haplotype probability = diplotype probability for CC |
+| diplotype | — | Pair of founder haplotypes at a locus; for CC inbred strains the outer product `P(fi) × P(fj)` is used in the full (non-additive) model; for heterozygous DO strains diplotype probabilities must be tracked explicitly |
+| allelic series | — | Pattern of per-founder effects at a QTL locus; describes which founders carry the high-effect vs low-effect allele; visualised via `viz/effects.py::coef_profile` |
+| founder haplotype | — | The genomic segment at a locus inherited from one of the J CC/DO founders; the J-column probability vector H_{i,ℓ} gives the probability that individual i carries each founder's haplotype at locus ℓ |
+| dosage | — | In SNP scan: allele dosage at a biallelic SNP, typically 0/1/2 for ref/het/alt; the `beta_dosage` column in SNP scan output gives the effect per unit dosage |
+| planted QTL / planted locus | — | A simulated QTL inserted at a known position by `sparc::sim.CC.data`; used as ground truth in Phase 1–2 validation to verify that the scan recovers the correct peak position and effect direction |
+| pseudomarker | — | Interpolated marker inserted between typed markers to densify the genetic map; present in the genome cache but excluded from the scan (`loci_max_delta=1237` reflects the number removed in sparcc_cache) |
+| proximal contamination | — | Bias in h² estimation when markers on the test chromosome are included in the kinship matrix; the test-locus haplotype signal "leaks" into the random effect, inflating h² and suppressing LOD; prevented by LOCO kinship |
+| kinship rotation | — | Diagonalising the LMM covariance by `K = UΛU^T` and rotating all data into eigenvector space; converts the LMM to WLS with per-sample weights `w_i = (σ² + τ²λ_i)⁻¹`, eliminating all O(n³) operations after the one-time O(m³) eigendecomposition |
+| collapse_genomecache | — | Locus-collapsing step that merges redundant markers with nearly identical haplotype probability vectors (L2 greedy forward scan); reduces scan cost proportionally; implemented in `genotype/genomecache.py::collapse_genomecache`. **Not yet validated** — P2-S5 gate requires an uncollapsed cache; validation pending (see GOALS.md P2-S5). |
+| amortization | — | Precomputing the chromosome-constant kinship rotation of H (`H_t`) once per chromosome in `precompute_chromosome`, then reusing it for every gene in the gene loop; the key algorithmic difference from miQTL's per-gene loop |
+| Brent's method | — | Scalar optimizer used in `estimate_h2_null` to find the ML or REML optimum of h² ∈ [0, 1); bracket search on the log-likelihood; standard `scipy.optimize.brent` |
+
+### Populations / experimental designs
+
+| Term | Full form | Meaning |
+|---|---|---|
+| CC | Collaborative Cross | Panel of ~60 inbred mouse strains derived from 8 founders; each strain fixed as homozygous mosaic of 8 haplotypes |
+| DO | Diversity Outbred | Outbred population derived from same 8 CC founders; heterozygous, requires diplotype model |
+| MAGIC | Multiparent Advanced Generation Inter-Cross | General term for MPP; specifically also a plant (Arabidopsis / wheat) multiparent population |
+| MPP | Multiparent Population | Any population derived from >2 founder strains (CC, DO, MAGIC, heterogeneous stock) |
+| F2 | Second-generation intercross | Two-founder cross; not CC/DO but supported by Population config |
+| CC founders | — | The 8 inbred strains: A/J, C57BL/6J, 129S1/SvImJ, NOD/ShiLtJ, NZO/HlLtJ, CAST/EiJ, PWK/PhJ, WSB/EiJ |
+| ROP | Random Observed Phenotype | Standard LMM scan using actual phenotype values; baseline scan mode |
+| MI | Multiple Imputation | Scan where `n_imp` hard diplotype draws are averaged to integrate founder-assignment uncertainty |
+
+### Tools / infrastructure
+
+| Term | Full form | Meaning |
+|---|---|---|
+| miQTL | — | R package by Greg Keele; mosaiQTL's primary algorithmic reference and validation ground truth |
+| qtl2 | R/qtl2 | Broman lab R package for QTL mapping; mosaiQTL API mirrors its scan conventions |
+| HAPPY | — | R haplotype probability format used by qtl2/miQTL; mosaiQTL's `GenomeCache.from_rds` reads this |
+| sparcc | — | R package (Keele) for simulating CC phenotypes with planted QTL; used in Phase 1–2 validation |
+| sparcc_cache | — | Companion genome cache (HDF5) containing real CC haplotype probabilities; used by sparcc and mosaiQTL validation |
+| NEBULA | — | `NB-mixed model for Ultra-Large single-cell Analysis`; Stage 1 null model in nb.py follows NEBULA-LN approach (He et al. 2021) |
+| LOCO | Leave-One-Chromosome-Out | Kinship recomputed excluding test chromosome; prevents proximal contamination of kinship estimate |
+| HPC | High-Performance Computing | Cluster compute environment (UCI CRSP / SLURM); used for full gastroc genome-wide scan |
+| SLURM | Simple Linux Utility for Resource Management | Job scheduler on HPC clusters; mosaiQTL submits per-chromosome jobs as a SLURM array |
+| HDF5 | Hierarchical Data Format v5 | Binary file format used for genome cache (`.h5`) and expression data; chunked, supports lazy I/O |
+| MPS | Metal Performance Shaders | Apple Silicon GPU backend for PyTorch; used in SPEED-07 GPU path on M-series Macs |
+| CUDA | Compute Unified Device Architecture | NVIDIA GPU compute platform; HPC GPU path in SPEED-07 |
+| RDS | R Data Serialisation | R's native binary format (`.rds`); `GenomeCache.from_rds` converts this to HDF5 |
+| PEER | Probabilistic Estimation of Expression Residuals | Method for computing expression latent factors as covariates; expression PCs (SWE-10) are a simpler equivalent |
+
+### Validation / pipeline shorthand
+
+| Term | Meaning |
+|---|---|
+| S1–S11 | The 11 comparison sections in Phase 2 validation (`validate_phase2.py`); numbered to match `phase2_validation.R` output |
+| P1–P7 | Phase 4 biological gate IDs (`validate_phase4.py`) |
+| Phase 1 | Minimal miQTL workflow mirror — ROP LOD + MI LOD + GEV threshold (`validate_sim.py`) |
+| Phase 2 | Full 11-section R vs Python comparison on sparc simulated data (`validate_phase2.py`) |
+| Phase 3 | Speed and memory benchmarking (`validate_phase3.py`) |
+| Phase 4 | NB vs LMM comparison on simulated single-cell data (`validate_phase4.py`) |
+| gastroc | Gastrocnemius (skeletal muscle) — the real CC pseudobulk dataset used for biological validation |
+| r_data/ | Subdirectory holding R reference outputs; Python validation reads these for comparison |
+| py_data/ | Subdirectory holding Python scan outputs |
+| compare/ | Subdirectory holding merged R-vs-Python comparison tables and plots |
+| fix_h2=True | Hardcoded behavior in `run_threshold_scans`: h² is always fixed from the real phenotype and never re-estimated per permutation. The `fix_h2` parameter was removed — this is now the only mode. Required for the vectorised `scan_chromosome_batch` path (h² fixed → single eigendecomposition shared across all permutations). |
+| ref_chrom / peak_chrom | The chromosome whose LOCO kinship is used to draw null phenotypes for permutation; should be the chromosome with the highest observed LOD |
+| scan_window | Controls the genomic scope of a scan call. Three options: **G** (`'genome'`) — scans all chromosomes in `kinship_decomp`; **C** (`'chr'`) — scans the gene's own chromosome only (requires `gene_chr`); **L** (`'local'`) — scans loci within ±`window_mb` of `gene_pos_mb` on `gene_chr` (requires both `gene_chr` and `gene_pos_mb`). Default is `'cis'` in `scan_h2lmm`/`scan_h2lmm_mi` (equivalent to `'chr'`) and `'genome'` in `scan_multi_gene`. |
+| window_mb | Half-window in Mb for `scan_window='local'`; default 10.0 (matches typical CC haplotype block size). Only active in local mode — ignored for `'chr'` and `'genome'`. |
+
+### Mediation output columns
+
+Columns in the DataFrame returned by `mediation_scan_qr` and `fixef_mediation_scan`.
+
+| Column | Meaning |
+|---|---|
+| `lod_base` | LOD at the locus from the base model `y ~ H \| X` (no mediator); the haplotype QTL evidence before conditioning on the mediator |
+| `lod_mediated` | LOD at the same locus from the mediated model `y ~ H \| X, M`; haplotype signal remaining after accounting for mediator M |
+| `lod_drop` | `lod_base − lod_mediated`; reduction in LOD explained by the mediator; the primary mediation signal. Always ≥ 0 (clamped). |
+| `prop_mediated` | `lod_drop / max(lod_base, ε)`; proportion of the haplotype effect explained by the mediator; bounded [0, 1]. A value near 1 means the mediator fully explains the QTL. |
+| `p_value` | chi-squared(df=1) p-value for `lod_drop`; tests whether mediation is statistically significant |
+| `h2` | LOCO null h² from the base scan on the outcome; fixed for all mediators on the same chromosome |
+| `n` | Effective sample size after NaN filtering and Z-matrix reduction to strain means |
+
+### Data objects
+
+| Object | Module | Meaning |
+|---|---|---|
+| `ScanResult` | `models/records.py` | Primary output of `scan_h2lmm` / `scan_h2lmm_mi`; fields: `lod (n_loci,)`, `betas (n_loci, J)`, `p_value (n_loci,)`, `h2`, `chr`, `phenotype_id`, `locus_ids`, `positions` |
+| `LMMResult` | `qtl/lmm.py` | Per-locus result from `fit_lmm_at_locus`; fields: `lod`, `p_value`, `f_stat`, `h2`, `betas (J,)`, `rss_null`, `rss_alt` |
+| `VQTLResult` | `models/records.py` | Dispersion QTL result; fields: `scan_result` (ScanResult for dispersion), `mean_scan_result` (ScanResult for mean). **Note**: field name is `scan_result` not `vqtl_scan`; `mean_scan_result` not `mean_scan` — common bug source. |
+| `QTLResult` | `models/records.py` | eGene record written to `eqtl_summary.csv`; one row per significant gene after permutation thresholding and FDR correction |
+| `FounderEffect` | `models/records.py` | Per-founder allele effect at the peak locus; fields: `gene`, `locus`, `founder`, `beta`, `se`, `ci_lo`, `ci_hi` |
+| `GenomeCache` | `genotype/genomecache.py` | HDF5-backed haplotype probability store; lazy per-chromosome loading via `get_chromosome(chrom)`; holds `sample_ids`, `chromosomes`, `n_founders`, `population` |
+| `Population` | `models/config.py` | Frozen Pydantic model encoding all population-specific config: `founders` list, `colors` dict, `n_gen`, `inbred`, `chromosome_names`, `genotyping_error_prob`. `CCPopulation` is the built-in CC instance. |
+| `ScanConfig` | `models/config.py` | Scan-level configuration: `population`, `scan_window`, `cis_window_mb` (default 10.0), `n_perms`, `seed`, `offset`, `permutation_method` |
+| `kinship_decomp` | `genotype/kinship.py` | Dict `{chrom: {'values': eigvals (m,), 'vectors': eigvecs (m,m)}}` returned by `decomp_kinship`; passed to all scan functions that require LOCO kinship |
+| `KinshipSingularError` | `qtl/permutation.py` | Raised when a LOCO kinship matrix has a minimum eigenvalue below the PSD tolerance; chromosome is skipped in permutation |
+
+### API parameters
+
+Common parameters shared across scan entry-point functions.
+
+| Parameter | Type | Meaning |
+|---|---|---|
+| `phenotype_id` | str | String label attached to the output `ScanResult.phenotype_id`; used as gene name in multi-gene wrappers and output CSVs |
+| `sample_ids` | list[str] | Genotype-level strain IDs (one per row of `phenotype` / `covariates`); must match `GenomeCache.sample_ids`. **Not** raw sample labels — use `meta_geno_map` to convert before calling. |
+| `gene_chr` | str | Chromosome of the gene being scanned; required for `scan_window='cis'` and `'local'`; must be a string (not int) |
+| `gene_pos_mb` | float | TSS position in Mb; required for `scan_window='local'` |
+| `kinship_decomp` | dict | See Data objects above; when `None`, computed internally from `genomecache` (slow — pass explicitly in loops) |
+| `covariates` | np.ndarray (n, p) | Fixed-effect covariate matrix including intercept; when `None` an intercept-only matrix is constructed |
+| `use_rint` | bool | Apply RINT to the phenotype before scanning (default `True`); set `False` when the caller has already normalized or when matching R reference behavior that RINTs at a different stage |
+| `base_lod` | dict | Pre-computed base LOD scores `{chrom: ndarray (n_loci,)}`; passed to `mediation_scan_qr` to skip re-running the outcome scan for multiple mediators |
+
+### Key output file columns
+
+**`lod_genome.csv` / `rop_lod.csv` / `mi_lod.csv`** — per-gene LOD profiles
+
+| Column | Type | Meaning |
+|---|---|---|
+| `gene` | str | Gene name (symbol) |
+| `locus` | str | Locus identifier from genome cache (e.g. `rs12345678` or `chr8:45.23`) |
+| `chr` | str | Chromosome (always `.astype(str)` — rule in INVIOLABLE RULES) |
+| `pos_mb` | float | Physical position in megabases (Mb) on the reference genome |
+| `lod` | float | LOD score at this locus for this gene |
+
+**`perm_max_lods.csv` / `perm_max_lods_chr{N}.csv`** — permutation null distribution
+
+| Column | Type | Meaning |
+|---|---|---|
+| `perm_index` | int | Permutation replicate index (0-based) |
+| `max_lod` | float | Genome-wide (or per-chromosome) maximum LOD under the null for this replicate |
+| `peak_mb` | float | Position of that max-LOD locus (present when `return_peak_positions=True`) |
+| `chr` | str | Chromosome of max-LOD locus (per-chromosome files only) |
+
+**`perm_threshold.csv`** — GEV-fitted significance thresholds
+
+| Column | Type | Meaning |
+|---|---|---|
+| `chr` | str | Chromosome (or `'genome'` for genome-wide threshold) |
+| `threshold_lod` | float | LOD threshold at α=0.05 from GEV fit |
+| `gev_shape` | float | GEV shape parameter ξ |
+| `gev_loc` | float | GEV location parameter μ |
+| `gev_scale` | float | GEV scale parameter σ |
+| `n_perms` | int | Number of permutation replicates used for the GEV fit |
+
+**`allele_effects_chr{N}.csv`** — per-founder haplotype effects at peak loci
+
+| Column | Type | Meaning |
+|---|---|---|
+| `gene` | str | Gene name |
+| `locus` | str | Peak locus identifier |
+| `pos_mb` | float | Peak locus position (Mb) |
+| `founder` | str | Founder strain name (e.g. `A/J`, `B6/J`) |
+| `beta` | float | Allele effect in RINT units (fixef estimator); see §9 note on 2× scale vs miQTL |
+| `se` | float | Standard error of beta |
+
+**`eqtl_summary.csv`** — one row per significant eGene (pipeline output)
+
+| Column | Type | Meaning |
+|---|---|---|
+| `gene` | str | Gene name |
+| `chr` | str | Chromosome of peak locus |
+| `tss_mb` | float | TSS position (Mb) |
+| `peak_locus` | str | Peak locus identifier |
+| `peak_mb` | float | Peak locus position (Mb) |
+| `cis_dist_mb` | float | Signed distance from TSS to peak (positive = downstream) |
+| `peak_lod` | float | Peak LOD score |
+| `h2` | float | Null h² (polygenic background fraction) |
+| `perm_n` | int | Number of permutation replicates |
+| `perm_chr` | str | Chromosome used for permutation null draws |
+| `chi2_haplotype` | float | LRT χ²(J−1) for haplotype effect |
+| `p_haplotype` | float | p-value for haplotype effect, χ²(J−1) |
+| `in_r_egenes` | bool | Present in miQTL eGene list (when `r_data/egenes.csv` available) |
+
+**`scan_stats.csv`** — per-chromosome scan timing and memory (written by `validate_gastroc.py`)
+
+| Column | Type | Meaning |
+|---|---|---|
+| `chr` | str | Chromosome |
+| `n_genes` | int | Number of genes scanned on that chromosome |
+| `n_loci` | int | Number of loci (pseudomarkers excluded) |
+| `wall_sec` | float | Wall-clock time in seconds |
+| `rss_mb` | float | Peak RSS memory in MB (from `tracemalloc` or `resource`) |
+| `genes_per_min` | float | Throughput: `n_genes / (wall_sec / 60)` |
+
+**`bootstrap_ci.csv`** — positional confidence intervals from `run_positional_scans`
+
+| Column | Type | Meaning |
+|---|---|---|
+| `gene` | str | Gene name |
+| `chr` | str | Chromosome |
+| `ci_lo_mb` | float | Lower bound of LOD-drop or bootstrap CI (Mb) |
+| `ci_hi_mb` | float | Upper bound of CI (Mb) |
+| `peak_mb` | float | Bootstrap mean peak position (Mb) |
+| `n_boot` | int | Number of bootstrap replicates |
+
+**`snp_lod.csv`** — SNP fine-mapping output from `imputed_snp_scan_h2lmm`
+
+| Column | Type | Meaning |
+|---|---|---|
+| `gene` | str | Gene name (from `phenotype_id`) |
+| `snp` | str | SNP identifier |
+| `chr` | str | Chromosome |
+| `pos_mb` | float | SNP position (Mb) |
+| `lod` | float | LOD score under the marginal SNP model |
+| `p_value` | float | chi-squared p-value derived from LOD |
+| `f_stat` | float | F-statistic from `fit_lmm_at_locus` |
+| `h2` | float | LOCO null h² |
+| `n` | int | Effective sample size |
+| `rss0` | float | Null RSS (no SNP effect) |
+| `rss1` | float | Alternative RSS (SNP effect included) |
+| `beta_dosage` | float | Estimated effect per unit allele dosage (0/1/2) |
+
+**`mediation_lod.csv`** — mediation scan output from `mediation_scan_qr`
+
+| Column | Type | Meaning |
+|---|---|---|
+| `outcome_id` | str | Outcome gene name |
+| `mediator_id` | str | Mediator gene name |
+| `chr` | str | Chromosome |
+| `locus` | str | Locus identifier |
+| `pos_mb` | float | Locus position (Mb) |
+| `lod_base` | float | Haplotype LOD without mediator covariate |
+| `lod_mediated` | float | Haplotype LOD after conditioning on mediator |
+| `lod_drop` | float | `lod_base − lod_mediated`; the mediation signal |
+| `prop_mediated` | float | `lod_drop / max(lod_base, ε)`; proportion explained |
+| `p_value` | float | chi-squared(1) p-value for `lod_drop` |
+| `h2` | float | Outcome null h² (from base scan) |
+| `n` | int | Effective sample size |
 
 ---
 *Last updated: see git log. Canonical source: github.com/gfilimban/mosaiqtl/docs/ARCHITECTURE.md*

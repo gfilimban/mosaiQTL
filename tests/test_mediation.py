@@ -150,7 +150,7 @@ class TestMediationScanQr:
         y = 3.0 * m + 0.2 * rng.standard_normal(len(m))
         df = mediation_scan_qr(y, m, self.cache,
                                 kinship_decomp=self.kd_decomp,
-                                use_rint=False)
+                                )
         signal_row = df[(df['chr'] == chrom) &
                         (df['locus'] == f'{chrom}_L{j:02d}')].iloc[0]
         assert signal_row['lod_drop'] > 0.5
@@ -163,7 +163,7 @@ class TestMediationScanQr:
         y = 2.0 * m + 0.3 * rng.standard_normal(len(m))
         df_lmm = mediation_scan_qr(y, m, self.cache,
                                     kinship_decomp=self.kd_decomp,
-                                    use_rint=False)
+                                    )
         df_ols = fixef_mediation_scan(y, m, self.cache)
         lmm_peak = df_lmm[df_lmm['chr'] == chrom]['lod_drop'].max()
         ols_peak = df_ols[df_ols['chr'] == chrom]['lod_drop'].max()

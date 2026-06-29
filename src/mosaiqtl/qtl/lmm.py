@@ -112,7 +112,7 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method='ml'):
     return h2_opt, ll_opt
 
 
-def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
+def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null):
     """fit LMM at a single locus and compute test statistic.
 
     uses null h² (from estimate_h2_null) as the fixed variance
@@ -127,7 +127,6 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null, use_reml=True):
     x_rot    : np.ndarray (n, p) U'X
     eigvals  : np.ndarray (n,)     eigenvalues of LOCO kinship
     h2_null  : float               null heritability
-    use_reml : bool                (unused for LOD; kept for API compatibility)
 
     returns
     -------

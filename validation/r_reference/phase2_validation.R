@@ -1,4 +1,4 @@
-# port_sim_validation_p2.R — Phase 2 simulated validation: all 11 miQTL functions
+# phase2_validation.R — Phase 2 simulated validation: all 11 miQTL functions
 #
 # Self-contained: generates its own sim.CC.data phenotypes (independent of Phase 1).
 # Exports phenotypes + haplotype prob CSVs so Python can build its own cache.
@@ -19,9 +19,9 @@
 #  s11.  instability         → instability_r.csv  (locus, chr, pos_mb, scan_1..scan_N p-values)
 #
 # Usage:
-#   Rscript validation/r_reference/port_sim_validation_p2.R                 # all sections
-#   Rscript validation/r_reference/port_sim_validation_p2.R --sections 6,9,11
-#   Rscript validation/r_reference/port_sim_validation_p2.R --sections 11 --force
+#   Rscript validation/r_reference/phase2_validation.R                 # all sections
+#   Rscript validation/r_reference/phase2_validation.R --sections 6,9,11
+#   Rscript validation/r_reference/phase2_validation.R --sections 11 --force
 #
 # Setup (sim.CC.data + full rop_scan) is cached to r_data/setup_cache.RData
 # on first run and reloaded on subsequent runs unless --force is passed.
@@ -870,4 +870,4 @@ cat('  timing written to:', file.path(r_data, 'timing_sections.csv'), '\n')
 
 cat('\n── Phase 2 sim R reference complete ────────────────────────────────────\n')
 cat('  outputs in:', r_data, '\n')
-cat('  run next: python validation/validate_sim_p2.py\n')
+cat('  run next: python validation/validate_phase2.py\n')

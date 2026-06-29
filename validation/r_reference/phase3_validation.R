@@ -1,4 +1,4 @@
-# port_sim_validation_p3.R — Phase 3: speed + memory benchmarking (miQTL side)
+# phase3_validation.R — Phase 3: speed + memory benchmarking (miQTL side)
 #
 # Uses the same sparcc_cache genomecache but independent Phase 3 phenotypes:
 #   num.lines=40  num.sim=50  num.replicates=3  seed=123
@@ -13,9 +13,9 @@
 #   timing_sections.csv             ← wall-clock + peak heap per section
 #
 # Usage:
-#   Rscript validation/r_reference/port_sim_validation_p3.R
-#   Rscript validation/r_reference/port_sim_validation_p3.R --sections 3,4
-#   Rscript validation/r_reference/port_sim_validation_p3.R --force
+#   Rscript validation/r_reference/phase3_validation.R
+#   Rscript validation/r_reference/phase3_validation.R --sections 3,4
+#   Rscript validation/r_reference/phase3_validation.R --force
 
 args         <- commandArgs(trailingOnly = TRUE)
 sections_pos <- which(args == '--sections')

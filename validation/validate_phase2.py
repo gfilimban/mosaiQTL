@@ -1,7 +1,7 @@
 """
-validate_sim_p2.py — Phase 2 simulated validation: all 11 miQTL functions
+validate_phase2.py — Phase 2 simulated validation: all 11 miQTL functions
 
-Python mirror of validation/r_reference/port_sim_validation_p2.R.
+Python mirror of validation/r_reference/phase2_validation.R.
 Self-contained: builds its own GenomeCache from phase2/r_data/probs/
 (Phase 2 R script runs sim.CC.data() independently; cannot reuse Phase 1 cache).
 Uses real LOCO kinship throughout — R passes K=K_loco[[chr]] explicitly (scan.h2lmm
@@ -26,9 +26,9 @@ Outputs:
   phase2/plots/       all QC + comparison figures
 
 Usage:
-  python validation/validate_sim_p2.py
-  python validation/validate_sim_p2.py --sections 3,4,6
-  python validation/validate_sim_p2.py --force
+  python validation/validate_phase2.py
+  python validation/validate_phase2.py --sections 3,4,6
+  python validation/validate_phase2.py --force
 """
 
 import argparse
@@ -72,7 +72,7 @@ from mosaiqtl.viz.effects import coef_profile
 from mosaiqtl.viz.haplotypes import prob_heatmap
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
-log = logging.getLogger('validate_sim_p2')
+log = logging.getLogger('validate_phase2')
 
 PASS = '✅'
 FAIL = '❌'
@@ -85,7 +85,7 @@ def _load_cache_from_probs_csv(
     probs_dir: Path,
     keep_strains: 'list[str] | None' = None,
 ) -> 'GenomeCache':
-    """build GenomeCache from per-chromosome CSVs exported by port_sim_validation_p2.R.
+    """build GenomeCache from per-chromosome CSVs exported by phase2_validation.R.
 
     Each CSV has columns: locus, pos_mb, strain, A, B, C, D, E, F, G, H
     """
@@ -213,7 +213,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
     # ── load phenotypes (defines sample space for all sections) ───────────────
     pheno_path = r_data / 'phenotypes.csv'
     if not pheno_path.exists():
-        log.error('phenotypes.csv not found at %s — run port_sim_validation_p2.R first',
+        log.error('phenotypes.csv not found at %s — run phase2_validation.R first',
                   pheno_path)
         sys.exit(1)
     pheno_df   = pd.read_csv(pheno_path)
@@ -246,7 +246,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
         log.info('  cached to HDF5: %s', hdf5_cache)
     else:
         log.error(
-            'probs/ not found at %s — run port_sim_validation_p2.R first', probs_dir)
+            'probs/ not found at %s — run phase2_validation.R first', probs_dir)
         sys.exit(1)
     log.info('  %d chromosomes, %d strains', len(cache.chromosomes), len(cache.sample_ids))
 
@@ -1340,7 +1340,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     phenotype=sim_ys[1],
                     kinship_decomp=kinship_decomp,
                     kinship_loco=kinship_loco_s6,
-                    fix_h2=True, use_rint=False,
+                    use_rint=False,
                     permutation_method='parametric',
                     seed=1,
                 )
@@ -1360,7 +1360,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     'empirical_quantile': gev_params['empirical_quantile'],
                 }]).to_csv(py_dir / 's6_threshold.csv', index=False)
 
-                # load R reference (now exported by port_sim_validation_p2.R)
+                # load R reference (now exported by phase2_validation.R)
                 r_thresh      = None
                 r_max_lods    = None
                 thresh_r_path = r_data / 'thresholds_r.csv'
@@ -1624,7 +1624,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 med_df = mediation_scan_qr(
                     sim_ys[1], sim_ys[2], cache,
                     kinship_decomp=kinship_decomp,
-                    use_rint=False,
+
                     outcome_id='sim.y.1', mediator_id='sim.y.2',
                 )
                 # restrict to peak chromosome (R also restricts to qtl_chr)
@@ -1723,7 +1723,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     phenotype=sim_ys[1],
                     kinship_decomp=kinship_decomp,
                     peak_chrom=peak_chrom,
-                    fix_h2=True, use_rint=False,
+                    use_rint=False,
                 )
                 log.info('  bootstrap 95%% CI: [%.2f, %.2f] Mb',
                          ci['ci_lo'], ci['ci_hi'])
@@ -2089,7 +2089,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description='Phase 2 validation: all 11 miQTL functions (simulated data)')
     ap.add_argument('--r_data', default='validation/phase2/r_data',
-                    help='path to R reference CSVs from port_sim_validation_p2.R')
+                    help='path to R reference CSVs from phase2_validation.R')
     ap.add_argument('--out',    default='validation/phase2',
                     help='output root — writes to out/py_data/, out/compare/, out/plots/')
     ap.add_argument('--sections', default=None,

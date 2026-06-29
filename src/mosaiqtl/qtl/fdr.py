@@ -69,7 +69,14 @@ def storey_qvalue(
     ok = np.isfinite(pi0_hat) & (pi0_hat > 0)
     if ok.sum() >= 4:
         try:
-            # natural cubic spline: evaluate at λ_max to get π₀ estimate
+            # KNOWN ISSUES (not yet fixed):
+            # (1) UnivariateSpline(k=3) is a B-spline, not a natural cubic spline
+            #     (Storey 2002 specifies zero second derivative at endpoints).
+            #     Use make_interp_spline with bc_type='natural' for strict compliance.
+            # (2) s=len(lam[ok]) under-smooths relative to Storey's GCV tuning;
+            #     R qvalue uses smooth.spline(df=3) — 3 effective degrees of freedom.
+            # (3) The cap below (pi0 = min(pi0, 1.0)) silently hides values > 1,
+            #     which are a diagnostic that input p-values are miscalibrated.
             spl = UnivariateSpline(lam[ok], pi0_hat[ok], k=3, s=len(lam[ok]))
             pi0 = float(spl(lam[ok].max()))
         except Exception:

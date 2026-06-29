@@ -23,7 +23,6 @@ logger = logging.getLogger('mosaiqtl')
 
 def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
                    covariates=None, kinship_decomp=None,
-                   use_rint=True, use_reml=True,
                    phenotype_id='unknown'):
     """pairwise GxG interaction test at haplotype resolution.
 
@@ -42,14 +41,14 @@ def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
 
     parameters
     ----------
-    phenotype    : np.ndarray (n,)
+    phenotype    : np.ndarray (n,)  pre-scaled by the caller — NB Pearson
+        residuals (already ~N(0,1)) or RINT-transformed continuous phenotype
+        for the LMM path.  no internal transformation is applied.
     genomecache : GenomeCache
     locus_a      : str   first locus id
     locus_b      : str   second locus id
     covariates   : np.ndarray (n, p) or None
     kinship_decomp : dict or None  {chrom: {'values', 'vectors'}}
-    use_rint     : bool
-    use_reml     : bool
     phenotype_id : str
 
     returns
@@ -65,7 +64,6 @@ def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
     """
     from ..genotype import kinship as kin_module
     from . import lmm as lmm_module
-    from ..utils import rint as _rint
 
     if kinship_decomp is None:
         kd = kin_module.calc_kinship(genomecache, method='loco')
@@ -86,8 +84,6 @@ def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
 
     valid = ~np.isnan(phenotype)
     y     = phenotype[valid].copy()
-    if use_rint:
-        y = _rint(y)
     n     = len(y)
 
     x = (covariates[valid].copy() if covariates is not None
@@ -115,8 +111,7 @@ def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
     hb_rot  = evc.T @ hb
     hab_rot = evc.T @ hab
 
-    h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, ev,
-                                         method='reml' if use_reml else 'ml')
+    h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, ev, method='ml')
 
     # additive model: [Ha Hb X]
     z_add = np.hstack([ha_rot, hb_rot, x_rot])
@@ -218,8 +213,7 @@ def test_haplotype_combinations(phenotype, genomecache, locus_a, locus_b,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def scan_conditional(scan_result, genomecache, covariates=None,
-                     kinship_decomp=None, n_signals=3, lod_drop_threshold=1.5,
-                     use_rint=True, use_reml=True):
+                     kinship_decomp=None, n_signals=3, lod_drop_threshold=1.5):
     """forward-stepwise multi-signal decomposition (Layer 3b).
 
     conditions on the peak-locus BLUP (best linear unbiased predictor of the
@@ -243,9 +237,6 @@ def scan_conditional(scan_result, genomecache, covariates=None,
     kinship_decomp      : dict or None
     n_signals           : int  max independent signals (default 3)
     lod_drop_threshold  : float  min LOD for secondary signal (default 1.5)
-    use_rint            : bool
-    use_reml            : bool
-
     returns
     -------
     list of ScanResult  one per independent signal found (length 1..n_signals)
@@ -313,8 +304,7 @@ def scan_conditional(scan_result, genomecache, covariates=None,
 
 def scan_conditional_with_y(phenotype, scan_result, genomecache,
                               covariates=None, kinship_decomp=None,
-                              n_signals=3, lod_drop_threshold=1.5,
-                              use_rint=True, use_reml=True):
+                              n_signals=3, lod_drop_threshold=1.5):
     """full BLUP-conditioning version of scan_conditional (requires phenotype).
 
     this is the preferred form — it computes the exact BLUP residual
@@ -332,7 +322,6 @@ def scan_conditional_with_y(phenotype, scan_result, genomecache,
     """
     from ..genotype import kinship as kin_module
     from . import lmm as lmm_module
-    from ..utils import rint as _rint
     from .scan import scan_h2lmm
 
     if kinship_decomp is None:
@@ -341,8 +330,6 @@ def scan_conditional_with_y(phenotype, scan_result, genomecache,
 
     valid  = ~np.isnan(phenotype)
     y      = phenotype[valid].copy()
-    if use_rint:
-        y = _rint(y)
     x = (covariates[valid].copy() if covariates is not None
          else np.ones((len(y), 1), dtype=float))
     if not np.allclose(x[:, 0], 1.0):

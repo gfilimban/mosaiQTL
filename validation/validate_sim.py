@@ -1,11 +1,11 @@
 """
 validate_sim.py — Phase 1 validation: minimal miQTL workflow mirror
 
-Python mirror of validation/r_reference/port_sim_validation.R.
+Python mirror of validation/r_reference/sim_validation.R.
 If Python matches R here, the core logic base is correct.
 Everything else is an expansion from this ground truth.
 
-Step-by-step mirror of port_sim_validation.R:
+Step-by-step mirror of sim_validation.R:
   1. load sparcc_cache genome cache
   2. load sparc phenotypes (phenotypes.csv from R export)
   3. ROP scan  → Python output + py-vs-R comparison
@@ -20,7 +20,7 @@ Step-by-step mirror of port_sim_validation.R:
   12. allele effects on peak chr (allele.plotter.region equivalent)
 
 Outputs (three parallel sets):
-  R reference    validation/phase1/r_data/   written by port_sim_validation.R
+  R reference    validation/phase1/r_data/   written by sim_validation.R
   Python output  validation/phase1/py_data/  written by this script
   Comparison     validation/phase1/compare/  merged py+R side-by-side
 
@@ -32,7 +32,7 @@ Pass criteria (all three must pass):
 Directory layout (validation/):
   sparcc_cache/   genome cache   (shared input, .claudeignored)
   sparcc_data/    phenotypes     (shared input: phenotypes.h5, .rds)
-  phase1/r_data/  R outputs      (written by port_sim_validation.R)
+  phase1/r_data/  R outputs      (written by sim_validation.R)
   phase1/py_data/ Python outputs (written by this script)
   phase1/compare/ merged         (written by this script)
   phase1/plots/   figures        (written by this script)
@@ -83,7 +83,7 @@ def _load_cache_from_probs_csv(
     probs_dir: Path,
     keep_strains: 'list[str] | None' = None,
 ) -> 'GenomeCache':
-    """build GenomeCache from per-chromosome CSVs exported by port_sim_validation.R.
+    """build GenomeCache from per-chromosome CSVs exported by sim_validation.R.
 
     Each CSV has columns: locus, pos_mb, strain, A, B, C, D, E, F, G, H
     Rows are grouped by locus (all strains for locus[0], then locus[1], ...).
@@ -186,7 +186,7 @@ def run(sparcc_cache, r_data, out_dir):
     # ── phenotypes first — defines the sample space ───────────────────────────
     pheno_path = r_data / 'phenotypes.csv'
     if not pheno_path.exists():
-        log.error('phenotypes.csv not found at %s — run port_sim_validation.R first',
+        log.error('phenotypes.csv not found at %s — run sim_validation.R first',
                   pheno_path)
         sys.exit(1)
     pheno_df   = pd.read_csv(pheno_path)
@@ -209,7 +209,7 @@ def run(sparcc_cache, r_data, out_dir):
         log.info('  cached to HDF5 for subsequent runs: %s', hdf5_cache)
     else:
         log.error(
-            'probs/ directory not found at %s — run port_sim_validation.R first',
+            'probs/ directory not found at %s — run sim_validation.R first',
             probs_dir,
         )
         sys.exit(1)
@@ -354,7 +354,7 @@ def run(sparcc_cache, r_data, out_dir):
     max_lods, _ = run_threshold_scans(
         null_y, cache, phenotype=y,
         kinship_decomp=ols_kd,
-        fix_h2=True, use_rint=False,
+        use_rint=False,
         permutation_method='plain',
         chrom=peak_chrom_for_perm,
     )
@@ -564,7 +564,7 @@ def run(sparcc_cache, r_data, out_dir):
         boot_y, cache, phenotype=y,
         kinship_decomp=ols_kd,
         peak_chrom=peak_chrom,
-        fix_h2=True, use_rint=False,
+        use_rint=False,
     )
     log.info('  bootstrap 95%% CI: [%.2f, %.2f] Mb  (peak %.2f Mb)',
              ci['ci_lo'], ci['ci_hi'], peak_pos_mb)
@@ -620,7 +620,7 @@ def run(sparcc_cache, r_data, out_dir):
         sym = PASS if ok else (SKIP if ok is None else FAIL)
         log.info('  %s %s', sym, gate)
     if n_total == 0:
-        log.info('\nNo R reference CSVs found. Run port_sim_validation.R first.')
+        log.info('\nNo R reference CSVs found. Run sim_validation.R first.')
         log.info('Python outputs saved to %s/py_data/', out_dir)
     elif n_pass == n_total:
         log.info('\nPhase 1 PASSED (%d/%d) ✅', n_pass, n_total)
@@ -637,7 +637,7 @@ def main():
     ap.add_argument('--sparcc_cache', default='validation/sparcc_cache',
                     help='path to sparcc HAPPY genome cache')
     ap.add_argument('--r_data',       default='validation/phase1/r_data',
-                    help='path to R reference CSVs from port_sim_validation.R')
+                    help='path to R reference CSVs from sim_validation.R')
     ap.add_argument('--out',          default='validation/phase1',
                     help='output root — writes to out/py_data/, out/compare/, out/plots/')
     args = ap.parse_args()

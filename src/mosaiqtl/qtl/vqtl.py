@@ -26,41 +26,9 @@ import numpy as np
 import logging
 from . import nb as nb_module
 from . import scan as scan_module
+from ..models.records import VQTLResult  # noqa: F401
 
 logger = logging.getLogger('mosaiqtl')
-
-
-class VQTLResult:
-    """container for vqtl scan results.
-
-    attributes
-    ----------
-    scan_result : ScanResult
-        genome-wide scan of dispersion phenotype
-    phi_estimates : np.ndarray (n_subjects,)
-        per-subject overdispersion estimates used as phenotype
-    phi_method : str
-        estimation method ('moments' or 'nb')
-    gene_id : str
-        gene name
-    mean_scan_result : ScanResult or None
-        corresponding mean eqtl scan (for comparison)
-    """
-    def __init__(self, **kwargs):
-        """Set all vQTL result fields from keyword arguments."""
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-
-    def summary(self):
-        """print summary of vqtl results."""
-        peak = self.scan_result.peak_locus()
-        print(f'vqtl scan for {self.gene_id}:')
-        print(f'  method: {self.phi_method}')
-        print(f'  n subjects with valid φ: {np.sum(~np.isnan(self.phi_estimates))}')
-        print(f'  median φ: {np.nanmedian(self.phi_estimates):.4f}')
-        print(f'  peak locus: {peak["locus_id"]} (chr{peak["chromosome"]})')
-        print(f'  peak lod: {peak["lod"]:.2f}')
-        print(f'  peak p-value: {peak["p_value"]:.2e}')
 
 
 def estimate_dispersion_per_subject(counts, subject_ids, library_sizes=None,
