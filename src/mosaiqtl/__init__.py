@@ -10,7 +10,7 @@ supports nb glm (primary), gaussian lmm, and cell-level nb via edgepython.
 parametric on J founders — no hardcoded assumptions about population size.
 """
 
-__version__ = '0.2.0'
+__version__ = '0.4.5'
 
 # population configuration — first-class public type
 from .models.config import Population, ScanConfig, PipelineConfig    # noqa: F401
