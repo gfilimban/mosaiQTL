@@ -63,6 +63,7 @@ from mosaiqtl.qtl.permutation import (
     run_threshold_scans,
 )
 from mosaiqtl.qtl.mediation import mediation_scan_qr
+from mosaiqtl.viz.validation import joint_lod_scatter, lod_comparison_profile
 
 # reuse Phase 2's CSV→GenomeCache builder (same probs format)
 sys.path.insert(0, str(Path(__file__).parent))
@@ -841,36 +842,13 @@ def _print_summary(
         merged.to_csv(cmp_dir / f'correctness_{slug}_merged.csv', index=False)
 
         # ── scatter plot: R LOD vs Python LOD ────────────────────────────────
-        fig_s, ax_s = plt.subplots(figsize=(4.5, 4.5), dpi=300)
-        ax_s.scatter(merged['r'].values, merged['py'].values,
-                     s=6, alpha=0.4, color='#4F6EAF', linewidths=0, rasterized=True)
-        _lo = min(float(merged['r'].min()), float(merged['py'].min())) - 0.2
-        _hi = max(float(merged['r'].max()), float(merged['py'].max())) + 0.2
-        _rx = np.array([_lo, _hi])
-        # identity line (what perfect agreement looks like)
-        ax_s.plot(_rx, _rx, color='#D83026', linewidth=1.0, linestyle='--',
-                  label='identity (y = x)')
-        # fitted regression line (reveals scale/offset bias)
-        ax_s.plot(_rx, cs['slope'] * _rx + cs['intercept'],
-                  color='#55AF5B', linewidth=1.0, linestyle='-',
-                  label=f'fit  slope={cs["slope"]:.3f}  b={cs["intercept"]:.3f}')
-        ax_s.set_xlim([_lo, _hi])
-        ax_s.set_ylim([_lo, _hi])
-        ax_s.set_xlabel('R / miQTL  LOD', fontsize=9)
-        ax_s.set_ylabel('Python / mosaiqtl  LOD', fontsize=9)
-        ax_s.set_title(
-            f'Correctness: {label}\n'
-            f'r={cs["pearson_r"]:.4f}  slope={cs["slope"]:.3f}  '
-            f'intercept={cs["intercept"]:.3f}  max|Δ|={cs["max_abs_diff"]:.3f}'
-            f'\nn={n_matched:,} / {n_r:,} R loci ({match_rate*100:.0f}%)  [{status}]',
-            fontsize=7.5,
+        joint_lod_scatter(
+            merged,
+            col_x='r', col_y='py',
+            xlabel='R / miQTL LOD Score',
+            ylabel='Python / mosaiqtl LOD Score',
+            save_path=str(plt_dir / f'correctness_{slug}_scatter.png'),
         )
-        ax_s.legend(fontsize=6.5)
-        sns.despine(ax=ax_s)
-        fig_s.tight_layout()
-        fig_s.savefig(plt_dir / f'correctness_{slug}_scatter.png', dpi=300,
-                      bbox_inches='tight')
-        plt.close(fig_s)
         log.info('  saved plots/correctness_%s_scatter.png', slug)
 
         # ── multi-line LOD profile (S4 only — full genome) ───────────────────
@@ -891,14 +869,7 @@ def _print_summary(
             py_sorted = _sort_lod(py_df, py_col)
             r_sorted  = _sort_lod(r_df,  r_col)
 
-            fig_l, ax_l = plt.subplots(figsize=(11, 3.5), dpi=300)
-            ax_l.plot(np.arange(len(r_sorted)),  r_sorted[r_col].values,
-                      color='#F4C245', linewidth=0.7, alpha=0.85, label='R / miQTL')
-            ax_l.plot(np.arange(len(py_sorted)), py_sorted[py_col].values,
-                      color='#52A5DB', linewidth=0.7, alpha=0.85, label='Python / mosaiqtl')
-
-            # chromosome boundary ticks on x-axis
-            chr_col_r = 'chromosome' if 'chromosome' in r_sorted.columns else 'chr'
+            # chromosome boundary ticks
             _chrs = r_sorted['_chr_int'].values
             _boundaries = np.where(np.diff(_chrs) != 0)[0] + 1
             _centers: list[int] = []
@@ -908,22 +879,22 @@ def _print_summary(
                 _centers.append((prev + bnd) // 2)
                 _chr_labels.append('X' if _chrs[prev] == 99 else str(_chrs[prev]))
                 prev = bnd
-            ax_l.set_xticks(_centers)
-            ax_l.set_xticklabels(_chr_labels, fontsize=6)
-            for bnd in _boundaries:
-                ax_l.axvline(bnd, color='#E8E8E8', linewidth=0.5, zorder=0)
 
-            ax_l.set_xlabel('Chromosome', fontsize=9)
-            ax_l.set_ylabel('LOD', fontsize=9)
-            ax_l.set_title(
-                f'S4 genome-wide LOD profile: Python vs R (sim.y.1)\nr = {cs["pearson_r"]:.4f}',
-                fontsize=9)
-            ax_l.legend(fontsize=7, loc='upper right')
-            sns.despine(ax=ax_l)
-            fig_l.tight_layout()
-            fig_l.savefig(plt_dir / 'correctness_s4_lod_profile.png',
-                          dpi=300, bbox_inches='tight')
-            plt.close(fig_l)
+            ax_l = lod_comparison_profile(
+                np.arange(len(py_sorted)), py_sorted[py_col].values,
+                r_lod=r_sorted[r_col].values,
+                r_positions=np.arange(len(r_sorted)),
+                pearson_r=cs['pearson_r'],
+                chr_tick_positions=_centers,
+                chr_labels=_chr_labels,
+                chr_boundaries=_boundaries,
+                figsize=(11, 3.5),
+            )
+            _fig_l = ax_l.get_figure()
+            _fig_l.tight_layout()
+            _fig_l.savefig(plt_dir / 'correctness_s4_lod_profile.png',
+                           dpi=300, bbox_inches='tight')
+            plt.close(_fig_l)
             log.info('  saved plots/correctness_s4_lod_profile.png')
 
         # ── SNP LOD profile (S8 only — peak chromosome) ──────────────────────
@@ -943,28 +914,21 @@ def _print_summary(
             py_s8 = py_s8.sort_values('_pos').reset_index(drop=True)
             r_s8  = r_s8.sort_values('_pos').reset_index(drop=True)
 
-            fig_s8, ax_s8 = plt.subplots(figsize=(9, 3.5), dpi=300)
-            ax_s8.plot(r_s8['_pos'].values, r_s8[r_col].values,
-                       color='#F4C245', linewidth=0.7, alpha=0.85, label='R / miQTL')
-            ax_s8.plot(py_s8['_pos'].values, py_s8[py_col].values,
-                       color='#52A5DB', linewidth=0.7, alpha=0.85,
-                       label='Python / mosaiqtl')
-
-            ax_s8.set_xlabel('Position (Mb)', fontsize=9)
-            ax_s8.set_ylabel('LOD', fontsize=9)
             _chr_label = str(py_s8[_pc].iloc[0]) if len(py_s8) else '?'
-            ax_s8.set_title(
-                f'S8 SNP LOD profile: Python vs R  chr{_chr_label}\n'
-                f'r={cs["pearson_r"]:.4f}  '
-                f'n_py={len(py_s8):,}  n_r={len(r_s8):,}  matched={n_matched:,}',
-                fontsize=8,
+            ax_s8 = lod_comparison_profile(
+                py_s8['_pos'].values, py_s8[py_col].values,
+                r_lod=r_s8[r_col].values,
+                r_positions=r_s8['_pos'].values,
+                pearson_r=cs['pearson_r'],
+                extra_stats=f'n_py={len(py_s8):,}  n_r={len(r_s8):,}  matched={n_matched:,}',
+                chrom=_chr_label,
+                figsize=(9, 3.5),
             )
-            ax_s8.legend(fontsize=7, loc='upper right')
-            sns.despine(ax=ax_s8)
-            fig_s8.tight_layout()
-            fig_s8.savefig(plt_dir / 'correctness_s8_snp_profile.png',
-                           dpi=300, bbox_inches='tight')
-            plt.close(fig_s8)
+            _fig_s8 = ax_s8.get_figure()
+            _fig_s8.tight_layout()
+            _fig_s8.savefig(plt_dir / 'correctness_s8_snp_profile.png',
+                            dpi=300, bbox_inches='tight')
+            plt.close(_fig_s8)
             log.info('  saved plots/correctness_s8_snp_profile.png')
 
     if corr_rows:

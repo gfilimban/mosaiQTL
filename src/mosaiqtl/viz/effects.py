@@ -180,6 +180,8 @@ def effect_bars(
     ax: Optional[plt.Axes] = None,
     se: Optional[np.ndarray] = None,
     ylabel: str = 'Founder effect (RINT SD)',
+    gene: str = '',
+    locus: str = '',
 ) -> plt.Axes:
     """Per-founder effect bar chart at a single locus.
 
@@ -198,13 +200,17 @@ def effect_bars(
         Standard errors same shape as betas_locus; drawn as error bars.
     ylabel : str
         Y-axis label. Default assumes RINT-transformed phenotype.
+    gene : str
+        Gene name shown in title.
+    locus : str
+        Locus identifier shown in title alongside gene.
 
     Returns
     -------
     plt.Axes
     """
     if ax is None:
-        _, ax = plt.subplots(figsize=(5, 3), dpi=300)
+        _, ax = plt.subplots(figsize=(6, 5), dpi=300)
 
     J = len(founders)
     if len(betas_locus) == J - 1:
@@ -215,14 +221,63 @@ def effect_bars(
         full_se = (np.asarray(se[:J]) if se is not None else None)
 
     colors = [FOUNDER_COLORS.get(f, COLOR_CC_FALLBACK) for f in founders]
-    x      = np.arange(J)
+    x = np.arange(J)
+    # compute range first so text placement is correct
+    y_abs_max = float(np.nanmax(np.abs(full_b))) * 1.2 or 1.0
     ax.bar(x, full_b, color=colors,
            yerr=full_se, capsize=3,
            error_kw={'linewidth': 0.8, 'ecolor': COLOR_NEUTRAL_DARK})
-    ax.axhline(0, color=COLOR_NEUTRAL_DARK, linewidth=0.6, zorder=0)
+    # ±0.5 SD scale lines to calibrate magnitude (slightly more visible)
+    for ref_level in [0.5, 1.0]:
+        if ref_level < y_abs_max:
+            for sign in [1, -1]:
+                ax.axhline(sign * ref_level, color=COLOR_NEUTRAL_DARK,
+                           linewidth=0.4, linestyle=':', alpha=0.6, zorder=0)
+    # annotate the founder with the largest absolute effect
+    top_idx = int(np.nanargmax(np.abs(full_b)))
+    top_val = float(full_b[top_idx])
+    top_offset = (0, 8) if top_val >= 0 else (0, -8)
+    top_va     = 'bottom' if top_val >= 0 else 'top'
+    ax.annotate(
+        f'{top_val:+.2f}',
+        xy=(top_idx, top_val),
+        xytext=top_offset, textcoords='offset points',
+        fontsize=10, fontweight='bold', ha='center', va=top_va,
+        color=colors[top_idx],
+    )
+    # annotate the opposite-direction extreme only if meaningfully large (> 0.1)
+    if top_val >= 0:
+        opp_val = float(np.nanmin(full_b))
+        opp_idx = int(np.nanargmin(full_b))
+        if opp_val < -0.1:
+            ax.annotate(
+                f'{opp_val:+.2f}',
+                xy=(opp_idx, opp_val),
+                xytext=(0, -8), textcoords='offset points',
+                fontsize=10, fontweight='bold', ha='center', va='top',
+                color=colors[opp_idx],
+            )
+    else:
+        opp_val = float(np.nanmax(full_b))
+        opp_idx = int(np.nanargmax(full_b))
+        if opp_val > 0.1:
+            ax.annotate(
+                f'{opp_val:+.2f}',
+                xy=(opp_idx, opp_val),
+                xytext=(0, 8), textcoords='offset points',
+                fontsize=10, fontweight='bold', ha='center', va='bottom',
+                color=colors[opp_idx],
+            )
     ax.set_xticks(x)
-    ax.set_xticklabels(founders, rotation=45, ha='right', fontsize=8)
-    ax.set_ylabel(ylabel)
+    ax.set_xticklabels(founders, rotation=40, ha='right', fontsize=11,
+                       fontweight='bold')
+    ax.set_ylabel(ylabel, fontsize=13)
+    ax.tick_params(labelsize=11)
+    ax.set_ylim(-y_abs_max, y_abs_max)
+    title = gene if gene else 'Founder effects'
+    if locus:
+        title += f'  @{locus}'
+    ax.set_title(title, fontsize=13)
     sns.despine(ax=ax)
     _set_font(ax)
     return ax

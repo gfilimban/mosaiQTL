@@ -63,7 +63,10 @@ from scipy import stats as sp_stats
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from mosaiqtl.genotype.founders import F1_COLORS, FOUNDER_CODE, FOUNDER_COLORS, FOUNDER_ORDER
+from mosaiqtl.genotype.founders import (
+    COLOR_CC_FALLBACK, COLOR_NEUTRAL_DARK, COLOR_NEUTRAL_LIGHT,
+    F1_COLORS, FOUNDER_CODE, FOUNDER_COLORS, FOUNDER_ORDER,
+)
 from mosaiqtl.utils import chr_sort_key as _chr_sort_key
 
 _FOUNDER_CODE_INV: dict[str, str] = {v: k for k, v in FOUNDER_CODE.items()}
@@ -101,6 +104,14 @@ from mosaiqtl.viz.genome import (
     snp_profiles_per_chr as _viz_snp_profiles_per_chr,
     genome_summary as _viz_genome_summary,
     genome_diagnostic as _viz_genome_diagnostic,
+    snp_lod_profile as _viz_snp_lod_profile,
+    instability_lod_overlay as _viz_instability_overlay,
+    mi_rop_overlay as _viz_mi_rop_overlay,
+    perm_threshold_comparison as _viz_perm_threshold_comparison,
+    ci_genomic_interval as _viz_ci_genomic_interval,
+    scan_throughput as _viz_scan_throughput,
+    mediation_summary_bar as _viz_mediation_summary_bar,
+    timing_memory_summary as _viz_timing_memory_summary,
     _MI_COLOR,
     _INST_COLOR,
 )
@@ -112,6 +123,13 @@ from mosaiqtl.viz.haplotypes import (
 from mosaiqtl.viz.effects import (
     effect_bars as _viz_effect_bars,
     genome_effects_grid as _viz_genome_effects_grid,
+)
+from mosaiqtl.viz.compare import (
+    lod_scatter as _cmp_scatter,
+    lod_density_comparison as _cmp_lod_density,
+    allele_effects_comparison as _cmp_allele_effects,
+    lod_profiles_comparison as _cmp_lod_profiles,
+    perm_lod_comparison as _cmp_perm_lod,
 )
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 from mosaiqtl.qtl.scan import (
@@ -466,7 +484,7 @@ def _make_descriptive_plots(
       timing_memory_summary.png      — elapsed time per section bar chart
     """
     sns.set_style('ticks')
-    f_colors = {f: FOUNDER_COLORS.get(f, '#888888') for f in founders}
+    f_colors = {f: FOUNDER_COLORS.get(f, COLOR_CC_FALLBACK) for f in founders}
 
     # ── S1: loci per chromosome bar ───────────────────────────────────────────
     s1_path = py_dir / 's1_cache_info.csv'
@@ -486,7 +504,7 @@ def _make_descriptive_plots(
             ax.set_title(f'Loci per chromosome  (total={ci["n_loci"].sum():,})',
                          fontsize=9)
             fig.tight_layout()
-            fig.savefig(plt_dir / 's1_loci_per_chr.png', dpi=300)
+            fig.savefig(plt_dir / 's1_loci_per_chr.png', dpi=300, transparent=True)
             plt.close(fig)
             log.info('  s1_loci_per_chr.png')
         except Exception as exc:
@@ -510,7 +528,7 @@ def _make_descriptive_plots(
             ax.set_title(f'Haplotype probs  locus={locus0}  (n={n_s})',
                          fontsize=9)
             fig.tight_layout()
-            fig.savefig(plt_dir / 's2_haplotype_heatmap.png', dpi=300)
+            fig.savefig(plt_dir / 's2_haplotype_heatmap.png', dpi=300, transparent=True)
             plt.close(fig)
             log.info('  s2_haplotype_heatmap.png  (%d strains)', n_s)
         except Exception as exc:
@@ -541,7 +559,7 @@ def _make_descriptive_plots(
             )
             ax1.set_title(f'LOCO kinship  chr{peak_chr}  (n={n})', fontsize=9)
             fig1.savefig(plt_dir / 's3_kinship_heatmap.png', dpi=300,
-                         bbox_inches='tight')
+                         bbox_inches='tight', transparent=True)
             plt.close(fig1)
             log.info('  s3_kinship_heatmap.png  (%d strains)', n)
 
@@ -549,7 +567,7 @@ def _make_descriptive_plots(
             _viz_kinship_distribution(K, ax=ax2, chrom=peak_chr)
             ax2.set_title(f'Kinship distribution  chr{peak_chr}', fontsize=9)
             fig2.tight_layout()
-            fig2.savefig(plt_dir / 's3_kinship_distribution.png', dpi=300)
+            fig2.savefig(plt_dir / 's3_kinship_distribution.png', dpi=300, transparent=True)
             plt.close(fig2)
             log.info('  s3_kinship_distribution.png')
         except Exception as exc:
@@ -632,12 +650,12 @@ def _make_descriptive_plots(
                 if lod_top.empty:
                     continue
                 thr = _thr_by_chr.get(c)
-                fig, ax = plt.subplots(figsize=(10, 3), dpi=300)
+                fig, ax = plt.subplots(figsize=(12, 3.5), dpi=300)
                 _viz_lod_profile(lod_top['pos_mb'].values, lod_top['lod'].values,
-                                 ax=ax, chrom=c, threshold=thr, fill=True)
-                ax.set_title(f'LOD profile  {top_gene}  chr{c}', fontsize=9)
+                                 ax=ax, chrom=c, threshold=thr, fill=True,
+                                 gene=top_gene)
                 fig.tight_layout()
-                fig.savefig(_s4_lod_dir / f's4_lod_profile_chr{c}.png', dpi=300)
+                fig.savefig(_s4_lod_dir / f's4_lod_profile_chr{c}.png', dpi=300, transparent=True)
                 plt.close(fig)
                 log.info('  s4_lod_profile/s4_lod_profile_chr%s.png  (gene=%s)', c, top_gene)
                 _p1 = PRIORITY_GENE.get(c)
@@ -646,12 +664,12 @@ def _make_descriptive_plots(
                         (_lod_df['chr'] == c) & (_lod_df['gene'] == _p1)
                     ].sort_values('pos_mb')
                     if not lod_p1.empty:
-                        fig2, ax2 = plt.subplots(figsize=(10, 3), dpi=300)
+                        fig2, ax2 = plt.subplots(figsize=(12, 3.5), dpi=300)
                         _viz_lod_profile(lod_p1['pos_mb'].values, lod_p1['lod'].values,
-                                         ax=ax2, chrom=c, threshold=thr, fill=True)
-                        ax2.set_title(f'LOD profile  {_p1}  chr{c}', fontsize=9)
+                                         ax=ax2, chrom=c, threshold=thr, fill=True,
+                                         gene=_p1)
                         fig2.tight_layout()
-                        fig2.savefig(_s4_lod_dir / f's4_lod_profile_{_p1}.png', dpi=300)
+                        fig2.savefig(_s4_lod_dir / f's4_lod_profile_{_p1}.png', dpi=300, transparent=True)
                         plt.close(fig2)
                         log.info('  s4_lod_profile/s4_lod_profile_%s.png', _p1)
         except Exception as exc:
@@ -672,28 +690,34 @@ def _make_descriptive_plots(
                 top_row = eff_c.loc[eff_c['peak_lod'].idxmax()]
                 betas   = np.array([top_row[bc] for bc in beta_cols])
                 fnames  = _display_founders([bc.replace('beta_', '') for bc in beta_cols])
-                fig, ax = plt.subplots(figsize=(7, 3), dpi=300)
-                _viz_effect_bars(betas, fnames, ax=ax)
-                ax.set_title(
-                    f'Founder effects  {top_row["gene"]}  '
-                    f'{top_row["peak_locus"]}  LOD={top_row["peak_lod"]:.1f}',
-                    fontsize=9)
+                fig, ax = plt.subplots(figsize=(8, 4), dpi=300)
+                _viz_effect_bars(betas, fnames, ax=ax,
+                                 gene=str(top_row['gene']),
+                                 locus=str(top_row['peak_locus']))
+                ax.text(0.98, 0.97, f'LOD = {top_row["peak_lod"]:.2f}',
+                        transform=ax.transAxes, fontsize=10, va='top', ha='right',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                                  edgecolor=COLOR_NEUTRAL_DARK, alpha=0.85))
+                sns.despine(ax=ax)
                 fig.tight_layout()
-                fig.savefig(_s4_eff_dir / f's4_founder_effects_chr{c}.png', dpi=300)
+                fig.savefig(_s4_eff_dir / f's4_founder_effects_chr{c}.png', dpi=300, transparent=True)
                 plt.close(fig)
                 log.info('  s4_founder_effects/s4_founder_effects_chr%s.png  (gene=%s)', c, top_row['gene'])
                 _p1 = PRIORITY_GENE.get(c)
                 if _p1 and top_row['gene'] != _p1 and _p1 in eff_c['gene'].values:
                     p1_row   = eff_c[eff_c['gene'] == _p1].iloc[0]
                     betas_p1 = np.array([p1_row[bc] for bc in beta_cols])
-                    fig2, ax2 = plt.subplots(figsize=(7, 3), dpi=300)
-                    _viz_effect_bars(betas_p1, fnames, ax=ax2)
-                    ax2.set_title(
-                        f'Founder effects  {p1_row["gene"]}  '
-                        f'{p1_row["peak_locus"]}  LOD={p1_row["peak_lod"]:.1f}',
-                        fontsize=9)
+                    fig2, ax2 = plt.subplots(figsize=(8, 4), dpi=300)
+                    _viz_effect_bars(betas_p1, fnames, ax=ax2,
+                                     gene=str(p1_row['gene']),
+                                     locus=str(p1_row['peak_locus']))
+                    ax2.text(0.98, 0.97, f'LOD = {p1_row["peak_lod"]:.2f}',
+                             transform=ax2.transAxes, fontsize=10, va='top', ha='right',
+                             bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                                       edgecolor=COLOR_NEUTRAL_DARK, alpha=0.85))
+                    sns.despine(ax=ax2)
                     fig2.tight_layout()
-                    fig2.savefig(_s4_eff_dir / f's4_founder_effects_{_p1}.png', dpi=300)
+                    fig2.savefig(_s4_eff_dir / f's4_founder_effects_{_p1}.png', dpi=300, transparent=True)
                     plt.close(fig2)
                     log.info('  s4_founder_effects/s4_founder_effects_%s.png', _p1)
         except Exception as exc:
@@ -710,7 +734,7 @@ def _make_descriptive_plots(
             _fnames4     = _display_founders([bc.replace('beta_', '') for bc in _beta_cols4])
             fig_eg = _viz_genome_effects_grid(_eff4, _fnames4)
             fig_eg.savefig(plt_dir / 's4_founder_effects_grid.png', dpi=300,
-                           bbox_inches='tight')
+                           bbox_inches='tight', transparent=True)
             plt.close(fig_eg)
             log.info('  s4_founder_effects_grid.png')
             fig_lpg = _viz_lod_panel_grid(
@@ -719,7 +743,7 @@ def _make_descriptive_plots(
                 priority_genes=PRIORITY_GENE,
             )
             fig_lpg.savefig(plt_dir / 's4_lod_panel_grid.png', dpi=300,
-                            bbox_inches='tight')
+                            bbox_inches='tight', transparent=True)
             plt.close(fig_lpg)
             log.info('  s4_lod_panel_grid.png')
             fig_lcg = _viz_locus_panel_grid(
@@ -728,7 +752,7 @@ def _make_descriptive_plots(
                 priority_genes=PRIORITY_GENE,
             )
             fig_lcg.savefig(plt_dir / 's4_locus_panel_grid.png', dpi=300,
-                            bbox_inches='tight')
+                            bbox_inches='tight', transparent=True)
             plt.close(fig_lcg)
             log.info('  s4_locus_panel_grid.png')
             _tss_mb_map4 = None
@@ -745,7 +769,7 @@ def _make_descriptive_plots(
                 tss_mb_map=_tss_mb_map4,
             )
             for _lp_c, _lp_fig in _lp_figs.items():
-                _lp_fig.savefig(_s4_lp_dir / f's4_locus_panel_chr{_lp_c}.png', dpi=300)
+                _lp_fig.savefig(_s4_lp_dir / f's4_locus_panel_chr{_lp_c}.png', dpi=300, transparent=True)
                 plt.close(_lp_fig)
             if _lp_figs:
                 log.info('  s4_locus_panel/s4_locus_panel_chr*.png  (%d files)', len(_lp_figs))
@@ -772,9 +796,12 @@ def _make_descriptive_plots(
             }
             thr = _thr_by_chr.get(str(peak_chr))
             fig = _viz_manhattan(scans_dict, threshold=thr)
-            fig.axes[0].set_title(f'Manhattan  n={len(peak_pos)} genes', fontsize=9)
+            _ax_m = fig.axes[0]
+            _ax_m.text(0.01, 0.97, f'n = {len(peak_pos):,} genes',
+                       transform=_ax_m.transAxes, fontsize=10, va='top', ha='left',
+                       fontweight='bold', color=COLOR_NEUTRAL_DARK)
             fig.tight_layout()
-            fig.savefig(plt_dir / 's4_manhattan.png', dpi=300)
+            fig.savefig(plt_dir / 's4_manhattan.png', dpi=300, transparent=True)
             plt.close(fig)
             log.info('  s4_manhattan.png')
         except Exception as exc:
@@ -791,14 +818,21 @@ def _make_descriptive_plots(
                 _td = pd.read_csv(s5_thr_path); _td['chr'] = _td['chr'].astype(str)
                 _tr = _td[_td['chr'] == str(peak_chr)]
                 thr = float(_tr['threshold'].iloc[0]) if len(_tr) > 0 else float(_td['threshold'].iloc[0])
-            fig, ax  = plt.subplots(figsize=(7, 4), dpi=300)
+            fig, ax  = plt.subplots(figsize=(8, 4.5), dpi=300)
             _viz_perm_distribution(max_lods, ax=ax, threshold=thr, chrom=peak_chr)
-            ax.set_title(
-                f'Permutation distribution  chr{peak_chr}  '
-                f'n={np.isfinite(max_lods).sum()}',
-                fontsize=9)
+            ax.set_xlabel('Genome-wide max LOD (per permutation)', fontsize=13, fontweight='bold')
+            ax.set_ylabel('Count', fontsize=13, fontweight='bold')
+            ax.tick_params(labelsize=11)
+            _perm_info = [f'n perms = {np.isfinite(max_lods).sum():,}']
+            if thr:
+                _perm_info.append(f'FWER thr = {thr:.2f}')
+            ax.text(0.98, 0.97, '\n'.join(_perm_info),
+                    transform=ax.transAxes, fontsize=10, va='top', ha='right',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                              edgecolor=COLOR_NEUTRAL_DARK, alpha=0.85))
+            sns.despine(ax=ax)
             fig.tight_layout()
-            fig.savefig(plt_dir / 's5_perm_distribution.png', dpi=300)
+            fig.savefig(plt_dir / 's5_perm_distribution.png', dpi=300, transparent=True)
             plt.close(fig)
             log.info('  s5_perm_distribution.png')
         except Exception as exc:
@@ -822,12 +856,12 @@ def _make_descriptive_plots(
             if _perm5:
                 _perm_figs = _viz_perm_distributions_per_chr(_perm5, _thr5_dict)
                 for _pc5, _pf5 in _perm_figs.items():
-                    _pf5.savefig(_s5_perm_dir / f's5_perm_chr{_pc5}.png', dpi=300)
+                    _pf5.savefig(_s5_perm_dir / f's5_perm_chr{_pc5}.png', dpi=300, transparent=True)
                     plt.close(_pf5)
                 log.info('  s5_perm/s5_perm_chr*.png  (%d files)', len(_perm_figs))
                 fig_pg = _viz_perm_panel_grid(_perm5, _thr5_dict)
                 fig_pg.savefig(plt_dir / 's5_perm_panel_grid.png', dpi=300,
-                               bbox_inches='tight')
+                               bbox_inches='tight', transparent=True)
                 plt.close(fig_pg)
                 log.info('  s5_perm_panel_grid.png')
         except Exception as exc:
@@ -849,14 +883,10 @@ def _make_descriptive_plots(
                           if _sum_path.exists() else set())
             lods       = pk['peak_lod'].dropna().values
             is_egene   = pk['gene'].isin(egenes_set).values
-            fig, ax    = plt.subplots(figsize=(7, 4), dpi=300)
-            _viz_egene_lod_distribution(lods, is_egene, ax=ax,
-                                        threshold=thr, chrom=peak_chr)
-            ax.set_title(
-                f'eGene calling  chr{peak_chr}  n={len(pk)} genes',
-                fontsize=9)
+            fig, ax    = plt.subplots(figsize=(9, 4.5), dpi=300)
+            _viz_egene_lod_distribution(lods, is_egene, ax=ax, threshold=thr)
             fig.tight_layout()
-            fig.savefig(plt_dir / 's6_egene_lod_distribution.png', dpi=300)
+            fig.savefig(plt_dir / 's6_egene_lod_distribution.png', dpi=300, transparent=True)
             plt.close(fig)
             log.info('  s6_egene_lod_distribution.png  (%d eGenes / %d genes)',
                      is_egene.sum(), len(pk))
@@ -879,22 +909,28 @@ def _make_descriptive_plots(
                 _td6['chr'] = _td6['chr'].astype(str)
                 _thr6 = dict(zip(_td6['chr'],
                                  _td6['threshold'].where(_td6['threshold'].notna(), None)))
+            _n_perms6 = 0
+            if s5_thr_path.exists():
+                _td_np6 = pd.read_csv(s5_thr_path)
+                if 'n_perms' in _td_np6.columns and len(_td_np6) > 0:
+                    _n_perms6 = int(_td_np6['n_perms'].iloc[0])
             _scan_stats6: dict = {
                 'n_genes': len(_pk6),
                 'n_egenes': int(_is_eg6.sum()),
                 'peak_chr': str(peak_chr),
+                'n_perms': _n_perms6,
                 'top_gene': (str(_pk6.loc[_pk6['peak_lod'].idxmax(), 'gene'])
                              if len(_pk6) > 0 else ''),
             }
             fig_gs = _viz_genome_summary(_pk6, _is_eg6, _thr6 or None,
                                          scan_stats=_scan_stats6)
             fig_gs.savefig(plt_dir / 's6_genome_summary.png', dpi=300,
-                           bbox_inches='tight')
+                           bbox_inches='tight', transparent=True)
             plt.close(fig_gs)
             log.info('  s6_genome_summary.png')
             fig_gd = _viz_genome_diagnostic(_pk6, _thr6, scan_stats=_scan_stats6)
             fig_gd.savefig(plt_dir / 's6_genome_diagnostic.png', dpi=300,
-                           bbox_inches='tight')
+                           bbox_inches='tight', transparent=True)
             plt.close(fig_gd)
             log.info('  s6_genome_diagnostic.png')
         except Exception as exc:
@@ -912,55 +948,37 @@ def _make_descriptive_plots(
             if len(snp_pc) > 0:
                 top_gene = _pick_top_gene(snp_pc, peak_chr)
                 snp_top  = snp_pc[snp_pc['gene'] == top_gene].sort_values('pos_mb')
-                fig, ax  = plt.subplots(figsize=(10, 3), dpi=300)
-                ax.scatter(snp_top['pos_mb'].values, snp_top['lod'].values,
-                           color=FOUNDER_COLORS['129S1J'], s=4, alpha=0.7,
-                           linewidths=0)
-                _top_row = snp_top.loc[snp_top['lod'].idxmax()]
-                ax.annotate(
-                    str(_top_row['snp']),
-                    xy=(_top_row['pos_mb'], _top_row['lod']),
-                    xytext=(6, 4), textcoords='offset points',
-                    fontsize=6, color=FOUNDER_COLORS['PWKJ'],
-                    arrowprops=dict(arrowstyle='-', color=FOUNDER_COLORS['PWKJ'],
-                                   lw=0.6),
+                _beta_s8 = (snp_top['beta_dosage'].values
+                            if 'beta_dosage' in snp_top.columns
+                            else np.zeros(len(snp_top)))
+                _pk_row_s8 = snp_top.loc[snp_top['lod'].idxmax()]
+                fig, ax  = plt.subplots(figsize=(12, 3.5), dpi=300)
+                _viz_snp_lod_profile(
+                    snp_top['pos_mb'].values, snp_top['lod'].values, _beta_s8,
+                    chrom=str(peak_chr), gene=top_gene,
+                    peak_pos=float(_pk_row_s8['pos_mb']),
+                    ax=ax,
                 )
-                ax.set_xlim(snp_top['pos_mb'].min(), snp_top['pos_mb'].max())
-                ax.set_ylim(bottom=0)
-                ax.set_xlabel(f'Chr {peak_chr} position (Mb)')
-                ax.set_ylabel('LOD (SNP)')
-                ax.set_title(f'SNP fine-mapping scan  {top_gene}  chr{peak_chr}',
-                             fontsize=9)
-                sns.despine(ax=ax)
                 fig.tight_layout()
-                fig.savefig(_s8_snp_dir / 's8_snp_lod_profile.png', dpi=300)
+                fig.savefig(_s8_snp_dir / 's8_snp_lod_profile.png', dpi=300, transparent=True)
                 plt.close(fig)
                 log.info('  s8_snp/s8_snp_lod_profile.png  (gene=%s)', top_gene)
                 _p1 = PRIORITY_GENE.get(str(peak_chr))
                 if _p1 and _p1 != top_gene and _p1 in snp_pc['gene'].values:
                     snp_p1 = snp_pc[snp_pc['gene'] == _p1].sort_values('pos_mb')
-                    fig_p1, ax_p1 = plt.subplots(figsize=(10, 3), dpi=300)
-                    ax_p1.scatter(snp_p1['pos_mb'].values, snp_p1['lod'].values,
-                                  color=FOUNDER_COLORS['129S1J'], s=4, alpha=0.7,
-                                  linewidths=0)
-                    _top_row_p1 = snp_p1.loc[snp_p1['lod'].idxmax()]
-                    ax_p1.annotate(
-                        str(_top_row_p1['snp']),
-                        xy=(_top_row_p1['pos_mb'], _top_row_p1['lod']),
-                        xytext=(6, 4), textcoords='offset points',
-                        fontsize=6, color=FOUNDER_COLORS['PWKJ'],
-                        arrowprops=dict(arrowstyle='-', color=FOUNDER_COLORS['PWKJ'],
-                                        lw=0.6),
+                    _beta_p1 = (snp_p1['beta_dosage'].values
+                                if 'beta_dosage' in snp_p1.columns
+                                else np.zeros(len(snp_p1)))
+                    _pk_p1 = snp_p1.loc[snp_p1['lod'].idxmax()]
+                    fig_p1, ax_p1 = plt.subplots(figsize=(12, 3.5), dpi=300)
+                    _viz_snp_lod_profile(
+                        snp_p1['pos_mb'].values, snp_p1['lod'].values, _beta_p1,
+                        chrom=str(peak_chr), gene=_p1,
+                        peak_pos=float(_pk_p1['pos_mb']),
+                        ax=ax_p1,
                     )
-                    ax_p1.set_xlim(snp_p1['pos_mb'].min(), snp_p1['pos_mb'].max())
-                    ax_p1.set_ylim(bottom=0)
-                    ax_p1.set_xlabel(f'Chr {peak_chr} position (Mb)')
-                    ax_p1.set_ylabel('LOD (SNP)')
-                    ax_p1.set_title(f'SNP fine-mapping scan  {_p1}  chr{peak_chr}',
-                                    fontsize=9)
-                    sns.despine(ax=ax_p1)
                     fig_p1.tight_layout()
-                    fig_p1.savefig(_s8_snp_dir / f's8_snp_lod_profile_{_p1}.png', dpi=300)
+                    fig_p1.savefig(_s8_snp_dir / f's8_snp_lod_profile_{_p1}.png', dpi=300, transparent=True)
                     plt.close(fig_p1)
                     log.info('  s8_snp/s8_snp_lod_profile_%s.png', _p1)
         except Exception as exc:
@@ -975,14 +993,52 @@ def _make_descriptive_plots(
             if (py_dir / 's4_peak_lod.csv').exists():
                 _pk8 = pd.read_csv(py_dir / 's4_peak_lod.csv')
                 _pk8['chr'] = _pk8['chr'].astype(str)
-            _snp_figs = _viz_snp_profiles_per_chr(
-                _snp8, _pk8, priority_genes=PRIORITY_GENE,
-            )
-            for _sc8, _sf8 in _snp_figs.items():
-                _sf8.savefig(_s8_snp_dir / f's8_snp_chr{_sc8}.png', dpi=300)
-                plt.close(_sf8)
-            if _snp_figs:
-                log.info('  s8_snp/s8_snp_chr*.png  (%d files)', len(_snp_figs))
+            _rop8 = None
+            if (py_dir / 's4_lod.csv').exists():
+                _rop8 = pd.read_csv(py_dir / 's4_lod.csv', low_memory=False)
+                _rop8['chr'] = _rop8['chr'].astype(str)
+            _saved8 = 0
+            for _c8 in sorted(_snp8['chr'].unique(), key=_chr_sort_key):
+                _snp8c = _snp8[_snp8['chr'] == _c8]
+                if _snp8c.empty:
+                    continue
+                _prio8 = PRIORITY_GENE.get(_c8)
+                if _prio8 and _prio8 in _snp8c['gene'].values:
+                    _g8 = _prio8
+                elif _pk8 is not None:
+                    _pk8c = _pk8[_pk8['chr'] == _c8]
+                    _candidates8 = set(_snp8c['gene'].values)
+                    _pk8c2 = _pk8c[_pk8c['gene'].isin(_candidates8)]
+                    _g8 = (str(_pk8c2.loc[_pk8c2['peak_lod'].idxmax(), 'gene'])
+                           if not _pk8c2.empty
+                           else str(_snp8c.groupby('gene')['lod'].max().idxmax()))
+                else:
+                    _g8 = str(_snp8c.groupby('gene')['lod'].max().idxmax())
+                _snp_g8 = _snp8c[_snp8c['gene'] == _g8].sort_values('pos_mb')
+                if _snp_g8.empty:
+                    continue
+                _snp_peak_row8 = _snp_g8.loc[_snp_g8['lod'].idxmax()]
+                _snp_peak_mb8 = float(_snp_peak_row8['pos_mb'])
+                # optional haplo background
+                _haplo_pos8, _haplo_lod8 = None, None
+                if _rop8 is not None and _g8 in _rop8[_rop8['chr'] == _c8]['gene'].values:
+                    _r8 = _rop8[(_rop8['chr'] == _c8) & (_rop8['gene'] == _g8)].sort_values('pos_mb')
+                    _haplo_pos8 = _r8['pos_mb'].values
+                    _haplo_lod8 = _r8['lod'].values
+                _beta8 = (_snp_g8['beta_dosage'].values
+                          if 'beta_dosage' in _snp_g8.columns
+                          else np.zeros(len(_snp_g8)))
+                fig8, ax8 = plt.subplots(figsize=(12, 3.5), dpi=300)
+                _viz_snp_lod_profile(
+                    _snp_g8['pos_mb'].values, _snp_g8['lod'].values, _beta8,
+                    haplo_positions=_haplo_pos8, haplo_lod=_haplo_lod8,
+                    peak_pos=_snp_peak_mb8, ax=ax8, chrom=_c8, gene=_g8)
+                fig8.tight_layout()
+                fig8.savefig(_s8_snp_dir / f's8_snp_chr{_c8}.png', dpi=300, transparent=True)
+                plt.close(fig8)
+                _saved8 += 1
+            if _saved8:
+                log.info('  s8_snp/s8_snp_chr*.png  (%d files)', _saved8)
         except Exception as exc:
             log.warning('  s8_snp_per_chr: %s', exc)
 
@@ -990,19 +1046,53 @@ def _make_descriptive_plots(
     s10_path = py_dir / 's10_ci.csv'
     if s10_path.exists():
         try:
-            ci_df = pd.read_csv(s10_path, low_memory=False).sort_values('peak_mb')
-            ci_df['ci_width'] = ci_df['ci_hi'] - ci_df['ci_lo']
-            fig, ax = plt.subplots(figsize=(10, 4), dpi=300)
-            ax.scatter(ci_df['peak_mb'], ci_df['ci_width'],
-                       s=4, alpha=0.4, linewidths=0,
-                       color=FOUNDER_COLORS['NODJ'])
-            ax.set_xlabel(f'Peak position  chr{peak_chr} (Mb)', fontsize=9)
-            ax.set_ylabel('CI width (Mb)', fontsize=9)
-            ax.set_ylim(bottom=0)
-            ax.set_title(f'Bootstrap CI width  {len(ci_df)} eGenes', fontsize=9)
-            sns.despine(ax=ax)
-            fig.tight_layout()
-            fig.savefig(plt_dir / 's10_ci_strip.png', dpi=300)
+            ci_df = pd.read_csv(s10_path, low_memory=False)
+            ci_df['ci_width'] = (ci_df['ci_hi_mb'] - ci_df['ci_lo_mb']
+                                 if 'ci_hi_mb' in ci_df.columns
+                                 else ci_df['ci_hi'] - ci_df['ci_lo'])
+            # merge chr from peak_lod if not already present
+            if 'chr' not in ci_df.columns and 'gene' in ci_df.columns:
+                _pk10 = py_dir / 's4_peak_lod.csv'
+                if _pk10.exists():
+                    _pkdf10 = pd.read_csv(_pk10)[['gene', 'chr']]
+                    _pkdf10['chr'] = _pkdf10['chr'].astype(str)
+                    ci_df = ci_df.merge(_pkdf10, on='gene', how='left')
+            ci_df['chr'] = ci_df.get('chr', pd.Series(dtype=str)).astype(str)
+            # normalise column names for ci_genomic_interval
+            if 'ci_lo_mb' not in ci_df.columns:
+                ci_df['ci_lo_mb'] = ci_df.get('ci_lo', np.nan)
+            if 'ci_hi_mb' not in ci_df.columns:
+                ci_df['ci_hi_mb'] = ci_df.get('ci_hi', np.nan)
+            _pk10_path = py_dir / 's4_peak_lod.csv'
+            if 'peak_lod' not in ci_df.columns and _pk10_path.exists():
+                _pk10df = pd.read_csv(_pk10_path)[['gene', 'peak_lod']]
+                ci_df = ci_df.merge(_pk10df, on='gene', how='left')
+            _genome_thr10 = None
+            if (py_dir / 's5_threshold.csv').exists():
+                _t10 = pd.read_csv(py_dir / 's5_threshold.csv')
+                _t10['chr'] = _t10['chr'].astype(str)
+                _g10 = _t10[_t10['chr'] == 'genome']
+                _col10 = 'threshold' if 'threshold' in _t10.columns else 'threshold_lod'
+                if len(_g10) > 0:
+                    _genome_thr10 = float(_g10[_col10].iloc[0])
+            fig, ax = plt.subplots(figsize=(16, 5), dpi=300)
+            _ci10_lo = (ci_df.get('ci_lo_mb', ci_df.get('ci_lo', np.full(len(ci_df), np.nan)))
+                        .astype(float).values)
+            _ci10_hi = (ci_df.get('ci_hi_mb', ci_df.get('ci_hi', np.full(len(ci_df), np.nan)))
+                        .astype(float).values)
+            _ci10_lod = (ci_df['peak_lod'].values if 'peak_lod' in ci_df.columns
+                         else np.ones(len(ci_df)) * (_genome_thr10 or 3.0))
+            _ci10_mb = (ci_df['peak_mb'].values if 'peak_mb' in ci_df.columns
+                        else np.zeros(len(ci_df)))
+            _viz_ci_genomic_interval(
+                ci_df['gene'].tolist() if 'gene' in ci_df.columns else list(ci_df.index.astype(str)),
+                ci_df['chr'].astype(str).tolist() if 'chr' in ci_df.columns else ['?'] * len(ci_df),
+                _ci10_lo, _ci10_hi, _ci10_lod, _ci10_mb,
+                ax=ax,
+            )
+            fig.tight_layout(pad=1.5)
+            fig.savefig(plt_dir / 's10_ci_strip.png', dpi=300,
+                        bbox_inches='tight', transparent=True)
             plt.close(fig)
             log.info('  s10_ci_strip.png  (%d genes)', len(ci_df))
         except Exception as exc:
@@ -1026,11 +1116,11 @@ def _make_descriptive_plots(
                     ax=ax, chrom=peak_chr, fill=True,
                     color=FOUNDER_COLORS['CASTJ'],
                 )
-                ax.set_ylabel('Instability LOD')
+                ax.set_ylabel('Instability LOD Score')
                 ax.set_title(f'Instability  {top_gene}  chr{peak_chr}',
                              fontsize=9)
                 fig.tight_layout()
-                fig.savefig(_s11_dir / 's11_instability_profile.png', dpi=300)
+                fig.savefig(_s11_dir / 's11_instability_profile.png', dpi=300, transparent=True)
                 plt.close(fig)
                 log.info('  s11_instability/s11_instability_profile.png  (gene=%s)', top_gene)
                 _p1 = PRIORITY_GENE.get(str(peak_chr))
@@ -1042,16 +1132,16 @@ def _make_descriptive_plots(
                         ax=ax_p1, chrom=peak_chr, fill=True,
                         color=FOUNDER_COLORS['CASTJ'],
                     )
-                    ax_p1.set_ylabel('Instability LOD')
+                    ax_p1.set_ylabel('Instability LOD Score')
                     ax_p1.set_title(f'Instability  {_p1}  chr{peak_chr}', fontsize=9)
                     fig_p1.tight_layout()
-                    fig_p1.savefig(_s11_dir / f's11_instability_profile_{_p1}.png', dpi=300)
+                    fig_p1.savefig(_s11_dir / f's11_instability_profile_{_p1}.png', dpi=300, transparent=True)
                     plt.close(fig_p1)
                     log.info('  s11_instability/s11_instability_profile_%s.png', _p1)
         except Exception as exc:
             log.warning('  s11_instability_profile: %s', exc)
 
-    # ── S11: per-chromosome instability figures ───────────────────────────────
+    # ── S11: per-chromosome instability overlay (instability score vs ROP LOD) ─
     if s11_path.exists():
         try:
             _inst11 = pd.read_csv(s11_path)
@@ -1060,18 +1150,58 @@ def _make_descriptive_plots(
             if (py_dir / 's4_peak_lod.csv').exists():
                 _pk11 = pd.read_csv(py_dir / 's4_peak_lod.csv')
                 _pk11['chr'] = _pk11['chr'].astype(str)
-            _inst_figs = _viz_lod_profiles_per_chr(
-                _inst11, _pk11,
-                thr_by_chr=_thr_by_chr or None,
-                color=_INST_COLOR,
-                ylabel='Instability LOD',
-                priority_genes=PRIORITY_GENE,
-            )
-            for _ic11, _if11 in _inst_figs.items():
-                _if11.savefig(_s11_dir / f's11_instability_chr{_ic11}.png', dpi=300)
-                plt.close(_if11)
-            if _inst_figs:
-                log.info('  s11_instability/s11_instability_chr*.png  (%d files)', len(_inst_figs))
+            _rop11 = None
+            if (py_dir / 's4_lod.csv').exists():
+                _rop11 = pd.read_csv(py_dir / 's4_lod.csv', low_memory=False)
+                _rop11['chr'] = _rop11['chr'].astype(str)
+            _saved11 = 0
+            for _c11 in sorted(_inst11['chr'].unique(), key=_chr_sort_key):
+                _inst11c = _inst11[_inst11['chr'] == _c11]
+                if _inst11c.empty:
+                    continue
+                _prio11 = PRIORITY_GENE.get(_c11)
+                if _prio11 and _prio11 in _inst11c['gene'].values:
+                    _g11 = _prio11
+                elif _pk11 is not None:
+                    _pk11c = _pk11[_pk11['chr'] == _c11]
+                    _g11 = (str(_pk11c.loc[_pk11c['peak_lod'].idxmax(), 'gene'])
+                            if not _pk11c.empty
+                            else str(_inst11c.groupby('gene')['lod'].max().idxmax()))
+                else:
+                    _g11 = str(_inst11c.groupby('gene')['lod'].max().idxmax())
+                _inst_top11 = _inst11c[_inst11c['gene'] == _g11].sort_values('pos_mb')
+                if _inst_top11.empty:
+                    continue
+                _thr11 = _thr_by_chr.get(_c11)
+                _rop_lod11: np.ndarray
+                _rop_pos11: np.ndarray
+                if (_rop11 is not None
+                        and _g11 in _rop11[_rop11['chr'] == _c11]['gene'].values):
+                    _rop_top11 = _rop11[(_rop11['chr'] == _c11)
+                                        & (_rop11['gene'] == _g11)].sort_values('pos_mb')
+                    _rop_pos11 = _rop_top11['pos_mb'].values
+                    _rop_lod11 = _rop_top11['lod'].values
+                else:
+                    _rop_pos11 = _inst_top11['pos_mb'].values
+                    _rop_lod11 = np.zeros(len(_rop_pos11))
+                # inst scores (0–1); use peak_freq if available, else normalise lod
+                _inst_col = ('peak_freq' if 'peak_freq' in _inst_top11.columns else 'lod')
+                _inst_raw = _inst_top11[_inst_col].values
+                _inst_scores11 = (_inst_raw / max(_inst_raw.max(), 1e-6)
+                                  if _inst_raw.max() > 1.0 else _inst_raw)
+                # align positions: use union grid
+                _common_pos = _inst_top11['pos_mb'].values
+                _rop_interp = np.interp(_common_pos, _rop_pos11, _rop_lod11)
+                fig11, ax11 = plt.subplots(figsize=(12, 3.5), dpi=300)
+                _viz_instability_overlay(
+                    _common_pos, _rop_interp, _inst_scores11,
+                    ax=ax11, chrom=_c11, gene=_g11, threshold=_thr11)
+                fig11.tight_layout()
+                fig11.savefig(_s11_dir / f's11_instability_chr{_c11}.png', dpi=300, transparent=True)
+                plt.close(fig11)
+                _saved11 += 1
+            if _saved11:
+                log.info('  s11_instability/s11_instability_chr*.png  (%d files, overlay)', _saved11)
         except Exception as exc:
             log.warning('  s11_per_chr: %s', exc)
 
@@ -1093,11 +1223,11 @@ def _make_descriptive_plots(
                     ax=ax, chrom=peak_chr, fill=True,
                     color=FOUNDER_COLORS['WSBJ'],
                 )
-                ax.set_ylabel('LOD (MI)')
-                ax.set_title(f'MI LOD profile  {top_gene}  chr{peak_chr}',
+                ax.set_ylabel('LOD Score (MI)')
+                ax.set_title(f'MI LOD Score Profile  {top_gene}  chr{peak_chr}',
                              fontsize=9)
                 fig.tight_layout()
-                fig.savefig(_s7_mi_dir / 's7_mi_lod_profile.png', dpi=300)
+                fig.savefig(_s7_mi_dir / 's7_mi_lod_profile.png', dpi=300, transparent=True)
                 plt.close(fig)
                 log.info('  s7_mi/s7_mi_lod_profile.png  (gene=%s)', top_gene)
                 _p1 = PRIORITY_GENE.get(str(peak_chr))
@@ -1109,16 +1239,16 @@ def _make_descriptive_plots(
                         ax=ax_p1, chrom=peak_chr, fill=True,
                         color=FOUNDER_COLORS['WSBJ'],
                     )
-                    ax_p1.set_ylabel('LOD (MI)')
-                    ax_p1.set_title(f'MI LOD profile  {_p1}  chr{peak_chr}', fontsize=9)
+                    ax_p1.set_ylabel('LOD Score (MI)')
+                    ax_p1.set_title(f'MI LOD Score Profile  {_p1}  chr{peak_chr}', fontsize=9)
                     fig_p1.tight_layout()
-                    fig_p1.savefig(_s7_mi_dir / f's7_mi_lod_profile_{_p1}.png', dpi=300)
+                    fig_p1.savefig(_s7_mi_dir / f's7_mi_lod_profile_{_p1}.png', dpi=300, transparent=True)
                     plt.close(fig_p1)
                     log.info('  s7_mi/s7_mi_lod_profile_%s.png', _p1)
         except Exception as exc:
             log.warning('  s7_mi_lod_profile: %s', exc)
 
-    # ── S7: per-chromosome MI LOD figures ─────────────────────────────────────
+    # ── S7: per-chromosome MI overlay (MI LOD vs ROP LOD) ─────────────────────
     if s7_path.exists():
         try:
             _mi7 = pd.read_csv(s7_path, low_memory=False)
@@ -1127,50 +1257,89 @@ def _make_descriptive_plots(
             if (py_dir / 's4_peak_lod.csv').exists():
                 _pk7 = pd.read_csv(py_dir / 's4_peak_lod.csv')
                 _pk7['chr'] = _pk7['chr'].astype(str)
-            _mi_figs = _viz_lod_profiles_per_chr(
-                _mi7, _pk7,
-                thr_by_chr=_thr_by_chr or None,
-                color=_MI_COLOR,
-                ylabel='LOD (MI)',
-                priority_genes=PRIORITY_GENE,
-            )
-            for _mc7, _mf7 in _mi_figs.items():
-                _mf7.savefig(_s7_mi_dir / f's7_mi_chr{_mc7}.png', dpi=300)
-                plt.close(_mf7)
-            if _mi_figs:
-                log.info('  s7_mi/s7_mi_chr*.png  (%d files)', len(_mi_figs))
+            _rop7 = None
+            if (py_dir / 's4_lod.csv').exists():
+                _rop7 = pd.read_csv(py_dir / 's4_lod.csv', low_memory=False)
+                _rop7['chr'] = _rop7['chr'].astype(str)
+            _saved7 = 0
+            for _c7 in sorted(_mi7['chr'].unique(), key=_chr_sort_key):
+                _mi7c = _mi7[_mi7['chr'] == _c7]
+                if _mi7c.empty:
+                    continue
+                _prio7 = PRIORITY_GENE.get(_c7)
+                if _prio7 and _prio7 in _mi7c['gene'].values:
+                    _g7 = _prio7
+                elif _pk7 is not None:
+                    _pk7c = _pk7[_pk7['chr'] == _c7]
+                    _g7 = (str(_pk7c.loc[_pk7c['peak_lod'].idxmax(), 'gene'])
+                           if not _pk7c.empty
+                           else str(_mi7c.groupby('gene')['lod'].max().idxmax()))
+                else:
+                    _g7 = str(_mi7c.groupby('gene')['lod'].max().idxmax())
+                _mi_top7 = _mi7c[_mi7c['gene'] == _g7].sort_values('pos_mb')
+                if _mi_top7.empty:
+                    continue
+                _thr7 = _thr_by_chr.get(_c7)
+                _common_pos7 = _mi_top7['pos_mb'].values
+                _mi_lod7 = _mi_top7['lod'].values
+                if (_rop7 is not None
+                        and _g7 in _rop7[_rop7['chr'] == _c7]['gene'].values):
+                    _rop_top7 = _rop7[(_rop7['chr'] == _c7)
+                                      & (_rop7['gene'] == _g7)].sort_values('pos_mb')
+                    _rop_lod7 = np.interp(_common_pos7, _rop_top7['pos_mb'].values,
+                                          _rop_top7['lod'].values)
+                else:
+                    _rop_lod7 = np.zeros_like(_mi_lod7)
+                fig7, ax7 = plt.subplots(figsize=(12, 3.5), dpi=300)
+                _viz_mi_rop_overlay(
+                    _common_pos7, _rop_lod7, _mi_lod7,
+                    ax=ax7, chrom=_c7, gene=_g7, threshold=_thr7)
+                fig7.tight_layout()
+                fig7.savefig(_s7_mi_dir / f's7_mi_chr{_c7}.png', dpi=300, transparent=True)
+                plt.close(fig7)
+                _saved7 += 1
+            if _saved7:
+                log.info('  s7_mi/s7_mi_chr*.png  (%d files, MI vs ROP overlay)', _saved7)
         except Exception as exc:
             log.warning('  s7_per_chr: %s', exc)
 
     # ── S9: mediation LOD profile (base vs mediated) ──────────────────────────
-    # ── S9: peak lod_mediated per chromosome ─────────────────────────────────
+    # ── S9: lod_drop distribution per chromosome ──────────────────────────────
     s9_path = py_dir / 's9_mediation.csv'
     if s9_path.exists():
         try:
             med_df = pd.read_csv(s9_path, low_memory=False)
             med_df['chr'] = med_df['chr'].astype(str)
-            peak_med = (med_df.groupby('chr')['lod_mediated']
-                        .max()
-                        .reset_index()
-                        .sort_values('chr', key=lambda s: s.map(
-                            lambda c: int(c) if c.isdigit() else 100)))
-            fig, ax = plt.subplots(figsize=(max(6, len(peak_med) * 0.55), 3.5),
-                                   dpi=300)
-            ax.bar(range(len(peak_med)), peak_med['lod_mediated'],
-                   color=FOUNDER_COLORS['NODJ'], edgecolor='none')
-            ax.set_xticks(range(len(peak_med)))
-            ax.set_xticklabels([f'chr{c}' for c in peak_med['chr']],
-                                rotation=45, ha='right', fontsize=7)
-            ax.set_ylabel('Peak lod_mediated', fontsize=9)
-            ax.set_title(f'Mediation — peak lod_mediated per chromosome'
-                         f'  ({len(med_df["gene"].unique())} outcomes)',
-                         fontsize=9)
-            ax.set_ylim(bottom=0)
+            # derive lod_drop if not present (lod_base - lod_mediated)
+            if 'lod_drop' not in med_df.columns:
+                if 'lod_base' in med_df.columns and 'lod_mediated' in med_df.columns:
+                    med_df['lod_drop'] = (med_df['lod_base'] - med_df['lod_mediated']).clip(lower=0)
+                else:
+                    raise KeyError('Column not found: lod_drop (and lod_base/lod_mediated absent)')
+            _chr_sort_series = lambda s: s.map(lambda c: int(c) if c.isdigit() else 100)
+            s9_grp = (med_df.groupby('chr')['lod_drop']
+                      .agg(mean_drop='mean', std_drop='std', n_pairs='count')
+                      .reset_index()
+                      .sort_values('chr', key=_chr_sort_series))
+            n_outcomes_s9 = (len(med_df['gene'].unique())
+                             if 'gene' in med_df.columns else 0)
+            n_chrs = len(s9_grp)
+            fig, ax = plt.subplots(
+                figsize=(max(8, n_chrs * 0.6), 4.5), dpi=300)
+            _viz_mediation_summary_bar(
+                s9_grp['chr'].tolist(),
+                s9_grp['mean_drop'].values,
+                std_drop=s9_grp['std_drop'].fillna(0).values,
+                n_pairs=s9_grp['n_pairs'].values,
+                n_outcomes=n_outcomes_s9,
+                ax=ax,
+            )
             sns.despine(ax=ax)
-            fig.tight_layout()
-            fig.savefig(plt_dir / 's9_mediation_by_chr.png', dpi=300)
+            fig.tight_layout(pad=1.5)
+            fig.savefig(plt_dir / 's9_mediation_by_chr.png', dpi=300,
+                        bbox_inches='tight', transparent=True)
             plt.close(fig)
-            log.info('  s9_mediation_by_chr.png  (%d chr)', len(peak_med))
+            log.info('  s9_mediation_by_chr.png  (%d chr)', n_chrs)
         except Exception as exc:
             log.warning('  s9_mediation_by_chr: %s', exc)
 
@@ -1201,25 +1370,16 @@ def _make_descriptive_plots(
             if len(ss) > 0:
                 has_mem = ('peak_heap_mb' in ss.columns
                            and ss['peak_heap_mb'].gt(0).any())
-                fig, axes = plt.subplots(1, 2 if has_mem else 1,
-                                         figsize=(9 if has_mem else 5,
-                                                  max(3, len(ss) * 0.45)))
-                ax_t = axes[0] if has_mem else axes
-                ax_t.barh(labels, ss['elapsed_s'], color='#4F6EAF')
-                ax_t.invert_yaxis()
-                ax_t.set_xlabel('Elapsed (s)')
-                ax_t.set_title('Timing per step')
-                sns.despine(ax=ax_t)
-                if has_mem:
-                    axes[1].barh(labels, ss['peak_heap_mb'].fillna(0),
-                                 color='#52A5DB')
-                    axes[1].invert_yaxis()
-                    axes[1].set_xlabel('Peak heap (MB)')
-                    axes[1].set_title('Memory per step')
-                    sns.despine(ax=axes[1])
-                fig.tight_layout()
-                fig.savefig(plt_dir / 'timing_memory_summary.png', dpi=300)
-                plt.close(fig)
+                heap_vals = (ss['peak_heap_mb'].fillna(0).values
+                             if has_mem else None)
+                fig_tm = _viz_timing_memory_summary(
+                    labels,
+                    ss['elapsed_s'].values,
+                    peak_heap_mb=heap_vals if has_mem else None,
+                )
+                fig_tm.savefig(plt_dir / 'timing_memory_summary.png',
+                               dpi=300, transparent=True)
+                plt.close(fig_tm)
                 log.info('  timing_memory_summary.png')
         except Exception as exc:
             log.warning('  timing_memory_summary: %s', exc)
@@ -1239,27 +1399,16 @@ def _make_descriptive_plots(
                         lambda c: int(c) if c.isdigit() else 100))
                 chr_rows['gpm'] = (chr_rows['n_items']
                                    / chr_rows['elapsed_s'].replace(0, float('nan')) * 60)
-                fig_tp, ax_tp = plt.subplots(figsize=(9, 3.5), dpi=300)
-                ax_tp.bar(range(len(chr_rows)), chr_rows['gpm'].fillna(0),
-                          color='#4F6EAF', edgecolor='none')
-                ax_tp.set_xticks(range(len(chr_rows)))
-                ax_tp.set_xticklabels(
-                    [f'chr{c}' for c in chr_rows['chrom']], rotation=45,
-                    ha='right', fontsize=7)
-                ax_tp.set_ylabel('Genes / min', fontsize=9)
-                ax_tp.set_title(
-                    'Scan throughput per chromosome  (real gastroc data)',
-                    fontsize=9)
-                # median line
-                med_gpm = chr_rows['gpm'].median()
-                ax_tp.axhline(med_gpm, color='#D83026', linestyle='--',
-                              linewidth=1, label=f'median {med_gpm:.0f} g/min')
-                ax_tp.legend(fontsize=7)
-                sns.despine(ax=ax_tp)
+                _chrs_tp = chr_rows['chrom'].tolist()
+                _gpm_tp = chr_rows['gpm'].fillna(0).values
+                fig_tp, ax_tp = plt.subplots(
+                    figsize=(max(9, len(chr_rows) * 0.55), 3.5), dpi=300)
+                _viz_scan_throughput(_chrs_tp, _gpm_tp, ax=ax_tp)
                 fig_tp.tight_layout()
                 fig_tp.savefig(plt_dir / 'throughput_by_chr.png',
-                               dpi=300, bbox_inches='tight')
+                               dpi=300, bbox_inches='tight', transparent=True)
                 plt.close(fig_tp)
+                med_gpm = chr_rows['gpm'].median()
                 log.info('  throughput_by_chr.png  (median %.0f genes/min)', med_gpm)
         except Exception as exc:
             log.warning('  throughput_by_chr: %s', exc)
@@ -1282,8 +1431,10 @@ def _make_comparison_plots(
     """generate all R-vs-Python comparison figures; skip silently if inputs missing."""
     from scipy.stats import genextreme as gev_dist
 
+    s5_thr_path = py_dir / 's5_threshold.csv'
+
     display_f = _display_founders(founders)  # full names for labels/colors
-    fcolors = [FOUNDER_COLORS.get(f, '#888888') for f in display_f]
+    fcolors = [FOUNDER_COLORS.get(f, COLOR_CC_FALLBACK) for f in display_f]
 
     # ── S2: haplotype prob scatter ─────────────────────────────────────────────
     hap_path = r_data / 'haplotype_probs.csv'
@@ -1309,19 +1460,17 @@ def _make_comparison_plots(
                     r_vals.extend((rrow[fcols].values.astype(float) / 2.0).tolist())
             if len(py_vals) >= 10:
                 py_v, r_v = np.array(py_vals), np.array(r_vals)
-                r_corr, _ = sp_stats.pearsonr(py_v, r_v)
-                fig, ax = plt.subplots(figsize=(4, 4))
-                ax.scatter(r_v, py_v, alpha=0.15, s=4, linewidths=0, color='#4F6EAF')
-                lim = max(r_v.max(), py_v.max())
-                ax.plot([0, lim], [0, lim], 'r--', lw=1)
-                ax.set_xlabel('R haplotype prob')
-                ax.set_ylabel('Python haplotype prob')
-                ax.set_title(f'Haplotype probs  r={r_corr:.4f}  n={len(py_v)}')
-                sns.despine(ax=ax)
-                fig.tight_layout()
-                fig.savefig(plt_dir / 's2_haplotype_scatter.png', dpi=300)
+                _hap_df = pd.DataFrame({'r_prob': r_v, 'py_prob': py_v})
+                _hap_sparse = _hap_df['r_prob'] < 0.05
+                fig, _ = _cmp_scatter(
+                    _hap_df, 'r_prob', 'py_prob',
+                    'R haplotype prob', 'Python haplotype prob',
+                    cbar_label='mean probability',
+                    sparse_mask=_hap_sparse,
+                    save_path=plt_dir / 's2_haplotype_scatter.png',
+                )
                 plt.close(fig)
-                log.info('  [plot] s2_haplotype_scatter.png  r=%.4f', r_corr)
+                log.info('  [plot] s2_haplotype_scatter.png')
         except Exception as exc:
             log.warning('  [plot] s2_haplotype_scatter: %s', exc)
 
@@ -1344,19 +1493,15 @@ def _make_comparison_plots(
                     py_k.append(float(K8_py[cidx_py[si], cidx_py[sj]]))
                     r_k.append(float(row['k_value']))
             if len(py_k) >= 10:
-                r_corr, _ = sp_stats.pearsonr(py_k, r_k)
-                fig, ax = plt.subplots(figsize=(4, 4))
-                ax.scatter(r_k, py_k, alpha=0.3, s=6, linewidths=0, color='#55AF5B')
-                lim = max(max(r_k), max(py_k))
-                ax.plot([0, lim], [0, lim], 'r--', lw=1)
-                ax.set_xlabel('R kinship (LOCO chr8)')
-                ax.set_ylabel('Python kinship (LOCO chr8)')
-                ax.set_title(f'Kinship elements  r={r_corr:.4f}  n={len(py_k)}')
-                sns.despine(ax=ax)
-                fig.tight_layout()
-                fig.savefig(plt_dir / 's3_kinship_scatter.png', dpi=300)
+                _k_df = pd.DataFrame({'k_r': r_k, 'k_py': py_k})
+                fig, _ = _cmp_scatter(
+                    _k_df, 'k_r', 'k_py',
+                    'R kinship (LOCO chr8)', 'Python kinship (LOCO chr8)',
+                    cbar_label='mean K',
+                    save_path=plt_dir / 's3_kinship_scatter.png',
+                )
                 plt.close(fig)
-                log.info('  [plot] s3_kinship_scatter.png  r=%.4f', r_corr)
+                log.info('  [plot] s3_kinship_scatter.png')
         except Exception as exc:
             log.warning('  [plot] s3_kinship_scatter: %s', exc)
 
@@ -1372,29 +1517,44 @@ def _make_comparison_plots(
     _density_any = any(p.exists() for p, *_ in _density_sources)
     if _density_any:
         try:
-            fig, ax = plt.subplots(figsize=(5, 4))
-            _n_plotted = 0
-            for path, col, label, color in _density_sources:
-                if not path.exists():
-                    continue
-                _df = pd.read_csv(path, usecols=[col])
-                vals = _df[col].dropna()
-                if len(vals) < 2:
-                    continue
-                vals.plot.kde(ax=ax, label=f'{label} (n={len(vals)})', color=color)
-                ax.axvline(vals.median(), color=color, ls='--', lw=1, alpha=0.7)
-                _n_plotted += 1
-            if _n_plotted:
-                ax.set_xlabel('peak LOD')
-                ax.set_title('LMM peak LOD distribution')
-                ax.legend(fontsize=8)
-                sns.despine(ax=ax)
-                fig.tight_layout()
-                fig.savefig(plt_dir / 's4_lod_density.png', dpi=300)
-                log.info('  [plot] s4_lod_density.png')
+            _lod_thr_d: float | None = None
+            if s5_thr_path.exists():
+                _td_ld = pd.read_csv(s5_thr_path)
+                _td_ld['chr'] = _td_ld['chr'].astype(str)
+                _tr_ld = _td_ld[_td_ld['chr'] == str(peak_chr)]
+                _lod_thr_d = float(_tr_ld['threshold'].iloc[0]) if len(_tr_ld) > 0 else None
+            _py_lods_d = (pd.read_csv(_py_lod_path, usecols=['peak_lod'])['peak_lod'].dropna().values
+                          if _py_lod_path.exists() else None)
+            _r_lod_col = 'lod' if _r_lod_path.exists() and 'lod' in pd.read_csv(
+                _r_lod_path, nrows=0).columns else 'peak_lod'
+            _r_lods_d  = (pd.read_csv(_r_lod_path, usecols=[_r_lod_col])[_r_lod_col].dropna().values
+                          if _r_lod_path.exists() else None)
+            fig, ax = plt.subplots(figsize=(8, 4.5), dpi=300)
+            _cmp_lod_density(_py_lods_d, _r_lods_d,
+                             threshold=_lod_thr_d, ax=ax)
+            fig.tight_layout()
+            fig.savefig(plt_dir / 's4_lod_density.png', dpi=300, transparent=True)
             plt.close(fig)
+            log.info('  [plot] s4_lod_density.png')
         except Exception as exc:
             log.warning('  [plot] s4_lod_density: %s', exc)
+
+    # ── S4: peak LOD scatter (R vs Python) ────────────────────────────────────
+    _cmp_lod_path = cmp_dir / 's4_peak_lod_comparison.csv'
+    if _cmp_lod_path.exists():
+        try:
+            _cmp_lod = pd.read_csv(_cmp_lod_path)
+            if len(_cmp_lod) >= 2 and 'peak_lod_py' in _cmp_lod.columns and 'peak_lod_r' in _cmp_lod.columns:
+                fig, _ = _cmp_scatter(
+                    _cmp_lod, 'peak_lod_r', 'peak_lod_py',
+                    'miQTL (R) peak LOD', 'mosaiQTL (Python) peak LOD',
+                    priority_genes={'Cwc22': FOUNDER_COLORS['CASTJ']},
+                    save_path=plt_dir / 's4_peak_lod_scatter.png',
+                )
+                plt.close(fig)
+                log.info('  [plot] s4_peak_lod_scatter.png')
+        except Exception as exc:
+            log.warning('  [plot] s4_peak_lod_scatter: %s', exc)
 
     # ── S4: peak position scatter ──────────────────────────────────────────────
     eff_path = py_dir / 's4_allele_effects.csv'
@@ -1422,21 +1582,14 @@ def _make_comparison_plots(
                 r_pos = pd.concat(r_peak_rows).groupby('gene')['peak_mb_r'].first().reset_index()
                 merged_pos = eff_py.merge(r_pos, on='gene', how='inner')
                 if len(merged_pos) >= 5:
-                    r_corr, _ = sp_stats.pearsonr(merged_pos['peak_mb'],
-                                                   merged_pos['peak_mb_r'])
-                    fig, ax = plt.subplots(figsize=(4, 4))
-                    ax.scatter(merged_pos['peak_mb_r'], merged_pos['peak_mb'],
-                               alpha=0.4, s=6, linewidths=0, color='#F4C245')
-                    lim = max(merged_pos['peak_mb'].max(), merged_pos['peak_mb_r'].max())
-                    ax.plot([0, lim], [0, lim], 'r--', lw=1)
-                    ax.set_xlabel('R peak position (Mb)')
-                    ax.set_ylabel('Python peak position (Mb)')
-                    ax.set_title(f'Peak positions  r={r_corr:.4f}  n={len(merged_pos)}')
-                    sns.despine(ax=ax)
-                    fig.tight_layout()
-                    fig.savefig(plt_dir / 's4_peak_pos_scatter.png', dpi=300)
+                    fig, _ = _cmp_scatter(
+                        merged_pos, 'peak_mb_r', 'peak_mb',
+                        'R peak position (Mb)', 'Python peak position (Mb)',
+                        cbar_label='mean position (Mb)',
+                        save_path=plt_dir / 's4_peak_pos_scatter.png',
+                    )
                     plt.close(fig)
-                    log.info('  [plot] s4_peak_pos_scatter.png  r=%.4f', r_corr)
+                    log.info('  [plot] s4_peak_pos_scatter.png')
         except Exception as exc:
             log.warning('  [plot] s4_peak_pos_scatter: %s', exc)
 
@@ -1449,34 +1602,21 @@ def _make_comparison_plots(
             if len(lod_pc) > 0:
                 top_genes = (lod_pc.groupby('gene')['lod'].max()
                              .nlargest(3).index.tolist())
-                n_top = len(top_genes)
                 r_lod_chr_path = r_data / f'chr{peak_chr}' / 'lod.csv'
                 r_lod_chr = (pd.read_csv(r_lod_chr_path)
                              if r_lod_chr_path.exists() else None)
-                fig, axes = plt.subplots(n_top, 1, figsize=(7, 2.5 * n_top), sharex=True)
-                if n_top == 1:
-                    axes = [axes]
-                for ax, gene in zip(axes, top_genes):
-                    py_g = lod_pc[lod_pc['gene'] == gene].sort_values('pos_mb')
-                    ax.plot(py_g['pos_mb'], py_g['lod'], lw=1, color='#4F6EAF',
-                            label='Python', zorder=3)
-                    if r_lod_chr is not None and gene in r_lod_chr['gene'].values:
-                        r_g = (r_lod_chr[r_lod_chr['gene'] == gene]
-                               .sort_values('pos_mb'))
-                        ax.plot(r_g['pos_mb'], r_g['lod'], lw=1, color='#D83026',
-                                ls='--', label='R', alpha=0.8, zorder=2)
-                    ax.set_ylabel('LOD', fontsize=7)
-                    ax.set_title(gene, fontsize=8)
-                    if ax is axes[0]:
-                        ax.legend(fontsize=7, loc='upper right')
-                    sns.despine(ax=ax)
-                axes[-1].set_xlabel('position (Mb)')
-                fig.suptitle(f'LOD profiles  chr{peak_chr}', fontsize=9)
-                fig.tight_layout()
-                fig.savefig(plt_dir / 's4_lod_profiles.png', dpi=300)
+                _comp_thr_p: float | None = None
+                if s5_thr_path.exists():
+                    _td_cp = pd.read_csv(s5_thr_path)
+                    _td_cp['chr'] = _td_cp['chr'].astype(str)
+                    _tr_cp = _td_cp[_td_cp['chr'] == str(peak_chr)]
+                    _comp_thr_p = float(_tr_cp['threshold'].iloc[0]) if len(_tr_cp) > 0 else None
+                fig = _cmp_lod_profiles(
+                    lod_pc, r_lod_chr, top_genes, str(peak_chr), thr=_comp_thr_p)
+                fig.savefig(plt_dir / 's4_lod_profiles.png', dpi=300, transparent=True)
                 plt.close(fig)
                 log.info('  [plot] s4_lod_profiles.png  top %d genes on chr%s',
-                         n_top, peak_chr)
+                         len(top_genes), peak_chr)
         except Exception as exc:
             log.warning('  [plot] s4_lod_profiles: %s', exc)
 
@@ -1486,8 +1626,6 @@ def _make_comparison_plots(
         try:
             py_eff = pd.read_csv(eff_path)
             r_eff  = pd.read_csv(r_eff_path)
-            # R column naming: may have 'beta_AJ' or founder abbreviations
-            # find founder beta columns by looking for 'beta_' prefix
             _disp_f = _display_founders(founders)
             py_beta_cols = [f'beta_{d}' for d in _disp_f if f'beta_{d}' in py_eff.columns]
             r_beta_cols  = [c for c in r_eff.columns if c.startswith('beta_')]
@@ -1502,24 +1640,12 @@ def _make_comparison_plots(
                 r_b  = np.array(r_betas,  dtype=float)
                 mask = np.isfinite(py_b) & np.isfinite(r_b)
                 if mask.sum() >= 10:
-                    r_corr, _ = sp_stats.pearsonr(py_b[mask], r_b[mask])
-                    fig, ax = plt.subplots(figsize=(4, 4))
-                    ax.scatter(r_b[mask], py_b[mask], alpha=0.3, s=5, linewidths=0)
-                    lim = np.abs(np.concatenate([r_b[mask], py_b[mask]])).max()
-                    ax.axhline(0, color='grey', lw=0.5)
-                    ax.axvline(0, color='grey', lw=0.5)
-                    ax.plot([-lim, lim], [-2*lim, 2*lim], 'r--', lw=1,
-                            label='slope=2× expected')
-                    ax.set_xlabel('R beta (per-allele scale)')
-                    ax.set_ylabel('Python beta (per-haplotype scale)')
-                    ax.set_title(f'Allele effects  r={r_corr:.4f}  n={mask.sum()}\n'
-                                 'Python 2× R: dosage 0–1 vs 0–2')
-                    ax.legend(fontsize=7)
-                    sns.despine(ax=ax)
+                    fig, ax = plt.subplots(figsize=(5, 5), dpi=300)
+                    _cmp_allele_effects(py_b[mask], r_b[mask], _disp_f, ax=ax)
                     fig.tight_layout()
-                    fig.savefig(plt_dir / 's4_allele_effects_scatter.png', dpi=300)
+                    fig.savefig(plt_dir / 's4_allele_effects_scatter.png', dpi=300, transparent=True)
                     plt.close(fig)
-                    log.info('  [plot] s4_allele_effects_scatter.png  r=%.4f', r_corr)
+                    log.info('  [plot] s4_allele_effects_scatter.png')
         except Exception as exc:
             log.warning('  [plot] s4_allele_effects_scatter: %s', exc)
 
@@ -1541,37 +1667,28 @@ def _make_comparison_plots(
                 _s5_row = _ts[_ts['section'] == 'S5_permutation']
                 if len(_s5_row) > 0 and pd.notna(_s5_row['n_perms'].iloc[0]):
                     r_n_perms = int(_s5_row['n_perms'].iloc[0])
-            fig, ax = plt.subplots(figsize=(5, 4))
-            _n_s5_plotted = 0
-            for vals, label, color, n_p in [
-                (py_perm, 'Python', '#4F6EAF', len(py_perm)),
-                (r_perm,  'R',      '#D83026', r_n_perms),
-            ]:
-                if len(vals) < 5:
-                    continue
-                ax.hist(vals, bins=30, alpha=0.35, color=color,
-                        density=True, label=f'{label} n={n_p}')
+            def _safe_thr95(vals: np.ndarray) -> 'float | None':
                 try:
-                    c, loc, scale = gev_dist.fit(vals)
-                    xg = np.linspace(vals.min(), vals.max(), 200)
-                    ax.plot(xg, gev_dist.pdf(xg, c, loc, scale),
-                            color=color, lw=1.5)
-                    thr95 = gev_dist.ppf(0.95, c, loc, scale)
-                    ax.axvline(thr95, color=color, ls='--', lw=1,
-                               label=f'{label} p95={thr95:.2f}')
+                    return float(gev_dist.ppf(0.95, *gev_dist.fit(vals)))
                 except Exception:
-                    pass
-                _n_s5_plotted += 1
-            if _n_s5_plotted:
-                ax.set_xlabel('max LOD')
-                ax.set_ylabel('density')
-                ax.set_title(f'Permutation max-LOD  chr{peak_chr}')
-                ax.legend(fontsize=7)
-                sns.despine(ax=ax)
+                    return None
+
+            _has_plot = (len(py_perm) >= 5 or len(r_perm) >= 5)
+            if _has_plot:
+                fig, ax = plt.subplots(figsize=(8, 4.5), dpi=300)
+                _cmp_perm_lod(
+                    py_perm if len(py_perm) >= 5 else np.array([]),
+                    r_perm  if len(r_perm)  >= 5 else np.array([]),
+                    label_a=f'Python  n={len(py_perm)}',
+                    label_b=f'R  n={r_n_perms}',
+                    threshold_a=_safe_thr95(py_perm) if len(py_perm) >= 5 else None,
+                    threshold_b=_safe_thr95(r_perm)  if len(r_perm)  >= 5 else None,
+                    ax=ax,
+                )
                 fig.tight_layout()
-                fig.savefig(plt_dir / 's5_perm_distribution.png', dpi=300)
+                fig.savefig(plt_dir / 's5_perm_distribution.png', dpi=300, transparent=True)
                 log.info('  [plot] s5_perm_distribution.png')
-            plt.close(fig)
+                plt.close(fig)
         except Exception as exc:
             log.warning('  [plot] s5_perm_distribution: %s', exc)
 
@@ -1602,45 +1719,60 @@ def _make_comparison_plots(
             has_py = len(py_s4) >= 2
             has_r  = r_s4 is not None and len(r_s4) >= 2
             if has_py or has_r:
-                # Use chromosome union from whichever sources exist
-                chrs_sp = (set(py_s4['chr']) if has_py else set()) | (
-                           set(r_s4['chr'])  if has_r  else set())
-                chrs_sp = sorted(chrs_sp,
-                                 key=lambda c: int(c) if c.isdigit() else 100)
+                chrs_sp = sorted(
+                    (set(py_s4['chr']) if has_py else set()) |
+                    (set(r_s4['chr']) if has_r else set()),
+                    key=lambda c: int(c) if c.isdigit() else 100,
+                )
                 if len(chrs_sp) >= 2:
                     py_gpm = ({row['chr']: row['gpm'] for _, row in py_s4.iterrows()}
                               if has_py else {})
                     r_gpm  = ({row['chr']: row['genes_per_min']
                                for _, row in r_s4.iterrows()}
                               if has_r else {})
-                    x = np.arange(len(chrs_sp))
-                    w = 0.35 if (has_py and has_r) else 0.6
-                    fig, ax = plt.subplots(figsize=(max(5, len(chrs_sp) * 0.55), 4))
-                    if has_py:
-                        offset = -w / 2 if has_r else 0
-                        ax.bar(x + offset,
-                               [py_gpm.get(c, 0) for c in chrs_sp], w,
-                               label='Python', color='#4F6EAF', alpha=0.8)
-                    if has_r:
-                        offset = w / 2 if has_py else 0
-                        ax.bar(x + offset,
-                               [r_gpm.get(c, 0) for c in chrs_sp], w,
-                               label='R', color='#D83026', alpha=0.8)
-                    ax.set_xticks(x)
-                    ax.set_xticklabels([f'chr{c}' for c in chrs_sp],
-                                       rotation=45, ha='right', fontsize=7)
-                    ax.set_ylabel('genes / min')
-                    ax.set_title('LMM scan throughput: Python vs R'
-                                 if (has_py and has_r) else
-                                 'LMM scan throughput')
-                    ax.legend(fontsize=8)
-                    sns.despine(ax=ax)
+                    _py_arr_sp = np.array([py_gpm.get(c, 0.0) for c in chrs_sp])
+                    _r_arr_sp  = (np.array([r_gpm.get(c, 0.0) for c in chrs_sp])
+                                  if has_r else None)
+                    fig, ax = plt.subplots(figsize=(max(10, len(chrs_sp) * 0.6), 4.5), dpi=300)
+                    _viz_scan_throughput(chrs_sp, _py_arr_sp,
+                                        r_genes_per_min=_r_arr_sp, ax=ax)
                     fig.tight_layout()
-                    fig.savefig(plt_dir / 's4_scan_speed.png', dpi=300)
+                    fig.savefig(plt_dir / 's4_scan_speed.png', dpi=300, transparent=True)
                     plt.close(fig)
                     log.info('  [plot] s4_scan_speed.png  %d chr', len(chrs_sp))
         except Exception as exc:
             log.warning('  [plot] s4_scan_speed: %s', exc)
+
+    # ── S5: per-chromosome FWER threshold comparison (Python vs R bars) ────────
+    py_thr_path = py_dir / 's5_threshold.csv'
+    r_thr_path  = r_data / 'thresholds_chr.csv'
+    if py_thr_path.exists():
+        try:
+            _py_thr_df = pd.read_csv(py_thr_path)
+            _py_thr_df['chr'] = _py_thr_df['chr'].astype(str)
+            _col_thr = 'threshold' if 'threshold' in _py_thr_df.columns else 'threshold_lod'
+            _py_thrs = dict(zip(_py_thr_df['chr'], _py_thr_df[_col_thr]))
+            _genome_thr = _py_thrs.pop('genome', None)
+
+            _r_thrs: dict[str, float] | None = None
+            if r_thr_path.exists():
+                _r_thr_df = pd.read_csv(r_thr_path)
+                _r_thr_df['chr'] = _r_thr_df['chr'].astype(str)
+                _r_col = 'threshold' if 'threshold' in _r_thr_df.columns else 'threshold_lod'
+                _r_thrs = dict(zip(_r_thr_df['chr'], _r_thr_df[_r_col]))
+
+            if _py_thrs:
+                fig, ax = plt.subplots(figsize=(12, 4.5), dpi=300)
+                _viz_perm_threshold_comparison(
+                    _py_thrs, _r_thrs,
+                    genome_wide_thr=_genome_thr, ax=ax)
+                fig.tight_layout()
+                fig.savefig(plt_dir / 's5_perm_threshold_comparison.png',
+                            dpi=300, transparent=True)
+                plt.close(fig)
+                log.info('  [plot] s5_perm_threshold_comparison.png')
+        except Exception as exc:
+            log.warning('  [plot] s5_perm_threshold_comparison: %s', exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2303,17 +2435,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                                  'max|Δ|=%.3f  n=%d',
                                  r2, slope, intercept, max_delta, n_matched)
 
-                        fig, ax = plt.subplots(figsize=(5, 5))
-                        ax.scatter(cmp['peak_lod_r'], cmp['peak_lod_py'],
-                                   alpha=0.4, s=8, linewidths=0)
-                        lim = max(cmp['peak_lod_r'].max(), cmp['peak_lod_py'].max())
-                        ax.plot([0, lim], [0, lim], 'r--', lw=1)
-                        ax.set_xlabel('R peak LOD')
-                        ax.set_ylabel('Python peak LOD')
-                        ax.set_title(f'Peak LOD  r²={r2:.4f}  n={n_matched}')
-                        sns.despine(ax=ax)
-                        fig.tight_layout()
-                        fig.savefig(plt_dir / 's4_peak_lod_scatter.png', dpi=300)
+                        fig, _ax = _cmp_scatter(
+                            cmp, 'peak_lod_r', 'peak_lod_py',
+                            'miQTL (R) peak LOD', 'mosaiQTL (Python) peak LOD',
+                            priority_genes={'Cwc22': FOUNDER_COLORS['CASTJ']},
+                            save_path=plt_dir / 's4_peak_lod_scatter.png',
+                        )
                         plt.close(fig)
 
                         results['S4_lod_r2'] = s4_ok
@@ -2762,6 +2889,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             merged_mi.to_csv(cmp_dir / 's7_mi_cmp.csv', index=False)
                             _check('MI LOD r', abs(r_mi_r), 0.75)
                             log.info('  vs R: r=%.4f  n=%d', r_mi_r, len(merged_mi))
+                            fig, _ax = _cmp_scatter(
+                                merged_mi, 'r', 'py',
+                                'MI LOD (R)', 'MI LOD (Python)',
+                                save_path=plt_dir / 's7_mi_scatter.png',
+                            )
+                            plt.close(fig)
                 else:
                     results['S7_mi_scan'] = None
             _, _s7_peak = tracemalloc.get_traced_memory()
@@ -2829,6 +2962,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             log.info('  r=%.4f  slope=%.3f  n=%d/%d',
                                      r_snp_r, slope_snp,
                                      len(merged_snp), len(r_snp))
+                            fig, _ax = _cmp_scatter(
+                                merged_snp, 'r', 'py',
+                                'SNP LOD (R)', 'SNP LOD (Python)',
+                                save_path=plt_dir / 's8_snp_scatter.png',
+                            )
+                            plt.close(fig)
                             results['S8_snp_lod_r'] = (abs(r_snp_r) >= 0.75 and
                                                         abs(slope_snp - 1.0) < 0.20)
                         else:
@@ -2936,6 +3075,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                                               index=False)
                             _check('mediation LOD r', abs(r_m), 0.90)
                             log.info('  vs R: r=%.4f  n=%d', r_m, len(merged_med))
+                            fig, _ax = _cmp_scatter(
+                                merged_med, 'r', 'py',
+                                'Mediated LOD (R)', 'Mediated LOD (Python)',
+                                save_path=plt_dir / 's9_mediation_scatter.png',
+                            )
+                            plt.close(fig)
                 else:
                     results['S9_mediation'] = None
             _, _s9_peak = tracemalloc.get_traced_memory()
@@ -3074,6 +3219,13 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             log.info('  vs R (Spearman): rho=%.4f  n=%d'
                                      '  [py=lod, r=neg_log10_p — rank correlation]',
                                      r_i, len(merged_inst))
+                            fig, _ax = _cmp_scatter(
+                                merged_inst, 'r', 'py',
+                                'Instability −log₁₀p (R)', 'Instability LOD (Python)',
+                                identity_line=False,
+                                save_path=plt_dir / 's11_instability_scatter.png',
+                            )
+                            plt.close(fig)
                 else:
                     results['S11_instability'] = None
             _, _s11_peak = tracemalloc.get_traced_memory()
