@@ -42,6 +42,7 @@ Sections:
   S4  Cell type vs cell type pairwise LOD scatter + lower-triangle grid
   S5  Cell type vs cell type pairwise allele effects scatter
   S6  LOD distribution per cell type vs whole tissue
+  S7  Cis-distance violin + proximal-fraction curves across all sources
 """
 
 from __future__ import annotations
@@ -68,6 +69,7 @@ from mosaiqtl.viz.compare import (
     lod_density_comparison as _cmp_lod_density,
     allele_effects_comparison as _cmp_allele_effects,
     lod_profile_overlay as _cmp_lod_overlay,
+    cis_distance_comparison as _cmp_cis_distance,
 )
 from mosaiqtl.genotype.founders import (
     FOUNDER_COLORS,
@@ -781,6 +783,57 @@ def _s6_lod_distributions(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# S7 — Cis-distance distribution comparison across cell types + whole tissue
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _s7_cis_distance_comparison(
+    cell_types: list[str],
+    ct_dirs: dict[str, Path],
+    whole_py_data: Path,
+    compare_dir: Path,
+    palette: dict[str, str],
+) -> None:
+    """Signed cis-distance violin + proximal-fraction curves across sources."""
+    sources: dict[str, tuple] = {}
+
+    w_path = whole_py_data / 's4_peak_lod.csv'
+    if w_path.exists():
+        _wdf = pd.read_csv(w_path)
+        if {'tss_mb', 'peak_mb', 'peak_lod'}.issubset(_wdf.columns):
+            _wdf = _wdf.dropna(subset=['tss_mb', 'peak_mb', 'peak_lod'])
+            sources['whole'] = (
+                _wdf['peak_lod'].values,
+                _wdf['tss_mb'].values,
+                _wdf['peak_mb'].values,
+            )
+
+    for ct in cell_types:
+        ct_path = ct_dirs[ct] / 's4_peak_lod.csv'
+        if not ct_path.exists():
+            continue
+        _cdf = pd.read_csv(ct_path)
+        if not {'tss_mb', 'peak_mb', 'peak_lod'}.issubset(_cdf.columns):
+            continue
+        _cdf = _cdf.dropna(subset=['tss_mb', 'peak_mb', 'peak_lod'])
+        sources[ct] = (
+            _cdf['peak_lod'].values,
+            _cdf['tss_mb'].values,
+            _cdf['peak_mb'].values,
+        )
+
+    if len(sources) < 2:
+        log.warning('S7: fewer than 2 sources with cis-distance data — skipping')
+        return
+
+    pal = {**{'whole': COLOR_CC_FALLBACK}, **palette}
+    fig = _cmp_cis_distance(sources, palette=pal, zoom_mb=1.0)
+    out = compare_dir / 's7_cis_distance_comparison.png'
+    fig.savefig(out, dpi=300, transparent=True, bbox_inches='tight')
+    plt.close(fig)
+    log.info('S7: %s  (%d sources)', out, len(sources))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -976,6 +1029,16 @@ def main() -> None:
             )
         except Exception as exc:
             log.error('S6 failed: %s', exc, exc_info=True)
+
+    # ── Section 7 ──────────────────────────────────────────────────────────────
+    if not sections or 7 in sections:
+        log.info('=== S7: cis-distance comparison across cell types ===')
+        try:
+            _s7_cis_distance_comparison(
+                cell_types, ct_dirs, whole_py_data, compare_dir, palette,
+            )
+        except Exception as exc:
+            log.error('S7 failed: %s', exc, exc_info=True)
 
     log.info('validate_gastroc_celltype.py complete — outputs: %s', compare_dir)
 

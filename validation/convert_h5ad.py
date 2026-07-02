@@ -1,20 +1,21 @@
 """Convert pseudobulk h5ad to HDF5 + metadata CSV for mosaiQTL / miQTL scan.
 
 Whole-tissue mode (default):
-    reads gastroc_all_pb_bulk.h5ad (one obs per sample)
-    writes to validation/gastroc_data/:
-        counts_lognorm.h5   metadata.csv   gene_info.csv
+    reads bulk h5ad (one obs per sample)
+    writes to --out/:
+        counts_lognorm.h5   metadata.csv   exp_gene_info_{tissue}.csv
 
 Cell-type mode (--cell_type):
-    reads gastroc_all_pb.h5ad (one obs per sample × cell type)
+    reads cell-type h5ad (one obs per sample × cell type)
     subsets to the requested cell type
-    writes ONLY counts_lognorm.h5 to validation/gastroc_data/celltypes/{cell_type}/
-    metadata.csv and gene_info.csv are shared from gastroc_data/ (same samples, same genes)
+    writes ONLY counts_lognorm.h5 to --out/celltypes/{cell_type}/
+    metadata.csv and exp_gene_info_{tissue}.csv are shared from --out/ (same samples, same genes)
 
 Usage:
-    python validation/convert_gastroc_h5ad.py
-    python validation/convert_gastroc_h5ad.py --cell_type myonuclei
-    python validation/convert_gastroc_h5ad.py --list_celltypes
+    python validation/convert_h5ad.py --tissue gastroc
+    python validation/convert_h5ad.py --tissue gastroc --cell_type myonuclei
+    python validation/convert_h5ad.py --tissue gastroc --list_celltypes
+    python validation/convert_h5ad.py --tissue ctxhipp --out validation/ctxhipp_data --h5ad /path/to/ctxhipp.h5ad
 """
 from __future__ import annotations
 
@@ -41,6 +42,9 @@ _DEFAULT_BULK_H5AD = (pathlib.Path.home() / 'Documents/journey/learning/graduate
 _DEFAULT_CT_H5AD   = (pathlib.Path.home() / 'Documents/journey/learning/graduate'
                       '/lab/projects/igvf/analysis/qtl/input/adata'
                       '/gastroc_all_pb.h5ad')
+
+# global gene universe — generated once from GENCODE vM32 GTF, tissue-agnostic
+_GLOBAL_GENE_INFO = pathlib.Path(__file__).parent / 'input' / 'gene_info.vm32.csv'
 
 
 def _strain_sort_key(genotype: str) -> tuple[int, str]:
@@ -101,8 +105,8 @@ def _write_counts_h5(adata: anndata.AnnData, sorted_idx: 'pd.Index',
         f.create_dataset('samples', data=samples)
 
 
-def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path) -> None:
-    """Whole-tissue conversion: writes counts_lognorm.h5, metadata.csv, gene_info.csv."""
+def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str) -> None:
+    """Whole-tissue conversion: writes counts_lognorm.h5, metadata.csv, exp_gene_info_{tissue}.csv."""
     out_dir.mkdir(parents=True, exist_ok=True)
 
     log.info('reading %s', h5ad_path)
@@ -118,8 +122,6 @@ def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path) -> None:
     keep, report = _cpm_filter(X.astype(np.float32), lib_sizes, adata.var)
     log.info('  CPM filter: %d / %d genes pass (CPM>1 in ≥20%% of samples)',
              int(keep.sum()), adata.n_vars)
-    report.to_csv(out_dir / 'gene_filter_report.csv', index=False)
-    log.info('  gene_filter_report.csv: %d genes total', len(report))
     adata = adata[:, keep].copy()
 
     _write_counts_h5(adata, obs.index, out_dir / 'counts_lognorm.h5')
@@ -128,37 +130,32 @@ def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path) -> None:
     log.info('writing %s', meta_path)
     obs.reset_index(drop=True).to_csv(meta_path, index=False)
 
-    # ── gene_info.csv ─────────────────────────────────────────────────────────
-    var = adata.var.copy().reset_index(names='_var_index')
-    if 'gene_id' not in var.columns:
-        var = var.rename(columns={'_var_index': 'gene_id'})
+    # ── exp_gene_info_{tissue}.csv ────────────────────────────────────────────
+    # coordinates + strand from global GENCODE gene universe; CPM stats from filter
+    if not _GLOBAL_GENE_INFO.exists():
+        log.warning('global gene info not found at %s — skipping coordinate annotation',
+                    _GLOBAL_GENE_INFO)
+        global_gi: pd.DataFrame = pd.DataFrame(columns=['gene_name', 'gene_id', 'chr',
+                                                         'start', 'end', 'strand'])
     else:
-        var = var.drop(columns='_var_index')
+        global_gi = pd.read_csv(_GLOBAL_GENE_INFO,
+                                 usecols=['gene_name', 'gene_id', 'chr', 'start', 'end', 'strand'])
 
-    chr_col   = next((c for c in var.columns
-                      if c.lower() in ('chromosome', 'chrom', 'chr', 'seqname', 'seqnames')), None)
-    start_col = next((c for c in var.columns
-                      if c.lower() in ('start', 'chromstart', 'gene_start', 'start_position')), None)
-    end_col   = next((c for c in var.columns
-                      if c.lower() in ('end', 'chromend', 'gene_end', 'end_position')), None)
-
-    if chr_col is None:
-        log.warning('no chromosome column found in adata.var — gene_info.csv will lack chr')
-    else:
-        log.info('  gene annotations: chr_col=%s  start_col=%s  end_col=%s',
-                 chr_col, start_col, end_col)
-
-    gene_info = pd.DataFrame({'gene_id': adata.var_names})
-    if chr_col is not None:
-        gene_info['chr'] = var[chr_col].astype(str).str.replace(r'^chr', '', regex=True)
-    if start_col is not None:
-        gene_info['start'] = pd.to_numeric(var[start_col], errors='coerce').astype('Int64')
-    if end_col is not None:
-        gene_info['end'] = pd.to_numeric(var[end_col], errors='coerce').astype('Int64')
-
-    gene_info_path = out_dir / 'gene_info.csv'
-    log.info('writing %s  (%d genes)', gene_info_path, len(gene_info))
-    gene_info.to_csv(gene_info_path, index=False)
+    cpm_stats_cols = ['gene_name', 'total_counts', 'mean_counts', 'n_cells_by_counts',
+                      'pct_dropout_by_counts', 'n_samples_cpm_gt1', 'frac_samples_cpm_gt1',
+                      'mean_cpm', 'median_cpm']
+    exp_gene_info = (
+        pd.DataFrame({'gene_name': adata.var_names})
+        .merge(global_gi, on='gene_name', how='left')
+        .merge(report[cpm_stats_cols], on='gene_name', how='left')
+    )
+    n_missing = exp_gene_info['gene_id'].isna().sum()
+    if n_missing:
+        log.warning('  %d genes not found in global gene_info — chr/start/end/strand will be NaN',
+                    n_missing)
+    exp_path = out_dir / f'exp_gene_info_{tissue}.csv'
+    log.info('writing %s  (%d genes)', exp_path, len(exp_gene_info))
+    exp_gene_info.to_csv(exp_path, index=False)
 
     log.info('done — %d samples, %d genes', adata.n_obs, adata.n_vars)
     for ds, grp in obs.groupby('dataset', sort=True):
@@ -167,22 +164,22 @@ def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path) -> None:
 
 
 def convert_celltype(h5ad_path: pathlib.Path, cell_type: str,
-                     out_root: pathlib.Path) -> None:
-    """Cell-type conversion: subsets gastroc_all_pb.h5ad and writes counts_lognorm.h5 only.
+                     out_root: pathlib.Path, tissue: str) -> None:
+    """Cell-type conversion: subsets pb h5ad and writes counts_lognorm.h5 only.
 
-    Gene set is inherited from the whole-tissue gene_filter_report.csv in out_root.parent
+    Gene set is inherited from the whole-tissue exp_gene_info_{tissue}.csv in out_root.parent
     so all cell types share the same genes — genes absent in a cell type remain as zeros,
     enabling detection of cell-type-specific eQTLs.
-    metadata.csv and gene_info.csv are shared from out_root.parent (same samples, same genes).
+    metadata.csv and exp_gene_info_{tissue}.csv are shared from out_root.parent (same samples, same genes).
     """
     # ── load whole-tissue gene set ─────────────────────────────────────────────
-    wt_report_path = out_root.parent / 'gene_filter_report.csv'
-    if not wt_report_path.exists():
+    wt_exp_path = out_root.parent / f'exp_gene_info_{tissue}.csv'
+    if not wt_exp_path.exists():
         raise FileNotFoundError(
-            f'whole-tissue gene_filter_report.csv not found at {wt_report_path} — '
+            f'whole-tissue exp_gene_info_{tissue}.csv not found at {wt_exp_path} — '
             f'run convert() (whole-tissue mode) first')
-    wt_report = pd.read_csv(wt_report_path)
-    passing_genes = set(wt_report.loc[wt_report['passes_filter'], 'gene_name'])
+    wt_exp = pd.read_csv(wt_exp_path, usecols=['gene_name'])
+    passing_genes = set(wt_exp['gene_name'])
     log.info('  whole-tissue gene set: %d genes', len(passing_genes))
 
     log.info('reading %s', h5ad_path)
@@ -230,8 +227,8 @@ def convert_celltype(h5ad_path: pathlib.Path, cell_type: str,
 
     _write_counts_h5(adata, obs.index, ct_dir / 'counts_lognorm.h5')
 
-    log.info('done — %d samples  %d genes  (metadata.csv / gene_info.csv shared from %s)',
-             adata.n_obs, adata.n_vars, out_root.parent)
+    log.info('done — %d samples  %d genes  (metadata.csv / exp_gene_info_%s.csv shared from %s)',
+             adata.n_obs, adata.n_vars, tissue, out_root.parent)
     for ds, grp in obs.groupby('dataset', sort=True):
         log.info('  dataset=%-12s  %d samples', ds, len(grp))
 
@@ -246,6 +243,8 @@ def main() -> None:
                         help='path to input h5ad (defaults depend on mode)')
     parser.add_argument('--out', type=pathlib.Path, default=gastroc_data,
                         help='output root (default: validation/gastroc_data)')
+    parser.add_argument('--tissue', type=str, default='gastroc',
+                        help='tissue label used in output filenames (default: gastroc)')
     parser.add_argument('--cell_type', type=str, default=None,
                         help='cell type to extract (e.g. myonuclei); omit for whole-tissue')
     parser.add_argument('--list_celltypes', action='store_true',
@@ -263,10 +262,10 @@ def main() -> None:
     if args.cell_type is not None:
         h5ad = args.h5ad or _DEFAULT_CT_H5AD
         ct_root = args.out / 'celltypes'
-        convert_celltype(h5ad, args.cell_type, ct_root)
+        convert_celltype(h5ad, args.cell_type, ct_root, args.tissue)
     else:
         h5ad = args.h5ad or _DEFAULT_BULK_H5AD
-        convert(h5ad, args.out)
+        convert(h5ad, args.out, args.tissue)
 
 
 if __name__ == '__main__':

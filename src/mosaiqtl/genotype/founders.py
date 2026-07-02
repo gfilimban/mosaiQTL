@@ -60,6 +60,7 @@ STRAIN_ORDER: list[str] = FOUNDER_ORDER + list(F1_COLORS.keys())
 COLOR_NEUTRAL_DARK:  str = '#444444'   # axis lines, tick labels, reference bars
 COLOR_CC_FALLBACK:   str = '#888888'   # CC strains without ancestry probability data
 COLOR_NEUTRAL_LIGHT: str = '#E8E8E8'   # NaN/masked cells in heatmaps
+COLOR_THRESHOLD:     str = '#E8870A'   # LOD threshold lines + quadrant annotations
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
@@ -160,6 +161,7 @@ __all__ = [
     'COLOR_NEUTRAL_DARK',
     'COLOR_CC_FALLBACK',
     'COLOR_NEUTRAL_LIGHT',
+    'COLOR_THRESHOLD',
     'cc_strain_palette',
     'CCPopulation',
 ]
