@@ -745,18 +745,20 @@ def _make_descriptive_plots(
                             bbox_inches='tight', transparent=True)
             plt.close(fig_lcg)
             log.info('  s4_locus_panel_grid.png')
-            _tss_mb_map4 = None
-            if 'tss_mb' in _eff4.columns:
-                _tss_mb_map4 = {
+            _start_mb_map4 = None
+            _start_col4 = 'near_tss_mb' if 'near_tss_mb' in _eff4.columns else \
+                ('start_mb' if 'start_mb' in _eff4.columns else None)
+            if _start_col4 is not None:
+                _start_mb_map4 = {
                     str(g): float(t)
-                    for g, t in zip(_eff4['gene'], _eff4['tss_mb'])
+                    for g, t in zip(_eff4['gene'], _eff4[_start_col4])
                     if pd.notna(t)
                 }
             _lp_figs = _viz_locus_panels_per_chr(
                 _lod_df, _eff4, _fnames4,
                 _thr_by_chr or None,
                 priority_genes=PRIORITY_GENE,
-                tss_mb_map=_tss_mb_map4,
+                tss_mb_map=_start_mb_map4,
             )
             for _lp_c, _lp_fig in _lp_figs.items():
                 _lp_fig.savefig(_s4_lp_dir / f's4_locus_panel_chr{_lp_c}.png', dpi=300, transparent=True)
@@ -801,7 +803,7 @@ def _make_descriptive_plots(
     if peak_lod_path.exists():
         try:
             _cd = pd.read_csv(peak_lod_path)
-            _cd_tss_col = 'near_tss_mb' if 'near_tss_mb' in _cd.columns else 'tss_mb'
+            _cd_tss_col = 'near_tss_mb' if 'near_tss_mb' in _cd.columns else 'start_mb'
             if {_cd_tss_col, 'peak_mb', 'peak_lod'}.issubset(_cd.columns):
                 _cd = _cd.dropna(subset=[_cd_tss_col, 'peak_mb', 'peak_lod'])
                 _sum_cd = py_dir / 'eqtl_summary.csv'
@@ -822,8 +824,8 @@ def _make_descriptive_plots(
                 log.info('  s4_cis_distance.png  (%d genes, %d eGenes) [tss_col=%s]',
                          len(_cd), int(_is_eg_cd.sum()), _cd_tss_col)
             else:
-                log.warning('  s4_cis_distance: tss_mb/peak_mb missing — '
-                            'rerun scan to populate')
+                log.warning('  s4_cis_distance: %s/peak_mb missing — '
+                            'rerun scan to populate', _cd_tss_col)
         except Exception as exc:
             log.warning('  s4_cis_distance: %s', exc)
 
@@ -831,7 +833,7 @@ def _make_descriptive_plots(
     if peak_lod_path.exists():
         try:
             _ch = pd.read_csv(peak_lod_path)
-            _ch_tss_col = 'near_tss_mb' if 'near_tss_mb' in _ch.columns else 'tss_mb'
+            _ch_tss_col = 'near_tss_mb' if 'near_tss_mb' in _ch.columns else 'start_mb'
             if {_ch_tss_col, 'peak_mb'}.issubset(_ch.columns):
                 _ch = _ch.dropna(subset=[_ch_tss_col, 'peak_mb'])
                 _sum_ch = py_dir / 'eqtl_summary.csv'
@@ -1879,12 +1881,30 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
              len(meta), meta['genotype'].nunique(),
              sorted(meta['dataset'].unique()))
 
-    # ── gene info (chr annotation + TSS for cis/local filter) ─────────────────
+    # ── gene info (chr annotation + strand-aware gene boundary for scan filter) ──
     # schema: gene_name=symbol (HDF5 key), gene_id=Ensembl, strand, chr, start, end
+    # start_mb = start/1e6 for + strand, end/1e6 for - strand (gene boundary, not TSS)
     gene_info_path = data_dir / 'exp_gene_info_gastroc.csv'
     gene_info = pd.read_csv(gene_info_path)
     gene_info['chr'] = gene_info['chr'].astype(str)
     log.info('gene_info: %d genes  (%s)', len(gene_info), gene_info_path.name)
+
+    # ── transcript TSS table (for near_tss_mb after peak calling) ───────────────
+    # near_tss_mb = transcript TSS (strand-aware) nearest to peak_mb per gene
+    # source: GENCODE vM32 transcript features for this run; one row per transcript
+    _gene_tss_path = pathlib.Path(__file__).parent / 'input' / 'gene_tss.vm32.csv'
+    if _gene_tss_path.exists():
+        _gene_tss = pd.read_csv(_gene_tss_path,
+                                usecols=['gene_name', 'start', 'end', 'strand'])
+        _gene_tss['tss_mb'] = np.where(
+            _gene_tss['strand'] == '-',
+            _gene_tss['end'] / 1e6,
+            _gene_tss['start'] / 1e6,
+        )
+        log.info('gene_tss: %d transcripts  (%s)', len(_gene_tss), _gene_tss_path.name)
+    else:
+        _gene_tss = None
+        log.warning('gene_tss.vm32.csv not found — near_tss_mb will be omitted')
 
     if scan_type == 'L' and 'start' not in gene_info.columns:
         log.warning('%s has no "start" column — L scan mode will not filter loci',
@@ -2224,16 +2244,16 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 log.info('  chr%s: %d genes  %d loci (%s mode)',
                          ch, len(loaded_ids), n_loci_ch, scan_type)
 
-                # build TSS lookup for all scan modes (needed for eff dict + L-mode filter)
-                # strand-aware: TSS = start for + strand, end for - strand
-                tss_lookup: dict[str, float] = {}
+                # build gene start lookup for all scan modes (needed for eff dict + L-mode filter)
+                # strand-aware gene boundary: start for + strand, end for - strand (from gene_info)
+                start_lookup: dict[str, float] = {}
                 if 'start' in ch_genes.columns:
                     _has_strand = 'strand' in ch_genes.columns
                     for _, grow in ch_genes.iterrows():
                         if _has_strand and grow['strand'] == '-':
-                            tss_lookup[grow['gene_name']] = float(grow['end']) / 1e6
+                            start_lookup[grow['gene_name']] = float(grow['end']) / 1e6
                         else:
-                            tss_lookup[grow['gene_name']] = float(grow['start']) / 1e6
+                            start_lookup[grow['gene_name']] = float(grow['start']) / 1e6
 
                 # map CLI scan_type to scan_window API
                 _sw = {'C': 'cis', 'G': 'genome', 'L': 'local'}[scan_type]
@@ -2272,8 +2292,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         elapsed = time.perf_counter() - t_scan
                         log.info('    chr%s %d/%d  %.0fs elapsed',
                                  ch, gi + 1, len(loaded_ids), elapsed)
-                    y_raw  = counts_ch[gi].astype(float)
-                    tss_mb = tss_lookup.get(gene_name)
+                    y_raw      = counts_ch[gi].astype(float)
+                    gene_start_mb = start_lookup.get(gene_name)
 
                     if _chr_precomputed and not np.any(np.isnan(y_raw[_vsid_ch])):
                         # precomputed path: sample-level K_n scan (matches R's K_n = Z K_m Z^T)
@@ -2282,8 +2302,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             _evecs_ch.T @ y_sub, _evecs_ch.T @ _x_full_ch, _evals_ch)
                         chr_res = scan_chromosome(
                             y_sub, _chr_data_ch, _x_full_ch, _evals_ch, _evecs_ch, h2)
-                        if _sw == 'local' and tss_mb is not None:
-                            _mask = np.abs(chr_res['positions'] - tss_mb) <= window_mb
+                        if _sw == 'local' and gene_start_mb is not None:
+                            _mask = np.abs(chr_res['positions'] - gene_start_mb) <= window_mb
                             chr_res = {
                                 k: (v[_mask] if isinstance(v, np.ndarray)
                                     and len(v) == len(_mask) else v)
@@ -2313,7 +2333,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             phenotype_id=gene_name,
                             scan_window=_sw,
                             gene_chr=ch,
-                            gene_pos_mb=tss_mb if _sw == 'local' else None,
+                            gene_pos_mb=gene_start_mb if _sw == 'local' else None,
                             window_mb=window_mb,
                         )
                     df = _scan_to_df(scan, gene_name)
@@ -2346,7 +2366,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         eff: dict = {
                             'gene':       gene_name,
                             'chr':        str(ch),
-                            'tss_mb':     round(float(tss_mb), 3) if tss_mb is not None else float('nan'),
+                            'start_mb':   round(float(gene_start_mb), 3) if gene_start_mb is not None else float('nan'),
                             'peak_locus': str(scan.locus_ids[peak_idx]),
                             'peak_mb':    float(scan.positions[peak_idx]),
                             'peak_lod':   float(scan.lod[peak_idx]),
@@ -2411,26 +2431,47 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 del lod_df; gc.collect()
                 if all_effect_rows:
                     _h2_map       = {r['gene']: r['h2']       for r in all_effect_rows}
-                    _tss_map      = {r['gene']: r['tss_mb']   for r in all_effect_rows}
+                    _start_mb_map = {r['gene']: r['start_mb'] for r in all_effect_rows}
                     _nv_map       = {r['gene']: r['n_valid']  for r in all_effect_rows}
                     _rss0_map     = {r['gene']: r['rss0']     for r in all_effect_rows}
                     _rss1_map     = {r['gene']: r['rss1']     for r in all_effect_rows}
                     _r2_map       = {r['gene']: r['r2_peak']  for r in all_effect_rows}
                     _sig2e_map    = {r['gene']: r['sigma2_e'] for r in all_effect_rows}
                     _tau2_map     = {r['gene']: r['tau2']     for r in all_effect_rows}
-                    peak_py['h2']          = peak_py['gene'].map(_h2_map)
-                    peak_py['tss_mb']      = peak_py['gene'].map(_tss_map)
-                    peak_py['cis_dist_mb'] = (
-                        (peak_py['peak_mb'] - peak_py['tss_mb']).abs().round(3))
+                    peak_py['h2']       = peak_py['gene'].map(_h2_map)
+                    peak_py['start_mb'] = peak_py['gene'].map(_start_mb_map)
                     peak_py['n_valid']  = peak_py['gene'].map(_nv_map)
                     peak_py['rss0']     = peak_py['gene'].map(_rss0_map)
                     peak_py['rss1']     = peak_py['gene'].map(_rss1_map)
                     peak_py['r2_peak']  = peak_py['gene'].map(_r2_map)
                     peak_py['sigma2_e'] = peak_py['gene'].map(_sig2e_map)
                     peak_py['tau2']     = peak_py['gene'].map(_tau2_map)
+                # ── near_tss_mb: transcript TSS nearest to peak_mb (post-peak join) ──
+                # cis_dist_mb = peak_mb − near_tss_mb; falls back to start_mb if NaN
+                if _gene_tss is not None and 'peak_mb' in peak_py.columns:
+                    _near: dict[str, float] = {}
+                    for _, _pr in peak_py.iterrows():
+                        _cands = _gene_tss[_gene_tss['gene_name'] == _pr['gene']]
+                        if _cands.empty:
+                            _near[_pr['gene']] = float('nan')
+                        else:
+                            _idx = (_cands['tss_mb'] - _pr['peak_mb']).abs().idxmin()
+                            _near[_pr['gene']] = float(_cands.loc[_idx, 'tss_mb'])
+                    peak_py['near_tss_mb'] = peak_py['gene'].map(_near)
+                if 'peak_mb' in peak_py.columns:
+                    _ref = peak_py['near_tss_mb'] if 'near_tss_mb' in peak_py.columns \
+                        else peak_py.get('start_mb')
+                    if _ref is not None:
+                        peak_py['cis_dist_mb'] = (
+                            peak_py['peak_mb'] - _ref).round(6)
+                        if 'near_tss_mb' in peak_py.columns and 'start_mb' in peak_py.columns:
+                            _mask_nan = peak_py['near_tss_mb'].isna()
+                            peak_py.loc[_mask_nan, 'cis_dist_mb'] = (
+                                peak_py.loc[_mask_nan, 'peak_mb']
+                                - peak_py.loc[_mask_nan, 'start_mb']).round(6)
                 _pk_cols = [
-                    'gene', 'chr', 'tss_mb', 'peak_locus', 'peak_mb', 'cis_dist_mb',
-                    'peak_lod', 'h2', 'n_valid',
+                    'gene', 'chr', 'start_mb', 'near_tss_mb', 'peak_locus', 'peak_mb',
+                    'cis_dist_mb', 'peak_lod', 'h2', 'n_valid',
                     'rss0', 'rss1', 'r2_peak', 'sigma2_e', 'tau2',
                 ]
                 peak_py = peak_py.reindex(
@@ -2855,16 +2896,43 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             _row['gene'], _row['lod_r'], _row['lod_py'],
                             _row['lod_r'] / _row['lod_py'],
                         )
-            # add h2, tss_mb from allele effects (computed during S4 scan)
+            # add h2, start_mb from allele effects (computed during S4 scan)
             _eff_sum_path = py_dir / 's4_allele_effects.csv'
             if _eff_sum_path.exists():
-                _h2_sum = pd.read_csv(_eff_sum_path, usecols=['gene', 'h2', 'tss_mb'])
+                _eff_cols = ['gene', 'h2']
+                _eff_peek = pd.read_csv(_eff_sum_path, nrows=0).columns.tolist()
+                if 'start_mb' in _eff_peek:
+                    _eff_cols.append('start_mb')
+                elif 'tss_mb' in _eff_peek:
+                    _eff_cols.append('tss_mb')
+                _h2_sum = pd.read_csv(_eff_sum_path, usecols=_eff_cols)
+                if 'tss_mb' in _h2_sum.columns:
+                    _h2_sum = _h2_sum.rename(columns={'tss_mb': 'start_mb'})
                 eqtl_sum = eqtl_sum.merge(_h2_sum, on='gene', how='left')
 
-            # cis_dist_mb = |peak_mb - tss_mb| (direct positional context for each eGene)
-            if 'tss_mb' in eqtl_sum.columns:
+            # join near_tss_mb from s4_peak_lod (computed post-peak during S4 scan)
+            if peak_lod_path.exists():
+                _pk_cols_eq = ['gene']
+                _pk_peek = pd.read_csv(peak_lod_path, nrows=0).columns.tolist()
+                for _c in ('near_tss_mb', 'start_mb'):
+                    if _c in _pk_peek and _c not in eqtl_sum.columns:
+                        _pk_cols_eq.append(_c)
+                if len(_pk_cols_eq) > 1:
+                    _pk_tss = pd.read_csv(peak_lod_path, usecols=_pk_cols_eq)
+                    eqtl_sum = eqtl_sum.merge(_pk_tss, on='gene', how='left')
+
+            # cis_dist_mb = peak_mb − near_tss_mb; falls back to start_mb if NaN
+            if 'near_tss_mb' in eqtl_sum.columns:
                 eqtl_sum['cis_dist_mb'] = (
-                    (eqtl_sum['peak_mb'] - eqtl_sum['tss_mb']).abs().round(3))
+                    eqtl_sum['peak_mb'] - eqtl_sum['near_tss_mb']).round(6)
+                if 'start_mb' in eqtl_sum.columns:
+                    _nan_mask = eqtl_sum['near_tss_mb'].isna()
+                    eqtl_sum.loc[_nan_mask, 'cis_dist_mb'] = (
+                        eqtl_sum.loc[_nan_mask, 'peak_mb']
+                        - eqtl_sum.loc[_nan_mask, 'start_mb']).round(6)
+            elif 'start_mb' in eqtl_sum.columns:
+                eqtl_sum['cis_dist_mb'] = (
+                    eqtl_sum['peak_mb'] - eqtl_sum['start_mb']).round(6)
 
             # chi2_haplotype and p_haplotype derived from peak_lod (no extra scan)
             # df = J-1 = 7 for 8-founder additive model
@@ -2872,8 +2940,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             eqtl_sum['p_haplotype'] = sp_stats.chi2.sf(
                 eqtl_sum['chi2_haplotype'].values, df=7)
 
-            col_order = ['gene', 'chr', 'tss_mb', 'peak_locus', 'peak_mb', 'cis_dist_mb',
-                         'peak_lod', 'h2',
+            col_order = ['gene', 'chr', 'start_mb', 'near_tss_mb', 'peak_locus', 'peak_mb',
+                         'cis_dist_mb', 'peak_lod', 'h2',
                          'perm_n', 'perm_chr',
                          'chi2_haplotype', 'p_haplotype',
                          'in_r_egenes']

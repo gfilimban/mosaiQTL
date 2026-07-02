@@ -10,9 +10,10 @@ validate_gastroc.py --cell_type <name> once per cell type, which produces
 per-cell-type outputs in:
 
     gastroc_data/py_data/<cell_type>/
-        s4_peak_lod.csv          (gene, chr, tss_mb, peak_locus, peak_mb, cis_dist_mb,
-                                   peak_lod, h2, n_valid, rss0, rss1, r2_peak, sigma2_e, tau2)
-        s4_allele_effects.csv    (gene, chr, tss_mb, peak_locus, peak_mb, peak_lod, h2,
+        s4_peak_lod.csv          (gene, chr, start_mb, near_tss_mb, peak_locus, peak_mb,
+                                   cis_dist_mb, peak_lod, h2, n_valid, rss0, rss1, r2_peak,
+                                   sigma2_e, tau2)
+        s4_allele_effects.csv    (gene, chr, start_mb, peak_locus, peak_mb, peak_lod, h2,
                                    beta_AJ, beta_B6J, beta_129S1J, beta_NODJ, beta_NZOJ,
                                    beta_CASTJ, beta_PWKJ, beta_WSBJ)
         eqtl_summary.csv         (eGene table)
@@ -796,14 +797,18 @@ def _s7_cis_distance_comparison(
     """Signed cis-distance violin + proximal-fraction curves across sources."""
     sources: dict[str, tuple] = {}
 
+    def _tss_col(df: pd.DataFrame) -> str:
+        return 'near_tss_mb' if 'near_tss_mb' in df.columns else 'start_mb'
+
     w_path = whole_py_data / 's4_peak_lod.csv'
     if w_path.exists():
         _wdf = pd.read_csv(w_path)
-        if {'tss_mb', 'peak_mb', 'peak_lod'}.issubset(_wdf.columns):
-            _wdf = _wdf.dropna(subset=['tss_mb', 'peak_mb', 'peak_lod'])
+        _wtss = _tss_col(_wdf)
+        if {_wtss, 'peak_mb', 'peak_lod'}.issubset(_wdf.columns):
+            _wdf = _wdf.dropna(subset=[_wtss, 'peak_mb', 'peak_lod'])
             sources['whole'] = (
                 _wdf['peak_lod'].values,
-                _wdf['tss_mb'].values,
+                _wdf[_wtss].values,
                 _wdf['peak_mb'].values,
             )
 
@@ -812,12 +817,13 @@ def _s7_cis_distance_comparison(
         if not ct_path.exists():
             continue
         _cdf = pd.read_csv(ct_path)
-        if not {'tss_mb', 'peak_mb', 'peak_lod'}.issubset(_cdf.columns):
+        _ctss = _tss_col(_cdf)
+        if not {_ctss, 'peak_mb', 'peak_lod'}.issubset(_cdf.columns):
             continue
-        _cdf = _cdf.dropna(subset=['tss_mb', 'peak_mb', 'peak_lod'])
+        _cdf = _cdf.dropna(subset=[_ctss, 'peak_mb', 'peak_lod'])
         sources[ct] = (
             _cdf['peak_lod'].values,
-            _cdf['tss_mb'].values,
+            _cdf[_ctss].values,
             _cdf['peak_mb'].values,
         )
 
@@ -884,9 +890,9 @@ def main() -> None:
     )
     parser.add_argument(
         '--output_version',
-        default='v0.4.5',
+        default='v0.4.7',
         help='Version subdirectory to write per-cell-type plots to '
-             '(default: v0.4.5)',
+             '(default: v0.4.7)',
     )
     parser.add_argument(
         '--plots-only',
