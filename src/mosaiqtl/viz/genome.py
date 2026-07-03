@@ -18,7 +18,7 @@ from .effects import effect_bars as _effect_bars
 
 _CHR_ORDER: list[str] = [str(i) for i in range(1, 20)] + ['X']
 _CHR_GAP_MB: float = 10.0
-_CHR_COLORS: tuple[str, str] = (FOUNDER_COLORS['NODJ'], COLOR_CC_FALLBACK)
+_CHR_COLORS: tuple[str, str] = (FOUNDER_COLORS['NODJ'], FOUNDER_COLORS['CASTJ'])
 _MI_COLOR: str = FOUNDER_COLORS['WSBJ']
 _INST_COLOR: str = FOUNDER_COLORS['CASTJ']
 _SNP_COLOR: str = FOUNDER_COLORS['129S1J']
@@ -153,6 +153,7 @@ def manhattan(
     highlight_chrom: Optional[str] = None,
     highlight_color: str = FOUNDER_COLORS['PWKJ'],
     egene_scans: Optional[dict[str, tuple[np.ndarray, np.ndarray]]] = None,
+    low_expr_mask: Optional[dict[str, np.ndarray]] = None,
     top_labels: Optional[dict[str, list[str]]] = None,
     top_n_labels: int = 5,
 ) -> plt.Figure:
@@ -174,6 +175,9 @@ def manhattan(
     egene_scans : dict, optional
         ``{chrom: (positions_Mb, lod)}`` for eGene loci only.
         Overlaid as larger colored dots on top of the grey background.
+    low_expr_mask : dict, optional
+        ``{chrom: bool_array}`` parallel to ``scans``; True entries are drawn
+        as light-grey dots instead of the chromosome color.
     top_labels : dict, optional
         ``{chrom: [gene_name, ...]}`` parallel to scans positions;
         annotates the top-LOD genes by name.
@@ -201,17 +205,21 @@ def manhattan(
         pos   = pos[order]
         lod   = lod[order]
         x     = pos + offset
-        x_start = offset
-        x_end   = float(x[-1])
         base_color = (highlight_color if chrom == highlight_chrom
                       else _CHR_COLORS[ci % 2])
-        # alternating band — drawn behind scatter
-        if ci % 2 == 0:
-            ax.axvspan(x_start, x_end, alpha=0.10,
-                       color=COLOR_NEUTRAL_LIGHT, zorder=0, linewidth=0)
-        # scatter points
-        ax.scatter(x, lod, color=base_color, s=4, linewidths=0, zorder=2,
-                   alpha=0.75, rasterized=True)
+        # low-expr genes: light grey, behind chromosome-colored scatter
+        if low_expr_mask and chrom in low_expr_mask:
+            _lo = low_expr_mask[chrom][order]
+            if _lo.any():
+                ax.scatter(x[_lo], lod[_lo], color=COLOR_NEUTRAL_LIGHT,
+                           s=3, linewidths=0, zorder=1, alpha=0.5,
+                           rasterized=True)
+            ax.scatter(x[~_lo], lod[~_lo], color=base_color,
+                       s=4, linewidths=0, zorder=2, alpha=0.75,
+                       rasterized=True)
+        else:
+            ax.scatter(x, lod, color=base_color, s=4, linewidths=0, zorder=2,
+                       alpha=0.75, rasterized=True)
         # eGene overlay: larger, opaque, highlight color
         if egene_scans and chrom in egene_scans:
             epos, elod = egene_scans[chrom]
@@ -743,6 +751,7 @@ def cis_distance_panel(
     peak_positions: np.ndarray,
     *,
     is_egene: Optional[np.ndarray] = None,
+    is_low_expr: Optional[np.ndarray] = None,
     zoom_mb: float = 1.0,
     threshold: Optional[float] = None,
 ) -> plt.Figure:
@@ -754,6 +763,9 @@ def cis_distance_panel(
         peak_positions: Peak locus position in Mb per gene, shape ``(n,)``.
         is_egene: Boolean mask marking eGenes, shape ``(n,)``.  All False if
             ``None``.
+        is_low_expr: Boolean mask for low-expression genes (frac_cpm_gt1 < 0.5),
+            shape ``(n,)``.  These are drawn as light-grey dots behind the colored
+            scatter and excluded from the eGene KDE.  All False if ``None``.
         zoom_mb: Half-window (Mb) for the central zoom panel; default 1.0.
         threshold: Peak-LOD significance threshold — drawn as a horizontal
             orange line on the scatter panels.  ``None`` omits the line.
@@ -769,6 +781,11 @@ def cis_distance_panel(
         np.asarray(is_egene, dtype=bool) if is_egene is not None
         else np.zeros(len(_lod), dtype=bool)
     )
+    _is_lo: np.ndarray = (
+        np.asarray(is_low_expr, dtype=bool) if is_low_expr is not None
+        else np.zeros(len(_lod), dtype=bool)
+    )
+    _hi = ~_is_lo   # expressed genes
     _n     = len(_lod)
     _n_eg  = int(_is_eg.sum())
     _vmax  = float(np.percentile(_lod, 95)) if _n > 0 else 1.0
@@ -780,19 +797,22 @@ def cis_distance_panel(
         1, 3, figsize=(19, 5.5), dpi=300, facecolor='white',
         constrained_layout=True)
 
-    _scatter_kw: dict = dict(
-        c=_lod, cmap='crest', vmin=0.0, vmax=_vmax,
+    _scatter_hi_kw: dict = dict(
+        cmap='crest', vmin=0.0, vmax=_vmax,
         s=5, alpha=0.4, linewidths=0, rasterized=True)
+    _scatter_lo_kw: dict = dict(
+        color=COLOR_NEUTRAL_LIGHT, s=4, alpha=0.3,
+        linewidths=0, rasterized=True, zorder=1)
     _ref_kw: dict = dict(
         color=COLOR_NEUTRAL_DARK, ls='--', lw=1.2, alpha=0.7, zorder=3)
     _thr_kw: dict = dict(
         color=COLOR_THRESHOLD, ls=':', lw=1.4, alpha=0.85, zorder=4)
-    _band_color = FOUNDER_COLORS['NODJ']
 
     # ── panel 1: full range scatter ──────────────────────────────────────────
-    ax_full.scatter(_dist, _lod, **_scatter_kw)
+    if _is_lo.any():
+        ax_full.scatter(_dist[_is_lo], _lod[_is_lo], **_scatter_lo_kw)
+    ax_full.scatter(_dist[_hi], _lod[_hi], c=_lod[_hi], **_scatter_hi_kw)
     ax_full.axvline(0, **_ref_kw)
-    ax_full.axvspan(-zoom_mb, zoom_mb, alpha=0.07, color=_band_color, zorder=0)
     if threshold is not None:
         ax_full.axhline(threshold, **_thr_kw)
     ax_full.set_xlabel('')
@@ -812,10 +832,14 @@ def cis_distance_panel(
     _set_font(ax_full)
 
     # ── panel 2: ±zoom_mb zoom ────────────────────────────────────────────────
-    _mask_z  = np.abs(_dist) <= zoom_mb
-    _dz, _lz = _dist[_mask_z], _lod[_mask_z]
-    _n_z_eg  = int((_mask_z & _is_eg).sum())
-    _vmax_z  = float(np.percentile(_lz, 95)) if len(_lz) > 0 else _vmax
+    _mask_z    = np.abs(_dist) <= zoom_mb
+    _mask_z_hi = _mask_z & _hi
+    _mask_z_lo = _mask_z & _is_lo
+    _dz, _lz   = _dist[_mask_z_hi], _lod[_mask_z_hi]
+    _n_z_eg    = int((_mask_z & _is_eg).sum())
+    _vmax_z    = float(np.percentile(_lz, 95)) if len(_lz) > 0 else _vmax
+    if _mask_z_lo.any():
+        ax_zoom.scatter(_dist[_mask_z_lo], _lod[_mask_z_lo], **_scatter_lo_kw)
     ax_zoom.scatter(
         _dz, _lz,
         c=_lz, cmap='crest', vmin=0.0, vmax=_vmax_z,
@@ -843,9 +867,8 @@ def cis_distance_panel(
     _set_font(ax_zoom)
 
     # ── panel 3: KDE — all scanned genes (background) vs eGenes (overlay) ────
-    _eg_d = _dist[_is_eg]
+    _eg_d = _dist[_is_eg & _hi]
     ax_kd.axvline(0, **_ref_kw)
-    ax_kd.axvspan(-zoom_mb, zoom_mb, alpha=0.08, color=_band_color, zorder=0)
     if _n > 2:
         sns.kdeplot(_dist, ax=ax_kd, color=COLOR_CC_FALLBACK,
                     fill=True, alpha=0.25, linewidth=1.8,

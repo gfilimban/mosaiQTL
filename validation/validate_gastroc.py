@@ -164,6 +164,15 @@ from mosaiqtl.utils import build_z_matrix, rint
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 log = logging.getLogger('validate_gastroc')
 
+
+def _git_hash() -> str:
+    import subprocess
+    try:
+        return subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'], text=True).strip()
+    except Exception:
+        return 'unknown'
+
 PASS = '✅'
 FAIL = '❌'
 SKIP = '⚠️ '
@@ -786,8 +795,14 @@ def _make_descriptive_plots(
                      peak_pos[peak_pos['chr'] == ch]['lod'].values)
                 for ch in chrs_sorted
             }
+            _lo_mask_dict = (
+                {ch: peak_pos[peak_pos['chr'] == ch]['gene'].isin(low_expr_genes).values
+                 for ch in chrs_sorted}
+                if low_expr_genes else None
+            )
             thr = _thr_by_chr.get(str(peak_chr))
-            fig = _viz_manhattan(scans_dict, threshold=thr)
+            fig = _viz_manhattan(scans_dict, threshold=thr,
+                                 low_expr_mask=_lo_mask_dict)
             _ax_m = fig.axes[0]
             _ax_m.text(0.01, 0.97, f'n = {len(peak_pos):,} genes',
                        transform=_ax_m.transAxes, fontsize=10, va='top', ha='left',
@@ -810,11 +825,13 @@ def _make_descriptive_plots(
                 _eg_cd  = (set(pd.read_csv(_sum_cd)['gene'])
                            if _sum_cd.exists() else set())
                 _is_eg_cd = _cd['gene'].isin(_eg_cd).values
+                _is_lo_cd = _cd['gene'].isin(low_expr_genes).values
                 fig_cd = _viz_cis_distance_panel(
                     _cd['peak_lod'].values,
                     _cd[_cd_tss_col].values,
                     _cd['peak_mb'].values,
                     is_egene=_is_eg_cd,
+                    is_low_expr=_is_lo_cd if low_expr_genes else None,
                     zoom_mb=1.0,
                     threshold=_gw_thr_scalar,
                 )
@@ -1596,10 +1613,15 @@ def _make_comparison_plots(
         try:
             _cmp_lod = pd.read_csv(_cmp_lod_path)
             if len(_cmp_lod) >= 2 and 'peak_lod_py' in _cmp_lod.columns and 'peak_lod_r' in _cmp_lod.columns:
+                _sparse_cmp = (
+                    _cmp_lod['gene'].isin(low_expr_genes)
+                    if low_expr_genes and 'gene' in _cmp_lod.columns else None
+                )
                 fig, _ = _cmp_scatter(
                     _cmp_lod, 'peak_lod_r', 'peak_lod_py',
                     'miQTL (R) peak LOD', 'mosaiQTL (Python) peak LOD',
                     priority_genes={'Cwc22': FOUNDER_COLORS['CASTJ']},
+                    sparse_mask=_sparse_cmp,
                     save_path=plt_dir / 's4_peak_lod_scatter.png',
                 )
                 plt.close(fig)
@@ -1834,22 +1856,32 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         force: bool, n_genes: int | None,
         scan_type: str = 'C',
         window_mb: float = 1.0,
-        scan_chr: list[str] | None = None) -> dict:
+        scan_chr: list[str] | None = None,
+        celltype: str | None = None,
+        plt_dir_override: Path | None = None) -> dict:
     """run gastroc characterization sections; return gate results dict.
 
     Parameters
     ----------
-    data_dir  : root of gastroc_data/ — contains input files (metadata.csv,
-                gene_info.csv, counts_lognorm.h5) and r_data/ subdirectory.
-    scan_type : 'C' (cis), 'G' (genome-wide), or 'L' (local ±window_mb of TSS)
-    window_mb : half-window size in Mb for L mode (ignored for C/G)
-    scan_chr  : chromosomes to scan; None = all chromosomes in kinship_decomp
+    data_dir         : root of gastroc_data/ — contains metadata.csv and r_data/;
+                       in CT mode this is also the CT dir with counts_lognorm.h5
+    out_dir          : directory where py_data/ (or CT-mode flat outputs) are written
+    scan_type        : 'C' (cis), 'G' (genome-wide), or 'L' (local ±window_mb of TSS)
+    window_mb        : half-window size in Mb for L mode (ignored for C/G)
+    scan_chr         : chromosomes to scan; None = all chromosomes in kinship_decomp
+    celltype         : cell-type label when running in CT mode; None = whole-tissue
+    plt_dir_override : plot output directory override (CT mode points here)
     """
-    r_data  = data_dir / 'r_data'    # R reference outputs (optional)
-    py_dir  = out_dir / 'py_data'
-    cmp_dir = out_dir / 'compare'
-    plt_dir = out_dir / 'plots'
-    for d in (py_dir, cmp_dir, plt_dir):
+    # in CT mode: outputs go flat into out_dir (no py_data/ subdir);
+    # cmp_dir points to a shared celltypes/compare/ for CT-vs-CT comparison CSVs
+    _ct_mode = celltype is not None
+    r_data  = GASTROC_DATA / 'r_data'   # R reference always from whole-tissue
+    py_dir  = out_dir if _ct_mode else out_dir / 'py_data'
+    cmp_dir = (GASTROC_DATA / 'celltypes' / 'compare'
+               if _ct_mode else out_dir / 'compare')
+    plt_dir = plt_dir_override if plt_dir_override is not None else out_dir / 'plots'
+    dirs_to_make = [py_dir, cmp_dir, plt_dir]
+    for d in dirs_to_make:
         d.mkdir(parents=True, exist_ok=True)
 
     results: dict[str, bool | None] = {}
@@ -1868,10 +1900,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             'peak_rss_mb':   round(peak_rss_mb, 1),
         })
 
-    # ── load metadata ─────────────────────────────────────────────────────────
-    meta_path = data_dir / 'metadata.csv'
+    # ── load metadata (always shared; CT mode reads same file as whole-tissue) ──
+    meta_path = GASTROC_DATA / 'metadata.csv'
     if not meta_path.exists():
-        log.error('metadata.csv not found at %s — run convert_gastroc_h5ad.py', meta_path)
+        log.error('metadata.csv not found at %s — run convert_h5ad.py', meta_path)
         sys.exit(1)
     meta = pd.read_csv(meta_path)
     sample_ids_meta = meta['sample_id'].tolist()
@@ -1884,10 +1916,22 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     # ── gene info (chr annotation + strand-aware gene boundary for scan filter) ──
     # schema: gene_name=symbol (HDF5 key), gene_id=Ensembl, strand, chr, start, end
     # start_mb = start/1e6 for + strand, end/1e6 for - strand (gene boundary, not TSS)
-    gene_info_path = data_dir / 'exp_gene_info_gastroc.csv'
+    if _ct_mode:
+        import re as _re_gi
+        _ct_safe_label = _re_gi.sub(r'[^a-z0-9]+', '_', celltype.lower()).strip('_')
+        gene_info_path = data_dir / f'exp_gene_info_{_ct_safe_label}.csv'
+    else:
+        gene_info_path = data_dir / 'exp_gene_info_gastroc.csv'
     gene_info = pd.read_csv(gene_info_path)
     gene_info['chr'] = gene_info['chr'].astype(str)
     log.info('gene_info: %d genes  (%s)', len(gene_info), gene_info_path.name)
+
+    low_expr_genes: set[str] = set()
+    if 'frac_samples_cpm_gt1' in gene_info.columns:
+        low_expr_genes = set(
+            gene_info.loc[gene_info['frac_samples_cpm_gt1'] < 0.5, 'gene_name'])
+        log.info('low-expression genes (frac_cpm_gt1 < 0.5): %d / %d',
+                 len(low_expr_genes), len(gene_info))
 
     # ── transcript TSS table (for near_tss_mb after peak calling) ───────────────
     # near_tss_mb = transcript TSS (strand-aware) nearest to peak_mb per gene
@@ -1911,7 +1955,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     gene_info_path.name)
 
     # ── load GenomeCache (must be pre-built as HDF5) ──────────────────────────
-    hdf5_cache = py_dir / 'cache.h5'
+    hdf5_cache = GASTROC_DATA / 'py_data' / 'cache.h5'
     if hdf5_cache.exists():
         log.info('loading GenomeCache from HDF5: %s', hdf5_cache)
         cache = GenomeCache.from_hdf5(str(hdf5_cache))
@@ -1929,7 +1973,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
              len(cache.chromosomes), len(cache.sample_ids), cache.sample_ids[0])
 
     # ── load or compute LOCO kinship decomp ───────────────────────────────────
-    kd_npz = py_dir / 'kinship_decomp.npz'
+    kd_npz = GASTROC_DATA / 'py_data' / 'kinship_decomp.npz'
     if kd_npz.exists():
         log.info('loading kinship decomp: %s', kd_npz)
         raw = np.load(kd_npz, allow_pickle=True)
@@ -2203,6 +2247,18 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS4: LMM scan  scan_type=%s  chrs=%s...',
                      scan_type, chrs_to_scan)
+
+            import json as _json
+            from importlib.metadata import version as _pkg_version
+            (py_dir / 'scan_info.json').write_text(_json.dumps({
+                'mosaiqtl_version': _pkg_version('mosaiqtl'),
+                'git_hash':         _git_hash(),
+                'run_date':         time.strftime('%Y-%m-%d'),
+                'celltype':         celltype if celltype else 'whole_tissue',
+                'scan_type':        scan_type,
+                'chr':              ','.join(chrs_to_scan) if chrs_to_scan else 'all',
+                'n_genes':          n_genes,
+            }, indent=2))
 
             h5_path = data_dir / 'counts_lognorm.h5'
             all_effect_rows: list[dict] = []
@@ -2525,10 +2581,15 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                                  'max|Δ|=%.3f  n=%d',
                                  r2, slope, intercept, max_delta, n_matched)
 
+                        _sparse_s4 = (
+                            cmp['gene'].isin(low_expr_genes)
+                            if low_expr_genes and 'gene' in cmp.columns else None
+                        )
                         fig, _ax = _cmp_scatter(
                             cmp, 'peak_lod_r', 'peak_lod_py',
                             'miQTL (R) peak LOD', 'mosaiQTL (Python) peak LOD',
                             priority_genes={'Cwc22': FOUNDER_COLORS['CASTJ']},
+                            sparse_mask=_sparse_s4,
                             save_path=plt_dir / 's4_peak_lod_scatter.png',
                         )
                         plt.close(fig)
@@ -3419,7 +3480,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     except Exception as exc:
         log.warning('  descriptive plots raised: %s', exc)
 
-    # ── comparison plots (only when R data present) ───────────────────────────
+    # ── comparison plots (R reference present) ───────────────────────────────────
     if any((r_data / f).exists() for f in
            ['cache_info.csv', 'haplotype_probs.csv', 'kinship_summary.csv']):
         log.info('\n── COMPARISON PLOTS ──────────────────────────────────────────')
@@ -3504,6 +3565,9 @@ def main() -> None:
     ap.add_argument('--chr', default='8',
                     help='chromosome(s) to scan: "all" or comma-separated like "8" or '
                          '"1,8,11" (default: 8)')
+    ap.add_argument('--celltype', type=str, default=None,
+                    help='cell type label (e.g. myonuclei); runs scan in '
+                         'celltypes/{ct}/ instead of whole-tissue gastroc_data/')
     args = ap.parse_args()
 
     # ── --build-cache: one-time rpy2 step, exits when done ────────────────────
@@ -3541,16 +3605,42 @@ def main() -> None:
     else:
         scan_chr = [c.strip() for c in args.chr.split(',')]
 
+    # ── cell-type mode: redirect data and output dirs ─────────────────────────
+    _ct_label = args.celltype
+    if _ct_label is not None:
+        import re as _re
+        _ct = _re.sub(r'[^a-z0-9]+', '_', _ct_label.lower()).strip('_')
+        _ct_dir     = GASTROC_DATA / 'celltypes' / _ct
+        _plt_dir_ct = GASTROC_DATA / 'plots' / 'celltypes' / _ct
+        _ct_exp_gi  = _ct_dir / f'exp_gene_info_{_ct}.csv'
+        if not _ct_dir.exists():
+            log.error('cell-type directory not found: %s\n'
+                      'Run first: conda run -n bioinfo python validation/convert_h5ad.py'
+                      ' --celltype %s', _ct_dir, _ct_label)
+            sys.exit(1)
+        if not _ct_exp_gi.exists():
+            log.error('exp_gene_info_%s.csv not found — rerun convert_h5ad.py --celltype %s',
+                      _ct, _ct_label)
+            sys.exit(1)
+        _run_data_dir = _ct_dir
+        _run_out_dir  = _ct_dir
+        _plt_override = _plt_dir_ct
+    else:
+        _run_data_dir = GASTROC_DATA
+        _run_out_dir  = OUT_DIR
+        _plt_override = None
+
     scan_desc = scan_type if scan_type != 'L' else f'L ±{window_mb:.1f} Mb'
     log.info('validate_gastroc.py  sections=%s  force=%s  n_genes=%s  '
-             'scan_type=%s  chr=%s',
-             sorted(sections), args.force, args.n_genes, scan_desc, args.chr)
-    log.info('  data_dir = %s', GASTROC_DATA)
-    log.info('  r_data   = %s', GASTROC_DATA / 'r_data')
-    log.info('  out_dir  = %s', OUT_DIR)
+             'scan_type=%s  chr=%s  celltype=%s',
+             sorted(sections), args.force, args.n_genes, scan_desc, args.chr,
+             _ct_label or 'whole_tissue')
+    log.info('  data_dir = %s', _run_data_dir)
+    log.info('  out_dir  = %s', _run_out_dir)
 
-    run(GASTROC_DATA, OUT_DIR, sections, args.force, args.n_genes,
-        scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr)
+    run(_run_data_dir, _run_out_dir, sections, args.force, args.n_genes,
+        scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,
+        celltype=_ct_label, plt_dir_override=_plt_override)
 
 
 if __name__ == '__main__':

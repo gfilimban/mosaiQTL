@@ -5,15 +5,15 @@ Whole-tissue mode (default):
     writes to --out/:
         counts_lognorm.h5   metadata.csv   exp_gene_info_{tissue}.csv
 
-Cell-type mode (--cell_type):
+Cell-type mode (--celltype):
     reads cell-type h5ad (one obs per sample × cell type)
     subsets to the requested cell type
-    writes ONLY counts_lognorm.h5 to --out/celltypes/{cell_type}/
-    metadata.csv and exp_gene_info_{tissue}.csv are shared from --out/ (same samples, same genes)
+    writes counts_lognorm.h5 AND exp_gene_info_{ct}.csv to --out/celltypes/{ct}/
+    metadata.csv is shared from --out/ (same samples for all cell types)
 
 Usage:
     python validation/convert_h5ad.py --tissue gastroc
-    python validation/convert_h5ad.py --tissue gastroc --cell_type myonuclei
+    python validation/convert_h5ad.py --tissue gastroc --celltype myonuclei
     python validation/convert_h5ad.py --tissue gastroc --list_celltypes
     python validation/convert_h5ad.py --tissue ctxhipp --out validation/ctxhipp_data --h5ad /path/to/ctxhipp.h5ad
 """
@@ -70,6 +70,7 @@ def _cpm_filter(X: np.ndarray, lib_sizes: np.ndarray, var: pd.DataFrame,
     threshold = int(np.ceil(min_frac * n_samples))
     keep = n_pass >= threshold
 
+    X_dense = X if not hasattr(X, 'toarray') else X.toarray()
     report = pd.DataFrame({'gene_name': var.index})
     if 'gene_id' in var.columns:
         report['gene_id'] = var['gene_id'].values
@@ -81,7 +82,8 @@ def _cpm_filter(X: np.ndarray, lib_sizes: np.ndarray, var: pd.DataFrame,
     report['frac_samples_cpm_gt1'] = (n_pass / n_samples).round(4)
     report['mean_cpm'] = cpm.mean(axis=0).round(4)
     report['median_cpm'] = np.median(cpm, axis=0).round(4)
-    report['passes_filter'] = keep
+    report['n_samples_zero'] = (X_dense == 0).sum(axis=0)
+    report['frac_samples_zero'] = ((X_dense == 0).sum(axis=0) / n_samples).round(4)
     return keep, report
 
 
@@ -143,11 +145,12 @@ def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str) -> None
 
     cpm_stats_cols = ['gene_name', 'total_counts', 'mean_counts', 'n_cells_by_counts',
                       'pct_dropout_by_counts', 'n_samples_cpm_gt1', 'frac_samples_cpm_gt1',
-                      'mean_cpm', 'median_cpm']
+                      'mean_cpm', 'median_cpm', 'n_samples_zero', 'frac_samples_zero']
     exp_gene_info = (
         pd.DataFrame({'gene_name': adata.var_names})
         .merge(global_gi, on='gene_name', how='left')
-        .merge(report[cpm_stats_cols], on='gene_name', how='left')
+        .merge(report[[c for c in cpm_stats_cols if c in report.columns]],
+               on='gene_name', how='left')
     )
     n_missing = exp_gene_info['gene_id'].isna().sum()
     if n_missing:
@@ -163,16 +166,18 @@ def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str) -> None
                  ds, len(grp), ', '.join(sorted(grp['genotype'].unique())))
 
 
-def convert_celltype(h5ad_path: pathlib.Path, cell_type: str,
+def convert_celltype(h5ad_path: pathlib.Path, celltype: str,
                      out_root: pathlib.Path, tissue: str) -> None:
-    """Cell-type conversion: subsets pb h5ad and writes counts_lognorm.h5 only.
+    """Cell-type conversion: subsets pb h5ad; writes counts_lognorm.h5 + exp_gene_info_{ct}.csv.
 
-    Gene set is inherited from the whole-tissue exp_gene_info_{tissue}.csv in out_root.parent
-    so all cell types share the same genes — genes absent in a cell type remain as zeros,
-    enabling detection of cell-type-specific eQTLs.
-    metadata.csv and exp_gene_info_{tissue}.csv are shared from out_root.parent (same samples, same genes).
+    Gene set is inherited from the whole-tissue exp_gene_info_{tissue}.csv (same passing genes
+    for all cell types — absent genes kept as zeros for cross-CT comparability).
+    CT-specific CPM stats are computed for the whole-tissue gene set.
+    metadata.csv is shared from out_root.parent (same samples, same order).
     """
-    # ── load whole-tissue gene set ─────────────────────────────────────────────
+    ct = _ct_safe(celltype)
+
+    # ── load whole-tissue gene set + coordinates ───────────────────────────────
     wt_exp_path = out_root.parent / f'exp_gene_info_{tissue}.csv'
     if not wt_exp_path.exists():
         raise FileNotFoundError(
@@ -189,29 +194,30 @@ def convert_celltype(h5ad_path: pathlib.Path, cell_type: str,
         raise ValueError(f'obs has no "celltype" column; found: {list(adata_full.obs.columns)}')
 
     # ── subset to requested cell type ─────────────────────────────────────────
-    adata = adata_full[adata_full.obs['celltype'] == cell_type].copy()
+    adata = adata_full[adata_full.obs['celltype'] == celltype].copy()
     if adata.n_obs == 0:
         available = sorted(adata_full.obs['celltype'].unique())
-        raise ValueError(f'cell type {cell_type!r} not found. available: {available}')
+        raise ValueError(f'cell type {celltype!r} not found. available: {available}')
 
     # ── restrict to whole-tissue passing genes (preserve zeros for absent genes) ──
     ct_genes = [g for g in adata.var_names if g in passing_genes]
     adata = adata[:, ct_genes].copy()
-    log.info('  cell_type=%r  %d samples × %d genes', cell_type, adata.n_obs, adata.n_vars)
+    log.info('  celltype=%r  %d samples × %d genes', celltype, adata.n_obs, adata.n_vars)
 
     obs = adata.obs[['sample_id', 'genotype', 'sex', 'dataset']].copy()
     obs['_sort'] = obs['genotype'].astype(str).map(_strain_sort_key)
     obs = obs.sort_values(['_sort', 'sample_id']).drop(columns='_sort')
 
-    ct_dir = out_root / _ct_safe(cell_type)
+    ct_dir = out_root / ct
     ct_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── per-CT expression summary (no filtering — whole-tissue gene set only) ──
+    # ── CT-specific CPM stats (no filtering — whole-tissue gene set only) ──────
     X = adata.X if not hasattr(adata.X, 'toarray') else adata.X.toarray()
+    X = X.astype(np.float32)
     lib_sizes = adata.obs['psbulk_counts'].values.astype(np.float32)
-    cpm = X.astype(np.float32) / lib_sizes[:, None] * 1e6
+    cpm = X / lib_sizes[:, None] * 1e6
     n_samples = adata.n_obs
-    ct_summary = pd.DataFrame({
+    ct_stats = pd.DataFrame({
         'gene_name':            adata.var_names,
         'n_samples_cpm_gt1':    (cpm > 1).sum(axis=0),
         'frac_samples_cpm_gt1': ((cpm > 1).sum(axis=0) / n_samples).round(4),
@@ -220,15 +226,30 @@ def convert_celltype(h5ad_path: pathlib.Path, cell_type: str,
         'n_samples_zero':       (X == 0).sum(axis=0),
         'frac_samples_zero':    ((X == 0).sum(axis=0) / n_samples).round(4),
     })
-    ct_summary.to_csv(ct_dir / 'gene_expression_summary.csv', index=False)
-    log.info('  gene_expression_summary.csv: %d genes  zeros_any=%d',
-             len(ct_summary),
-             int((ct_summary['n_samples_zero'] > 0).sum()))
+
+    # ── build exp_gene_info_{ct}.csv with coordinates + CT CPM stats ─────────
+    if _GLOBAL_GENE_INFO.exists():
+        global_gi = pd.read_csv(_GLOBAL_GENE_INFO,
+                                usecols=['gene_name', 'gene_id', 'chr', 'start', 'end', 'strand'])
+    else:
+        log.warning('global gene info not found at %s — coordinate columns will be NaN',
+                    _GLOBAL_GENE_INFO)
+        global_gi = pd.DataFrame(columns=['gene_name', 'gene_id', 'chr', 'start', 'end', 'strand'])
+
+    exp_gene_info_ct = (
+        pd.DataFrame({'gene_name': adata.var_names})
+        .merge(global_gi[['gene_name', 'gene_id', 'chr', 'start', 'end', 'strand']],
+               on='gene_name', how='left')
+        .merge(ct_stats, on='gene_name', how='left')
+    )
+    exp_path = ct_dir / f'exp_gene_info_{ct}.csv'
+    exp_gene_info_ct.to_csv(exp_path, index=False)
+    log.info('writing %s  (%d genes)', exp_path, len(exp_gene_info_ct))
 
     _write_counts_h5(adata, obs.index, ct_dir / 'counts_lognorm.h5')
 
-    log.info('done — %d samples  %d genes  (metadata.csv / exp_gene_info_%s.csv shared from %s)',
-             adata.n_obs, adata.n_vars, tissue, out_root.parent)
+    log.info('done — %d samples  %d genes  (metadata.csv shared from %s)',
+             adata.n_obs, adata.n_vars, out_root.parent)
     for ds, grp in obs.groupby('dataset', sort=True):
         log.info('  dataset=%-12s  %d samples', ds, len(grp))
 
@@ -245,7 +266,7 @@ def main() -> None:
                         help='output root (default: validation/gastroc_data)')
     parser.add_argument('--tissue', type=str, default='gastroc',
                         help='tissue label used in output filenames (default: gastroc)')
-    parser.add_argument('--cell_type', type=str, default=None,
+    parser.add_argument('--celltype', type=str, default=None,
                         help='cell type to extract (e.g. myonuclei); omit for whole-tissue')
     parser.add_argument('--list_celltypes', action='store_true',
                         help='list available cell types in the cell-type h5ad and exit')
@@ -259,10 +280,10 @@ def main() -> None:
             print(f'  {ct!r:50s}  {n} samples')
         return
 
-    if args.cell_type is not None:
+    if args.celltype is not None:
         h5ad = args.h5ad or _DEFAULT_CT_H5AD
         ct_root = args.out / 'celltypes'
-        convert_celltype(h5ad, args.cell_type, ct_root, args.tissue)
+        convert_celltype(h5ad, args.celltype, ct_root, args.tissue)
     else:
         h5ad = args.h5ad or _DEFAULT_BULK_H5AD
         convert(h5ad, args.out, args.tissue)
