@@ -158,6 +158,7 @@ from mosaiqtl.qtl.mediation import (
 )
 from mosaiqtl.qtl.snp_scan import imputed_snp_scan_from_db, snp_scan_multi_gene
 from mosaiqtl.io.covariates import encode_sex
+from mosaiqtl.io.results_io import pos_merge as _pos_merge
 from mosaiqtl.pipeline import call_egenes
 from mosaiqtl.utils import build_z_matrix, rint
 
@@ -231,54 +232,6 @@ def _scan_to_df(scan, gene_id: str) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# canonical strain ordering
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _ensure_canonical_order(cache: GenomeCache) -> GenomeCache:
-    """reorder cache sample axis to canonical: Founders → F1s → CC alphanumeric.
-
-    Canonical order matches founders.py FOUNDER_ORDER + F1_COLORS key order +
-    CC strains sorted alphanumerically.  No-op if already canonical.
-    """
-    current = list(cache.sample_ids)
-    founders_set = set(FOUNDER_ORDER)
-    f1_set       = set(F1_COLORS.keys())
-    cc_strains   = sorted(s for s in current if s not in founders_set and s not in f1_set)
-
-    canonical  = [s for s in FOUNDER_ORDER if s in founders_set.intersection(current)]
-    canonical += [s for s in F1_COLORS.keys() if s in f1_set.intersection(current)]
-    canonical += cc_strains
-
-    if canonical == current:
-        return cache
-
-    cur_idx = {s: i for i, s in enumerate(current)}
-    missing = [s for s in canonical if s not in cur_idx]
-    if missing:
-        log.warning('canonical order: %d strains missing from cache: %s',
-                    len(missing), missing[:5])
-        canonical = [s for s in canonical if s in cur_idx]
-
-    perm = np.array([cur_idx[s] for s in canonical])
-
-    new_data: dict = {}
-    for chrom in cache.chromosomes:
-        lids, pos, probs = cache.get_chromosome(chrom)
-        new_data[chrom] = {
-            'locus_ids': lids.copy(),
-            'positions': pos.copy(),
-            'probs':     probs[:, perm, :],   # (n_loci, n_canonical, J)
-        }
-
-    log.info('reordered cache to canonical strain order (%d strains)', len(canonical))
-    return GenomeCache(
-        sample_ids=np.array(canonical),
-        founders=list(cache.founders),
-        data=new_data,
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # one-time cache builder — invoked only via --build-cache flag, never during run
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -333,7 +286,7 @@ def _build_cache_from_happy(genomecache_dir: Path, out_h5: Path) -> None:
         founders=founders_r,
         data=data,
     )
-    cache = _ensure_canonical_order(cache)
+    cache = cache.reorder_to_canonical()
     out_h5.parent.mkdir(parents=True, exist_ok=True)
     cache.to_hdf5(str(out_h5))
     log.info('saved cache.h5 → %s  (%d strains, canonical order)', out_h5,
@@ -390,33 +343,6 @@ def _build_covariates(meta: pd.DataFrame,
     dummies  = pd.get_dummies(cat, drop_first=True).values.astype(np.float64)  # (n, 4)
 
     return np.column_stack([sex_vec, dummies])   # (n_samples, 5)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# position-merge helper (same pattern as validate_phase3.py)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _pos_merge(py: pd.DataFrame, r: pd.DataFrame,
-               py_val: str, r_val: str,
-               round_dp: int = 3) -> pd.DataFrame:
-    """inner-join on (chr, rounded pos_mb); deduplicate to avoid many-to-many."""
-    py = py.copy()
-    r  = r.copy()
-    py['_chr'] = py['chr'].astype(str)
-    r['_chr']  = r['chr'].astype(str)
-    py['_pos'] = py['pos_mb'].round(round_dp)
-    r['_pos']  = r['pos_mb'].round(round_dp)
-    py_d = (py[['_chr', '_pos', py_val]]
-            .sort_values(py_val, ascending=False)
-            .drop_duplicates(['_chr', '_pos']))
-    r_d  = (r[['_chr', '_pos', r_val]]
-            .sort_values(r_val, ascending=False)
-            .drop_duplicates(['_chr', '_pos']))
-    return pd.merge(
-        py_d.rename(columns={py_val: 'py'}),
-        r_d.rename(columns={r_val: 'r'}),
-        on=['_chr', '_pos'],
-    ).dropna()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1959,7 +1885,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     if hdf5_cache.exists():
         log.info('loading GenomeCache from HDF5: %s', hdf5_cache)
         cache = GenomeCache.from_hdf5(str(hdf5_cache))
-        cache = _ensure_canonical_order(cache)  # fast no-op if already canonical
+        cache = cache.reorder_to_canonical()  # fast no-op if already canonical
     else:
         log.error(
             'cache.h5 not found at %s\n'
@@ -3060,7 +2986,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     results['S7_mi_scan'] = True
                     if r_mi_path.exists():
                         r_mi = pd.read_csv(r_mi_path)
-                        merged_mi = _pos_merge(mi_df, r_mi, 'lod', 'lod')
+                        merged_mi = _pos_merge(mi_df, r_mi, 'lod', 'lod',
+                                               left_label='py', right_label='r')
                         if len(merged_mi) >= 10:
                             r_mi_r, _ = sp_stats.pearsonr(merged_mi['py'],
                                                            merged_mi['r'])
@@ -3129,7 +3056,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     snp_df.to_csv(py_dir / 's8_snp_lod.csv', index=False)
                     if r_snp_path.exists():
                         r_snp = pd.read_csv(r_snp_path)
-                        merged_snp = _pos_merge(snp_df, r_snp, 'lod', 'lod')
+                        merged_snp = _pos_merge(snp_df, r_snp, 'lod', 'lod',
+                                                left_label='py', right_label='r')
                         if len(merged_snp) >= 10:
                             r_snp_r, _ = sp_stats.pearsonr(merged_snp['py'],
                                                             merged_snp['r'])
@@ -3243,7 +3171,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             r_med = r_med.rename(columns={'pos.Mb': 'pos_mb'})
                         if 'lod_mediated' in r_med.columns and 'lod' not in r_med.columns:
                             r_med = r_med.rename(columns={'lod_mediated': 'lod'})
-                        merged_med = _pos_merge(med_df, r_med, 'lod_mediated', 'lod')
+                        merged_med = _pos_merge(med_df, r_med, 'lod_mediated', 'lod',
+                                                left_label='py', right_label='r')
                         if len(merged_med) >= 10:
                             r_m, _ = sp_stats.pearsonr(merged_med['py'],
                                                         merged_med['r'])
@@ -3381,7 +3310,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     if r_inst_path.exists():
                         r_inst      = pd.read_csv(r_inst_path)
                         merged_inst = _pos_merge(inst_df, r_inst,
-                                                  'lod', 'neg_log10_p')
+                                                  'lod', 'neg_log10_p',
+                                                  left_label='py', right_label='r')
                         if len(merged_inst) >= 10:
                             # R exports neg_log10_p (median -log10 F-test p across subsamples)
                             # Python exports lod (mean bootstrap LOD from fixef scan)
