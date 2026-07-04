@@ -28,7 +28,7 @@ from pathlib import Path
 
 from ..genotype import kinship as kin_module
 from . import lmm as lmm_module
-from ..utils import rint, build_z_matrix, chr_sort_key
+from ..utils import rint, build_z_matrix, chr_sort_key, _build_gm_idx, _enrich_scan_df
 
 logger = logging.getLogger("mosaiqtl")
 
@@ -1111,7 +1111,11 @@ def scan_multi_gene_mi(
     n_imp: int = 11,
     seed: int = 1,
     use_rint: bool = True,
+    peak_mb_map: 'dict[str, float] | None' = None,
+    window_mb: float = 10.0,
+    peak_only: bool = True,
     output_path: 'Path | None' = None,
+    gene_meta: 'pd.DataFrame | None' = None,
 ) -> pd.DataFrame:
     """multiple-imputation scan over a set of genes, streaming to disk.
 
@@ -1130,12 +1134,26 @@ def scan_multi_gene_mi(
     n_imp          : int  imputations per gene (default 11)
     seed           : int  base seed; incremented per gene
     use_rint       : bool
+    peak_mb_map    : dict {gene_id: float} or None — S4 peak positions; when provided
+                     scan uses local window ± window_mb around each gene's peak
+    window_mb      : float  half-window in Mb for local scan (default 10.0)
+    peak_only      : bool   when True (default) output one peak-locus row per gene;
+                     when False output all scanned loci (full per-locus profile)
     output_path    : Path or None  stream CSV here; None accumulates in RAM
+    gene_meta      : DataFrame keyed by 'gene' — extra columns joined into each row
 
     returns
     -------
-    pd.DataFrame  columns: gene, chr, locus, pos_mb, lod
+    peak_only=True  — gene, chr, locus [+ gene_meta cols], peak_mb, peak_lod
+    peak_only=False — gene, chr [+ gene_meta cols], locus, pos_mb, lod
     """
+    _gm_idx = _build_gm_idx(gene_meta)
+    if peak_only:
+        _id_cols   = ['gene', 'chr', 'locus']
+        _data_cols = ['peak_mb', 'peak_lod']
+    else:
+        _id_cols   = ['gene', 'chr']
+        _data_cols = ['locus', 'pos_mb', 'lod']
     _first = True
     _buf: 'list[pd.DataFrame]' = []
     for _g, (gene_id, y) in enumerate(expr_cache.items()):
@@ -1143,6 +1161,14 @@ def scan_multi_gene_mi(
         if not gene_chr:
             logger.warning('scan_multi_gene_mi: no chr for %s — skipped', gene_id)
             continue
+        peak_mb = peak_mb_map.get(gene_id) if peak_mb_map else None
+        scan_kw: 'dict' = dict(
+            scan_window='local' if peak_mb is not None else 'cis',
+            gene_chr=gene_chr,
+        )
+        if peak_mb is not None:
+            scan_kw['gene_pos_mb'] = peak_mb
+            scan_kw['window_mb'] = window_mb
         try:
             res = scan_h2lmm_mi(
                 y, genomecache,
@@ -1153,8 +1179,7 @@ def scan_multi_gene_mi(
                 seed=seed + _g,
                 use_rint=use_rint,
                 phenotype_id=gene_id,
-                scan_window='cis',
-                gene_chr=gene_chr,
+                **scan_kw,
             )
             _df = pd.DataFrame({
                 'gene': gene_id,
@@ -1164,6 +1189,10 @@ def scan_multi_gene_mi(
                 'lod': res.lod,
             })
             del res
+            if peak_only and not _df.empty:
+                _df = (_df.loc[[_df['lod'].idxmax()]]
+                         .rename(columns={'pos_mb': 'peak_mb', 'lod': 'peak_lod'}))
+            _df = _enrich_scan_df(_df, gene_id, _gm_idx, _id_cols, _data_cols)
             if output_path is not None:
                 _df.to_csv(output_path, mode='a', header=_first, index=False)
                 _first = False
@@ -1188,12 +1217,17 @@ def instability_scan_multi_gene(
     n_subsamples: int = 100,
     subsample_prop: float = 0.63,
     seed: int = 1,
+    peak_mb_map: 'dict[str, float] | None' = None,
+    window_mb: float = 10.0,
+    peak_only: bool = True,
     output_path: 'Path | None' = None,
+    gene_meta: 'pd.DataFrame | None' = None,
 ) -> pd.DataFrame:
     """instability scan over a set of genes, streaming to disk.
 
     calls instability_lm_scan per gene restricted to each gene's chromosome
-    and streams each result immediately, keeping peak memory bounded.
+    (or a local window when peak_mb_map is provided) and streams each result
+    immediately, keeping peak memory bounded.
 
     parameters
     ----------
@@ -1205,12 +1239,26 @@ def instability_scan_multi_gene(
     n_subsamples   : int  bootstrap iterations per gene (default 100)
     subsample_prop : float  proportion of strains per subsample (default 0.63)
     seed           : int  base seed; incremented per gene
+    peak_mb_map    : dict {gene_id: float} or None — S4 peak positions; when provided
+                     scan is restricted to loci within ± window_mb of each gene's peak
+    window_mb      : float  half-window in Mb for local locus filter (default 10.0)
+    peak_only      : bool   when True (default) output one peak-locus row per gene;
+                     when False output all scanned loci
     output_path    : Path or None  stream CSV here; None accumulates in RAM
+    gene_meta      : DataFrame keyed by 'gene' — extra columns joined into each row
 
     returns
     -------
-    pd.DataFrame  columns: gene, chr, locus, pos_mb, lod
+    peak_only=True  — gene, chr, locus [+ gene_meta cols], peak_mb, peak_lod
+    peak_only=False — gene, chr [+ gene_meta cols], locus, pos_mb, lod
     """
+    _gm_idx = _build_gm_idx(gene_meta)
+    if peak_only:
+        _id_cols   = ['gene', 'chr', 'locus']
+        _data_cols = ['peak_mb', 'peak_lod']
+    else:
+        _id_cols   = ['gene', 'chr']
+        _data_cols = ['locus', 'pos_mb', 'lod']
     _first = True
     _buf: 'list[pd.DataFrame]' = []
     for _g, (gene_id, y) in enumerate(expr_cache.items()):
@@ -1220,7 +1268,15 @@ def instability_scan_multi_gene(
                 'instability_scan_multi_gene: no chr for %s — skipped', gene_id)
             continue
         try:
-            lids_chr, _, _ = genomecache.get_chromosome(gene_chr)
+            lids_chr, _, pos_chr = genomecache.get_chromosome(gene_chr)
+            peak_mb = peak_mb_map.get(gene_id) if peak_mb_map else None
+            if peak_mb is not None:
+                loci_set = {
+                    lid for lid, p in zip(lids_chr, pos_chr)
+                    if abs(p - peak_mb) <= window_mb
+                }
+            else:
+                loci_set = set(lids_chr)
             res = instability_lm_scan(
                 y, genomecache,
                 covariates=covariates,
@@ -1229,7 +1285,7 @@ def instability_scan_multi_gene(
                 subsample_prop=subsample_prop,
                 seed=seed + _g,
                 phenotype_id=gene_id,
-                just_these_loci=set(lids_chr),
+                just_these_loci=loci_set,
             )
             _df = pd.DataFrame({
                 'gene': gene_id,
@@ -1239,6 +1295,10 @@ def instability_scan_multi_gene(
                 'lod': res.lod,
             })
             del res
+            if peak_only and not _df.empty:
+                _df = (_df.loc[[_df['lod'].idxmax()]]
+                         .rename(columns={'pos_mb': 'peak_mb', 'lod': 'peak_lod'}))
+            _df = _enrich_scan_df(_df, gene_id, _gm_idx, _id_cols, _data_cols)
             if output_path is not None:
                 _df.to_csv(output_path, mode='a', header=_first, index=False)
                 _first = False

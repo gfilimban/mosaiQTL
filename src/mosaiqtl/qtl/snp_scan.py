@@ -15,7 +15,7 @@ import pandas as pd
 import logging
 from pathlib import Path
 
-from ..utils import chr_sort_key
+from ..utils import chr_sort_key, _build_gm_idx, _enrich_scan_df
 
 logger = logging.getLogger('mosaiqtl')
 
@@ -543,7 +543,9 @@ def snp_scan_multi_gene(
     kinship_decomp: 'dict | None' = None,
     sample_ids: 'list[str] | None' = None,
     founder_col_map: 'dict[str, str] | None' = None,
+    peak_only: bool = True,
     output_path: 'Path | None' = None,
+    gene_meta: 'pd.DataFrame | None' = None,
 ) -> pd.DataFrame:
     """imputed SNP scan over a set of genes, streaming to disk.
 
@@ -560,12 +562,25 @@ def snp_scan_multi_gene(
     kinship_decomp  : dict or None  {chrom: {'values':, 'vectors':}}
     sample_ids      : list[str] or None  genotype-level strain IDs
     founder_col_map : dict {founder_name: allele_code} or None
+    peak_only       : bool  when True (default) output one peak-SNP row per gene;
+                     when False output all SNPs on the gene's chromosome
     output_path     : Path or None  stream CSV here; None accumulates in RAM
+    gene_meta       : DataFrame keyed by 'gene' — extra columns joined into each row
 
     returns
     -------
-    pd.DataFrame  imputed_snp_scan_from_db output with 'gene' column prepended
+    peak_only=True  — gene, chr, snp [+ gene_meta cols], peak_mb, peak_lod, beta_dosage
+    peak_only=False — gene, chr [+ gene_meta cols], snp, pos_mb, lod, p_value,
+                      f_stat, h2, n, rss0, rss1, beta_dosage
     """
+    _gm_idx = _build_gm_idx(gene_meta)
+    if peak_only:
+        _id_cols   = ['gene', 'chr', 'snp']
+        _data_cols = ['peak_mb', 'peak_lod', 'beta_dosage']
+    else:
+        _id_cols   = ['gene', 'chr']
+        _data_cols = ['snp', 'pos_mb', 'lod', 'p_value', 'f_stat', 'h2', 'n',
+                      'rss0', 'rss1', 'beta_dosage']
     _first = True
     _buf: 'list[pd.DataFrame]' = []
     for gene_id, y in expr_cache.items():
@@ -587,6 +602,10 @@ def snp_scan_multi_gene(
                 phenotype_id=gene_id,
             )
             if not _df.empty:
+                if peak_only:
+                    _df = (_df.loc[[_df['lod'].idxmax()]]
+                             .rename(columns={'pos_mb': 'peak_mb', 'lod': 'peak_lod'}))
+                _df = _enrich_scan_df(_df, gene_id, _gm_idx, _id_cols, _data_cols)
                 if output_path is not None:
                     _df.to_csv(output_path, mode='a', header=_first, index=False)
                     _first = False

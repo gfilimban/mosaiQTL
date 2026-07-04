@@ -2,12 +2,20 @@
 utils — shared utility functions
 
 rank-inverse normal transformation, sample alignment, Z-matrix construction,
-kinship/haplotype Z-expansion, design matrix builder, and chromosome ordering.
+kinship/haplotype Z-expansion, design matrix builder, chromosome ordering,
+and streaming-output helpers.
 """
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy import stats
 import logging
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 logger = logging.getLogger('mosaiqtl')
 
@@ -138,6 +146,63 @@ def expand_probs(h_geno, z_mat):
     np.ndarray (n, J)
     """
     return z_mat @ h_geno
+
+
+def _build_gm_idx(
+    gene_meta: 'pd.DataFrame | None',
+) -> 'dict[str, dict] | None':
+    """Build a gene → {col: val} lookup from a gene_meta DataFrame.
+
+    Parameters
+    ----------
+    gene_meta : DataFrame with a 'gene' column, or None.
+
+    Returns
+    -------
+    dict keyed by gene_id, or None when gene_meta is absent.
+    """
+    if gene_meta is not None and not gene_meta.empty and 'gene' in gene_meta.columns:
+        return gene_meta.set_index('gene').to_dict('index')
+    return None
+
+
+def _enrich_scan_df(
+    df: 'pd.DataFrame',
+    gene_id: str,
+    gm_idx: 'dict[str, dict] | None',
+    id_cols: 'list[str]',
+    data_cols: 'list[str]',
+) -> 'pd.DataFrame':
+    """Inject gene_meta columns and reorder a per-gene scan DataFrame.
+
+    Column order: id_cols → gene_meta columns → data_cols → remaining.
+    Gene_meta columns are injected only when not already present in df,
+    so the function's own columns always take precedence.
+
+    Parameters
+    ----------
+    df        : per-gene scan result (modified in-place before reorder).
+    gene_id   : key into gm_idx.
+    gm_idx    : output of _build_gm_idx, or None.
+    id_cols   : identifier columns that lead the output (e.g. ['gene', 'chr']).
+    data_cols : scan-result columns that follow the gene_meta columns.
+
+    Returns
+    -------
+    pd.DataFrame with columns in the canonical order.
+    """
+    meta_cols: 'list[str]' = []
+    if gm_idx is not None and gene_id in gm_idx:
+        for col, val in gm_idx[gene_id].items():
+            if col not in df.columns:
+                df[col] = val
+                meta_cols.append(col)
+    ordered = id_cols + meta_cols + data_cols
+    ordered_set = set(ordered)
+    return df[
+        [c for c in ordered if c in df.columns]
+        + [c for c in df.columns if c not in ordered_set]
+    ]
 
 
 def make_design_matrix(covariates_df, formula_cols=None):

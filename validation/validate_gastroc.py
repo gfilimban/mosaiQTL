@@ -2943,6 +2943,22 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         log.info('[eGenes] loaded %d eGenes from checkpoint (%s)',
                  len(egenes_df), eqtl_summary_path.name)
 
+    # gene_meta passed to all streaming scan functions (S7–S11)
+    _gene_meta: 'pd.DataFrame | None' = None
+    _peak_mb_map: 'dict[str, float]' = {}
+    if egenes_df is not None and len(egenes_df) > 0:
+        _gm_cols = [c for c in ['gene', 'near_tss_mb', 'cis_dist_mb', 'peak_lod', 'peak_mb']
+                    if c in egenes_df.columns]
+        _gene_meta = (egenes_df[_gm_cols]
+                      .drop_duplicates('gene')
+                      .rename(columns={'peak_lod': 'peak_lod_lmm', 'peak_mb': 'peak_mb_lmm'})
+                      .copy())
+        _peak_mb_map = {
+            str(r['gene']): float(r['peak_mb_lmm'])
+            for _, r in _gene_meta.iterrows()
+            if pd.notna(r.get('peak_mb_lmm'))
+        }
+
     # ─────────────────────────────────────────────────────────────────────────
     # S7 — MI scan (significant genes on peak_chr)
     # ─────────────────────────────────────────────────────────────────────────
@@ -2978,7 +2994,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     kinship_decomp=kinship_decomp,
                     sample_ids=geno_ids_s7,
                     n_imp=11, seed=1,
+                    peak_mb_map=_peak_mb_map,
                     output_path=_s7_path,
+                    gene_meta=_gene_meta,
                 )
                 del _s7_expr, _s7_counts
                 if not mi_df.empty:
@@ -2986,8 +3004,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     results['S7_mi_scan'] = True
                     if r_mi_path.exists():
                         r_mi = pd.read_csv(r_mi_path)
-                        merged_mi = _pos_merge(mi_df, r_mi, 'lod', 'lod',
-                                               left_label='py', right_label='r')
+                        # peak_only=True → one row per gene; compare peak LOD per gene
+                        r_mi_peak = (r_mi.groupby('gene')['lod'].max()
+                                     .reset_index().rename(columns={'lod': 'r'}))
+                        merged_mi = (mi_df[['gene', 'peak_lod']]
+                                     .rename(columns={'peak_lod': 'py'})
+                                     .merge(r_mi_peak, on='gene', how='inner'))
                         if len(merged_mi) >= 10:
                             r_mi_r, _ = sp_stats.pearsonr(merged_mi['py'],
                                                            merged_mi['r'])
@@ -3050,14 +3072,18 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     sample_ids=geno_ids_s8,
                     founder_col_map=FOUNDER_CODE,
                     output_path=_s8_path,
+                    gene_meta=_gene_meta,
                 )
                 del _s8_expr, _s8_counts
                 if not snp_df.empty:
-                    snp_df.to_csv(py_dir / 's8_snp_lod.csv', index=False)
                     if r_snp_path.exists():
                         r_snp = pd.read_csv(r_snp_path)
-                        merged_snp = _pos_merge(snp_df, r_snp, 'lod', 'lod',
-                                                left_label='py', right_label='r')
+                        # peak_only=True → one row per gene; compare peak SNP LOD per gene
+                        r_snp_peak = (r_snp.groupby('gene')['lod'].max()
+                                      .reset_index().rename(columns={'lod': 'r'}))
+                        merged_snp = (snp_df[['gene', 'peak_lod']]
+                                      .rename(columns={'peak_lod': 'py'})
+                                      .merge(r_snp_peak, on='gene', how='inner'))
                         if len(merged_snp) >= 10:
                             r_snp_r, _ = sp_stats.pearsonr(merged_snp['py'],
                                                             merged_snp['r'])
@@ -3080,9 +3106,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             log.info('  %s too few matched SNPs', SKIP)
                             results['S8_snp_lod_r'] = None
                     else:
-                        log.info('  Python SNP scan complete (%d SNPs across %d genes) '
+                        log.info('  Python SNP scan complete (%d genes) '
                                  '— no R reference yet (run gastroc_miqtl_scan.R S8)',
-                                 len(snp_df), snp_df['gene'].nunique())
+                                 snp_df['gene'].nunique())
                         results['S8_snp_lod_r'] = None
                 else:
                     log.info('  %s SNP scan produced no results', SKIP)
@@ -3156,6 +3182,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     kinship_decomp=kinship_decomp,
                     sample_ids=geno_ids_s9,
                     output_path=_med_path,
+                    gene_meta=_gene_meta,
                 )
                 del _s9_expr
                 if not med_df.empty:
@@ -3235,6 +3262,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     sample_ids=geno_ids_s10,
                     n_boot=200, seed=1,
                     output_path=_s10_path,
+                    gene_meta=_gene_meta,
                 )
                 del _s10_expr
                 if not ci_df.empty:
@@ -3301,29 +3329,32 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     covariates=cov_s11,
                     sample_ids=geno_ids_s11,
                     n_subsamples=100, seed=1,
+                    peak_mb_map=_peak_mb_map,
                     output_path=_s11_path,
+                    gene_meta=_gene_meta,
                 )
                 del _s11_expr
                 if not inst_df.empty:
                     log.info('  instability complete: %d genes', inst_df['gene'].nunique())
                     results['S11_instability'] = True
                     if r_inst_path.exists():
-                        r_inst      = pd.read_csv(r_inst_path)
-                        merged_inst = _pos_merge(inst_df, r_inst,
-                                                  'lod', 'neg_log10_p',
-                                                  left_label='py', right_label='r')
+                        r_inst = pd.read_csv(r_inst_path)
+                        # peak_only=True → one row per gene; compare peak instability per gene
+                        # R: neg_log10_p (median -log10 F-test p); Python: peak_lod
+                        # Both monotone with instability signal — use Spearman (scale-invariant)
+                        r_inst_peak = (r_inst.groupby('gene')['neg_log10_p'].max()
+                                       .reset_index().rename(columns={'neg_log10_p': 'r'}))
+                        merged_inst = (inst_df[['gene', 'peak_lod']]
+                                       .rename(columns={'peak_lod': 'py'})
+                                       .merge(r_inst_peak, on='gene', how='inner'))
                         if len(merged_inst) >= 10:
-                            # R exports neg_log10_p (median -log10 F-test p across subsamples)
-                            # Python exports lod (mean bootstrap LOD from fixef scan)
-                            # Both are monotone with instability signal but on different scales
-                            # — use Spearman rank correlation which is scale-invariant
                             r_i, _ = sp_stats.spearmanr(merged_inst['py'],
                                                           merged_inst['r'])
                             merged_inst.to_csv(cmp_dir / 's11_instability_cmp.csv',
                                                index=False)
                             _check('instability rho', abs(r_i), 0.90)
                             log.info('  vs R (Spearman): rho=%.4f  n=%d'
-                                     '  [py=lod, r=neg_log10_p — rank correlation]',
+                                     '  [py=peak_lod, r=peak neg_log10_p — rank correlation]',
                                      r_i, len(merged_inst))
                             fig, _ax = _cmp_scatter(
                                 merged_inst, 'r', 'py',
