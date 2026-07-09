@@ -91,9 +91,9 @@ class TestGetGevThresholds:
                     'n_perms', 'empirical_quantile'):
             assert key in params
 
-    def test_too_few_values_raises(self):
-        with pytest.raises(ValueError, match='too few'):
-            get_gev_thresholds(np.array([1.0, 2.0, 3.0]))
+    def test_too_few_values_returns_none(self):
+        thr, params = get_gev_thresholds(np.array([1.0, 2.0, 3.0]))
+        assert thr is None and params is None
 
     def test_higher_percentile_higher_threshold(self):
         rng = np.random.default_rng(13)

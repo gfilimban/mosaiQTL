@@ -148,6 +148,89 @@ def expand_probs(h_geno, z_mat):
     return z_mat @ h_geno
 
 
+def get_rss_mb() -> float:
+    """Return the current process RSS in MB (macOS: bytes → MB; Linux: kB → MB)."""
+    import resource
+    import sys
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    if sys.platform == 'darwin':
+        return usage.ru_maxrss / 1024 ** 2
+    return usage.ru_maxrss / 1024
+
+
+def git_hash() -> str:
+    """Return the short git commit hash of HEAD, or ``'unknown'`` on failure."""
+    import subprocess
+    try:
+        return subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'], text=True).strip()
+    except Exception:
+        return 'unknown'
+
+
+def build_tss_lookup(genes_df: 'pd.DataFrame') -> 'dict[str, float]':
+    """Build a gene-name → TSS position (Mb) mapping from a gene-info DataFrame.
+
+    Uses strand-aware boundary selection: ``start`` column for ``+`` strand,
+    ``end`` column for ``-`` strand.  Falls back to ``start`` when the
+    ``strand`` column is absent.
+
+    Parameters
+    ----------
+    genes_df :
+        DataFrame with at minimum a ``gene_name`` column and ``start`` column
+        (base-pair coordinates).  Optional: ``end``, ``strand``.
+
+    Returns
+    -------
+    dict[str, float]
+        Mapping from gene name to TSS position in Mb.
+    """
+    lookup: dict[str, float] = {}
+    if 'start' not in genes_df.columns:
+        return lookup
+    has_strand = 'strand' in genes_df.columns
+    has_end = 'end' in genes_df.columns
+    for _, row in genes_df.iterrows():
+        if has_strand and has_end and row['strand'] == '-':
+            lookup[row['gene_name']] = float(row['end']) / 1e6
+        else:
+            lookup[row['gene_name']] = float(row['start']) / 1e6
+    return lookup
+
+
+def compute_near_tss_mb(
+    peak_df: 'pd.DataFrame',
+    gene_tss_df: 'pd.DataFrame',
+) -> 'pd.Series':
+    """For each gene in ``peak_df``, find the TSS in ``gene_tss_df`` nearest to the peak.
+
+    Parameters
+    ----------
+    peak_df :
+        DataFrame with ``gene`` and ``peak_mb`` columns.
+    gene_tss_df :
+        DataFrame with ``gene_name`` and ``tss_mb`` columns listing all known
+        transcript TSSs per gene.
+
+    Returns
+    -------
+    pd.Series
+        Indexed as ``peak_df``, values are the nearest TSS position in Mb
+        (``NaN`` when the gene is absent from ``gene_tss_df``).
+    """
+    import pandas as pd
+    near: dict[str, float] = {}
+    for _, row in peak_df.iterrows():
+        cands = gene_tss_df[gene_tss_df['gene_name'] == row['gene']]
+        if cands.empty:
+            near[row['gene']] = float('nan')
+        else:
+            idx = (cands['tss_mb'] - row['peak_mb']).abs().idxmin()
+            near[row['gene']] = float(cands.loc[idx, 'tss_mb'])
+    return peak_df['gene'].map(near)
+
+
 def _build_gm_idx(
     gene_meta: 'pd.DataFrame | None',
 ) -> 'dict[str, dict] | None':

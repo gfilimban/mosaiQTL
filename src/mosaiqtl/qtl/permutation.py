@@ -427,31 +427,39 @@ def run_threshold_scans(null_outcomes, genomecache,
 # gev threshold
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_gev_thresholds(max_lods, percentile=0.95):
-    """fit a generalised extreme value (GEV) distribution to the
-    permutation peak-LOD distribution and return the threshold.
+def get_gev_thresholds(
+    max_lods: 'np.ndarray',
+    percentile: float = 0.95,
+) -> 'tuple[float, dict] | tuple[None, None]':
+    """Fit a GEV distribution to the permutation peak-LOD distribution.
 
-    fitting GEV is more stable than empirical quantiles when n_perms
-    is small (100-500).
+    Fitting GEV is more stable than empirical quantiles when n_perms
+    is small (100–500).
 
-
-    parameters
+    Parameters
     ----------
-    max_lods   : np.ndarray (n_perms,)  per-permutation max LOD scores
-    percentile : float  significance percentile (default 0.95 = 5% genome-wide)
+    max_lods :
+        Per-permutation maximum LOD scores.
+    percentile :
+        Significance percentile (default ``0.95`` = 5% genome-wide FWE).
 
-    returns
+    Returns
     -------
-    float  LOD threshold at the requested percentile
-    dict   {'c', 'loc', 'scale', 'threshold', 'percentile',
-            'n_perms', 'empirical_quantile'}
+    tuple[float, dict]
+        LOD threshold at the requested percentile and a parameter dict with
+        keys ``c``, ``loc``, ``scale``, ``threshold``, ``percentile``,
+        ``n_perms``, ``empirical_quantile``.
+    tuple[None, None]
+        When there are fewer than 10 finite values or the GEV fit fails.
     """
-    finite = max_lods[np.isfinite(max_lods)]              # drop any inf/nan
+    finite = max_lods[np.isfinite(max_lods)]
     if len(finite) < 10:
-        raise ValueError(f'too few finite max-LOD values ({len(finite)}) for GEV fit')
-
-    c, loc, scale = genextreme.fit(finite)                 # scipy GEV fit
-    threshold = float(genextreme.ppf(percentile, c, loc=loc, scale=scale))
+        return None, None
+    try:
+        c, loc, scale = genextreme.fit(finite)
+        threshold = float(genextreme.ppf(percentile, c, loc=loc, scale=scale))
+    except Exception:
+        return None, None
 
     params = {
         'c': float(c), 'loc': float(loc), 'scale': float(scale),

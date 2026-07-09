@@ -1,9 +1,13 @@
 """results_io — serialisation helpers for QTL scan outputs."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
+import numpy as np
 import pandas as pd
+
+if TYPE_CHECKING:
+    from mosaiqtl.models.records import ScanResult
 
 
 def pos_merge(
@@ -58,3 +62,26 @@ def pos_merge(
                .sort_values(right_out, ascending=False)
                .drop_duplicates(['_chr', '_pos']))
     return pd.merge(left_d, right_d, on=['_chr', '_pos']).dropna()
+
+
+def scan_result_to_df(scan: 'ScanResult', gene_name: str) -> pd.DataFrame:
+    """Convert a ScanResult to a per-locus DataFrame.
+
+    Parameters
+    ----------
+    scan:
+        Completed scan result from ``scan_h2lmm`` or equivalent.
+    gene_name:
+        String written to the ``gene`` column — typically the gene symbol.
+
+    Returns
+    -------
+    DataFrame with columns: gene, chr, locus, pos_mb, lod.
+    """
+    return pd.DataFrame({
+        'gene':   gene_name,
+        'chr':    np.asarray(scan.chromosomes),
+        'locus':  np.asarray(scan.locus_ids),
+        'pos_mb': np.asarray(scan.positions),
+        'lod':    np.asarray(scan.lod),
+    })

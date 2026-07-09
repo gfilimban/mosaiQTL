@@ -181,6 +181,45 @@ def encode_sex(series: 'pd.Series') -> 'pd.Series':
     return series.map(_map).astype(np.float64)
 
 
+def build_sex_dataset_covariates(
+    meta: 'pd.DataFrame',
+    sample_order: 'list[str]',
+    dataset_col: str = 'dataset',
+    dataset_categories: 'list[str] | None' = None,
+) -> 'np.ndarray':
+    """Build a covariate matrix aligned to ``sample_order`` for sex + dataset design.
+
+    Matches R formula ``~ sex + dataset`` with Founder as reference level.
+
+    Parameters
+    ----------
+    meta :
+        Sample metadata DataFrame; must contain ``sample_id``, ``sex``, and
+        the column named by ``dataset_col``.
+    sample_order :
+        Ordered list of sample IDs; defines the row order of the output.
+    dataset_col :
+        Column in ``meta`` holding the dataset/batch label (default ``'dataset'``).
+    dataset_categories :
+        Ordered category list for the dataset column; the first entry becomes
+        the reference level (dropped in dummies).  Defaults to
+        ``['Founder', 'CC1', 'CC2', 'CC3', 'F1']``.
+
+    Returns
+    -------
+    np.ndarray  (n_samples, n_covariates)
+        Columns: sex (0=F, 1=M), then one-hot dataset dummies (reference dropped).
+    """
+    import pandas as pd
+    if dataset_categories is None:
+        dataset_categories = ['Founder', 'CC1', 'CC2', 'CC3', 'F1']
+    rows = meta.set_index('sample_id').loc[sample_order]
+    sex_vec = encode_sex(rows['sex']).values.astype(np.float64)
+    cat = pd.Categorical(rows[dataset_col].values, categories=dataset_categories)
+    dummies = pd.get_dummies(cat, drop_first=True).values.astype(np.float64)
+    return np.column_stack([sex_vec, dummies])
+
+
 # ---------------------------------------------------------------------------
 # private helpers
 # ---------------------------------------------------------------------------

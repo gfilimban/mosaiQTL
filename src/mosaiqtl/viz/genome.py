@@ -1522,9 +1522,9 @@ def instability_lod_overlay(
     return ax
 
 
-def mi_rop_overlay(
+def mi_scan_overlay(
     positions: np.ndarray,
-    rop_lod: np.ndarray,
+    scan_lod: np.ndarray,
     mi_lod: np.ndarray,
     *,
     ax: Optional[plt.Axes] = None,
@@ -1533,11 +1533,11 @@ def mi_rop_overlay(
     peak_pos: Optional[float] = None,
     threshold: Optional[float] = None,
 ) -> plt.Axes:
-    """Overlay MI LOD profile against ROP LOD on a shared position axis.
+    """Overlay MI LOD profile against the base scan LOD on a shared position axis.
 
     Args:
         positions: Locus positions in Mb, shape (n_loci,).
-        rop_lod: ROP LOD scores (additive haplotype scan), shape (n_loci,).
+        scan_lod: Base scan LOD scores (additive haplotype scan), shape (n_loci,).
         mi_lod: Multiple-imputation LOD scores, shape (n_loci,).
         ax: Axes; creates a new figure (dpi=300) if None.
         chrom: Chromosome label for x-axis.
@@ -1552,12 +1552,12 @@ def mi_rop_overlay(
         _, ax = plt.subplots(figsize=(11, 3.5), dpi=300)
 
     ord_i = np.argsort(positions)
-    pos = positions[ord_i]
-    rop = rop_lod[ord_i]
-    mi  = mi_lod[ord_i]
+    pos  = positions[ord_i]
+    scan = scan_lod[ord_i]
+    mi   = mi_lod[ord_i]
 
-    ax.fill_between(pos, rop, alpha=0.12, color=FOUNDER_COLORS['NODJ'], zorder=1)
-    ax.plot(pos, rop, color=FOUNDER_COLORS['NODJ'], lw=1.2, zorder=2, label='ROP')
+    ax.fill_between(pos, scan, alpha=0.12, color=FOUNDER_COLORS['NODJ'], zorder=1)
+    ax.plot(pos, scan, color=FOUNDER_COLORS['NODJ'], lw=1.2, zorder=2, label='Scan')
     ax.fill_between(pos, mi, alpha=0.08, color=_MI_COLOR, zorder=1)
     ax.plot(pos, mi, color=_MI_COLOR, lw=1.0, ls='--', zorder=2, label='MI')
 
@@ -1573,11 +1573,11 @@ def mi_rop_overlay(
                 fontsize=8, va='top', fontweight='bold',
                 color=FOUNDER_COLORS['NODJ'])
 
-    delta = float(np.max(mi) - np.max(rop))
+    delta = float(np.max(mi) - np.max(scan))
     ax.text(
         0.98, 0.97,
-        f'ΔLODpeak  = {delta:+.2f}\nROP peak  = {float(np.max(rop)):.2f}\n'
-        f'MI  peak  = {float(np.max(mi)):.2f}',
+        f'ΔLODpeak = {delta:+.2f}\nScan peak = {float(np.max(scan)):.2f}\n'
+        f'MI   peak = {float(np.max(mi)):.2f}',
         transform=ax.transAxes, ha='right', va='top',
         fontfamily='monospace', fontsize=10,
         bbox=dict(boxstyle='round,pad=0.35', facecolor='white',
