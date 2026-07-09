@@ -31,6 +31,8 @@ import logging
 from pathlib import Path
 from scipy.stats import genextreme
 
+from ..utils import _build_gm_idx, _enrich_scan_df
+
 logger = logging.getLogger('mosaiqtl')
 
 __all__ = [
@@ -190,7 +192,6 @@ def _draw_parametric_batch(
 
     # rank-permute y by each column's argsort — vectorised
     return y[np.argsort(Y_null, axis=0)]                    # (n, n_perms)
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -426,31 +427,39 @@ def run_threshold_scans(null_outcomes, genomecache,
 # gev threshold
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_gev_thresholds(max_lods, percentile=0.95):
-    """fit a generalised extreme value (GEV) distribution to the
-    permutation peak-LOD distribution and return the threshold.
+def get_gev_thresholds(
+    max_lods: 'np.ndarray',
+    percentile: float = 0.95,
+) -> 'tuple[float, dict] | tuple[None, None]':
+    """Fit a GEV distribution to the permutation peak-LOD distribution.
 
-    fitting GEV is more stable than empirical quantiles when n_perms
-    is small (100-500).
+    Fitting GEV is more stable than empirical quantiles when n_perms
+    is small (100–500).
 
-
-    parameters
+    Parameters
     ----------
-    max_lods   : np.ndarray (n_perms,)  per-permutation max LOD scores
-    percentile : float  significance percentile (default 0.95 = 5% genome-wide)
+    max_lods :
+        Per-permutation maximum LOD scores.
+    percentile :
+        Significance percentile (default ``0.95`` = 5% genome-wide FWE).
 
-    returns
+    Returns
     -------
-    float  LOD threshold at the requested percentile
-    dict   {'c', 'loc', 'scale', 'threshold', 'percentile',
-            'n_perms', 'empirical_quantile'}
+    tuple[float, dict]
+        LOD threshold at the requested percentile and a parameter dict with
+        keys ``c``, ``loc``, ``scale``, ``threshold``, ``percentile``,
+        ``n_perms``, ``empirical_quantile``.
+    tuple[None, None]
+        When there are fewer than 10 finite values or the GEV fit fails.
     """
-    finite = max_lods[np.isfinite(max_lods)]              # drop any inf/nan
+    finite = max_lods[np.isfinite(max_lods)]
     if len(finite) < 10:
-        raise ValueError(f'too few finite max-LOD values ({len(finite)}) for GEV fit')
-
-    c, loc, scale = genextreme.fit(finite)                 # scipy GEV fit
-    threshold = float(genextreme.ppf(percentile, c, loc=loc, scale=scale))
+        return None, None
+    try:
+        c, loc, scale = genextreme.fit(finite)
+        threshold = float(genextreme.ppf(percentile, c, loc=loc, scale=scale))
+    except Exception:
+        return None, None
 
     params = {
         'c': float(c), 'loc': float(loc), 'scale': float(scale),
@@ -585,6 +594,7 @@ def ci_scan_multi_gene(
     seed: int = 1,
     use_rint: bool = True,
     output_path: 'Path | None' = None,
+    gene_meta: 'pd.DataFrame | None' = None,
 ) -> pd.DataFrame:
     """bootstrap positional CI for a set of genes, streaming to disk.
 
@@ -604,13 +614,17 @@ def ci_scan_multi_gene(
     seed           : int  base seed; incremented per gene
     use_rint       : bool
     output_path    : Path or None  stream CSV here; None accumulates in RAM
+    gene_meta      : DataFrame keyed by 'gene' — extra columns joined into each row
 
     returns
     -------
-    pd.DataFrame  columns: gene, chr, peak_mb, ci_lo, ci_hi, ci_width_mb
+    pd.DataFrame  columns: gene, chr [+ gene_meta cols], peak_mb, ci_lo, ci_hi, ci_width_mb
     """
+    _gm_idx    = _build_gm_idx(gene_meta)
+    _id_cols   = ['gene', 'chr']
+    _data_cols = ['peak_mb', 'ci_lo', 'ci_hi', 'ci_width_mb']
     _first = True
-    _buf: 'list[dict]' = []
+    _buf: 'list[pd.DataFrame]' = []
     for _g, (gene_id, y) in enumerate(expr_cache.items()):
         gene_chr = gene_chr_map.get(gene_id, '')
         peak_mb = peak_mb_map.get(gene_id)
@@ -633,24 +647,25 @@ def ci_scan_multi_gene(
                 sample_ids=sample_ids,
             )
             del boot_out, ci_mbs
-            row = {
+            _df = pd.DataFrame([{
                 'gene':        gene_id,
                 'chr':         gene_chr,
                 'peak_mb':     float(peak_mb),
                 'ci_lo':       ci_info['ci_lo'],
                 'ci_hi':       ci_info['ci_hi'],
                 'ci_width_mb': ci_info['ci_hi'] - ci_info['ci_lo'],
-            }
+            }])
+            _df = _enrich_scan_df(_df, gene_id, _gm_idx, _id_cols, _data_cols)
             if output_path is not None:
-                pd.DataFrame([row]).to_csv(
-                    output_path, mode='a', header=_first, index=False)
+                _df.to_csv(output_path, mode='a', header=_first, index=False)
                 _first = False
             else:
-                _buf.append(row)
+                _buf.append(_df)
+            del _df
         except Exception as exc:
             logger.warning('ci_scan_multi_gene: %s failed — %s', gene_id, exc)
     gc.collect()
     if output_path is not None:
         return (pd.read_csv(output_path)
                 if output_path.exists() and not _first else pd.DataFrame())
-    return pd.DataFrame(_buf) if _buf else pd.DataFrame()
+    return pd.concat(_buf, ignore_index=True) if _buf else pd.DataFrame()

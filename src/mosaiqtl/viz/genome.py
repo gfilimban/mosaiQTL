@@ -11,13 +11,14 @@ import pandas as pd
 import seaborn as sns
 
 from ..genotype.founders import (
-    COLOR_CC_FALLBACK, COLOR_NEUTRAL_DARK, COLOR_NEUTRAL_LIGHT, FOUNDER_COLORS,
+    COLOR_CC_FALLBACK, COLOR_NEUTRAL_DARK, COLOR_NEUTRAL_LIGHT,
+    COLOR_THRESHOLD, FOUNDER_COLORS,
 )
 from .effects import effect_bars as _effect_bars
 
 _CHR_ORDER: list[str] = [str(i) for i in range(1, 20)] + ['X']
 _CHR_GAP_MB: float = 10.0
-_CHR_COLORS: tuple[str, str] = (FOUNDER_COLORS['NODJ'], COLOR_CC_FALLBACK)
+_CHR_COLORS: tuple[str, str] = (FOUNDER_COLORS['NODJ'], FOUNDER_COLORS['CASTJ'])
 _MI_COLOR: str = FOUNDER_COLORS['WSBJ']
 _INST_COLOR: str = FOUNDER_COLORS['CASTJ']
 _SNP_COLOR: str = FOUNDER_COLORS['129S1J']
@@ -152,6 +153,7 @@ def manhattan(
     highlight_chrom: Optional[str] = None,
     highlight_color: str = FOUNDER_COLORS['PWKJ'],
     egene_scans: Optional[dict[str, tuple[np.ndarray, np.ndarray]]] = None,
+    low_expr_mask: Optional[dict[str, np.ndarray]] = None,
     top_labels: Optional[dict[str, list[str]]] = None,
     top_n_labels: int = 5,
 ) -> plt.Figure:
@@ -173,6 +175,9 @@ def manhattan(
     egene_scans : dict, optional
         ``{chrom: (positions_Mb, lod)}`` for eGene loci only.
         Overlaid as larger colored dots on top of the grey background.
+    low_expr_mask : dict, optional
+        ``{chrom: bool_array}`` parallel to ``scans``; True entries are drawn
+        as light-grey dots instead of the chromosome color.
     top_labels : dict, optional
         ``{chrom: [gene_name, ...]}`` parallel to scans positions;
         annotates the top-LOD genes by name.
@@ -200,17 +205,21 @@ def manhattan(
         pos   = pos[order]
         lod   = lod[order]
         x     = pos + offset
-        x_start = offset
-        x_end   = float(x[-1])
         base_color = (highlight_color if chrom == highlight_chrom
                       else _CHR_COLORS[ci % 2])
-        # alternating band — drawn behind scatter
-        if ci % 2 == 0:
-            ax.axvspan(x_start, x_end, alpha=0.10,
-                       color=COLOR_NEUTRAL_LIGHT, zorder=0, linewidth=0)
-        # scatter points
-        ax.scatter(x, lod, color=base_color, s=4, linewidths=0, zorder=2,
-                   alpha=0.75, rasterized=True)
+        # low-expr genes: light grey, behind chromosome-colored scatter
+        if low_expr_mask and chrom in low_expr_mask:
+            _lo = low_expr_mask[chrom][order]
+            if _lo.any():
+                ax.scatter(x[_lo], lod[_lo], color=COLOR_NEUTRAL_LIGHT,
+                           s=3, linewidths=0, zorder=1, alpha=0.5,
+                           rasterized=True)
+            ax.scatter(x[~_lo], lod[~_lo], color=base_color,
+                       s=4, linewidths=0, zorder=2, alpha=0.75,
+                       rasterized=True)
+        else:
+            ax.scatter(x, lod, color=base_color, s=4, linewidths=0, zorder=2,
+                       alpha=0.75, rasterized=True)
         # eGene overlay: larger, opaque, highlight color
         if egene_scans and chrom in egene_scans:
             epos, elod = egene_scans[chrom]
@@ -640,44 +649,243 @@ def cis_distance_histogram(
     *,
     ax: Optional[plt.Axes] = None,
     cis_window_mb: float = 5.0,
+    proximal_mb: float = 1.0,
     bins: int = 60,
 ) -> plt.Axes:
-    """Distribution of eQTL peak distance from gene TSS.
+    """Annotated histogram of eQTL peak distance from gene TSS.
 
-    Parameters
-    ----------
-    tss_positions : np.ndarray
-        Gene TSS positions in Mb, shape (n_egenes,).
-    peak_positions : np.ndarray
-        eQTL peak positions in Mb, same shape (same-chromosome eGenes only).
-    ax : plt.Axes, optional
-        Axes to draw on; created at dpi=300 if None.
-    cis_window_mb : float
-        Cis-window boundary — drawn as vertical dotted lines.
-    bins : int
-        Number of histogram bins.
+    Bars are colored by direction: upstream (peak < TSS) in blue, downstream
+    in green.  A KDE overlay, stats box, and directional count annotations
+    are included.
 
-    Returns
-    -------
-    plt.Axes
+    Args:
+        tss_positions: Gene TSS positions in Mb, shape ``(n_egenes,)``.
+        peak_positions: Peak locus positions in Mb, same shape.
+        ax: Axes to draw on; created at ``dpi=300`` if ``None``.
+        cis_window_mb: Cis-window boundary — drawn as vertical dotted lines.
+        proximal_mb: Half-window for "proximal" fraction reported in stats
+            box; default 1.0 Mb.
+        bins: Number of histogram bins.
+
+    Returns:
+        Populated ``plt.Axes``.
     """
     if ax is None:
-        _, ax = plt.subplots(figsize=(5, 3), dpi=300)
+        _, ax = plt.subplots(figsize=(6, 3.8), dpi=300)
 
-    distance = peak_positions - tss_positions
-    sns.histplot(distance, bins=bins, color=FOUNDER_COLORS['NODJ'],
-                 alpha=0.7, ax=ax, linewidth=0)
-    for sign in (-1, 1):
-        ax.axvline(sign * cis_window_mb, color=COLOR_CC_FALLBACK,
-                   linewidth=0.8, linestyle=':', zorder=1)
-    ax.axvline(0, color=COLOR_NEUTRAL_DARK, linewidth=0.6, zorder=1)
+    _dist = np.asarray(peak_positions, dtype=float) - np.asarray(tss_positions, dtype=float)
+    _n    = len(_dist)
+    _up   = _dist[_dist < 0]
+    _dn   = _dist[_dist >= 0]
+    _n_up = len(_up)
+    _n_dn = len(_dn)
+    _med  = float(np.median(np.abs(_dist))) if _n > 0 else 0.0
+    _prox = 100 * (np.abs(_dist) <= proximal_mb).mean() if _n > 0 else 0.0
+
+    # shared bin edges so upstream/downstream bars align perfectly
+    _lo = float(np.floor(_dist.min())) if _n > 0 else -cis_window_mb
+    _hi = float(np.ceil(_dist.max()))  if _n > 0 else cis_window_mb
+    _edges = np.linspace(_lo, _hi, bins + 1)
+    _w     = (_edges[1] - _edges[0]) * 0.88
+
+    _cnt_up, _e_up = np.histogram(_up, bins=_edges)
+    _cnt_dn, _e_dn = np.histogram(_dn, bins=_edges)
+    _ctr = (_edges[:-1] + _edges[1:]) / 2
+
+    ax.bar(_ctr, _cnt_up, width=_w, color=FOUNDER_COLORS['NODJ'],
+           alpha=0.75, linewidth=0, label=f'upstream  ({_n_up:,})', zorder=2)
+    ax.bar(_ctr, _cnt_dn, width=_w, color=FOUNDER_COLORS['CASTJ'],
+           alpha=0.75, linewidth=0, label=f'downstream  ({_n_dn:,})', zorder=2)
+
+    # KDE overlay (neutral dark line, no fill)
+    if _n > 4:
+        _kde_ax = ax.twinx()
+        sns.kdeplot(_dist, ax=_kde_ax, color=COLOR_NEUTRAL_DARK,
+                    linewidth=1.6, alpha=0.6)
+        _kde_ax.set_ylabel('')
+        _kde_ax.set_yticks([])
+        sns.despine(ax=_kde_ax, left=True, right=True, top=True, bottom=True)
+
+    # ±proximal_mb shaded band
+    ax.axvspan(-proximal_mb, proximal_mb, alpha=0.07,
+               color=FOUNDER_COLORS['NODJ'], zorder=0)
+
+    # reference and boundary lines
+    ax.axvline(0, color=COLOR_NEUTRAL_DARK, lw=1.2, zorder=3)
+    for _s in (-1, 1):
+        ax.axvline(_s * cis_window_mb, color=COLOR_CC_FALLBACK,
+                   lw=0.9, ls=':', zorder=1)
+
+    # directional count annotations just above x-axis
+    _ymax = max((_cnt_up + _cnt_dn).max(), 1) if _n > 0 else 1
+    ax.text(-cis_window_mb * 0.05, _ymax * 0.96,
+            f'{_n_up:,}\n({100*_n_up/_n:.0f}%)', fontsize=8.5,
+            ha='right', va='top', color=FOUNDER_COLORS['NODJ'],
+            fontweight='bold')
+    ax.text(cis_window_mb * 0.05, _ymax * 0.96,
+            f'{_n_dn:,}\n({100*_n_dn/_n:.0f}%)', fontsize=8.5,
+            ha='left', va='top', color=FOUNDER_COLORS['CASTJ'],
+            fontweight='bold')
+
+    # stats box (upper right)
+    ax.text(0.98, 0.97,
+            f'n = {_n:,}\nmedian |d| = {_med:.2f} Mb\n'
+            f'±{proximal_mb:.0f} Mb: {_prox:.0f}%',
+            transform=ax.transAxes, fontsize=8, va='top', ha='right',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                      edgecolor=COLOR_NEUTRAL_DARK, alpha=0.9))
 
     ax.set_ylim(bottom=0)
-    ax.set_xlabel('Peak − TSS (Mb)')
-    ax.set_ylabel('Number of eGenes')
+    ax.set_xlabel('Cis distance  (peak − TSS, Mb)', fontsize=11)
+    ax.set_ylabel('Number of eGenes', fontsize=11)
+    ax.legend(fontsize=8.5, frameon=False, loc='upper center',
+              ncol=2, bbox_to_anchor=(0.5, 1.0))
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
+
+
+def cis_distance_panel(
+    peak_lod: np.ndarray,
+    tss_positions: np.ndarray,
+    peak_positions: np.ndarray,
+    *,
+    is_egene: Optional[np.ndarray] = None,
+    is_low_expr: Optional[np.ndarray] = None,
+    zoom_mb: float = 1.0,
+    threshold: Optional[float] = None,
+) -> plt.Figure:
+    """Three-panel cis-distance figure: full scatter | ±zoom_mb zoom | KDE.
+
+    Args:
+        peak_lod: Peak LOD per gene, shape ``(n,)``.
+        tss_positions: TSS position in Mb per gene, shape ``(n,)``.
+        peak_positions: Peak locus position in Mb per gene, shape ``(n,)``.
+        is_egene: Boolean mask marking eGenes, shape ``(n,)``.  All False if
+            ``None``.
+        is_low_expr: Boolean mask for low-expression genes (frac_cpm_gt1 < 0.5),
+            shape ``(n,)``.  These are drawn as light-grey dots behind the colored
+            scatter and excluded from the eGene KDE.  All False if ``None``.
+        zoom_mb: Half-window (Mb) for the central zoom panel; default 1.0.
+        threshold: Peak-LOD significance threshold — drawn as a horizontal
+            orange line on the scatter panels.  ``None`` omits the line.
+
+    Returns:
+        Three-panel ``plt.Figure`` — full scatter | ±zoom scatter | KDE.
+    """
+    _lod  = np.asarray(peak_lod,     dtype=float)
+    _tss  = np.asarray(tss_positions, dtype=float)
+    _peak = np.asarray(peak_positions, dtype=float)
+    _dist = _peak - _tss
+    _is_eg: np.ndarray = (
+        np.asarray(is_egene, dtype=bool) if is_egene is not None
+        else np.zeros(len(_lod), dtype=bool)
+    )
+    _is_lo: np.ndarray = (
+        np.asarray(is_low_expr, dtype=bool) if is_low_expr is not None
+        else np.zeros(len(_lod), dtype=bool)
+    )
+    _hi = ~_is_lo   # expressed genes
+    _n     = len(_lod)
+    _n_eg  = int(_is_eg.sum())
+    _vmax  = float(np.percentile(_lod, 95)) if _n > 0 else 1.0
+    _pct1  = 100 * (np.abs(_dist) <= zoom_mb).mean() if _n > 0 else 0.0
+    _pct5  = 100 * (np.abs(_dist) <= 5).mean() if _n > 0 else 0.0
+    _med   = float(np.median(np.abs(_dist))) if _n > 0 else 0.0
+
+    fig, (ax_kd, ax_full, ax_zoom) = plt.subplots(
+        1, 3, figsize=(19, 5.5), dpi=300, facecolor='white',
+        constrained_layout=True)
+
+    _scatter_hi_kw: dict = dict(
+        cmap='crest', vmin=0.0, vmax=_vmax,
+        s=5, alpha=0.4, linewidths=0, rasterized=True)
+    _scatter_lo_kw: dict = dict(
+        color=COLOR_NEUTRAL_LIGHT, s=4, alpha=0.3,
+        linewidths=0, rasterized=True, zorder=1)
+    _ref_kw: dict = dict(
+        color=COLOR_NEUTRAL_DARK, ls='--', lw=1.2, alpha=0.7, zorder=3)
+    _thr_kw: dict = dict(
+        color=COLOR_THRESHOLD, ls=':', lw=1.4, alpha=0.85, zorder=4)
+
+    # ── panel 1: full range scatter ──────────────────────────────────────────
+    if _is_lo.any():
+        ax_full.scatter(_dist[_is_lo], _lod[_is_lo], **_scatter_lo_kw)
+    ax_full.scatter(_dist[_hi], _lod[_hi], c=_lod[_hi], **_scatter_hi_kw)
+    ax_full.axvline(0, **_ref_kw)
+    if threshold is not None:
+        ax_full.axhline(threshold, **_thr_kw)
+    ax_full.set_xlabel('')
+    ax_full.set_ylabel('Peak LOD', fontsize=11)
+    ax_zoom.sharey(ax_full)
+    ax_full.set_title('Full range', fontsize=12, fontweight='bold')
+    ax_full.text(
+        0.03, 0.97,
+        f'n = {_n:,}\neGenes = {_n_eg:,}\n'
+        f'±{zoom_mb:.0f} Mb: {_pct1:.0f}%\n'
+        f'±5 Mb: {_pct5:.0f}%\n'
+        f'median |d|: {_med:.1f} Mb',
+        transform=ax_full.transAxes, fontsize=8.5, va='top',
+        bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                  edgecolor=COLOR_NEUTRAL_DARK, alpha=0.9))
+    sns.despine(ax=ax_full)
+    _set_font(ax_full)
+
+    # ── panel 2: ±zoom_mb zoom ────────────────────────────────────────────────
+    _mask_z    = np.abs(_dist) <= zoom_mb
+    _mask_z_hi = _mask_z & _hi
+    _mask_z_lo = _mask_z & _is_lo
+    _dz, _lz   = _dist[_mask_z_hi], _lod[_mask_z_hi]
+    _n_z_eg    = int((_mask_z & _is_eg).sum())
+    _vmax_z    = float(np.percentile(_lz, 95)) if len(_lz) > 0 else _vmax
+    if _mask_z_lo.any():
+        ax_zoom.scatter(_dist[_mask_z_lo], _lod[_mask_z_lo], **_scatter_lo_kw)
+    ax_zoom.scatter(
+        _dz, _lz,
+        c=_lz, cmap='crest', vmin=0.0, vmax=_vmax_z,
+        s=8, alpha=0.5, linewidths=0, rasterized=True)
+    ax_zoom.axvline(0, **_ref_kw)
+    if threshold is not None:
+        ax_zoom.axhline(threshold, **_thr_kw)
+    ax_zoom.set_xlim(-zoom_mb, zoom_mb)
+    ax_zoom.set_xlabel('')
+    ax_zoom.set_ylabel('')
+    plt.setp(ax_zoom.get_yticklabels(), visible=False)
+    ax_zoom.set_title(f'±{zoom_mb:.0f} Mb zoom', fontsize=12, fontweight='bold')
+    _pct_half = 100 * (np.abs(_dist) <= zoom_mb / 2).mean() if _n > 0 else 0.0
+    _med_z = float(np.median(np.abs(_dz))) if len(_dz) > 0 else 0.0
+    ax_zoom.text(
+        0.03, 0.97,
+        f'n = {_mask_z.sum():,}  ({_pct1:.0f}% of all)\n'
+        f'eGenes = {_n_z_eg:,}\n'
+        f'±{zoom_mb/2:.2g} Mb: {_pct_half:.0f}%\n'
+        f'median |d|: {_med_z:.3f} Mb',
+        transform=ax_zoom.transAxes, fontsize=8.5, va='top',
+        bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                  edgecolor=COLOR_NEUTRAL_DARK, alpha=0.9))
+    sns.despine(ax=ax_zoom)
+    _set_font(ax_zoom)
+
+    # ── panel 3: KDE — all scanned genes (background) vs eGenes (overlay) ────
+    _eg_d = _dist[_is_eg & _hi]
+    ax_kd.axvline(0, **_ref_kw)
+    if _n > 2:
+        sns.kdeplot(_dist, ax=ax_kd, color=COLOR_CC_FALLBACK,
+                    fill=True, alpha=0.25, linewidth=1.8,
+                    label=f'all scanned  ({_n:,})')
+    if len(_eg_d) > 2:
+        sns.kdeplot(_eg_d, ax=ax_kd, color=COLOR_THRESHOLD,
+                    fill=True, alpha=0.35, linewidth=2.2,
+                    label=f'eGenes  ({_n_eg:,})')
+    ax_kd.set_xlabel('')
+    ax_kd.set_ylabel('Density', fontsize=11)
+    ax_kd.set_title('Cis distance distribution', fontsize=12, fontweight='bold')
+    ax_kd.legend(fontsize=9, frameon=False, loc='upper right')
+    sns.despine(ax=ax_kd)
+    _set_font(ax_kd)
+
+    fig.supxlabel('Cis distance  (peak − TSS, ±Mb)', fontsize=11)
+    return fig
 
 
 def nb_vs_lmm_lod(
@@ -1314,9 +1522,9 @@ def instability_lod_overlay(
     return ax
 
 
-def mi_rop_overlay(
+def mi_scan_overlay(
     positions: np.ndarray,
-    rop_lod: np.ndarray,
+    scan_lod: np.ndarray,
     mi_lod: np.ndarray,
     *,
     ax: Optional[plt.Axes] = None,
@@ -1325,11 +1533,11 @@ def mi_rop_overlay(
     peak_pos: Optional[float] = None,
     threshold: Optional[float] = None,
 ) -> plt.Axes:
-    """Overlay MI LOD profile against ROP LOD on a shared position axis.
+    """Overlay MI LOD profile against the base scan LOD on a shared position axis.
 
     Args:
         positions: Locus positions in Mb, shape (n_loci,).
-        rop_lod: ROP LOD scores (additive haplotype scan), shape (n_loci,).
+        scan_lod: Base scan LOD scores (additive haplotype scan), shape (n_loci,).
         mi_lod: Multiple-imputation LOD scores, shape (n_loci,).
         ax: Axes; creates a new figure (dpi=300) if None.
         chrom: Chromosome label for x-axis.
@@ -1344,12 +1552,12 @@ def mi_rop_overlay(
         _, ax = plt.subplots(figsize=(11, 3.5), dpi=300)
 
     ord_i = np.argsort(positions)
-    pos = positions[ord_i]
-    rop = rop_lod[ord_i]
-    mi  = mi_lod[ord_i]
+    pos  = positions[ord_i]
+    scan = scan_lod[ord_i]
+    mi   = mi_lod[ord_i]
 
-    ax.fill_between(pos, rop, alpha=0.12, color=FOUNDER_COLORS['NODJ'], zorder=1)
-    ax.plot(pos, rop, color=FOUNDER_COLORS['NODJ'], lw=1.2, zorder=2, label='ROP')
+    ax.fill_between(pos, scan, alpha=0.12, color=FOUNDER_COLORS['NODJ'], zorder=1)
+    ax.plot(pos, scan, color=FOUNDER_COLORS['NODJ'], lw=1.2, zorder=2, label='Scan')
     ax.fill_between(pos, mi, alpha=0.08, color=_MI_COLOR, zorder=1)
     ax.plot(pos, mi, color=_MI_COLOR, lw=1.0, ls='--', zorder=2, label='MI')
 
@@ -1365,11 +1573,11 @@ def mi_rop_overlay(
                 fontsize=8, va='top', fontweight='bold',
                 color=FOUNDER_COLORS['NODJ'])
 
-    delta = float(np.max(mi) - np.max(rop))
+    delta = float(np.max(mi) - np.max(scan))
     ax.text(
         0.98, 0.97,
-        f'ΔLODpeak  = {delta:+.2f}\nROP peak  = {float(np.max(rop)):.2f}\n'
-        f'MI  peak  = {float(np.max(mi)):.2f}',
+        f'ΔLODpeak = {delta:+.2f}\nScan peak = {float(np.max(scan)):.2f}\n'
+        f'MI   peak = {float(np.max(mi)):.2f}',
         transform=ax.transAxes, ha='right', va='top',
         fontfamily='monospace', fontsize=10,
         bbox=dict(boxstyle='round,pad=0.35', facecolor='white',

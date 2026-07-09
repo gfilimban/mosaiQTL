@@ -27,6 +27,7 @@ from ..genotype.founders import (
     COLOR_CC_FALLBACK,
     COLOR_NEUTRAL_DARK,
     COLOR_NEUTRAL_LIGHT,
+    COLOR_THRESHOLD,
     FOUNDER_COLORS,
     FOUNDER_ORDER,
 )
@@ -65,7 +66,7 @@ def lod_scatter(
     threshold: Optional[float] = None,
     threshold_x: Optional[float] = None,
     threshold_y: Optional[float] = None,
-    quadrant_color: str = '#E8870A',
+    quadrant_color: str = COLOR_THRESHOLD,
     save_path: Optional[object] = None,
 ) -> tuple[plt.Figure, plt.Axes]:
     """JointGrid scatter with KDE marginals, identity line, and stats box.
@@ -1030,3 +1031,92 @@ def nb_vs_lmm_comparison(
     ax.legend(fontsize=8, frameon=False)
     sns.despine(ax=ax)
     return ax
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cis-distance comparison across sources (cell types / whole tissue)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def cis_distance_comparison(
+    sources: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]],
+    *,
+    palette: Optional[dict[str, str]] = None,
+    zoom_mb: float = 1.0,
+    windows_mb: tuple[float, ...] = (0.5, 1.0, 2.0, 5.0, 10.0),
+) -> plt.Figure:
+    """Two-panel cis-distance comparison across cell types or scan runs.
+
+    Args:
+        sources: Mapping of ``source_label`` →
+            ``(peak_lod, tss_mb, peak_mb)`` arrays, each shape ``(n_genes,)``.
+            Sources are plotted in iteration order; put whole-tissue first.
+        palette: Optional mapping of source label → hex color.  Falls back to
+            ``COLOR_CC_FALLBACK`` for any label not in the dict.
+        zoom_mb: Half-window (Mb) for the ±zoom shaded band on the violin
+            panel; default 1.0.
+        windows_mb: Cumulative window sizes (Mb) for the proximal-fraction
+            curve panel.
+
+    Returns:
+        Two-panel ``plt.Figure`` — violin distribution | proximal-fraction
+        curves.
+    """
+    _set_style()
+    source_names = list(sources.keys())
+    _pal = palette or {}
+
+    fig, (ax_v, ax_b) = plt.subplots(
+        1, 2, figsize=(14, 5.5), dpi=300, facecolor='white')
+
+    # ── panel 1: violin of signed cis distances ───────────────────────────────
+    for i, name in enumerate(source_names):
+        _, tss, peak = sources[name]
+        dist = (np.asarray(peak, dtype=float) - np.asarray(tss, dtype=float))
+        dist = dist[np.isfinite(dist)]
+        if len(dist) < 2:
+            continue
+        color = _pal.get(name, COLOR_CC_FALLBACK)
+        vp = ax_v.violinplot([dist], positions=[i], widths=0.65,
+                              showmedians=True, showextrema=False)
+        for pc in vp['bodies']:
+            pc.set_facecolor(color)
+            pc.set_alpha(0.65)
+            pc.set_edgecolor('white')
+            pc.set_linewidth(0.5)
+        vp['cmedians'].set_color(COLOR_NEUTRAL_DARK)
+        vp['cmedians'].set_linewidth(2.0)
+
+    ax_v.axhline(0, color=COLOR_NEUTRAL_DARK, ls='--', lw=1.1, alpha=0.6,
+                 zorder=0)
+    ax_v.axhspan(-zoom_mb, zoom_mb, alpha=0.07,
+                 color=FOUNDER_COLORS['NODJ'], zorder=0)
+    ax_v.set_xticks(range(len(source_names)))
+    ax_v.set_xticklabels(source_names, rotation=30, ha='right', fontsize=9)
+    ax_v.set_ylabel('Cis distance  (peak − TSS, ±Mb)', fontsize=11)
+    ax_v.set_title('Distribution by source', fontsize=12, fontweight='bold')
+    sns.despine(ax=ax_v)
+
+    # ── panel 2: % genes within cumulative Mb windows ─────────────────────────
+    wlist = list(windows_mb)
+    for name in source_names:
+        _, tss, peak = sources[name]
+        dist_abs = np.abs(
+            np.asarray(peak, dtype=float) - np.asarray(tss, dtype=float))
+        dist_abs = dist_abs[np.isfinite(dist_abs)]
+        if len(dist_abs) < 2:
+            continue
+        color = _pal.get(name, COLOR_CC_FALLBACK)
+        pcts = [100.0 * float((dist_abs <= w).mean()) for w in wlist]
+        ax_b.plot(wlist, pcts, 'o-', color=color, label=name,
+                  linewidth=1.8, markersize=5)
+
+    ax_b.set_xlabel('Window size (Mb)', fontsize=11)
+    ax_b.set_ylabel('% genes with |cis dist| ≤ window', fontsize=11)
+    ax_b.set_title('Proximal peak fraction', fontsize=12, fontweight='bold')
+    ax_b.set_xlim(0, max(wlist) + 0.5)
+    ax_b.set_ylim(0, 105)
+    ax_b.legend(fontsize=8.5, frameon=False, loc='upper left')
+    sns.despine(ax=ax_b)
+
+    fig.tight_layout()
+    return fig

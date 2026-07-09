@@ -2,12 +2,20 @@
 utils — shared utility functions
 
 rank-inverse normal transformation, sample alignment, Z-matrix construction,
-kinship/haplotype Z-expansion, design matrix builder, and chromosome ordering.
+kinship/haplotype Z-expansion, design matrix builder, chromosome ordering,
+and streaming-output helpers.
 """
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy import stats
 import logging
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 logger = logging.getLogger('mosaiqtl')
 
@@ -138,6 +146,146 @@ def expand_probs(h_geno, z_mat):
     np.ndarray (n, J)
     """
     return z_mat @ h_geno
+
+
+def get_rss_mb() -> float:
+    """Return the current process RSS in MB (macOS: bytes → MB; Linux: kB → MB)."""
+    import resource
+    import sys
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    if sys.platform == 'darwin':
+        return usage.ru_maxrss / 1024 ** 2
+    return usage.ru_maxrss / 1024
+
+
+def git_hash() -> str:
+    """Return the short git commit hash of HEAD, or ``'unknown'`` on failure."""
+    import subprocess
+    try:
+        return subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'], text=True).strip()
+    except Exception:
+        return 'unknown'
+
+
+def build_tss_lookup(genes_df: 'pd.DataFrame') -> 'dict[str, float]':
+    """Build a gene-name → TSS position (Mb) mapping from a gene-info DataFrame.
+
+    Uses strand-aware boundary selection: ``start`` column for ``+`` strand,
+    ``end`` column for ``-`` strand.  Falls back to ``start`` when the
+    ``strand`` column is absent.
+
+    Parameters
+    ----------
+    genes_df :
+        DataFrame with at minimum a ``gene_name`` column and ``start`` column
+        (base-pair coordinates).  Optional: ``end``, ``strand``.
+
+    Returns
+    -------
+    dict[str, float]
+        Mapping from gene name to TSS position in Mb.
+    """
+    lookup: dict[str, float] = {}
+    if 'start' not in genes_df.columns:
+        return lookup
+    has_strand = 'strand' in genes_df.columns
+    has_end = 'end' in genes_df.columns
+    for _, row in genes_df.iterrows():
+        if has_strand and has_end and row['strand'] == '-':
+            lookup[row['gene_name']] = float(row['end']) / 1e6
+        else:
+            lookup[row['gene_name']] = float(row['start']) / 1e6
+    return lookup
+
+
+def compute_near_tss_mb(
+    peak_df: 'pd.DataFrame',
+    gene_tss_df: 'pd.DataFrame',
+) -> 'pd.Series':
+    """For each gene in ``peak_df``, find the TSS in ``gene_tss_df`` nearest to the peak.
+
+    Parameters
+    ----------
+    peak_df :
+        DataFrame with ``gene`` and ``peak_mb`` columns.
+    gene_tss_df :
+        DataFrame with ``gene_name`` and ``tss_mb`` columns listing all known
+        transcript TSSs per gene.
+
+    Returns
+    -------
+    pd.Series
+        Indexed as ``peak_df``, values are the nearest TSS position in Mb
+        (``NaN`` when the gene is absent from ``gene_tss_df``).
+    """
+    import pandas as pd
+    near: dict[str, float] = {}
+    for _, row in peak_df.iterrows():
+        cands = gene_tss_df[gene_tss_df['gene_name'] == row['gene']]
+        if cands.empty:
+            near[row['gene']] = float('nan')
+        else:
+            idx = (cands['tss_mb'] - row['peak_mb']).abs().idxmin()
+            near[row['gene']] = float(cands.loc[idx, 'tss_mb'])
+    return peak_df['gene'].map(near)
+
+
+def _build_gm_idx(
+    gene_meta: 'pd.DataFrame | None',
+) -> 'dict[str, dict] | None':
+    """Build a gene → {col: val} lookup from a gene_meta DataFrame.
+
+    Parameters
+    ----------
+    gene_meta : DataFrame with a 'gene' column, or None.
+
+    Returns
+    -------
+    dict keyed by gene_id, or None when gene_meta is absent.
+    """
+    if gene_meta is not None and not gene_meta.empty and 'gene' in gene_meta.columns:
+        return gene_meta.set_index('gene').to_dict('index')
+    return None
+
+
+def _enrich_scan_df(
+    df: 'pd.DataFrame',
+    gene_id: str,
+    gm_idx: 'dict[str, dict] | None',
+    id_cols: 'list[str]',
+    data_cols: 'list[str]',
+) -> 'pd.DataFrame':
+    """Inject gene_meta columns and reorder a per-gene scan DataFrame.
+
+    Column order: id_cols → gene_meta columns → data_cols → remaining.
+    Gene_meta columns are injected only when not already present in df,
+    so the function's own columns always take precedence.
+
+    Parameters
+    ----------
+    df        : per-gene scan result (modified in-place before reorder).
+    gene_id   : key into gm_idx.
+    gm_idx    : output of _build_gm_idx, or None.
+    id_cols   : identifier columns that lead the output (e.g. ['gene', 'chr']).
+    data_cols : scan-result columns that follow the gene_meta columns.
+
+    Returns
+    -------
+    pd.DataFrame with columns in the canonical order.
+    """
+    meta_cols: 'list[str]' = []
+    if gm_idx is not None and gene_id in gm_idx:
+        for col, val in gm_idx[gene_id].items():
+            if col not in df.columns:
+                df[col] = val
+                meta_cols.append(col)
+    ordered = id_cols + meta_cols + data_cols
+    ordered_set = set(ordered)
+    return df[
+        [c for c in ordered if c in df.columns]
+        + [c for c in df.columns if c not in ordered_set]
+    ]
 
 
 def make_design_matrix(covariates_df, formula_cols=None):

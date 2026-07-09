@@ -359,8 +359,18 @@ def run(sparcc_cache, r_data, out_dir):
         chrom=peak_chrom_for_perm,
     )
     threshold, gev_params = get_gev_thresholds(max_lods, percentile=0.95)
-    log.info('  GEV threshold (95th pct) = %.3f LOD  (empirical = %.3f)',
-             threshold, gev_params['empirical_quantile'])
+    if threshold is None:
+        finite = max_lods[np.isfinite(max_lods)]
+        threshold = float(np.quantile(finite, 0.95))
+        gev_params = {
+            'empirical_quantile': threshold,
+            'c': float('nan'), 'loc': float('nan'), 'scale': float('nan'),
+            'n_perms': len(finite),
+        }
+        log.warning('  GEV fit failed — using empirical 95th pct: %.3f LOD', threshold)
+    else:
+        log.info('  GEV threshold (95th pct) = %.3f LOD  (empirical = %.3f)',
+                 threshold, gev_params['empirical_quantile'])
 
     # Python output
     pd.DataFrame({'perm_index': np.arange(len(max_lods)),

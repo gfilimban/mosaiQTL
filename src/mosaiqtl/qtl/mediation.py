@@ -18,7 +18,7 @@ import pandas as pd
 import logging
 from pathlib import Path
 from scipy.stats import chi2 as _chi2
-from ..utils import build_z_matrix
+from ..utils import build_z_matrix, _build_gm_idx, _enrich_scan_df
 
 logger = logging.getLogger('mosaiqtl')
 
@@ -451,6 +451,7 @@ def mediation_scan_multi_outcome(
     lod_base_min: float = 1.5,
     lod_drop_min: float = 0.5,
     output_path: 'Path | None' = None,
+    gene_meta: 'pd.DataFrame | None' = None,
 ) -> pd.DataFrame:
     """Mediation scan over all outcome genes, streaming to disk.
 
@@ -471,17 +472,21 @@ def mediation_scan_multi_outcome(
     lod_base_min     : float  minimum base LOD to retain (default 1.5)
     lod_drop_min     : float  minimum LOD drop to retain (default 0.5)
     output_path      : Path or None  stream CSV here; None accumulates in RAM
+    gene_meta        : DataFrame keyed by 'gene' — extra columns joined into each row
 
     Returns
     -------
-    pd.DataFrame columns: gene, mediator, chr, locus, pos_mb,
+    pd.DataFrame columns: gene, chr [+ gene_meta cols], mediator, locus, pos_mb,
         lod_base, lod_mediated, lod_drop, prop_mediated, p_value, h2, n
     """
     _OUT_COLS = [
-        'gene', 'mediator', 'chr', 'locus', 'pos_mb',
+        'gene', 'chr', 'mediator', 'locus', 'pos_mb',
         'lod_base', 'lod_mediated', 'lod_drop', 'prop_mediated',
         'p_value', 'h2', 'n',
     ]
+    _gm_idx    = _build_gm_idx(gene_meta)
+    _id_cols   = ['gene', 'chr']
+    _data_cols = _OUT_COLS[2:]
     _first = True
     _buf: 'list[pd.DataFrame]' = []
     _n = len(pairs_by_outcome)
@@ -516,6 +521,8 @@ def mediation_scan_multi_outcome(
                     (_df['lod_drop'] >= lod_drop_min)
                 ][_OUT_COLS]
                 if not _df.empty:
+                    _df = _enrich_scan_df(
+                        _df, outcome_id, _gm_idx, _id_cols, _data_cols)
                     if output_path is not None:
                         _df.to_csv(
                             output_path, mode='a', header=_first, index=False)

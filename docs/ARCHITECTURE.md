@@ -1325,7 +1325,9 @@ When a symbol appears in code it follows this definition exactly.
 | Phase 4 | NB vs LMM comparison on simulated single-cell data (`validate_phase4.py`) |
 | gastroc | Gastrocnemius (skeletal muscle) — the real CC pseudobulk dataset used for biological validation |
 | r_data/ | Subdirectory holding R reference outputs; Python validation reads these for comparison |
-| py_data/ | Subdirectory holding Python scan outputs |
+| py_data/ | Root: summaries (eqtl_summary.csv, scan_stats.csv, run_summary.csv, cache.h5, *.done) |
+| py_data/core/ | S1–S6 scan outputs (lod.csv, peak_lod.csv, allele_effects.csv, perm_max_lods*.csv, threshold.csv) |
+| py_data/extended/ | S7–S11 downstream outputs (mi_lod.csv, snp_lod.csv, mediation.csv, ci.csv, instability.csv) |
 | compare/ | Subdirectory holding merged R-vs-Python comparison tables and plots |
 | fix_h2=True | Hardcoded behavior in `run_threshold_scans`: h² is always fixed from the real phenotype and never re-estimated per permutation. The `fix_h2` parameter was removed — this is now the only mode. Required for the vectorised `scan_chromosome_batch` path (h² fixed → single eigendecomposition shared across all permutations). |
 | ref_chrom / peak_chrom | The chromosome whose LOCO kinship is used to draw null phenotypes for permutation; should be the chromosome with the highest observed LOD |

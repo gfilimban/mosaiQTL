@@ -24,8 +24,15 @@ Outputs (all in validation/gastroc_data/):
   compare/    py-vs-R merged CSVs (written only when R data present)
 
 Usage:
-  python validation/validate_gastroc.py
-  python validation/validate_gastroc.py --sections 1,2,3,4
+  python validation/validate_gastroc.py              # default: --scan (S1–S6)
+  python validation/validate_gastroc.py --full       # run all sections S1–S11
+  python validation/validate_gastroc.py --scan       # S1-S6: main scan + permutation + eGene calling
+  python validation/validate_gastroc.py --mi         # S7: multiple-imputation scan only
+  python validation/validate_gastroc.py --snp        # S8: SNP fine-mapping only
+  python validation/validate_gastroc.py --mediation  # S9: mediation scan only
+  python validation/validate_gastroc.py --ci         # S10: confidence intervals only
+  python validation/validate_gastroc.py --instability  # S11: instability scan only
+  python validation/validate_gastroc.py --scan --mi  # combine flags freely
   python validation/validate_gastroc.py --force
   python validation/validate_gastroc.py --n_genes 50   # fast test run
   python validation/validate_gastroc.py --scan_type C --chr all
@@ -43,7 +50,6 @@ from __future__ import annotations
 import argparse
 import gc
 import logging
-import re
 import resource
 import sys
 import time
@@ -106,12 +112,14 @@ from mosaiqtl.viz.genome import (
     genome_diagnostic as _viz_genome_diagnostic,
     snp_lod_profile as _viz_snp_lod_profile,
     instability_lod_overlay as _viz_instability_overlay,
-    mi_rop_overlay as _viz_mi_rop_overlay,
+    mi_scan_overlay as _viz_mi_scan_overlay,
     perm_threshold_comparison as _viz_perm_threshold_comparison,
     ci_genomic_interval as _viz_ci_genomic_interval,
     scan_throughput as _viz_scan_throughput,
     mediation_summary_bar as _viz_mediation_summary_bar,
     timing_memory_summary as _viz_timing_memory_summary,
+    cis_distance_histogram as _viz_cis_distance_histogram,
+    cis_distance_panel as _viz_cis_distance_panel,
     _MI_COLOR,
     _INST_COLOR,
 )
@@ -130,6 +138,20 @@ from mosaiqtl.viz.compare import (
     allele_effects_comparison as _cmp_allele_effects,
     lod_profiles_comparison as _cmp_lod_profiles,
     perm_lod_comparison as _cmp_perm_lod,
+)
+from mosaiqtl.viz.celltypes import (
+    safe_ct as _ct_safe,
+    resolve_ct_scan_dir as _ct_resolve_dir,
+    discover_cell_types as _ct_discover,
+    build_ct_palette as _ct_palette,
+    load_threshold as _ct_load_threshold,
+    ct_vs_whole_lod_scatter as _ct_vs_whole_lod,
+    ct_vs_whole_effects_scatter as _ct_vs_whole_effects,
+    ct_lod_profile_overlay as _ct_lod_overlay,
+    ct_pairwise_lod_scatter as _ct_pairwise_lod,
+    ct_pairwise_effects_scatter as _ct_pairwise_effects,
+    ct_lod_distributions as _ct_lod_distributions,
+    ct_cis_distance_comparison as _ct_cis_distance,
 )
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 from mosaiqtl.qtl.scan import (
@@ -157,11 +179,23 @@ from mosaiqtl.qtl.mediation import (
 )
 from mosaiqtl.qtl.snp_scan import imputed_snp_scan_from_db, snp_scan_multi_gene
 from mosaiqtl.io.covariates import encode_sex
+from mosaiqtl.io.results_io import pos_merge as _pos_merge, scan_result_to_df as _scan_to_df
+from mosaiqtl.io.anndata_io import load_expression_h5 as _load_expression_h5
+from mosaiqtl.qtl.scan import scan_multi_gene_lmm as _scan_multi_gene_lmm
 from mosaiqtl.pipeline import call_egenes
 from mosaiqtl.utils import build_z_matrix, rint
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 log = logging.getLogger('validate_gastroc')
+
+
+def _git_hash() -> str:
+    import subprocess
+    try:
+        return subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'], text=True).strip()
+    except Exception:
+        return 'unknown'
 
 PASS = '✅'
 FAIL = '❌'
@@ -189,21 +223,6 @@ OUT_DIR      = GASTROC_DATA   # py_data/, plots/, compare/ all live under gastro
 # helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def make_names(genes: list[str]) -> list[str]:
-    """approximate R's make.names(genes, unique=TRUE)."""
-    seen: dict[str, int] = {}
-    out = []
-    for g in genes:
-        n = re.sub(r'[^a-zA-Z0-9.]', '.', str(g))
-        if n and (n[0].isdigit() or n[0] == '.'):
-            n = 'X' + n
-        if n in seen:
-            seen[n] += 1
-            n = f'{n}.{seen[n]}'
-        else:
-            seen[n] = 0
-        out.append(n)
-    return out
 
 
 def _check(label: str, value: float, threshold: float, op: str = '>=') -> bool:
@@ -224,63 +243,6 @@ def _checkpoint(py_dir: Path, section: str, force: bool) -> bool:
 def _mark_done(py_dir: Path, section: str) -> None:
     (py_dir / f's{section}.done').write_text('done')
 
-
-def _scan_to_df(scan, gene_id: str) -> pd.DataFrame:
-    return pd.DataFrame({
-        'gene':   gene_id,
-        'chr':    scan.chromosomes,
-        'locus':  scan.locus_ids,
-        'pos_mb': scan.positions,
-        'lod':    scan.lod,
-    })
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# canonical strain ordering
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _ensure_canonical_order(cache: GenomeCache) -> GenomeCache:
-    """reorder cache sample axis to canonical: Founders → F1s → CC alphanumeric.
-
-    Canonical order matches founders.py FOUNDER_ORDER + F1_COLORS key order +
-    CC strains sorted alphanumerically.  No-op if already canonical.
-    """
-    current = list(cache.sample_ids)
-    founders_set = set(FOUNDER_ORDER)
-    f1_set       = set(F1_COLORS.keys())
-    cc_strains   = sorted(s for s in current if s not in founders_set and s not in f1_set)
-
-    canonical  = [s for s in FOUNDER_ORDER if s in founders_set.intersection(current)]
-    canonical += [s for s in F1_COLORS.keys() if s in f1_set.intersection(current)]
-    canonical += cc_strains
-
-    if canonical == current:
-        return cache
-
-    cur_idx = {s: i for i, s in enumerate(current)}
-    missing = [s for s in canonical if s not in cur_idx]
-    if missing:
-        log.warning('canonical order: %d strains missing from cache: %s',
-                    len(missing), missing[:5])
-        canonical = [s for s in canonical if s in cur_idx]
-
-    perm = np.array([cur_idx[s] for s in canonical])
-
-    new_data: dict = {}
-    for chrom in cache.chromosomes:
-        lids, pos, probs = cache.get_chromosome(chrom)
-        new_data[chrom] = {
-            'locus_ids': lids.copy(),
-            'positions': pos.copy(),
-            'probs':     probs[:, perm, :],   # (n_loci, n_canonical, J)
-        }
-
-    log.info('reordered cache to canonical strain order (%d strains)', len(canonical))
-    return GenomeCache(
-        sample_ids=np.array(canonical),
-        founders=list(cache.founders),
-        data=new_data,
-    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -338,7 +300,7 @@ def _build_cache_from_happy(genomecache_dir: Path, out_h5: Path) -> None:
         founders=founders_r,
         data=data,
     )
-    cache = _ensure_canonical_order(cache)
+    cache = cache.reorder_to_canonical()
     out_h5.parent.mkdir(parents=True, exist_ok=True)
     cache.to_hdf5(str(out_h5))
     log.info('saved cache.h5 → %s  (%d strains, canonical order)', out_h5,
@@ -398,33 +360,6 @@ def _build_covariates(meta: pd.DataFrame,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# position-merge helper (same pattern as validate_phase3.py)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _pos_merge(py: pd.DataFrame, r: pd.DataFrame,
-               py_val: str, r_val: str,
-               round_dp: int = 3) -> pd.DataFrame:
-    """inner-join on (chr, rounded pos_mb); deduplicate to avoid many-to-many."""
-    py = py.copy()
-    r  = r.copy()
-    py['_chr'] = py['chr'].astype(str)
-    r['_chr']  = r['chr'].astype(str)
-    py['_pos'] = py['pos_mb'].round(round_dp)
-    r['_pos']  = r['pos_mb'].round(round_dp)
-    py_d = (py[['_chr', '_pos', py_val]]
-            .sort_values(py_val, ascending=False)
-            .drop_duplicates(['_chr', '_pos']))
-    r_d  = (r[['_chr', '_pos', r_val]]
-            .sort_values(r_val, ascending=False)
-            .drop_duplicates(['_chr', '_pos']))
-    return pd.merge(
-        py_d.rename(columns={py_val: 'py'}),
-        r_d.rename(columns={r_val: 'r'}),
-        on=['_chr', '_pos'],
-    ).dropna()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # descriptive plots — qtl2charts-informed, no R data required
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -467,30 +402,33 @@ def _make_descriptive_plots(
     """qtl2charts-inspired descriptive plots from Python outputs only.
 
     Figures produced (all in plt_dir/):
-      s1_loci_per_chr.png            — loci per chromosome bar
-      s2_haplotype_heatmap.png       — founder prob heatmap at sampled loci
-      s3_kinship_heatmap.png         — LOCO kinship matrix heatmap
-      s3_kinship_distribution.png    — kinship diagonal vs off-diagonal KDE
-      s4_lod_profile.png             — LOD profile for top gene
-      s4_founder_effects.png         — founder coef bar at peak locus (canonical colors)
-      s4_manhattan.png               — peak LOD per gene across chr
-      s5_perm_distribution.png       — max-LOD histogram + GEV fit + threshold
-      s6_egene_lod_distribution.png  — peak LOD histogram; eGenes vs threshold
-      s7_mi_lod_profile.png          — MI scan LOD profile for top gene
-      s8_snp_lod_profile.png         — SNP scan LOD scatter for top gene
-      s9_mediation_profile.png       — mediation LOD base/mediated/drop
-      s10_ci_strip.png               — bootstrap CI strip per eGene
-      s11_instability_profile.png    — instability LOD profile for top gene
-      timing_memory_summary.png      — elapsed time per section bar chart
+      loci_per_chr.png              — loci per chromosome bar
+      haplotype_heatmap.png         — founder prob heatmap at sampled loci
+      kinship_heatmap.png           — LOCO kinship matrix heatmap
+      kinship_distribution.png      — kinship diagonal vs off-diagonal KDE
+      lod_profile/                  — LOD profile for top gene (per chr)
+      founder_effects/              — founder coef bar at peak locus (canonical colors)
+      manhattan.png                 — peak LOD per gene across chr
+      cis_distance.png              — cis-distance scatter + KDE (all scanned vs eGenes)
+      cis_histogram.png             — histogram of peak − TSS distance for eGenes
+      perm_distribution.png         — max-LOD histogram + GEV fit + threshold
+      egene_lod_distribution.png    — peak LOD histogram; eGenes vs threshold
+      extended/mi/                  — MI scan LOD profile for top gene
+      extended/snp/                 — SNP scan LOD scatter for top gene
+      mediation_by_chr.png          — mediation LOD drop summary by chromosome
+      ci_strip.png                  — bootstrap CI strip per eGene
+      extended/instability/         — instability LOD profile for top gene
+      timing_memory_summary.png     — elapsed time per section bar chart
     """
     sns.set_style('ticks')
     f_colors = {f: FOUNDER_COLORS.get(f, COLOR_CC_FALLBACK) for f in founders}
+    core_dir = py_dir / 'core'
 
-    # ── S1: loci per chromosome bar ───────────────────────────────────────────
-    s1_path = py_dir / 's1_cache_info.csv'
-    if s1_path.exists():
+    # ── loci per chromosome bar ───────────────────────────────────────────
+    cache_info_path = py_dir / 'cache_info.csv'
+    if cache_info_path.exists():
         try:
-            ci = pd.read_csv(s1_path)
+            ci = pd.read_csv(cache_info_path)
             ci['chr'] = ci['chr'].astype(str)
 
             def _chr_key(c):
@@ -504,17 +442,17 @@ def _make_descriptive_plots(
             ax.set_title(f'Loci per chromosome  (total={ci["n_loci"].sum():,})',
                          fontsize=9)
             fig.tight_layout()
-            fig.savefig(plt_dir / 's1_loci_per_chr.png', dpi=300, transparent=True)
+            fig.savefig(plt_dir / 'core' / 'loci_per_chr.png', dpi=300, transparent=True)
             plt.close(fig)
-            log.info('  s1_loci_per_chr.png')
+            log.info('  core/loci_per_chr.png')
         except Exception as exc:
-            log.warning('  s1_loci_per_chr: %s', exc)
+            log.warning('  loci_per_chr: %s', exc)
 
-    # ── S2: haplotype prob heatmap ────────────────────────────────────────────
-    s2_path = py_dir / 's2_haplotype_probs.csv'
-    if s2_path.exists():
+    # ── haplotype prob heatmap ────────────────────────────────────────────
+    hap_probs_path = py_dir / 'haplotype_probs.csv'
+    if hap_probs_path.exists():
         try:
-            hp       = pd.read_csv(s2_path)
+            hp       = pd.read_csv(hap_probs_path)
             locus0   = hp['locus'].iloc[0]
             sub      = hp[hp['locus'] == locus0].copy()
             strain_order = list(cache.sample_ids)
@@ -528,13 +466,13 @@ def _make_descriptive_plots(
             ax.set_title(f'Haplotype probs  locus={locus0}  (n={n_s})',
                          fontsize=9)
             fig.tight_layout()
-            fig.savefig(plt_dir / 's2_haplotype_heatmap.png', dpi=300, transparent=True)
+            fig.savefig(plt_dir / 'core' / 'haplotype_heatmap.png', dpi=300, transparent=True)
             plt.close(fig)
-            log.info('  s2_haplotype_heatmap.png  (%d strains)', n_s)
+            log.info('  core/haplotype_heatmap.png  (%d strains)', n_s)
         except Exception as exc:
-            log.warning('  s2_haplotype_heatmap: %s', exc)
+            log.warning('  haplotype_heatmap: %s', exc)
 
-    # ── S3: kinship heatmap + distribution ───────────────────────────────────
+    # ── kinship heatmap + distribution ───────────────────────────────────
     if peak_chr in kinship_decomp:
         try:
             kd = kinship_decomp[peak_chr]
@@ -558,50 +496,52 @@ def _make_descriptive_plots(
                 cmap='Blues', vmin=0,
             )
             ax1.set_title(f'LOCO kinship  chr{peak_chr}  (n={n})', fontsize=9)
-            fig1.savefig(plt_dir / 's3_kinship_heatmap.png', dpi=300,
+            fig1.savefig(plt_dir / 'core' / 'kinship_heatmap.png', dpi=300,
                          bbox_inches='tight', transparent=True)
             plt.close(fig1)
-            log.info('  s3_kinship_heatmap.png  (%d strains)', n)
+            log.info('  core/kinship_heatmap.png  (%d strains)', n)
 
             fig2, ax2 = plt.subplots(figsize=(6, 4), dpi=300)
             _viz_kinship_distribution(K, ax=ax2, chrom=peak_chr)
             ax2.set_title(f'Kinship distribution  chr{peak_chr}', fontsize=9)
             fig2.tight_layout()
-            fig2.savefig(plt_dir / 's3_kinship_distribution.png', dpi=300, transparent=True)
+            fig2.savefig(plt_dir / 'core' / 'kinship_distribution.png', dpi=300, transparent=True)
             plt.close(fig2)
-            log.info('  s3_kinship_distribution.png')
+            log.info('  core/kinship_distribution.png')
         except Exception as exc:
-            log.warning('  s3_kinship_heatmap: %s', exc)
+            log.warning('  kinship_heatmap: %s', exc)
 
-    # ── S4: read lod_df once (reused for profile, Manhattan) ─────────────────
-    # s4_lod.csv is the full genome-wide (genes × loci) LOD table — at gastroc
+    ext_dir = py_dir / 'extended'
+
+    # ── read lod_df once (reused for profile, Manhattan) ─────────────────
+    # lod.csv is the full genome-wide (genes × loci) LOD table — at gastroc
     # scale this is multi-GB / 100M+ rows. Loading it whole here would
     # re-materialise the matrix MEM-05 forbids and was the source of a severe
     # plotting-stage stall. Every consumer below only needs the LOD profile
     # for a handful of named genes (top gene per chromosome + priority genes),
     # so we determine that gene set first and stream-filter the CSV in
     # chunks, keeping only matching rows.
-    s4_lod_path = py_dir / 's4_lod.csv'
-    s4_pk_path  = py_dir / 's4_peak_lod.csv'
-    s4_eff_path = py_dir / 's4_allele_effects.csv'
+    lod_path = core_dir / 'lod.csv'
+    pk_path  = core_dir / 'peak_lod.csv'
+    eff_path = core_dir / 'allele_effects.csv'
     _lod_df: 'pd.DataFrame | None' = None
-    if s4_lod_path.exists() and s4_pk_path.exists():
+    if lod_path.exists() and pk_path.exists():
         try:
-            _pk_for_filter = pd.read_csv(s4_pk_path)
+            _pk_for_filter = pd.read_csv(pk_path)
             _pk_for_filter['chr'] = _pk_for_filter['chr'].astype(str)
             _needed_genes: set[str] = set(
                 _pk_for_filter.loc[_pk_for_filter.groupby('chr')['peak_lod'].idxmax(),
                                    'gene'].astype(str))
             _needed_genes.update(PRIORITY_GENE.values())
-            if s4_eff_path.exists():
-                _eff_for_filter = pd.read_csv(s4_eff_path, usecols=['chr', 'gene', 'peak_lod'])
+            if eff_path.exists():
+                _eff_for_filter = pd.read_csv(eff_path, usecols=['chr', 'gene', 'peak_lod'])
                 _eff_for_filter['chr'] = _eff_for_filter['chr'].astype(str)
                 _needed_genes.update(
                     _eff_for_filter.loc[_eff_for_filter.groupby('chr')['peak_lod'].idxmax(),
                                         'gene'].astype(str))
 
             _chunks: 'list[pd.DataFrame]' = []
-            for _chunk in pd.read_csv(s4_lod_path, low_memory=False, chunksize=2_000_000):
+            for _chunk in pd.read_csv(lod_path, low_memory=False, chunksize=2_000_000):
                 _hit = _chunk[_chunk['gene'].isin(_needed_genes)]
                 if len(_hit) > 0:
                     _chunks.append(_hit.copy())
@@ -610,34 +550,36 @@ def _make_descriptive_plots(
             _lod_df['chr'] = _lod_df['chr'].astype(str)
             del _chunks
             gc.collect()
-            log.info('  s4_lod.csv filtered to %d genes  (%d rows)',
+            log.info('  lod.csv filtered to %d genes  (%d rows)',
                      len(_needed_genes), len(_lod_df))
         except Exception as exc:
-            log.warning('  s4_lod.csv read failed: %s', exc)
+            log.warning('  lod.csv read failed: %s', exc)
 
-    # ── threshold lookup (genome-wide scalar from s5_threshold.csv) ──────────
+    # ── threshold lookup (genome-wide scalar from threshold.csv) ──────────
     _thr_by_chr: 'dict[str, float | None]' = {}
-    _s4_thr_path = py_dir / 's5_threshold.csv'
-    if _s4_thr_path.exists():
+    _gw_thr_scalar: float | None = None
+    _thr_path = core_dir / 'threshold.csv'
+    if _thr_path.exists():
         try:
-            _td0 = pd.read_csv(_s4_thr_path)
+            _td0 = pd.read_csv(_thr_path)
             _td0['chr'] = _td0['chr'].astype(str)
             if 'genome_wide' in _td0['chr'].values:
-                _gw_thr = float(_td0.loc[_td0['chr'] == 'genome_wide', 'threshold'].iloc[0])
+                _gw_thr_scalar = float(
+                    _td0.loc[_td0['chr'] == 'genome_wide', 'threshold'].iloc[0])
                 for _tc in chrs_to_scan:
-                    _thr_by_chr[str(_tc)] = _gw_thr
+                    _thr_by_chr[str(_tc)] = _gw_thr_scalar
             else:
                 for _tc, _tg in _td0.groupby('chr'):
                     _thr_by_chr[str(_tc)] = float(_tg['threshold'].iloc[0])
         except Exception:
             pass
 
-    # ── S4: LOD profile — top gene per chromosome ────────────────────────────
-    _s4_lod_dir = plt_dir / 's4_lod_profile'
-    _s4_lod_dir.mkdir(exist_ok=True)
-    if _lod_df is not None and s4_pk_path.exists():
+    # ── LOD profile — top gene per chromosome ────────────────────────────
+    _lod_dir = plt_dir / 'core' / 'lod_profile'
+    _lod_dir.mkdir(parents=True, exist_ok=True)
+    if _lod_df is not None and pk_path.exists():
         try:
-            pk_df = pd.read_csv(s4_pk_path)
+            pk_df = pd.read_csv(pk_path)
             pk_df['chr'] = pk_df['chr'].astype(str)
             for c in sorted(_lod_df['chr'].unique(), key=_chr_sort_key):
                 pk_c = pk_df[pk_df['chr'] == c]
@@ -655,9 +597,9 @@ def _make_descriptive_plots(
                                  ax=ax, chrom=c, threshold=thr, fill=True,
                                  gene=top_gene)
                 fig.tight_layout()
-                fig.savefig(_s4_lod_dir / f's4_lod_profile_chr{c}.png', dpi=300, transparent=True)
+                fig.savefig(_lod_dir / f'lod_profile_chr{c}.png', dpi=300, transparent=True)
                 plt.close(fig)
-                log.info('  s4_lod_profile/s4_lod_profile_chr%s.png  (gene=%s)', c, top_gene)
+                log.info('  lod_profile/lod_profile_chr%s.png  (gene=%s)', c, top_gene)
                 _p1 = PRIORITY_GENE.get(c)
                 if _p1 and _p1 != top_gene:
                     lod_p1 = _lod_df[
@@ -669,18 +611,18 @@ def _make_descriptive_plots(
                                          ax=ax2, chrom=c, threshold=thr, fill=True,
                                          gene=_p1)
                         fig2.tight_layout()
-                        fig2.savefig(_s4_lod_dir / f's4_lod_profile_{_p1}.png', dpi=300, transparent=True)
+                        fig2.savefig(_lod_dir / f'lod_profile_{_p1}.png', dpi=300, transparent=True)
                         plt.close(fig2)
-                        log.info('  s4_lod_profile/s4_lod_profile_%s.png', _p1)
+                        log.info('  lod_profile/lod_profile_%s.png', _p1)
         except Exception as exc:
-            log.warning('  s4_lod_profile: %s', exc)
+            log.warning('  lod_profile: %s', exc)
 
-    # ── S4: founder coef bar — top gene per chromosome ───────────────────────
-    _s4_eff_dir = plt_dir / 's4_founder_effects'
-    _s4_eff_dir.mkdir(exist_ok=True)
-    if s4_eff_path.exists():
+    # ── founder coef bar — top gene per chromosome ───────────────────────
+    _eff_dir = plt_dir / 'core' / 'founder_effects'
+    _eff_dir.mkdir(parents=True, exist_ok=True)
+    if eff_path.exists():
         try:
-            eff_df    = pd.read_csv(s4_eff_path)
+            eff_df    = pd.read_csv(eff_path)
             eff_df['chr'] = eff_df['chr'].astype(str)
             beta_cols = [bc for bc in eff_df.columns if bc.startswith('beta_')]
             for c in sorted(eff_df['chr'].unique(), key=_chr_sort_key):
@@ -700,9 +642,9 @@ def _make_descriptive_plots(
                                   edgecolor=COLOR_NEUTRAL_DARK, alpha=0.85))
                 sns.despine(ax=ax)
                 fig.tight_layout()
-                fig.savefig(_s4_eff_dir / f's4_founder_effects_chr{c}.png', dpi=300, transparent=True)
+                fig.savefig(_eff_dir / f'founder_effects_chr{c}.png', dpi=300, transparent=True)
                 plt.close(fig)
-                log.info('  s4_founder_effects/s4_founder_effects_chr%s.png  (gene=%s)', c, top_row['gene'])
+                log.info('  founder_effects/founder_effects_chr%s.png  (gene=%s)', c, top_row['gene'])
                 _p1 = PRIORITY_GENE.get(c)
                 if _p1 and top_row['gene'] != _p1 and _p1 in eff_c['gene'].values:
                     p1_row   = eff_c[eff_c['gene'] == _p1].iloc[0]
@@ -717,71 +659,73 @@ def _make_descriptive_plots(
                                        edgecolor=COLOR_NEUTRAL_DARK, alpha=0.85))
                     sns.despine(ax=ax2)
                     fig2.tight_layout()
-                    fig2.savefig(_s4_eff_dir / f's4_founder_effects_{_p1}.png', dpi=300, transparent=True)
+                    fig2.savefig(_eff_dir / f'founder_effects_{_p1}.png', dpi=300, transparent=True)
                     plt.close(fig2)
-                    log.info('  s4_founder_effects/s4_founder_effects_%s.png', _p1)
+                    log.info('  founder_effects/founder_effects_%s.png', _p1)
         except Exception as exc:
-            log.warning('  s4_founder_effects: %s', exc)
+            log.warning('  founder_effects: %s', exc)
 
-    # ── S4: founder effects grid + locus panel grids ─────────────────────────
-    _s4_lp_dir = plt_dir / 's4_locus_panel'
-    _s4_lp_dir.mkdir(exist_ok=True)
-    if s4_eff_path.exists() and _lod_df is not None:
+    # ── founder effects grid + locus panel grids ─────────────────────────
+    _lp_dir = plt_dir / 'core' / 'locus_panel'
+    _lp_dir.mkdir(parents=True, exist_ok=True)
+    if eff_path.exists() and _lod_df is not None:
         try:
-            _eff4     = pd.read_csv(s4_eff_path)
-            _eff4['chr'] = _eff4['chr'].astype(str)
-            _beta_cols4  = [bc for bc in _eff4.columns if bc.startswith('beta_')]
-            _fnames4     = _display_founders([bc.replace('beta_', '') for bc in _beta_cols4])
-            fig_eg = _viz_genome_effects_grid(_eff4, _fnames4)
-            fig_eg.savefig(plt_dir / 's4_founder_effects_grid.png', dpi=300,
+            _eff     = pd.read_csv(eff_path)
+            _eff['chr'] = _eff['chr'].astype(str)
+            _beta_cols  = [bc for bc in _eff.columns if bc.startswith('beta_')]
+            _fnames     = _display_founders([bc.replace('beta_', '') for bc in _beta_cols])
+            fig_eg = _viz_genome_effects_grid(_eff, _fnames)
+            fig_eg.savefig(plt_dir / 'core' / 'founder_effects_grid.png', dpi=300,
                            bbox_inches='tight', transparent=True)
             plt.close(fig_eg)
-            log.info('  s4_founder_effects_grid.png')
+            log.info('  core/founder_effects_grid.png')
             fig_lpg = _viz_lod_panel_grid(
-                _lod_df, _eff4,
+                _lod_df, _eff,
                 thr_by_chr=_thr_by_chr or None,
                 priority_genes=PRIORITY_GENE,
             )
-            fig_lpg.savefig(plt_dir / 's4_lod_panel_grid.png', dpi=300,
+            fig_lpg.savefig(plt_dir / 'core' / 'lod_panel_grid.png', dpi=300,
                             bbox_inches='tight', transparent=True)
             plt.close(fig_lpg)
-            log.info('  s4_lod_panel_grid.png')
+            log.info('  core/lod_panel_grid.png')
             fig_lcg = _viz_locus_panel_grid(
-                _lod_df, _eff4, _fnames4,
+                _lod_df, _eff, _fnames,
                 _thr_by_chr or None,
                 priority_genes=PRIORITY_GENE,
             )
-            fig_lcg.savefig(plt_dir / 's4_locus_panel_grid.png', dpi=300,
+            fig_lcg.savefig(plt_dir / 'core' / 'locus_panel_grid.png', dpi=300,
                             bbox_inches='tight', transparent=True)
             plt.close(fig_lcg)
-            log.info('  s4_locus_panel_grid.png')
-            _tss_mb_map4 = None
-            if 'tss_mb' in _eff4.columns:
-                _tss_mb_map4 = {
+            log.info('  core/locus_panel_grid.png')
+            _start_mb_map = None
+            _start_col = 'near_tss_mb' if 'near_tss_mb' in _eff.columns else \
+                ('start_mb' if 'start_mb' in _eff.columns else None)
+            if _start_col is not None:
+                _start_mb_map = {
                     str(g): float(t)
-                    for g, t in zip(_eff4['gene'], _eff4['tss_mb'])
+                    for g, t in zip(_eff['gene'], _eff[_start_col])
                     if pd.notna(t)
                 }
             _lp_figs = _viz_locus_panels_per_chr(
-                _lod_df, _eff4, _fnames4,
+                _lod_df, _eff, _fnames,
                 _thr_by_chr or None,
                 priority_genes=PRIORITY_GENE,
-                tss_mb_map=_tss_mb_map4,
+                tss_mb_map=_start_mb_map,
             )
             for _lp_c, _lp_fig in _lp_figs.items():
-                _lp_fig.savefig(_s4_lp_dir / f's4_locus_panel_chr{_lp_c}.png', dpi=300, transparent=True)
+                _lp_fig.savefig(_lp_dir / f'locus_panel_chr{_lp_c}.png', dpi=300, transparent=True)
                 plt.close(_lp_fig)
             if _lp_figs:
-                log.info('  s4_locus_panel/s4_locus_panel_chr*.png  (%d files)', len(_lp_figs))
+                log.info('  locus_panel/locus_panel_chr*.png  (%d files)', len(_lp_figs))
         except Exception as exc:
-            log.warning('  s4_grid: %s', exc)
+            log.warning('  locus_panel_grid: %s', exc)
 
-    # ── S4: Manhattan — peak LOD per gene across all scanned chr ──────────────
-    # s4_peak_lod.csv already holds the genome-wide peak-per-gene reduction
+    # ── Manhattan — peak LOD per gene across all scanned chr ──────────────
+    # peak_lod.csv already holds the genome-wide peak-per-gene reduction
     # computed during the streaming S4 scan — read it directly rather than
     # rederiving it from _lod_df, which (above) is now filtered to only the
     # per-chromosome top genes and would silently drop every other gene.
-    peak_lod_path = py_dir / 's4_peak_lod.csv'
+    peak_lod_path = core_dir / 'peak_lod.csv'
     if peak_lod_path.exists():
         try:
             _pk2     = pd.read_csv(peak_lod_path)
@@ -794,28 +738,95 @@ def _make_descriptive_plots(
                      peak_pos[peak_pos['chr'] == ch]['lod'].values)
                 for ch in chrs_sorted
             }
+            _lo_mask_dict = (
+                {ch: peak_pos[peak_pos['chr'] == ch]['gene'].isin(low_expr_genes).values
+                 for ch in chrs_sorted}
+                if low_expr_genes else None
+            )
             thr = _thr_by_chr.get(str(peak_chr))
-            fig = _viz_manhattan(scans_dict, threshold=thr)
+            fig = _viz_manhattan(scans_dict, threshold=thr,
+                                 low_expr_mask=_lo_mask_dict)
             _ax_m = fig.axes[0]
             _ax_m.text(0.01, 0.97, f'n = {len(peak_pos):,} genes',
                        transform=_ax_m.transAxes, fontsize=10, va='top', ha='left',
                        fontweight='bold', color=COLOR_NEUTRAL_DARK)
             fig.tight_layout()
-            fig.savefig(plt_dir / 's4_manhattan.png', dpi=300, transparent=True)
+            fig.savefig(plt_dir / 'core' / 'manhattan.png', dpi=300, transparent=True)
             plt.close(fig)
-            log.info('  s4_manhattan.png')
+            log.info('  core/manhattan.png')
         except Exception as exc:
-            log.warning('  s4_manhattan: %s', exc)
+            log.warning('  manhattan: %s', exc)
 
-    # ── S5: permutation max-LOD distribution + GEV fit + threshold ───────────
-    s5_perm_path = py_dir / 's5_perm_max_lods.csv'
-    s5_thr_path  = py_dir / 's5_threshold.csv'
-    if s5_perm_path.exists():
+    # ── cis-distance scatter (full + ±1 Mb zoom) + KDE ───────────────────
+    if peak_lod_path.exists():
         try:
-            max_lods = pd.read_csv(s5_perm_path)['max_lod'].values
+            _cd = pd.read_csv(peak_lod_path)
+            _cd_tss_col = 'near_tss_mb' if 'near_tss_mb' in _cd.columns else 'start_mb'
+            if {_cd_tss_col, 'peak_mb', 'peak_lod'}.issubset(_cd.columns):
+                _cd = _cd.dropna(subset=[_cd_tss_col, 'peak_mb', 'peak_lod'])
+                _sum_cd = py_dir / 'eqtl_summary.csv'
+                _eg_cd  = (set(pd.read_csv(_sum_cd)['gene'])
+                           if _sum_cd.exists() else set())
+                _is_eg_cd = _cd['gene'].isin(_eg_cd).values
+                _is_lo_cd = _cd['gene'].isin(low_expr_genes).values
+                fig_cd = _viz_cis_distance_panel(
+                    _cd['peak_lod'].values,
+                    _cd[_cd_tss_col].values,
+                    _cd['peak_mb'].values,
+                    is_egene=_is_eg_cd,
+                    is_low_expr=_is_lo_cd if low_expr_genes else None,
+                    zoom_mb=1.0,
+                    threshold=_gw_thr_scalar,
+                )
+                fig_cd.savefig(plt_dir / 'core' / 'cis_distance.png', dpi=300,
+                               transparent=True, bbox_inches='tight')
+                plt.close(fig_cd)
+                log.info('  core/cis_distance.png  (%d genes, %d eGenes) [tss_col=%s]',
+                         len(_cd), int(_is_eg_cd.sum()), _cd_tss_col)
+            else:
+                log.warning('  cis_distance: %s/peak_mb missing — '
+                            'rerun scan to populate', _cd_tss_col)
+        except Exception as exc:
+            log.warning('  cis_distance: %s', exc)
+
+    # ── cis-distance histogram (eGenes only) ──────────────────────────────
+    if peak_lod_path.exists():
+        try:
+            _ch = pd.read_csv(peak_lod_path)
+            _ch_tss_col = 'near_tss_mb' if 'near_tss_mb' in _ch.columns else 'start_mb'
+            if {_ch_tss_col, 'peak_mb'}.issubset(_ch.columns):
+                _ch = _ch.dropna(subset=[_ch_tss_col, 'peak_mb'])
+                _sum_ch = py_dir / 'eqtl_summary.csv'
+                _eg_ch  = (set(pd.read_csv(_sum_ch)['gene'])
+                           if _sum_ch.exists() else set())
+                _ch_eg  = _ch[_ch['gene'].isin(_eg_ch)]
+                if len(_ch_eg) > 0:
+                    fig_ch, ax_ch = plt.subplots(figsize=(6, 3.8), dpi=300,
+                                                 facecolor='white')
+                    _viz_cis_distance_histogram(
+                        _ch_eg[_ch_tss_col].values,
+                        _ch_eg['peak_mb'].values,
+                        ax=ax_ch,
+                    )
+                    fig_ch.tight_layout()
+                    fig_ch.savefig(plt_dir / 'core' / 'cis_histogram.png', dpi=300,
+                                   transparent=True, bbox_inches='tight')
+                    plt.close(fig_ch)
+                    log.info('  core/cis_histogram.png  (%d eGenes)', len(_ch_eg))
+                else:
+                    log.warning('  cis_histogram: no eGenes in eqtl_summary.csv')
+        except Exception as exc:
+            log.warning('  cis_histogram: %s', exc)
+
+    # ── permutation max-LOD distribution + GEV fit + threshold ───────────
+    perm_max_lods_path = core_dir / 'perm_max_lods.csv'
+    thr_path           = core_dir / 'threshold.csv'
+    if perm_max_lods_path.exists():
+        try:
+            max_lods = pd.read_csv(perm_max_lods_path)['max_lod'].values
             thr = None
-            if s5_thr_path.exists():
-                _td = pd.read_csv(s5_thr_path); _td['chr'] = _td['chr'].astype(str)
+            if thr_path.exists():
+                _td = pd.read_csv(thr_path); _td['chr'] = _td['chr'].astype(str)
                 _tr = _td[_td['chr'] == str(peak_chr)]
                 thr = float(_tr['threshold'].iloc[0]) if len(_tr) > 0 else float(_td['threshold'].iloc[0])
             fig, ax  = plt.subplots(figsize=(8, 4.5), dpi=300)
@@ -832,47 +843,47 @@ def _make_descriptive_plots(
                               edgecolor=COLOR_NEUTRAL_DARK, alpha=0.85))
             sns.despine(ax=ax)
             fig.tight_layout()
-            fig.savefig(plt_dir / 's5_perm_distribution.png', dpi=300, transparent=True)
+            fig.savefig(plt_dir / 'core' / 'perm_distribution.png', dpi=300, transparent=True)
             plt.close(fig)
-            log.info('  s5_perm_distribution.png')
+            log.info('  core/perm_distribution.png')
         except Exception as exc:
-            log.warning('  s5_perm_distribution: %s', exc)
+            log.warning('  perm_distribution: %s', exc)
 
-    # ── S5: per-chromosome permutation distributions ──────────────────────────
-    _s5_perm_dir = plt_dir / 's5_perm'
-    _s5_perm_dir.mkdir(exist_ok=True)
-    if s5_thr_path.exists():
+    # ── per-chromosome permutation distributions ──────────────────────────
+    _perm_dir = plt_dir / 'core' / 'perm'
+    _perm_dir.mkdir(parents=True, exist_ok=True)
+    if thr_path.exists():
         try:
-            _thr5 = pd.read_csv(s5_thr_path)
-            _thr5['chr'] = _thr5['chr'].astype(str)
-            _thr5_dict = dict(
-                zip(_thr5['chr'], _thr5['threshold'].where(_thr5['threshold'].notna(), None))
+            _thr_perm = pd.read_csv(thr_path)
+            _thr_perm['chr'] = _thr_perm['chr'].astype(str)
+            _perm_thr_dict = dict(
+                zip(_thr_perm['chr'], _thr_perm['threshold'].where(_thr_perm['threshold'].notna(), None))
             )
-            _perm5: dict[str, np.ndarray] = {}
-            for _c5 in _thr5_dict:
-                _p5f = py_dir / f's5_perm_max_lods_chr{_c5}.csv'
-                if _p5f.exists():
-                    _perm5[_c5] = pd.read_csv(_p5f)['max_lod'].values
-            if _perm5:
-                _perm_figs = _viz_perm_distributions_per_chr(_perm5, _thr5_dict)
-                for _pc5, _pf5 in _perm_figs.items():
-                    _pf5.savefig(_s5_perm_dir / f's5_perm_chr{_pc5}.png', dpi=300, transparent=True)
-                    plt.close(_pf5)
-                log.info('  s5_perm/s5_perm_chr*.png  (%d files)', len(_perm_figs))
-                fig_pg = _viz_perm_panel_grid(_perm5, _thr5_dict)
-                fig_pg.savefig(plt_dir / 's5_perm_panel_grid.png', dpi=300,
+            _perm_null: dict[str, np.ndarray] = {}
+            for _c_perm in _perm_thr_dict:
+                _pf_path = core_dir / f'perm_max_lods_chr{_c_perm}.csv'
+                if _pf_path.exists():
+                    _perm_null[_c_perm] = pd.read_csv(_pf_path)['max_lod'].values
+            if _perm_null:
+                _perm_figs = _viz_perm_distributions_per_chr(_perm_null, _perm_thr_dict)
+                for _pc, _pf in _perm_figs.items():
+                    _pf.savefig(_perm_dir / f'perm_chr{_pc}.png', dpi=300, transparent=True)
+                    plt.close(_pf)
+                log.info('  perm/perm_chr*.png  (%d files)', len(_perm_figs))
+                fig_pg = _viz_perm_panel_grid(_perm_null, _perm_thr_dict)
+                fig_pg.savefig(plt_dir / 'core' / 'perm_panel_grid.png', dpi=300,
                                bbox_inches='tight', transparent=True)
                 plt.close(fig_pg)
-                log.info('  s5_perm_panel_grid.png')
+                log.info('  core/perm_panel_grid.png')
         except Exception as exc:
-            log.warning('  s5_per_chr: %s', exc)
+            log.warning('  perm_per_chr: %s', exc)
 
-    # ── S6: eGene calling — LOD distribution + threshold ─────────────────────
-    peak_lod_path = py_dir / 's4_peak_lod.csv'
+    # ── eGene calling — LOD distribution + threshold ─────────────────────
+    peak_lod_path = core_dir / 'peak_lod.csv'
     if peak_lod_path.exists():
         try:
             pk         = pd.read_csv(peak_lod_path)
-            thr_path   = py_dir / 's5_threshold.csv'
+            thr_path   = core_dir / 'threshold.csv'
             thr = None
             if thr_path.exists():
                 _td = pd.read_csv(thr_path); _td['chr'] = _td['chr'].astype(str)
@@ -886,332 +897,61 @@ def _make_descriptive_plots(
             fig, ax    = plt.subplots(figsize=(9, 4.5), dpi=300)
             _viz_egene_lod_distribution(lods, is_egene, ax=ax, threshold=thr)
             fig.tight_layout()
-            fig.savefig(plt_dir / 's6_egene_lod_distribution.png', dpi=300, transparent=True)
+            fig.savefig(plt_dir / 'core' / 'egene_lod_distribution.png', dpi=300, transparent=True)
             plt.close(fig)
-            log.info('  s6_egene_lod_distribution.png  (%d eGenes / %d genes)',
+            log.info('  core/egene_lod_distribution.png  (%d eGenes / %d genes)',
                      is_egene.sum(), len(pk))
         except Exception as exc:
-            log.warning('  s6_egene_lod_distribution: %s', exc)
+            log.warning('  egene_lod_distribution: %s', exc)
 
-    # ── S6: genome-wide summary + diagnostic plots ────────────────────────────
-    _pk6_path = py_dir / 's4_peak_lod.csv'
-    if _pk6_path.exists():
+    # ── genome-wide summary + diagnostic plots ────────────────────────────
+    _pk_gs_path = core_dir / 'peak_lod.csv'
+    if _pk_gs_path.exists():
         try:
-            _pk6 = pd.read_csv(_pk6_path)
-            _pk6['chr'] = _pk6['chr'].astype(str)
-            _sum6_path = py_dir / 'eqtl_summary.csv'
-            _eg6_set = (set(pd.read_csv(_sum6_path)['gene'])
-                        if _sum6_path.exists() else set())
-            _is_eg6 = _pk6['gene'].isin(_eg6_set).values
-            _thr6: dict = {}
-            if s5_thr_path.exists():
-                _td6 = pd.read_csv(s5_thr_path)
-                _td6['chr'] = _td6['chr'].astype(str)
-                _thr6 = dict(zip(_td6['chr'],
-                                 _td6['threshold'].where(_td6['threshold'].notna(), None)))
-            _n_perms6 = 0
-            if s5_thr_path.exists():
-                _td_np6 = pd.read_csv(s5_thr_path)
-                if 'n_perms' in _td_np6.columns and len(_td_np6) > 0:
-                    _n_perms6 = int(_td_np6['n_perms'].iloc[0])
-            _scan_stats6: dict = {
-                'n_genes': len(_pk6),
-                'n_egenes': int(_is_eg6.sum()),
+            _pk_gs = pd.read_csv(_pk_gs_path)
+            _pk_gs['chr'] = _pk_gs['chr'].astype(str)
+            _sum_path = py_dir / 'eqtl_summary.csv'
+            _eg_set = (set(pd.read_csv(_sum_path)['gene'])
+                        if _sum_path.exists() else set())
+            _is_eg = _pk_gs['gene'].isin(_eg_set).values
+            _td_gs = pd.read_csv(thr_path) if thr_path.exists() else None
+            _thr_gs: dict = {}
+            if _td_gs is not None:
+                _td_gs['chr'] = _td_gs['chr'].astype(str)
+                _thr_gs = dict(zip(_td_gs['chr'],
+                                 _td_gs['threshold'].where(_td_gs['threshold'].notna(), None)))
+            _n_perms = (int(_td_gs['n_perms'].iloc[0])
+                        if _td_gs is not None and 'n_perms' in _td_gs.columns
+                        and len(_td_gs) > 0 else None)
+            _scan_stats_gs: dict = {
+                'n_genes': len(_pk_gs),
+                'n_egenes': int(_is_eg.sum()),
                 'peak_chr': str(peak_chr),
-                'n_perms': _n_perms6,
-                'top_gene': (str(_pk6.loc[_pk6['peak_lod'].idxmax(), 'gene'])
-                             if len(_pk6) > 0 else ''),
+                'n_perms': _n_perms,
+                'top_gene': (str(_pk_gs.loc[_pk_gs['peak_lod'].idxmax(), 'gene'])
+                             if len(_pk_gs) > 0 else ''),
             }
-            fig_gs = _viz_genome_summary(_pk6, _is_eg6, _thr6 or None,
-                                         scan_stats=_scan_stats6)
-            fig_gs.savefig(plt_dir / 's6_genome_summary.png', dpi=300,
+            fig_gs = _viz_genome_summary(_pk_gs, _is_eg, _thr_gs or None,
+                                         scan_stats=_scan_stats_gs)
+            fig_gs.savefig(plt_dir / 'core' / 'genome_summary.png', dpi=300,
                            bbox_inches='tight', transparent=True)
             plt.close(fig_gs)
-            log.info('  s6_genome_summary.png')
-            fig_gd = _viz_genome_diagnostic(_pk6, _thr6, scan_stats=_scan_stats6)
-            fig_gd.savefig(plt_dir / 's6_genome_diagnostic.png', dpi=300,
+            log.info('  core/genome_summary.png')
+            fig_gd = _viz_genome_diagnostic(_pk_gs, _thr_gs, scan_stats=_scan_stats_gs)
+            fig_gd.savefig(plt_dir / 'core' / 'genome_diagnostic.png', dpi=300,
                            bbox_inches='tight', transparent=True)
             plt.close(fig_gd)
-            log.info('  s6_genome_diagnostic.png')
+            log.info('  core/genome_diagnostic.png')
         except Exception as exc:
-            log.warning('  s6_genome_summary: %s', exc)
+            log.warning('  genome_summary: %s', exc)
 
-    # ── S8: SNP LOD profile for top eGene ────────────────────────────────────
-    _s8_snp_dir = plt_dir / 's8_snp'
-    _s8_snp_dir.mkdir(exist_ok=True)
-    s8_path = py_dir / 's8_snp_lod.csv'
-    if s8_path.exists():
+    # ── MI scan LOD profile ───────────────────────────────────────────────
+    _mi_dir = plt_dir / 'extended' / 'mi'
+    _mi_dir.mkdir(parents=True, exist_ok=True)
+    mi_lod_path = ext_dir / 'mi_lod.csv'
+    if mi_lod_path.exists():
         try:
-            snp_df = pd.read_csv(s8_path, low_memory=False)
-            snp_df['chr'] = snp_df['chr'].astype(str)
-            snp_pc = snp_df[snp_df['chr'] == str(peak_chr)]
-            if len(snp_pc) > 0:
-                top_gene = _pick_top_gene(snp_pc, peak_chr)
-                snp_top  = snp_pc[snp_pc['gene'] == top_gene].sort_values('pos_mb')
-                _beta_s8 = (snp_top['beta_dosage'].values
-                            if 'beta_dosage' in snp_top.columns
-                            else np.zeros(len(snp_top)))
-                _pk_row_s8 = snp_top.loc[snp_top['lod'].idxmax()]
-                fig, ax  = plt.subplots(figsize=(12, 3.5), dpi=300)
-                _viz_snp_lod_profile(
-                    snp_top['pos_mb'].values, snp_top['lod'].values, _beta_s8,
-                    chrom=str(peak_chr), gene=top_gene,
-                    peak_pos=float(_pk_row_s8['pos_mb']),
-                    ax=ax,
-                )
-                fig.tight_layout()
-                fig.savefig(_s8_snp_dir / 's8_snp_lod_profile.png', dpi=300, transparent=True)
-                plt.close(fig)
-                log.info('  s8_snp/s8_snp_lod_profile.png  (gene=%s)', top_gene)
-                _p1 = PRIORITY_GENE.get(str(peak_chr))
-                if _p1 and _p1 != top_gene and _p1 in snp_pc['gene'].values:
-                    snp_p1 = snp_pc[snp_pc['gene'] == _p1].sort_values('pos_mb')
-                    _beta_p1 = (snp_p1['beta_dosage'].values
-                                if 'beta_dosage' in snp_p1.columns
-                                else np.zeros(len(snp_p1)))
-                    _pk_p1 = snp_p1.loc[snp_p1['lod'].idxmax()]
-                    fig_p1, ax_p1 = plt.subplots(figsize=(12, 3.5), dpi=300)
-                    _viz_snp_lod_profile(
-                        snp_p1['pos_mb'].values, snp_p1['lod'].values, _beta_p1,
-                        chrom=str(peak_chr), gene=_p1,
-                        peak_pos=float(_pk_p1['pos_mb']),
-                        ax=ax_p1,
-                    )
-                    fig_p1.tight_layout()
-                    fig_p1.savefig(_s8_snp_dir / f's8_snp_lod_profile_{_p1}.png', dpi=300, transparent=True)
-                    plt.close(fig_p1)
-                    log.info('  s8_snp/s8_snp_lod_profile_%s.png', _p1)
-        except Exception as exc:
-            log.warning('  s8_snp_lod_profile: %s', exc)
-
-    # ── S8: per-chromosome SNP fine-mapping figures ───────────────────────────
-    if s8_path.exists():
-        try:
-            _snp8 = pd.read_csv(s8_path, low_memory=False)
-            _snp8['chr'] = _snp8['chr'].astype(str)
-            _pk8 = None
-            if (py_dir / 's4_peak_lod.csv').exists():
-                _pk8 = pd.read_csv(py_dir / 's4_peak_lod.csv')
-                _pk8['chr'] = _pk8['chr'].astype(str)
-            _rop8 = None
-            if (py_dir / 's4_lod.csv').exists():
-                _rop8 = pd.read_csv(py_dir / 's4_lod.csv', low_memory=False)
-                _rop8['chr'] = _rop8['chr'].astype(str)
-            _saved8 = 0
-            for _c8 in sorted(_snp8['chr'].unique(), key=_chr_sort_key):
-                _snp8c = _snp8[_snp8['chr'] == _c8]
-                if _snp8c.empty:
-                    continue
-                _prio8 = PRIORITY_GENE.get(_c8)
-                if _prio8 and _prio8 in _snp8c['gene'].values:
-                    _g8 = _prio8
-                elif _pk8 is not None:
-                    _pk8c = _pk8[_pk8['chr'] == _c8]
-                    _candidates8 = set(_snp8c['gene'].values)
-                    _pk8c2 = _pk8c[_pk8c['gene'].isin(_candidates8)]
-                    _g8 = (str(_pk8c2.loc[_pk8c2['peak_lod'].idxmax(), 'gene'])
-                           if not _pk8c2.empty
-                           else str(_snp8c.groupby('gene')['lod'].max().idxmax()))
-                else:
-                    _g8 = str(_snp8c.groupby('gene')['lod'].max().idxmax())
-                _snp_g8 = _snp8c[_snp8c['gene'] == _g8].sort_values('pos_mb')
-                if _snp_g8.empty:
-                    continue
-                _snp_peak_row8 = _snp_g8.loc[_snp_g8['lod'].idxmax()]
-                _snp_peak_mb8 = float(_snp_peak_row8['pos_mb'])
-                # optional haplo background
-                _haplo_pos8, _haplo_lod8 = None, None
-                if _rop8 is not None and _g8 in _rop8[_rop8['chr'] == _c8]['gene'].values:
-                    _r8 = _rop8[(_rop8['chr'] == _c8) & (_rop8['gene'] == _g8)].sort_values('pos_mb')
-                    _haplo_pos8 = _r8['pos_mb'].values
-                    _haplo_lod8 = _r8['lod'].values
-                _beta8 = (_snp_g8['beta_dosage'].values
-                          if 'beta_dosage' in _snp_g8.columns
-                          else np.zeros(len(_snp_g8)))
-                fig8, ax8 = plt.subplots(figsize=(12, 3.5), dpi=300)
-                _viz_snp_lod_profile(
-                    _snp_g8['pos_mb'].values, _snp_g8['lod'].values, _beta8,
-                    haplo_positions=_haplo_pos8, haplo_lod=_haplo_lod8,
-                    peak_pos=_snp_peak_mb8, ax=ax8, chrom=_c8, gene=_g8)
-                fig8.tight_layout()
-                fig8.savefig(_s8_snp_dir / f's8_snp_chr{_c8}.png', dpi=300, transparent=True)
-                plt.close(fig8)
-                _saved8 += 1
-            if _saved8:
-                log.info('  s8_snp/s8_snp_chr*.png  (%d files)', _saved8)
-        except Exception as exc:
-            log.warning('  s8_snp_per_chr: %s', exc)
-
-    # ── S10: CI strip per eGene ───────────────────────────────────────────────
-    s10_path = py_dir / 's10_ci.csv'
-    if s10_path.exists():
-        try:
-            ci_df = pd.read_csv(s10_path, low_memory=False)
-            ci_df['ci_width'] = (ci_df['ci_hi_mb'] - ci_df['ci_lo_mb']
-                                 if 'ci_hi_mb' in ci_df.columns
-                                 else ci_df['ci_hi'] - ci_df['ci_lo'])
-            # merge chr from peak_lod if not already present
-            if 'chr' not in ci_df.columns and 'gene' in ci_df.columns:
-                _pk10 = py_dir / 's4_peak_lod.csv'
-                if _pk10.exists():
-                    _pkdf10 = pd.read_csv(_pk10)[['gene', 'chr']]
-                    _pkdf10['chr'] = _pkdf10['chr'].astype(str)
-                    ci_df = ci_df.merge(_pkdf10, on='gene', how='left')
-            ci_df['chr'] = ci_df.get('chr', pd.Series(dtype=str)).astype(str)
-            # normalise column names for ci_genomic_interval
-            if 'ci_lo_mb' not in ci_df.columns:
-                ci_df['ci_lo_mb'] = ci_df.get('ci_lo', np.nan)
-            if 'ci_hi_mb' not in ci_df.columns:
-                ci_df['ci_hi_mb'] = ci_df.get('ci_hi', np.nan)
-            _pk10_path = py_dir / 's4_peak_lod.csv'
-            if 'peak_lod' not in ci_df.columns and _pk10_path.exists():
-                _pk10df = pd.read_csv(_pk10_path)[['gene', 'peak_lod']]
-                ci_df = ci_df.merge(_pk10df, on='gene', how='left')
-            _genome_thr10 = None
-            if (py_dir / 's5_threshold.csv').exists():
-                _t10 = pd.read_csv(py_dir / 's5_threshold.csv')
-                _t10['chr'] = _t10['chr'].astype(str)
-                _g10 = _t10[_t10['chr'] == 'genome']
-                _col10 = 'threshold' if 'threshold' in _t10.columns else 'threshold_lod'
-                if len(_g10) > 0:
-                    _genome_thr10 = float(_g10[_col10].iloc[0])
-            fig, ax = plt.subplots(figsize=(16, 5), dpi=300)
-            _ci10_lo = (ci_df.get('ci_lo_mb', ci_df.get('ci_lo', np.full(len(ci_df), np.nan)))
-                        .astype(float).values)
-            _ci10_hi = (ci_df.get('ci_hi_mb', ci_df.get('ci_hi', np.full(len(ci_df), np.nan)))
-                        .astype(float).values)
-            _ci10_lod = (ci_df['peak_lod'].values if 'peak_lod' in ci_df.columns
-                         else np.ones(len(ci_df)) * (_genome_thr10 or 3.0))
-            _ci10_mb = (ci_df['peak_mb'].values if 'peak_mb' in ci_df.columns
-                        else np.zeros(len(ci_df)))
-            _viz_ci_genomic_interval(
-                ci_df['gene'].tolist() if 'gene' in ci_df.columns else list(ci_df.index.astype(str)),
-                ci_df['chr'].astype(str).tolist() if 'chr' in ci_df.columns else ['?'] * len(ci_df),
-                _ci10_lo, _ci10_hi, _ci10_lod, _ci10_mb,
-                ax=ax,
-            )
-            fig.tight_layout(pad=1.5)
-            fig.savefig(plt_dir / 's10_ci_strip.png', dpi=300,
-                        bbox_inches='tight', transparent=True)
-            plt.close(fig)
-            log.info('  s10_ci_strip.png  (%d genes)', len(ci_df))
-        except Exception as exc:
-            log.warning('  s10_ci_strip: %s', exc)
-
-    # ── S11: instability LOD profile for top gene ─────────────────────────────
-    _s11_dir = plt_dir / 's11_instability'
-    _s11_dir.mkdir(exist_ok=True)
-    s11_path = py_dir / 's11_instability.csv'
-    if s11_path.exists():
-        try:
-            inst_df = pd.read_csv(s11_path, low_memory=False)
-            inst_df['chr'] = inst_df['chr'].astype(str)
-            inst_pc = inst_df[inst_df['chr'] == str(peak_chr)]
-            if len(inst_pc) > 0:
-                top_gene = _pick_top_gene(inst_pc, peak_chr)
-                inst_top = inst_pc[inst_pc['gene'] == top_gene].sort_values('pos_mb')
-                fig, ax  = plt.subplots(figsize=(10, 3), dpi=300)
-                _viz_lod_profile(
-                    inst_top['pos_mb'].values, inst_top['lod'].values,
-                    ax=ax, chrom=peak_chr, fill=True,
-                    color=FOUNDER_COLORS['CASTJ'],
-                )
-                ax.set_ylabel('Instability LOD Score')
-                ax.set_title(f'Instability  {top_gene}  chr{peak_chr}',
-                             fontsize=9)
-                fig.tight_layout()
-                fig.savefig(_s11_dir / 's11_instability_profile.png', dpi=300, transparent=True)
-                plt.close(fig)
-                log.info('  s11_instability/s11_instability_profile.png  (gene=%s)', top_gene)
-                _p1 = PRIORITY_GENE.get(str(peak_chr))
-                if _p1 and _p1 != top_gene and _p1 in inst_pc['gene'].values:
-                    inst_p1 = inst_pc[inst_pc['gene'] == _p1].sort_values('pos_mb')
-                    fig_p1, ax_p1 = plt.subplots(figsize=(10, 3), dpi=300)
-                    _viz_lod_profile(
-                        inst_p1['pos_mb'].values, inst_p1['lod'].values,
-                        ax=ax_p1, chrom=peak_chr, fill=True,
-                        color=FOUNDER_COLORS['CASTJ'],
-                    )
-                    ax_p1.set_ylabel('Instability LOD Score')
-                    ax_p1.set_title(f'Instability  {_p1}  chr{peak_chr}', fontsize=9)
-                    fig_p1.tight_layout()
-                    fig_p1.savefig(_s11_dir / f's11_instability_profile_{_p1}.png', dpi=300, transparent=True)
-                    plt.close(fig_p1)
-                    log.info('  s11_instability/s11_instability_profile_%s.png', _p1)
-        except Exception as exc:
-            log.warning('  s11_instability_profile: %s', exc)
-
-    # ── S11: per-chromosome instability overlay (instability score vs ROP LOD) ─
-    if s11_path.exists():
-        try:
-            _inst11 = pd.read_csv(s11_path)
-            _inst11['chr'] = _inst11['chr'].astype(str)
-            _pk11 = None
-            if (py_dir / 's4_peak_lod.csv').exists():
-                _pk11 = pd.read_csv(py_dir / 's4_peak_lod.csv')
-                _pk11['chr'] = _pk11['chr'].astype(str)
-            _rop11 = None
-            if (py_dir / 's4_lod.csv').exists():
-                _rop11 = pd.read_csv(py_dir / 's4_lod.csv', low_memory=False)
-                _rop11['chr'] = _rop11['chr'].astype(str)
-            _saved11 = 0
-            for _c11 in sorted(_inst11['chr'].unique(), key=_chr_sort_key):
-                _inst11c = _inst11[_inst11['chr'] == _c11]
-                if _inst11c.empty:
-                    continue
-                _prio11 = PRIORITY_GENE.get(_c11)
-                if _prio11 and _prio11 in _inst11c['gene'].values:
-                    _g11 = _prio11
-                elif _pk11 is not None:
-                    _pk11c = _pk11[_pk11['chr'] == _c11]
-                    _g11 = (str(_pk11c.loc[_pk11c['peak_lod'].idxmax(), 'gene'])
-                            if not _pk11c.empty
-                            else str(_inst11c.groupby('gene')['lod'].max().idxmax()))
-                else:
-                    _g11 = str(_inst11c.groupby('gene')['lod'].max().idxmax())
-                _inst_top11 = _inst11c[_inst11c['gene'] == _g11].sort_values('pos_mb')
-                if _inst_top11.empty:
-                    continue
-                _thr11 = _thr_by_chr.get(_c11)
-                _rop_lod11: np.ndarray
-                _rop_pos11: np.ndarray
-                if (_rop11 is not None
-                        and _g11 in _rop11[_rop11['chr'] == _c11]['gene'].values):
-                    _rop_top11 = _rop11[(_rop11['chr'] == _c11)
-                                        & (_rop11['gene'] == _g11)].sort_values('pos_mb')
-                    _rop_pos11 = _rop_top11['pos_mb'].values
-                    _rop_lod11 = _rop_top11['lod'].values
-                else:
-                    _rop_pos11 = _inst_top11['pos_mb'].values
-                    _rop_lod11 = np.zeros(len(_rop_pos11))
-                # inst scores (0–1); use peak_freq if available, else normalise lod
-                _inst_col = ('peak_freq' if 'peak_freq' in _inst_top11.columns else 'lod')
-                _inst_raw = _inst_top11[_inst_col].values
-                _inst_scores11 = (_inst_raw / max(_inst_raw.max(), 1e-6)
-                                  if _inst_raw.max() > 1.0 else _inst_raw)
-                # align positions: use union grid
-                _common_pos = _inst_top11['pos_mb'].values
-                _rop_interp = np.interp(_common_pos, _rop_pos11, _rop_lod11)
-                fig11, ax11 = plt.subplots(figsize=(12, 3.5), dpi=300)
-                _viz_instability_overlay(
-                    _common_pos, _rop_interp, _inst_scores11,
-                    ax=ax11, chrom=_c11, gene=_g11, threshold=_thr11)
-                fig11.tight_layout()
-                fig11.savefig(_s11_dir / f's11_instability_chr{_c11}.png', dpi=300, transparent=True)
-                plt.close(fig11)
-                _saved11 += 1
-            if _saved11:
-                log.info('  s11_instability/s11_instability_chr*.png  (%d files, overlay)', _saved11)
-        except Exception as exc:
-            log.warning('  s11_per_chr: %s', exc)
-
-    # ── S7: MI scan LOD profile ───────────────────────────────────────────────
-    _s7_mi_dir = plt_dir / 's7_mi'
-    _s7_mi_dir.mkdir(exist_ok=True)
-    s7_path = py_dir / 's7_mi_lod.csv'
-    if s7_path.exists():
-        try:
-            mi_df = pd.read_csv(s7_path, low_memory=False)
+            mi_df = pd.read_csv(mi_lod_path, low_memory=False)
             mi_df['chr'] = mi_df['chr'].astype(str)
             mi_pc = mi_df[mi_df['chr'] == str(peak_chr)]
             if len(mi_pc) > 0:
@@ -1227,9 +967,9 @@ def _make_descriptive_plots(
                 ax.set_title(f'MI LOD Score Profile  {top_gene}  chr{peak_chr}',
                              fontsize=9)
                 fig.tight_layout()
-                fig.savefig(_s7_mi_dir / 's7_mi_lod_profile.png', dpi=300, transparent=True)
+                fig.savefig(_mi_dir / 'mi_lod_profile.png', dpi=300, transparent=True)
                 plt.close(fig)
-                log.info('  s7_mi/s7_mi_lod_profile.png  (gene=%s)', top_gene)
+                log.info('  extended/mi/mi_lod_profile.png  (gene=%s)', top_gene)
                 _p1 = PRIORITY_GENE.get(str(peak_chr))
                 if _p1 and _p1 != top_gene and _p1 in mi_pc['gene'].values:
                     mi_p1 = mi_pc[mi_pc['gene'] == _p1].sort_values('pos_mb')
@@ -1242,106 +982,368 @@ def _make_descriptive_plots(
                     ax_p1.set_ylabel('LOD Score (MI)')
                     ax_p1.set_title(f'MI LOD Score Profile  {_p1}  chr{peak_chr}', fontsize=9)
                     fig_p1.tight_layout()
-                    fig_p1.savefig(_s7_mi_dir / f's7_mi_lod_profile_{_p1}.png', dpi=300, transparent=True)
+                    fig_p1.savefig(_mi_dir / f'mi_lod_profile_{_p1}.png', dpi=300, transparent=True)
                     plt.close(fig_p1)
-                    log.info('  s7_mi/s7_mi_lod_profile_%s.png', _p1)
+                    log.info('  extended/mi/mi_lod_profile_%s.png', _p1)
         except Exception as exc:
-            log.warning('  s7_mi_lod_profile: %s', exc)
+            log.warning('  mi_lod_profile: %s', exc)
 
-    # ── S7: per-chromosome MI overlay (MI LOD vs ROP LOD) ─────────────────────
-    if s7_path.exists():
+    # ── per-chromosome MI overlay (MI LOD vs scan LOD) ────────────────────
+    if mi_lod_path.exists():
         try:
-            _mi7 = pd.read_csv(s7_path, low_memory=False)
-            _mi7['chr'] = _mi7['chr'].astype(str)
-            _pk7 = None
-            if (py_dir / 's4_peak_lod.csv').exists():
-                _pk7 = pd.read_csv(py_dir / 's4_peak_lod.csv')
-                _pk7['chr'] = _pk7['chr'].astype(str)
-            _rop7 = None
-            if (py_dir / 's4_lod.csv').exists():
-                _rop7 = pd.read_csv(py_dir / 's4_lod.csv', low_memory=False)
-                _rop7['chr'] = _rop7['chr'].astype(str)
-            _saved7 = 0
-            for _c7 in sorted(_mi7['chr'].unique(), key=_chr_sort_key):
-                _mi7c = _mi7[_mi7['chr'] == _c7]
-                if _mi7c.empty:
+            _mi = pd.read_csv(mi_lod_path, low_memory=False)
+            _mi['chr'] = _mi['chr'].astype(str)
+            _pk = None
+            if (core_dir / 'peak_lod.csv').exists():
+                _pk = pd.read_csv(core_dir / 'peak_lod.csv')
+                _pk['chr'] = _pk['chr'].astype(str)
+            _scan = None
+            if (core_dir / 'lod.csv').exists():
+                _scan = pd.read_csv(core_dir / 'lod.csv', low_memory=False)
+                _scan['chr'] = _scan['chr'].astype(str)
+            _saved = 0
+            for _c in sorted(_mi['chr'].unique(), key=_chr_sort_key):
+                _mi_c = _mi[_mi['chr'] == _c]
+                if _mi_c.empty:
                     continue
-                _prio7 = PRIORITY_GENE.get(_c7)
-                if _prio7 and _prio7 in _mi7c['gene'].values:
-                    _g7 = _prio7
-                elif _pk7 is not None:
-                    _pk7c = _pk7[_pk7['chr'] == _c7]
-                    _g7 = (str(_pk7c.loc[_pk7c['peak_lod'].idxmax(), 'gene'])
-                           if not _pk7c.empty
-                           else str(_mi7c.groupby('gene')['lod'].max().idxmax()))
+                _prio = PRIORITY_GENE.get(_c)
+                if _prio and _prio in _mi_c['gene'].values:
+                    _g = _prio
+                elif _pk is not None:
+                    _pk_c = _pk[_pk['chr'] == _c]
+                    _g = (str(_pk_c.loc[_pk_c['peak_lod'].idxmax(), 'gene'])
+                           if not _pk_c.empty
+                           else str(_mi_c.groupby('gene')['lod'].max().idxmax()))
                 else:
-                    _g7 = str(_mi7c.groupby('gene')['lod'].max().idxmax())
-                _mi_top7 = _mi7c[_mi7c['gene'] == _g7].sort_values('pos_mb')
-                if _mi_top7.empty:
+                    _g = str(_mi_c.groupby('gene')['lod'].max().idxmax())
+                _mi_top = _mi_c[_mi_c['gene'] == _g].sort_values('pos_mb')
+                if _mi_top.empty:
                     continue
-                _thr7 = _thr_by_chr.get(_c7)
-                _common_pos7 = _mi_top7['pos_mb'].values
-                _mi_lod7 = _mi_top7['lod'].values
-                if (_rop7 is not None
-                        and _g7 in _rop7[_rop7['chr'] == _c7]['gene'].values):
-                    _rop_top7 = _rop7[(_rop7['chr'] == _c7)
-                                      & (_rop7['gene'] == _g7)].sort_values('pos_mb')
-                    _rop_lod7 = np.interp(_common_pos7, _rop_top7['pos_mb'].values,
-                                          _rop_top7['lod'].values)
+                _thr = _thr_by_chr.get(_c)
+                _common_pos = _mi_top['pos_mb'].values
+                _mi_lod = _mi_top['lod'].values
+                if (_scan is not None
+                        and _g in _scan[_scan['chr'] == _c]['gene'].values):
+                    _scan_top = _scan[(_scan['chr'] == _c)
+                                      & (_scan['gene'] == _g)].sort_values('pos_mb')
+                    _scan_lod = np.interp(_common_pos, _scan_top['pos_mb'].values,
+                                          _scan_top['lod'].values)
                 else:
-                    _rop_lod7 = np.zeros_like(_mi_lod7)
-                fig7, ax7 = plt.subplots(figsize=(12, 3.5), dpi=300)
-                _viz_mi_rop_overlay(
-                    _common_pos7, _rop_lod7, _mi_lod7,
-                    ax=ax7, chrom=_c7, gene=_g7, threshold=_thr7)
-                fig7.tight_layout()
-                fig7.savefig(_s7_mi_dir / f's7_mi_chr{_c7}.png', dpi=300, transparent=True)
-                plt.close(fig7)
-                _saved7 += 1
-            if _saved7:
-                log.info('  s7_mi/s7_mi_chr*.png  (%d files, MI vs ROP overlay)', _saved7)
+                    _scan_lod = np.zeros_like(_mi_lod)
+                fig_mi, ax_mi = plt.subplots(figsize=(12, 3.5), dpi=300)
+                _viz_mi_scan_overlay(
+                    _common_pos, _scan_lod, _mi_lod,
+                    ax=ax_mi, chrom=_c, gene=_g, threshold=_thr)
+                fig_mi.tight_layout()
+                fig_mi.savefig(_mi_dir / f'mi_chr{_c}.png', dpi=300, transparent=True)
+                plt.close(fig_mi)
+                _saved += 1
+            if _saved:
+                log.info('  extended/mi/mi_chr*.png  (%d files, MI vs scan overlay)', _saved)
         except Exception as exc:
-            log.warning('  s7_per_chr: %s', exc)
+            log.warning('  mi_per_chr: %s', exc)
 
-    # ── S9: mediation LOD profile (base vs mediated) ──────────────────────────
-    # ── S9: lod_drop distribution per chromosome ──────────────────────────────
-    s9_path = py_dir / 's9_mediation.csv'
-    if s9_path.exists():
+    # ── SNP LOD profile for top eGene ────────────────────────────────────
+    _snp_dir = plt_dir / 'extended' / 'snp'
+    _snp_dir.mkdir(parents=True, exist_ok=True)
+    snp_lod_path = ext_dir / 'snp_lod.csv'
+    if snp_lod_path.exists():
         try:
-            med_df = pd.read_csv(s9_path, low_memory=False)
+            snp_df = pd.read_csv(snp_lod_path, low_memory=False)
+            snp_df['chr'] = snp_df['chr'].astype(str)
+            snp_pc = snp_df[snp_df['chr'] == str(peak_chr)]
+            if len(snp_pc) > 0:
+                top_gene = _pick_top_gene(snp_pc, peak_chr)
+                snp_top  = snp_pc[snp_pc['gene'] == top_gene].sort_values('pos_mb')
+                _snp_beta = (snp_top['beta_dosage'].values
+                            if 'beta_dosage' in snp_top.columns
+                            else np.zeros(len(snp_top)))
+                _snp_peak_row = snp_top.loc[snp_top['lod'].idxmax()]
+                fig, ax  = plt.subplots(figsize=(12, 3.5), dpi=300)
+                _viz_snp_lod_profile(
+                    snp_top['pos_mb'].values, snp_top['lod'].values, _snp_beta,
+                    chrom=str(peak_chr), gene=top_gene,
+                    peak_pos=float(_snp_peak_row['pos_mb']),
+                    ax=ax,
+                )
+                fig.tight_layout()
+                fig.savefig(_snp_dir / 'snp_lod_profile.png', dpi=300, transparent=True)
+                plt.close(fig)
+                log.info('  extended/snp/snp_lod_profile.png  (gene=%s)', top_gene)
+                _p1 = PRIORITY_GENE.get(str(peak_chr))
+                if _p1 and _p1 != top_gene and _p1 in snp_pc['gene'].values:
+                    snp_p1 = snp_pc[snp_pc['gene'] == _p1].sort_values('pos_mb')
+                    _beta_p1 = (snp_p1['beta_dosage'].values
+                                if 'beta_dosage' in snp_p1.columns
+                                else np.zeros(len(snp_p1)))
+                    _pk_p1 = snp_p1.loc[snp_p1['lod'].idxmax()]
+                    fig_p1, ax_p1 = plt.subplots(figsize=(12, 3.5), dpi=300)
+                    _viz_snp_lod_profile(
+                        snp_p1['pos_mb'].values, snp_p1['lod'].values, _beta_p1,
+                        chrom=str(peak_chr), gene=_p1,
+                        peak_pos=float(_pk_p1['pos_mb']),
+                        ax=ax_p1,
+                    )
+                    fig_p1.tight_layout()
+                    fig_p1.savefig(_snp_dir / f'snp_lod_profile_{_p1}.png', dpi=300, transparent=True)
+                    plt.close(fig_p1)
+                    log.info('  extended/snp/snp_lod_profile_%s.png', _p1)
+        except Exception as exc:
+            log.warning('  snp_lod_profile: %s', exc)
+
+    # ── per-chromosome SNP fine-mapping figures ───────────────────────────
+    if snp_lod_path.exists():
+        try:
+            _snp = pd.read_csv(snp_lod_path, low_memory=False)
+            _snp['chr'] = _snp['chr'].astype(str)
+            _pk = None
+            if (core_dir / 'peak_lod.csv').exists():
+                _pk = pd.read_csv(core_dir / 'peak_lod.csv')
+                _pk['chr'] = _pk['chr'].astype(str)
+            _scan = None
+            if (core_dir / 'lod.csv').exists():
+                _scan = pd.read_csv(core_dir / 'lod.csv', low_memory=False)
+                _scan['chr'] = _scan['chr'].astype(str)
+            _saved = 0
+            for _c in sorted(_snp['chr'].unique(), key=_chr_sort_key):
+                _snp_c = _snp[_snp['chr'] == _c]
+                if _snp_c.empty:
+                    continue
+                _prio = PRIORITY_GENE.get(_c)
+                if _prio and _prio in _snp_c['gene'].values:
+                    _g = _prio
+                elif _pk is not None:
+                    _pk_c = _pk[_pk['chr'] == _c]
+                    _candidates = set(_snp_c['gene'].values)
+                    _pk_c_cand = _pk_c[_pk_c['gene'].isin(_candidates)]
+                    _g = (str(_pk_c_cand.loc[_pk_c_cand['peak_lod'].idxmax(), 'gene'])
+                           if not _pk_c_cand.empty
+                           else str(_snp_c.groupby('gene')['lod'].max().idxmax()))
+                else:
+                    _g = str(_snp_c.groupby('gene')['lod'].max().idxmax())
+                _snp_g = _snp_c[_snp_c['gene'] == _g].sort_values('pos_mb')
+                if _snp_g.empty:
+                    continue
+                _snp_peak_row = _snp_g.loc[_snp_g['lod'].idxmax()]
+                _snp_peak_mb = float(_snp_peak_row['pos_mb'])
+                _haplo_pos, _haplo_lod = None, None
+                if _scan is not None and _g in _scan[_scan['chr'] == _c]['gene'].values:
+                    _scan_row = _scan[(_scan['chr'] == _c) & (_scan['gene'] == _g)].sort_values('pos_mb')
+                    _haplo_pos = _scan_row['pos_mb'].values
+                    _haplo_lod = _scan_row['lod'].values
+                _beta = (_snp_g['beta_dosage'].values
+                          if 'beta_dosage' in _snp_g.columns
+                          else np.zeros(len(_snp_g)))
+                fig_snp, ax_snp = plt.subplots(figsize=(12, 3.5), dpi=300)
+                _viz_snp_lod_profile(
+                    _snp_g['pos_mb'].values, _snp_g['lod'].values, _beta,
+                    haplo_positions=_haplo_pos, haplo_lod=_haplo_lod,
+                    peak_pos=_snp_peak_mb, ax=ax_snp, chrom=_c, gene=_g)
+                fig_snp.tight_layout()
+                fig_snp.savefig(_snp_dir / f'snp_chr{_c}.png', dpi=300, transparent=True)
+                plt.close(fig_snp)
+                _saved += 1
+            if _saved:
+                log.info('  extended/snp/snp_chr*.png  (%d files)', _saved)
+        except Exception as exc:
+            log.warning('  snp_per_chr: %s', exc)
+
+    # ── mediation lod_drop distribution per chromosome ────────────────────
+    mediation_path = ext_dir / 'mediation.csv'
+    if mediation_path.exists():
+        try:
+            med_df = pd.read_csv(mediation_path, low_memory=False)
             med_df['chr'] = med_df['chr'].astype(str)
-            # derive lod_drop if not present (lod_base - lod_mediated)
             if 'lod_drop' not in med_df.columns:
                 if 'lod_base' in med_df.columns and 'lod_mediated' in med_df.columns:
                     med_df['lod_drop'] = (med_df['lod_base'] - med_df['lod_mediated']).clip(lower=0)
                 else:
                     raise KeyError('Column not found: lod_drop (and lod_base/lod_mediated absent)')
             _chr_sort_series = lambda s: s.map(lambda c: int(c) if c.isdigit() else 100)
-            s9_grp = (med_df.groupby('chr')['lod_drop']
-                      .agg(mean_drop='mean', std_drop='std', n_pairs='count')
-                      .reset_index()
-                      .sort_values('chr', key=_chr_sort_series))
-            n_outcomes_s9 = (len(med_df['gene'].unique())
-                             if 'gene' in med_df.columns else 0)
-            n_chrs = len(s9_grp)
+            med_grp = (med_df.groupby('chr')['lod_drop']
+                       .agg(mean_drop='mean', std_drop='std', n_pairs='count')
+                       .reset_index()
+                       .sort_values('chr', key=_chr_sort_series))
+            n_outcomes_med = (len(med_df['gene'].unique())
+                              if 'gene' in med_df.columns else 0)
+            n_chrs = len(med_grp)
             fig, ax = plt.subplots(
                 figsize=(max(8, n_chrs * 0.6), 4.5), dpi=300)
             _viz_mediation_summary_bar(
-                s9_grp['chr'].tolist(),
-                s9_grp['mean_drop'].values,
-                std_drop=s9_grp['std_drop'].fillna(0).values,
-                n_pairs=s9_grp['n_pairs'].values,
-                n_outcomes=n_outcomes_s9,
+                med_grp['chr'].tolist(),
+                med_grp['mean_drop'].values,
+                std_drop=med_grp['std_drop'].fillna(0).values,
+                n_pairs=med_grp['n_pairs'].values,
+                n_outcomes=n_outcomes_med,
                 ax=ax,
             )
             sns.despine(ax=ax)
             fig.tight_layout(pad=1.5)
-            fig.savefig(plt_dir / 's9_mediation_by_chr.png', dpi=300,
+            fig.savefig(plt_dir / 'extended' / 'mediation_by_chr.png', dpi=300,
                         bbox_inches='tight', transparent=True)
             plt.close(fig)
-            log.info('  s9_mediation_by_chr.png  (%d chr)', n_chrs)
+            log.info('  extended/mediation_by_chr.png  (%d chr)', n_chrs)
         except Exception as exc:
-            log.warning('  s9_mediation_by_chr: %s', exc)
+            log.warning('  mediation_by_chr: %s', exc)
+
+    # ── CI strip per eGene ───────────────────────────────────────────────
+    ci_path = ext_dir / 'ci.csv'
+    if ci_path.exists():
+        try:
+            ci_df = pd.read_csv(ci_path, low_memory=False)
+            ci_df['ci_width'] = (ci_df['ci_hi_mb'] - ci_df['ci_lo_mb']
+                                 if 'ci_hi_mb' in ci_df.columns
+                                 else ci_df['ci_hi'] - ci_df['ci_lo'])
+            if 'chr' not in ci_df.columns and 'gene' in ci_df.columns:
+                _pk_path = core_dir / 'peak_lod.csv'
+                if _pk_path.exists():
+                    _pkdf = pd.read_csv(_pk_path)[['gene', 'chr']]
+                    _pkdf['chr'] = _pkdf['chr'].astype(str)
+                    ci_df = ci_df.merge(_pkdf, on='gene', how='left')
+            ci_df['chr'] = ci_df.get('chr', pd.Series(dtype=str)).astype(str)
+            if 'ci_lo_mb' not in ci_df.columns:
+                ci_df['ci_lo_mb'] = ci_df.get('ci_lo', np.nan)
+            if 'ci_hi_mb' not in ci_df.columns:
+                ci_df['ci_hi_mb'] = ci_df.get('ci_hi', np.nan)
+            _pk_path = core_dir / 'peak_lod.csv'
+            if 'peak_lod' not in ci_df.columns and _pk_path.exists():
+                _pk_lod_df = pd.read_csv(_pk_path)[['gene', 'peak_lod']]
+                ci_df = ci_df.merge(_pk_lod_df, on='gene', how='left')
+            _genome_thr = None
+            if (core_dir / 'threshold.csv').exists():
+                _t = pd.read_csv(core_dir / 'threshold.csv')
+                _t['chr'] = _t['chr'].astype(str)
+                _thr_wide = _t[_t['chr'] == 'genome']
+                _col = 'threshold' if 'threshold' in _t.columns else 'threshold_lod'
+                if len(_thr_wide) > 0:
+                    _genome_thr = float(_thr_wide[_col].iloc[0])
+            fig, ax = plt.subplots(figsize=(16, 5), dpi=300)
+            _ci_lo = (ci_df.get('ci_lo_mb', ci_df.get('ci_lo', np.full(len(ci_df), np.nan)))
+                        .astype(float).values)
+            _ci_hi = (ci_df.get('ci_hi_mb', ci_df.get('ci_hi', np.full(len(ci_df), np.nan)))
+                        .astype(float).values)
+            _ci_lod = (ci_df['peak_lod'].values if 'peak_lod' in ci_df.columns
+                         else np.ones(len(ci_df)) * (_genome_thr or 3.0))
+            _ci_mb = (ci_df['peak_mb'].values if 'peak_mb' in ci_df.columns
+                        else np.zeros(len(ci_df)))
+            _viz_ci_genomic_interval(
+                ci_df['gene'].tolist() if 'gene' in ci_df.columns else list(ci_df.index.astype(str)),
+                ci_df['chr'].astype(str).tolist() if 'chr' in ci_df.columns else ['?'] * len(ci_df),
+                _ci_lo, _ci_hi, _ci_lod, _ci_mb,
+                ax=ax,
+            )
+            fig.tight_layout(pad=1.5)
+            fig.savefig(plt_dir / 'extended' / 'ci_strip.png', dpi=300,
+                        bbox_inches='tight', transparent=True)
+            plt.close(fig)
+            log.info('  extended/ci_strip.png  (%d genes)', len(ci_df))
+        except Exception as exc:
+            log.warning('  ci_strip: %s', exc)
+
+    # ── instability LOD profile for top gene ─────────────────────────────
+    _instability_dir = plt_dir / 'extended' / 'instability'
+    _instability_dir.mkdir(parents=True, exist_ok=True)
+    instability_path = ext_dir / 'instability.csv'
+    if instability_path.exists():
+        try:
+            inst_df = pd.read_csv(instability_path, low_memory=False)
+            inst_df['chr'] = inst_df['chr'].astype(str)
+            inst_pc = inst_df[inst_df['chr'] == str(peak_chr)]
+            if len(inst_pc) > 0:
+                top_gene = _pick_top_gene(inst_pc, peak_chr)
+                inst_top = inst_pc[inst_pc['gene'] == top_gene].sort_values('pos_mb')
+                fig, ax  = plt.subplots(figsize=(10, 3), dpi=300)
+                _viz_lod_profile(
+                    inst_top['pos_mb'].values, inst_top['lod'].values,
+                    ax=ax, chrom=peak_chr, fill=True,
+                    color=FOUNDER_COLORS['CASTJ'],
+                )
+                ax.set_ylabel('Instability LOD Score')
+                ax.set_title(f'Instability  {top_gene}  chr{peak_chr}',
+                             fontsize=9)
+                fig.tight_layout()
+                fig.savefig(_instability_dir / 'instability_profile.png', dpi=300, transparent=True)
+                plt.close(fig)
+                log.info('  extended/instability/instability_profile.png  (gene=%s)', top_gene)
+                _p1 = PRIORITY_GENE.get(str(peak_chr))
+                if _p1 and _p1 != top_gene and _p1 in inst_pc['gene'].values:
+                    inst_p1 = inst_pc[inst_pc['gene'] == _p1].sort_values('pos_mb')
+                    fig_p1, ax_p1 = plt.subplots(figsize=(10, 3), dpi=300)
+                    _viz_lod_profile(
+                        inst_p1['pos_mb'].values, inst_p1['lod'].values,
+                        ax=ax_p1, chrom=peak_chr, fill=True,
+                        color=FOUNDER_COLORS['CASTJ'],
+                    )
+                    ax_p1.set_ylabel('Instability LOD Score')
+                    ax_p1.set_title(f'Instability  {_p1}  chr{peak_chr}', fontsize=9)
+                    fig_p1.tight_layout()
+                    fig_p1.savefig(_instability_dir / f'instability_profile_{_p1}.png', dpi=300, transparent=True)
+                    plt.close(fig_p1)
+                    log.info('  extended/instability/instability_profile_%s.png', _p1)
+        except Exception as exc:
+            log.warning('  instability_profile: %s', exc)
+
+    # ── per-chromosome instability overlay (instability score vs scan LOD) ─
+    if instability_path.exists():
+        try:
+            _inst = pd.read_csv(instability_path)
+            _inst['chr'] = _inst['chr'].astype(str)
+            _pk = None
+            if (core_dir / 'peak_lod.csv').exists():
+                _pk = pd.read_csv(core_dir / 'peak_lod.csv')
+                _pk['chr'] = _pk['chr'].astype(str)
+            _scan = None
+            if (core_dir / 'lod.csv').exists():
+                _scan = pd.read_csv(core_dir / 'lod.csv', low_memory=False)
+                _scan['chr'] = _scan['chr'].astype(str)
+            _saved = 0
+            for _c in sorted(_inst['chr'].unique(), key=_chr_sort_key):
+                _inst_c = _inst[_inst['chr'] == _c]
+                if _inst_c.empty:
+                    continue
+                _prio = PRIORITY_GENE.get(_c)
+                if _prio and _prio in _inst_c['gene'].values:
+                    _g = _prio
+                elif _pk is not None:
+                    _pk_c = _pk[_pk['chr'] == _c]
+                    _g = (str(_pk_c.loc[_pk_c['peak_lod'].idxmax(), 'gene'])
+                            if not _pk_c.empty
+                            else str(_inst_c.groupby('gene')['lod'].max().idxmax()))
+                else:
+                    _g = str(_inst_c.groupby('gene')['lod'].max().idxmax())
+                _inst_top = _inst_c[_inst_c['gene'] == _g].sort_values('pos_mb')
+                if _inst_top.empty:
+                    continue
+                _thr = _thr_by_chr.get(_c)
+                _scan_lod: np.ndarray
+                _scan_pos: np.ndarray
+                if (_scan is not None
+                        and _g in _scan[_scan['chr'] == _c]['gene'].values):
+                    _scan_top = _scan[(_scan['chr'] == _c)
+                                        & (_scan['gene'] == _g)].sort_values('pos_mb')
+                    _scan_pos = _scan_top['pos_mb'].values
+                    _scan_lod = _scan_top['lod'].values
+                else:
+                    _scan_pos = _inst_top['pos_mb'].values
+                    _scan_lod = np.zeros(len(_scan_pos))
+                _inst_col = ('peak_freq' if 'peak_freq' in _inst_top.columns else 'lod')
+                _inst_raw = _inst_top[_inst_col].values
+                _inst_scores = (_inst_raw / max(_inst_raw.max(), 1e-6)
+                                  if _inst_raw.max() > 1.0 else _inst_raw)
+                _common_pos = _inst_top['pos_mb'].values
+                _scan_interp = np.interp(_common_pos, _scan_pos, _scan_lod)
+                fig_inst, ax_inst = plt.subplots(figsize=(12, 3.5), dpi=300)
+                _viz_instability_overlay(
+                    _common_pos, _scan_interp, _inst_scores,
+                    ax=ax_inst, chrom=_c, gene=_g, threshold=_thr)
+                fig_inst.tight_layout()
+                fig_inst.savefig(_instability_dir / f'instability_chr{_c}.png', dpi=300, transparent=True)
+                plt.close(fig_inst)
+                _saved += 1
+            if _saved:
+                log.info('  extended/instability/instability_chr*.png  (%d files, overlay)', _saved)
+        except Exception as exc:
+            log.warning('  instability_per_chr: %s', exc)
 
     # ── timing / memory summary ───────────────────────────────────────────────
     # Excluded from plot (no meaningful compute or memory signal):
@@ -1431,12 +1433,13 @@ def _make_comparison_plots(
     """generate all R-vs-Python comparison figures; skip silently if inputs missing."""
     from scipy.stats import genextreme as gev_dist
 
-    s5_thr_path = py_dir / 's5_threshold.csv'
+    core_dir = py_dir / 'core'
+    thr_path = core_dir / 'threshold.csv'
 
     display_f = _display_founders(founders)  # full names for labels/colors
     fcolors = [FOUNDER_COLORS.get(f, COLOR_CC_FALLBACK) for f in display_f]
 
-    # ── S2: haplotype prob scatter ─────────────────────────────────────────────
+    # ── haplotype prob scatter ─────────────────────────────────────────────
     hap_path = r_data / 'haplotype_probs.csv'
     if hap_path.exists() and cache is not None:
         try:
@@ -1467,19 +1470,21 @@ def _make_comparison_plots(
                     'R haplotype prob', 'Python haplotype prob',
                     cbar_label='mean probability',
                     sparse_mask=_hap_sparse,
-                    save_path=plt_dir / 's2_haplotype_scatter.png',
+                    save_path=plt_dir / 'haplotype_scatter.png',
                 )
                 plt.close(fig)
-                log.info('  [plot] s2_haplotype_scatter.png')
+                log.info('  [plot] haplotype_scatter.png')
         except Exception as exc:
-            log.warning('  [plot] s2_haplotype_scatter: %s', exc)
+            log.warning('  [plot] haplotype_scatter: %s', exc)
 
-    # ── S3: kinship element scatter (chr8) ────────────────────────────────────
-    k8_path = r_data / 'kinship_chr8_elements.csv'
+    # ── kinship element scatter ───────────────────────────────────────────
+    k8_path = r_data / f'kinship_chr{peak_chr}_elements.csv'
+    if not k8_path.exists():
+        k8_path = r_data / 'kinship_chr8_elements.csv'
     if k8_path.exists() and peak_chr in kinship_decomp:
         try:
             k_elem = pd.read_csv(k8_path)
-            kd8    = kinship_decomp.get('8') or kinship_decomp.get(peak_chr)
+            kd8    = kinship_decomp.get(str(peak_chr)) or kinship_decomp.get('8')
             K8_py  = kd8['vectors'] @ np.diag(kd8['values']) @ kd8['vectors'].T
             sids   = list(cache.sample_ids)
             sid_r  = k_elem['strain_i'].unique().tolist()
@@ -1496,19 +1501,19 @@ def _make_comparison_plots(
                 _k_df = pd.DataFrame({'k_r': r_k, 'k_py': py_k})
                 fig, _ = _cmp_scatter(
                     _k_df, 'k_r', 'k_py',
-                    'R kinship (LOCO chr8)', 'Python kinship (LOCO chr8)',
+                    f'R kinship (LOCO chr{peak_chr})', f'Python kinship (LOCO chr{peak_chr})',
                     cbar_label='mean K',
-                    save_path=plt_dir / 's3_kinship_scatter.png',
+                    save_path=plt_dir / 'kinship_scatter.png',
                 )
                 plt.close(fig)
-                log.info('  [plot] s3_kinship_scatter.png')
+                log.info('  [plot] kinship_scatter.png')
         except Exception as exc:
-            log.warning('  [plot] s3_kinship_scatter: %s', exc)
+            log.warning('  [plot] kinship_scatter: %s', exc)
 
-    # ── S4: LOD density (peak LOD distribution) ───────────────────────────────
+    # ── LOD density (peak LOD distribution) ───────────────────────────────
     # Read Python and R independently so each series plots whatever is available
     # without requiring both to be present in the merged comparison CSV.
-    _py_lod_path = py_dir / 's4_peak_lod.csv'
+    _py_lod_path = core_dir / 'peak_lod.csv'
     _r_lod_path  = r_data / 'peak_lod.csv'
     _density_sources = [
         (_py_lod_path, 'peak_lod', 'Python', '#4F6EAF'),
@@ -1518,8 +1523,8 @@ def _make_comparison_plots(
     if _density_any:
         try:
             _lod_thr_d: float | None = None
-            if s5_thr_path.exists():
-                _td_ld = pd.read_csv(s5_thr_path)
+            if thr_path.exists():
+                _td_ld = pd.read_csv(thr_path)
                 _td_ld['chr'] = _td_ld['chr'].astype(str)
                 _tr_ld = _td_ld[_td_ld['chr'] == str(peak_chr)]
                 _lod_thr_d = float(_tr_ld['threshold'].iloc[0]) if len(_tr_ld) > 0 else None
@@ -1533,31 +1538,36 @@ def _make_comparison_plots(
             _cmp_lod_density(_py_lods_d, _r_lods_d,
                              threshold=_lod_thr_d, ax=ax)
             fig.tight_layout()
-            fig.savefig(plt_dir / 's4_lod_density.png', dpi=300, transparent=True)
+            fig.savefig(plt_dir / 'lod_density.png', dpi=300, transparent=True)
             plt.close(fig)
-            log.info('  [plot] s4_lod_density.png')
+            log.info('  [plot] lod_density.png')
         except Exception as exc:
-            log.warning('  [plot] s4_lod_density: %s', exc)
+            log.warning('  [plot] lod_density: %s', exc)
 
-    # ── S4: peak LOD scatter (R vs Python) ────────────────────────────────────
-    _cmp_lod_path = cmp_dir / 's4_peak_lod_comparison.csv'
+    # ── peak LOD scatter (R vs Python) ────────────────────────────────────
+    _cmp_lod_path = cmp_dir / 'peak_lod_comparison.csv'
     if _cmp_lod_path.exists():
         try:
             _cmp_lod = pd.read_csv(_cmp_lod_path)
             if len(_cmp_lod) >= 2 and 'peak_lod_py' in _cmp_lod.columns and 'peak_lod_r' in _cmp_lod.columns:
+                _sparse_cmp = (
+                    _cmp_lod['gene'].isin(low_expr_genes)
+                    if low_expr_genes and 'gene' in _cmp_lod.columns else None
+                )
                 fig, _ = _cmp_scatter(
                     _cmp_lod, 'peak_lod_r', 'peak_lod_py',
                     'miQTL (R) peak LOD', 'mosaiQTL (Python) peak LOD',
                     priority_genes={'Cwc22': FOUNDER_COLORS['CASTJ']},
-                    save_path=plt_dir / 's4_peak_lod_scatter.png',
+                    sparse_mask=_sparse_cmp,
+                    save_path=plt_dir / 'peak_lod_scatter.png',
                 )
                 plt.close(fig)
-                log.info('  [plot] s4_peak_lod_scatter.png')
+                log.info('  [plot] peak_lod_scatter.png')
         except Exception as exc:
-            log.warning('  [plot] s4_peak_lod_scatter: %s', exc)
+            log.warning('  [plot] peak_lod_scatter: %s', exc)
 
-    # ── S4: peak position scatter ──────────────────────────────────────────────
-    eff_path = py_dir / 's4_allele_effects.csv'
+    # ── peak position scatter ──────────────────────────────────────────────
+    eff_path = core_dir / 'allele_effects.csv'
     if eff_path.exists():
         try:
             eff_py = pd.read_csv(eff_path, usecols=['gene', 'peak_mb'])
@@ -1586,15 +1596,15 @@ def _make_comparison_plots(
                         merged_pos, 'peak_mb_r', 'peak_mb',
                         'R peak position (Mb)', 'Python peak position (Mb)',
                         cbar_label='mean position (Mb)',
-                        save_path=plt_dir / 's4_peak_pos_scatter.png',
+                        save_path=plt_dir / 'peak_pos_scatter.png',
                     )
                     plt.close(fig)
-                    log.info('  [plot] s4_peak_pos_scatter.png')
+                    log.info('  [plot] peak_pos_scatter.png')
         except Exception as exc:
-            log.warning('  [plot] s4_peak_pos_scatter: %s', exc)
+            log.warning('  [plot] peak_pos_scatter: %s', exc)
 
-    # ── S4: LOD profiles (top 3 genes on peak_chr) ────────────────────────────
-    py_lod_path = py_dir / 's4_lod.csv'
+    # ── LOD profiles (top 3 genes on peak_chr) ────────────────────────────
+    py_lod_path = core_dir / 'lod.csv'
     if py_lod_path.exists():
         try:
             lod_py_all = pd.read_csv(py_lod_path)
@@ -1606,21 +1616,21 @@ def _make_comparison_plots(
                 r_lod_chr = (pd.read_csv(r_lod_chr_path)
                              if r_lod_chr_path.exists() else None)
                 _comp_thr_p: float | None = None
-                if s5_thr_path.exists():
-                    _td_cp = pd.read_csv(s5_thr_path)
+                if thr_path.exists():
+                    _td_cp = pd.read_csv(thr_path)
                     _td_cp['chr'] = _td_cp['chr'].astype(str)
                     _tr_cp = _td_cp[_td_cp['chr'] == str(peak_chr)]
                     _comp_thr_p = float(_tr_cp['threshold'].iloc[0]) if len(_tr_cp) > 0 else None
                 fig = _cmp_lod_profiles(
                     lod_pc, r_lod_chr, top_genes, str(peak_chr), thr=_comp_thr_p)
-                fig.savefig(plt_dir / 's4_lod_profiles.png', dpi=300, transparent=True)
+                fig.savefig(plt_dir / 'lod_profiles.png', dpi=300, transparent=True)
                 plt.close(fig)
-                log.info('  [plot] s4_lod_profiles.png  top %d genes on chr%s',
+                log.info('  [plot] lod_profiles.png  top %d genes on chr%s',
                          len(top_genes), peak_chr)
         except Exception as exc:
-            log.warning('  [plot] s4_lod_profiles: %s', exc)
+            log.warning('  [plot] lod_profiles: %s', exc)
 
-    # ── S4: allele effects scatter (Python betas vs R betas, 2× scale note) ───
+    # ── allele effects scatter (Python betas vs R betas, 2× scale note) ───
     r_eff_path = r_data / 'allele_effects_chr8.csv'
     if eff_path.exists() and r_eff_path.exists():
         try:
@@ -1643,15 +1653,15 @@ def _make_comparison_plots(
                     fig, ax = plt.subplots(figsize=(5, 5), dpi=300)
                     _cmp_allele_effects(py_b[mask], r_b[mask], _disp_f, ax=ax)
                     fig.tight_layout()
-                    fig.savefig(plt_dir / 's4_allele_effects_scatter.png', dpi=300, transparent=True)
+                    fig.savefig(plt_dir / 'allele_effects_scatter.png', dpi=300, transparent=True)
                     plt.close(fig)
-                    log.info('  [plot] s4_allele_effects_scatter.png')
+                    log.info('  [plot] allele_effects_scatter.png')
         except Exception as exc:
-            log.warning('  [plot] s4_allele_effects_scatter: %s', exc)
+            log.warning('  [plot] allele_effects_scatter: %s', exc)
 
-    # ── S5: permutation distribution (py vs R, fitted GEV) ────────────────────
+    # ── permutation distribution (py vs R, fitted GEV) ────────────────────
     # Read each source independently — plot whichever series exists.
-    py_perm_path = py_dir / 's5_perm_max_lods.csv'
+    py_perm_path = core_dir / 'perm_max_lods.csv'
     r_perm_path  = r_data / f'perm_max_lods_chr{peak_chr}.csv'
     if py_perm_path.exists() or r_perm_path.exists():
         try:
@@ -1664,9 +1674,9 @@ def _make_comparison_plots(
             _r_timing_sec = r_data / 'timing_sections.csv'
             if _r_timing_sec.exists():
                 _ts = pd.read_csv(_r_timing_sec)
-                _s5_row = _ts[_ts['section'] == 'S5_permutation']
-                if len(_s5_row) > 0 and pd.notna(_s5_row['n_perms'].iloc[0]):
-                    r_n_perms = int(_s5_row['n_perms'].iloc[0])
+                _perm_row = _ts[_ts['section'] == 'S5_permutation']
+                if len(_perm_row) > 0 and pd.notna(_perm_row['n_perms'].iloc[0]):
+                    r_n_perms = int(_perm_row['n_perms'].iloc[0])
             def _safe_thr95(vals: np.ndarray) -> 'float | None':
                 try:
                     return float(gev_dist.ppf(0.95, *gev_dist.fit(vals)))
@@ -1686,49 +1696,49 @@ def _make_comparison_plots(
                     ax=ax,
                 )
                 fig.tight_layout()
-                fig.savefig(plt_dir / 's5_perm_distribution.png', dpi=300, transparent=True)
-                log.info('  [plot] s5_perm_distribution.png')
+                fig.savefig(plt_dir / 'perm_distribution.png', dpi=300, transparent=True)
+                log.info('  [plot] perm_distribution.png')
                 plt.close(fig)
         except Exception as exc:
-            log.warning('  [plot] s5_perm_distribution: %s', exc)
+            log.warning('  [plot] perm_distribution: %s', exc)
 
-    # ── S4: scan speed comparison (genes/min py vs R per chr) ─────────────────
+    # ── scan speed comparison (genes/min py vs R per chr) ─────────────────
     # Plot each series from its own source; show Python-only when R timing absent.
     scan_stats_path = py_dir / 'scan_stats.csv'
     r_timing_path   = r_data / 'timing_chr.csv'
     if scan_stats_path.exists() or r_timing_path.exists():
         try:
-            py_s4, r_s4 = pd.DataFrame(), None
+            py_scan_timing, r_scan_timing = pd.DataFrame(), None
             if scan_stats_path.exists():
                 py_stats = pd.read_csv(scan_stats_path)
-                py_s4 = py_stats[py_stats['section'].str.startswith('S4_chr')].copy()
-                py_s4['chr'] = py_s4['section'].str.replace('S4_chr', '', regex=False)
-                py_s4['chr'] = py_s4['chr'].astype(str)
-                py_s4['gpm'] = py_s4['n_items'] / py_s4['elapsed_s'].replace(0, float('nan')) * 60
+                py_scan_timing = py_stats[py_stats['section'].str.startswith('S4_chr')].copy()
+                py_scan_timing['chr'] = py_scan_timing['section'].str.replace('S4_chr', '', regex=False)
+                py_scan_timing['chr'] = py_scan_timing['chr'].astype(str)
+                py_scan_timing['gpm'] = py_scan_timing['n_items'] / py_scan_timing['elapsed_s'].replace(0, float('nan')) * 60
             if r_timing_path.exists():
                 r_timing = pd.read_csv(r_timing_path)
                 if 'genes_per_min' in r_timing.columns:
-                    r_s4 = r_timing[['chr', 'genes_per_min']].copy()
-                    r_s4['chr'] = r_s4['chr'].astype(str)
+                    r_scan_timing = r_timing[['chr', 'genes_per_min']].copy()
+                    r_scan_timing['chr'] = r_scan_timing['chr'].astype(str)
                 elif 'elapsed_s' in r_timing.columns and 'n_genes' in r_timing.columns:
-                    r_s4 = r_timing.copy()
-                    r_s4['chr'] = r_s4['chr'].astype(str)
-                    r_s4['genes_per_min'] = (r_s4['n_genes']
-                                             / r_s4['elapsed_s'].replace(0, float('nan')) * 60)
+                    r_scan_timing = r_timing.copy()
+                    r_scan_timing['chr'] = r_scan_timing['chr'].astype(str)
+                    r_scan_timing['genes_per_min'] = (r_scan_timing['n_genes']
+                                             / r_scan_timing['elapsed_s'].replace(0, float('nan')) * 60)
 
-            has_py = len(py_s4) >= 2
-            has_r  = r_s4 is not None and len(r_s4) >= 2
+            has_py = len(py_scan_timing) >= 2
+            has_r  = r_scan_timing is not None and len(r_scan_timing) >= 2
             if has_py or has_r:
                 chrs_sp = sorted(
-                    (set(py_s4['chr']) if has_py else set()) |
-                    (set(r_s4['chr']) if has_r else set()),
+                    (set(py_scan_timing['chr']) if has_py else set()) |
+                    (set(r_scan_timing['chr']) if has_r else set()),
                     key=lambda c: int(c) if c.isdigit() else 100,
                 )
                 if len(chrs_sp) >= 2:
-                    py_gpm = ({row['chr']: row['gpm'] for _, row in py_s4.iterrows()}
+                    py_gpm = ({row['chr']: row['gpm'] for _, row in py_scan_timing.iterrows()}
                               if has_py else {})
                     r_gpm  = ({row['chr']: row['genes_per_min']
-                               for _, row in r_s4.iterrows()}
+                               for _, row in r_scan_timing.iterrows()}
                               if has_r else {})
                     _py_arr_sp = np.array([py_gpm.get(c, 0.0) for c in chrs_sp])
                     _r_arr_sp  = (np.array([r_gpm.get(c, 0.0) for c in chrs_sp])
@@ -1737,14 +1747,14 @@ def _make_comparison_plots(
                     _viz_scan_throughput(chrs_sp, _py_arr_sp,
                                         r_genes_per_min=_r_arr_sp, ax=ax)
                     fig.tight_layout()
-                    fig.savefig(plt_dir / 's4_scan_speed.png', dpi=300, transparent=True)
+                    fig.savefig(plt_dir / 'scan_speed.png', dpi=300, transparent=True)
                     plt.close(fig)
-                    log.info('  [plot] s4_scan_speed.png  %d chr', len(chrs_sp))
+                    log.info('  [plot] scan_speed.png  %d chr', len(chrs_sp))
         except Exception as exc:
-            log.warning('  [plot] s4_scan_speed: %s', exc)
+            log.warning('  [plot] scan_speed: %s', exc)
 
-    # ── S5: per-chromosome FWER threshold comparison (Python vs R bars) ────────
-    py_thr_path = py_dir / 's5_threshold.csv'
+    # ── per-chromosome FWER threshold comparison (Python vs R bars) ────────
+    py_thr_path = core_dir / 'threshold.csv'
     r_thr_path  = r_data / 'thresholds_chr.csv'
     if py_thr_path.exists():
         try:
@@ -1767,12 +1777,12 @@ def _make_comparison_plots(
                     _py_thrs, _r_thrs,
                     genome_wide_thr=_genome_thr, ax=ax)
                 fig.tight_layout()
-                fig.savefig(plt_dir / 's5_perm_threshold_comparison.png',
+                fig.savefig(plt_dir / 'perm_threshold_comparison.png',
                             dpi=300, transparent=True)
                 plt.close(fig)
-                log.info('  [plot] s5_perm_threshold_comparison.png')
+                log.info('  [plot] perm_threshold_comparison.png')
         except Exception as exc:
-            log.warning('  [plot] s5_perm_threshold_comparison: %s', exc)
+            log.warning('  [plot] perm_threshold_comparison: %s', exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1783,22 +1793,35 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         force: bool, n_genes: int | None,
         scan_type: str = 'C',
         window_mb: float = 1.0,
-        scan_chr: list[str] | None = None) -> dict:
+        scan_chr: list[str] | None = None,
+        celltype: str | None = None,
+        plt_dir_override: Path | None = None) -> dict:
     """run gastroc characterization sections; return gate results dict.
 
     Parameters
     ----------
-    data_dir  : root of gastroc_data/ — contains input files (metadata.csv,
-                gene_info.csv, counts_lognorm.h5) and r_data/ subdirectory.
-    scan_type : 'C' (cis), 'G' (genome-wide), or 'L' (local ±window_mb of TSS)
-    window_mb : half-window size in Mb for L mode (ignored for C/G)
-    scan_chr  : chromosomes to scan; None = all chromosomes in kinship_decomp
+    data_dir         : root of gastroc_data/ — contains metadata.csv and r_data/;
+                       in CT mode this is also the CT dir with counts_lognorm.h5
+    out_dir          : directory where py_data/ (or CT-mode flat outputs) are written
+    scan_type        : 'C' (cis), 'G' (genome-wide), or 'L' (local ±window_mb of TSS)
+    window_mb        : half-window size in Mb for L mode (ignored for C/G)
+    scan_chr         : chromosomes to scan; None = all chromosomes in kinship_decomp
+    celltype         : cell-type label when running in CT mode; None = whole-tissue
+    plt_dir_override : plot output directory override (CT mode points here)
     """
-    r_data  = data_dir / 'r_data'    # R reference outputs (optional)
-    py_dir  = out_dir / 'py_data'
-    cmp_dir = out_dir / 'compare'
-    plt_dir = out_dir / 'plots'
-    for d in (py_dir, cmp_dir, plt_dir):
+    # in CT mode: outputs go flat into out_dir (no py_data/ subdir);
+    # cmp_dir points to a shared celltypes/compare/ for CT-vs-CT comparison CSVs
+    _ct_mode = celltype is not None
+    r_data  = GASTROC_DATA / 'r_data'   # R reference always from whole-tissue
+    py_dir  = out_dir if _ct_mode else out_dir / 'py_data'
+    cmp_dir = (GASTROC_DATA / 'celltypes' / 'compare'
+               if _ct_mode else out_dir / 'compare')
+    plt_dir = plt_dir_override if plt_dir_override is not None else out_dir / 'plots'
+    ext_dir  = py_dir / 'extended'
+    core_dir = py_dir / 'core'
+    dirs_to_make = [py_dir, cmp_dir, plt_dir, core_dir, ext_dir,
+                    plt_dir / 'core', plt_dir / 'extended']
+    for d in dirs_to_make:
         d.mkdir(parents=True, exist_ok=True)
 
     results: dict[str, bool | None] = {}
@@ -1817,10 +1840,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             'peak_rss_mb':   round(peak_rss_mb, 1),
         })
 
-    # ── load metadata ─────────────────────────────────────────────────────────
-    meta_path = data_dir / 'metadata.csv'
+    # ── load metadata (always shared; CT mode reads same file as whole-tissue) ──
+    meta_path = GASTROC_DATA / 'metadata.csv'
     if not meta_path.exists():
-        log.error('metadata.csv not found at %s — run convert_gastroc_h5ad.py', meta_path)
+        log.error('metadata.csv not found at %s — run convert_h5ad.py', meta_path)
         sys.exit(1)
     meta = pd.read_csv(meta_path)
     sample_ids_meta = meta['sample_id'].tolist()
@@ -1830,25 +1853,53 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
              len(meta), meta['genotype'].nunique(),
              sorted(meta['dataset'].unique()))
 
-    # ── gene info (chr annotation + TSS for cis/local filter) ─────────────────
-    gene_info_path = data_dir / 'gene_info.csv'
+    # ── gene info (chr annotation + strand-aware gene boundary for scan filter) ──
+    # schema: gene_name=symbol (HDF5 key), gene_id=Ensembl, strand, chr, start, end
+    # start_mb = start/1e6 for + strand, end/1e6 for - strand (gene boundary, not TSS)
+    if _ct_mode:
+        import re as _re_gi
+        _ct_safe_label = _re_gi.sub(r'[^a-z0-9]+', '_', celltype.lower()).strip('_')
+        gene_info_path = data_dir / f'exp_gene_info_{_ct_safe_label}.csv'
+    else:
+        gene_info_path = data_dir / 'exp_gene_info_gastroc.csv'
     gene_info = pd.read_csv(gene_info_path)
     gene_info['chr'] = gene_info['chr'].astype(str)
-    gene_info = gene_info.copy()
-    gene_info['gene_name'] = make_names(gene_info['gene_id'].tolist())
-    gene_id_to_name = dict(zip(gene_info['gene_id'],   gene_info['gene_name']))
-    gene_name_to_id = dict(zip(gene_info['gene_name'], gene_info['gene_id']))
-    log.info('gene_info: %d genes annotated', len(gene_info))
+    log.info('gene_info: %d genes  (%s)', len(gene_info), gene_info_path.name)
+
+    low_expr_genes: set[str] = set()
+    if 'frac_samples_cpm_gt1' in gene_info.columns:
+        low_expr_genes = set(
+            gene_info.loc[gene_info['frac_samples_cpm_gt1'] < 0.5, 'gene_name'])
+        log.info('low-expression genes (frac_cpm_gt1 < 0.5): %d / %d',
+                 len(low_expr_genes), len(gene_info))
+
+    # ── transcript TSS table (for near_tss_mb after peak calling) ───────────────
+    # near_tss_mb = transcript TSS (strand-aware) nearest to peak_mb per gene
+    # source: GENCODE vM32 transcript features for this run; one row per transcript
+    _gene_tss_path = pathlib.Path(__file__).parent / 'input' / 'gene_tss.vm32.csv'
+    if _gene_tss_path.exists():
+        _gene_tss = pd.read_csv(_gene_tss_path,
+                                usecols=['gene_name', 'start', 'end', 'strand'])
+        _gene_tss['tss_mb'] = np.where(
+            _gene_tss['strand'] == '-',
+            _gene_tss['end'] / 1e6,
+            _gene_tss['start'] / 1e6,
+        )
+        log.info('gene_tss: %d transcripts  (%s)', len(_gene_tss), _gene_tss_path.name)
+    else:
+        _gene_tss = None
+        log.warning('gene_tss.vm32.csv not found — near_tss_mb will be omitted')
 
     if scan_type == 'L' and 'start' not in gene_info.columns:
-        log.warning('gene_info.csv has no "start" column — L scan mode will not filter loci')
+        log.warning('%s has no "start" column — L scan mode will not filter loci',
+                    gene_info_path.name)
 
     # ── load GenomeCache (must be pre-built as HDF5) ──────────────────────────
-    hdf5_cache = py_dir / 'cache.h5'
+    hdf5_cache = GASTROC_DATA / 'py_data' / 'cache.h5'
     if hdf5_cache.exists():
         log.info('loading GenomeCache from HDF5: %s', hdf5_cache)
         cache = GenomeCache.from_hdf5(str(hdf5_cache))
-        cache = _ensure_canonical_order(cache)  # fast no-op if already canonical
+        cache = cache.reorder_to_canonical()  # fast no-op if already canonical
     else:
         log.error(
             'cache.h5 not found at %s\n'
@@ -1862,7 +1913,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
              len(cache.chromosomes), len(cache.sample_ids), cache.sample_ids[0])
 
     # ── load or compute LOCO kinship decomp ───────────────────────────────────
-    kd_npz = py_dir / 'kinship_decomp.npz'
+    kd_npz = GASTROC_DATA / 'py_data' / 'kinship_decomp.npz'
     if kd_npz.exists():
         log.info('loading kinship decomp: %s', kd_npz)
         raw = np.load(kd_npz, allow_pickle=True)
@@ -1909,21 +1960,21 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS1: cache characterization...')
-            _rss_s1 = _get_rss_mb()
+            _rss_cache = _get_rss_mb()
             tracemalloc.start()
-            _t_s1 = time.perf_counter()
-            s1_ok = True
+            _t_cache = time.perf_counter()
+            cache_ok = True
 
             # always: characterize Python cache
             py_loci = {c: len(cache.get_chromosome(c)[0]) for c in cache.chromosomes}
             ci_py = pd.DataFrame([{'chr': c, 'n_loci': n}
                                   for c, n in py_loci.items()])
-            ci_py.to_csv(py_dir / 's1_cache_info.csv', index=False)
+            ci_py.to_csv(py_dir / 'cache_info.csv', index=False)
             log.info('  cache: %d chromosomes  total loci=%d  founders=%d  genotypes=%d',
                      len(cache.chromosomes), sum(py_loci.values()),
                      len(cache.founders), len(cache.sample_ids))
             log.info('  founders: %s', list(cache.founders))
-            _s1_n_items = len(ci_py)
+            _n_items_cache = len(ci_py)
 
             # optional: compare loci counts to R
             cache_info_r = r_data / 'cache_info.csv'
@@ -1934,10 +1985,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     ci_r[['chr', 'n_loci']].rename(columns={'n_loci': 'n_loci_r'}),
                     on='chr', how='outer')
                 merged['delta'] = (merged['n_loci'] - merged['n_loci_r']).abs()
-                merged.to_csv(cmp_dir / 's1_cache_info_cmp.csv', index=False)
+                merged.to_csv(cmp_dir / 'cache_info_cmp.csv', index=False)
                 max_delta = int(merged['delta'].fillna(9999).max())
                 loci_ok = _check('max loci delta', float(max_delta), 0.5, '<')
-                s1_ok = s1_ok and loci_ok
+                cache_ok = cache_ok and loci_ok
                 log.info('    vs R: loci delta max=%d', max_delta)
 
             # optional: compare founders/genotypes to R
@@ -1948,7 +1999,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 founders_ok = founders_r == py_founders
                 sym = PASS if founders_ok else FAIL
                 log.info('  %s vs R founders match=%s', sym, founders_ok)
-                s1_ok = s1_ok and founders_ok
+                cache_ok = cache_ok and founders_ok
 
             genotype_ids_r_path = r_data / 'genotype_ids.csv'
             if genotype_ids_r_path.exists():
@@ -1960,18 +2011,18 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                       FAIL if not set_match else '⚠️ ')
                 log.info('  %s vs R genotypes: set_match=%s  order_match=%s',
                          sym, set_match, order_match)
-                s1_ok = s1_ok and set_match
+                cache_ok = cache_ok and set_match
 
-            _, _s1_peak = tracemalloc.get_traced_memory()
+            _, _cache_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
-            _s1_elapsed = time.perf_counter() - _t_s1
-            _record_stats('S1', 'cache_info', _s1_n_items,
-                          _s1_elapsed, _s1_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_s1))
+            _cache_elapsed = time.perf_counter() - _t_cache
+            _record_stats('S1', 'cache_info', _n_items_cache,
+                          _cache_elapsed, _cache_peak / 1e6,
+                          max(0.0, _get_rss_mb() - _rss_cache))
             log.info('  [timing] S1: %.2fs  heap_peak=%.0fMB',
-                     _s1_elapsed, _s1_peak / 1e6)
+                     _cache_elapsed, _cache_peak / 1e6)
 
-            results['S1_cache'] = s1_ok
+            results['S1_cache'] = cache_ok
             _mark_done(py_dir, str(sec))
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1982,9 +2033,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS2: haplotype probabilities...')
-            _rss_s2 = _get_rss_mb()
+            _rss_hap = _get_rss_mb()
             tracemalloc.start()
-            _t_s2 = time.perf_counter()
+            _t_hap = time.perf_counter()
             founder_cols = list(cache.founders)
             probe_chr = '8' if '8' in cache.chromosomes else cache.chromosomes[0]
             lids_probe, _, probs_probe = cache.get_chromosome(probe_chr)
@@ -2001,10 +2052,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     row.update(dict(zip(founder_cols, probs_probe[li, si, :].tolist())))
                     hap_rows.append(row)
             hap_py = pd.DataFrame(hap_rows)
-            hap_py.to_csv(py_dir / 's2_haplotype_probs.csv', index=False)
+            hap_py.to_csv(py_dir / 'haplotype_probs.csv', index=False)
             log.info('  sampled %d loci × %d genotypes on chr%s',
                      len(sample_lids), len(cache.sample_ids), probe_chr)
-            _s2_n = len(hap_rows)
+            _n_items_hap = len(hap_rows)
 
             # optional: compare argmax to R haplotype_probs.csv
             hap_path = r_data / 'haplotype_probs.csv'
@@ -2031,26 +2082,26 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             'match': int(np.argmax(py_probs)) == int(np.argmax(r_probs)),
                         })
                 if rows:
-                    df_s2 = pd.DataFrame(rows)
-                    df_s2.to_csv(cmp_dir / 's2_haplotype_argmax_cmp.csv', index=False)
-                    concordance = float(df_s2['match'].mean())
-                    s2_ok = _check('haplotype argmax concordance', concordance, 0.95)
-                    results['S2_haplotype'] = s2_ok
+                    hap_cmp_df = pd.DataFrame(rows)
+                    hap_cmp_df.to_csv(cmp_dir / 'haplotype_argmax_cmp.csv', index=False)
+                    concordance = float(hap_cmp_df['match'].mean())
+                    hap_ok = _check('haplotype argmax concordance', concordance, 0.95)
+                    results['S2_haplotype'] = hap_ok
                     log.info('    vs R: concordance=%.4f  (%d/%d pairs)',
-                             concordance, df_s2['match'].sum(), len(df_s2))
+                             concordance, hap_cmp_df['match'].sum(), len(hap_cmp_df))
                 else:
                     results['S2_haplotype'] = None
             else:
                 results['S2_haplotype'] = None
 
-            _, _s2_peak = tracemalloc.get_traced_memory()
+            _, _hap_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
-            _s2_elapsed = time.perf_counter() - _t_s2
-            _record_stats('S2', 'haplotype_probe', _s2_n,
-                          _s2_elapsed, _s2_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_s2))
+            _hap_elapsed = time.perf_counter() - _t_hap
+            _record_stats('S2', 'haplotype_probe', _n_items_hap,
+                          _hap_elapsed, _hap_peak / 1e6,
+                          max(0.0, _get_rss_mb() - _rss_hap))
             log.info('  [timing] S2: %.2fs  heap_peak=%.0fMB',
-                     _s2_elapsed, _s2_peak / 1e6)
+                     _hap_elapsed, _hap_peak / 1e6)
             _mark_done(py_dir, str(sec))
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -2061,9 +2112,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS3: LOCO kinship...')
-            _rss_s3 = _get_rss_mb()
+            _rss_kinship = _get_rss_mb()
             tracemalloc.start()
-            _t_s3 = time.perf_counter()
+            _t_kinship = time.perf_counter()
 
             # always: compute and export kinship summary across all chromosomes
             py_rows = []
@@ -2080,8 +2131,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     'max_eig':      float(eigs.max()),
                 })
             k_py = pd.DataFrame(py_rows)
-            k_py.to_csv(py_dir / 's3_kinship_summary.csv', index=False)
-            _s3_n = len(py_rows)
+            k_py.to_csv(py_dir / 'kinship_summary.csv', index=False)
+            _n_items_kinship = len(py_rows)
             log.info('  kinship: %d chr  mean_diag=%.4f  mean_offdiag=%.4f',
                      len(py_rows),
                      k_py['mean_diag'].mean(), k_py['mean_offdiag'].mean())
@@ -2095,25 +2146,25 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     k_r.rename(columns={'mean_diag': 'mean_diag_r',
                                         'mean_offdiag': 'mean_offdiag_r'}),
                     on='chr', how='inner')
-                merged_k.to_csv(cmp_dir / 's3_kinship_cmp.csv', index=False)
+                merged_k.to_csv(cmp_dir / 'kinship_cmp.csv', index=False)
                 r_diag, _ = sp_stats.pearsonr(
                     merged_k['mean_diag'], merged_k['mean_diag_r'])
                 r_off,  _ = sp_stats.pearsonr(
                     merged_k['mean_offdiag'], merged_k['mean_offdiag_r'])
-                s3_ok = (_check('kinship diag r',    r_diag, 0.999) and
+                kinship_ok = (_check('kinship diag r',    r_diag, 0.999) and
                          _check('kinship offdiag r', r_off,  0.999))
-                results['S3_kinship'] = s3_ok
+                results['S3_kinship'] = kinship_ok
             else:
                 results['S3_kinship'] = None
 
-            _, _s3_peak = tracemalloc.get_traced_memory()
+            _, _kinship_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
-            _s3_elapsed = time.perf_counter() - _t_s3
-            _record_stats('S3', 'kinship_summary', _s3_n,
-                          _s3_elapsed, _s3_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_s3))
+            _kinship_elapsed = time.perf_counter() - _t_kinship
+            _record_stats('S3', 'kinship_summary', _n_items_kinship,
+                          _kinship_elapsed, _kinship_peak / 1e6,
+                          max(0.0, _get_rss_mb() - _rss_kinship))
             log.info('  [timing] S3: %.2fs  heap_peak=%.0fMB',
-                     _s3_elapsed, _s3_peak / 1e6)
+                     _kinship_elapsed, _kinship_peak / 1e6)
 
             if _scan_stats:
                 _sec_ord = {s: i for i, s in enumerate(_SECTION_ORDER)}
@@ -2129,18 +2180,30 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     # Modes: C (cis, each gene vs its own chr), G (genome-wide), L (local ±Mb)
     # ─────────────────────────────────────────────────────────────────────────
     sec = 4
-    py_lod_path  = py_dir / 's4_lod.csv'
-    peak_lod_path = py_dir / 's4_peak_lod.csv'
+    py_lod_path  = core_dir / 'lod.csv'
+    peak_lod_path = core_dir / 'peak_lod.csv'
 
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS4: LMM scan  scan_type=%s  chrs=%s...',
                      scan_type, chrs_to_scan)
 
+            import json as _json
+            from importlib.metadata import version as _pkg_version
+            (py_dir / 'scan_info.json').write_text(_json.dumps({
+                'mosaiqtl_version': _pkg_version('mosaiqtl'),
+                'git_hash':         _git_hash(),
+                'run_date':         time.strftime('%Y-%m-%d'),
+                'celltype':         celltype if celltype else 'whole_tissue',
+                'scan_type':        scan_type,
+                'chr':              ','.join(chrs_to_scan) if chrs_to_scan else 'all',
+                'n_genes':          n_genes,
+            }, indent=2))
+
             h5_path = data_dir / 'counts_lognorm.h5'
             all_effect_rows: list[dict] = []
-            _s4_lod_header_written = False
-            _rss_s4 = _get_rss_mb()
+            _lod_header_written = False
+            _rss_scan = _get_rss_mb()
             tracemalloc.start()
             t_scan = time.perf_counter()
             n_genes_total = 0
@@ -2157,14 +2220,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 if len(ch_genes) == 0:
                     continue
 
-                gene_ids_ch   = ch_genes['gene_id'].tolist()
-                gene_names_ch = ch_genes['gene_name'].tolist()
+                gene_names_ch = ch_genes['gene_name'].tolist()   # symbol = HDF5 key = phenotype_id
 
                 if n_genes is not None:
-                    gene_ids_ch   = gene_ids_ch[:n_genes]
                     gene_names_ch = gene_names_ch[:n_genes]
 
-                counts_ch, loaded_ids, sids_ch = _load_expression(h5_path, gene_ids_ch)
+                counts_ch, loaded_ids, sids_ch = _load_expression(h5_path, gene_names_ch)
                 if counts_ch.shape[0] == 0:
                     log.info('  chr%s: no genes found in HDF5 — skipping', ch)
                     continue
@@ -2172,19 +2233,23 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 # map sample-level IDs → genotype IDs (strain names in cache)
                 geno_ids_ch = [meta_geno_map.get(s, s) for s in sids_ch]
 
-                # use gene_id_to_name for loaded genes (handles missing entries)
-                loaded_names = [gene_id_to_name.get(gid, gid) for gid in loaded_ids]
+                loaded_names = loaded_ids  # symbol = phenotype_id; no transformation needed
                 cov_ch = _build_covariates(meta, sids_ch)
                 n_loci_ch = len(cache.get_chromosome(ch)[0])
 
                 log.info('  chr%s: %d genes  %d loci (%s mode)',
                          ch, len(loaded_ids), n_loci_ch, scan_type)
 
-                # build TSS lookup for all scan modes (needed for eff dict + L-mode filter)
-                tss_lookup: dict[str, float] = {}
+                # build gene start lookup for all scan modes (needed for eff dict + L-mode filter)
+                # strand-aware gene boundary: start for + strand, end for - strand (from gene_info)
+                start_lookup: dict[str, float] = {}
                 if 'start' in ch_genes.columns:
+                    _has_strand = 'strand' in ch_genes.columns
                     for _, grow in ch_genes.iterrows():
-                        tss_lookup[grow['gene_name']] = float(grow['start']) / 1e6
+                        if _has_strand and grow['strand'] == '-':
+                            start_lookup[grow['gene_name']] = float(grow['end']) / 1e6
+                        else:
+                            start_lookup[grow['gene_name']] = float(grow['start']) / 1e6
 
                 # map CLI scan_type to scan_window API
                 _sw = {'C': 'cis', 'G': 'genome', 'L': 'local'}[scan_type]
@@ -2223,8 +2288,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         elapsed = time.perf_counter() - t_scan
                         log.info('    chr%s %d/%d  %.0fs elapsed',
                                  ch, gi + 1, len(loaded_ids), elapsed)
-                    y_raw  = counts_ch[gi].astype(float)
-                    tss_mb = tss_lookup.get(gene_name)
+                    y_raw      = counts_ch[gi].astype(float)
+                    gene_start_mb = start_lookup.get(gene_name)
 
                     if _chr_precomputed and not np.any(np.isnan(y_raw[_vsid_ch])):
                         # precomputed path: sample-level K_n scan (matches R's K_n = Z K_m Z^T)
@@ -2233,8 +2298,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             _evecs_ch.T @ y_sub, _evecs_ch.T @ _x_full_ch, _evals_ch)
                         chr_res = scan_chromosome(
                             y_sub, _chr_data_ch, _x_full_ch, _evals_ch, _evecs_ch, h2)
-                        if _sw == 'local' and tss_mb is not None:
-                            _mask = np.abs(chr_res['positions'] - tss_mb) <= window_mb
+                        if _sw == 'local' and gene_start_mb is not None:
+                            _mask = np.abs(chr_res['positions'] - gene_start_mb) <= window_mb
                             chr_res = {
                                 k: (v[_mask] if isinstance(v, np.ndarray)
                                     and len(v) == len(_mask) else v)
@@ -2264,15 +2329,15 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             phenotype_id=gene_name,
                             scan_window=_sw,
                             gene_chr=ch,
-                            gene_pos_mb=tss_mb if _sw == 'local' else None,
+                            gene_pos_mb=gene_start_mb if _sw == 'local' else None,
                             window_mb=window_mb,
                         )
                     df = _scan_to_df(scan, gene_name)
                     df.to_csv(py_lod_path,
                               mode='a',
-                              header=not _s4_lod_header_written,
+                              header=not _lod_header_written,
                               index=False)
-                    _s4_lod_header_written = True
+                    _lod_header_written = True
 
                     # collect peak-locus betas and h2 for allele effects + threshold gene selection
                     if hasattr(scan, 'betas') and scan.betas is not None:
@@ -2297,7 +2362,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         eff: dict = {
                             'gene':       gene_name,
                             'chr':        str(ch),
-                            'tss_mb':     round(float(tss_mb), 3) if tss_mb is not None else float('nan'),
+                            'start_mb':   round(float(gene_start_mb), 3) if gene_start_mb is not None else float('nan'),
                             'peak_locus': str(scan.locus_ids[peak_idx]),
                             'peak_mb':    float(scan.positions[peak_idx]),
                             'peak_lod':   float(scan.lod[peak_idx]),
@@ -2315,10 +2380,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
 
                 elapsed_chr = time.perf_counter() - t_chr
                 gpm_chr     = len(loaded_ids) / elapsed_chr * 60 if elapsed_chr > 0 else 0
-                _, _s4_chr_peak = tracemalloc.get_traced_memory()
+                _, _chr_heap_peak = tracemalloc.get_traced_memory()
                 _record_stats(f'S4_chr{ch}', f'lmm_scan_chr{ch}',
                               len(loaded_ids), elapsed_chr,
-                              _s4_chr_peak / 1e6)
+                              _chr_heap_peak / 1e6)
                 log.info('    chr%s done: %d genes  %d loci  %.1fs  %.1f genes/min',
                          ch, len(loaded_ids), n_loci_ch, elapsed_chr, gpm_chr)
 
@@ -2329,14 +2394,14 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 gc.collect()
 
             elapsed_s = time.perf_counter() - t_scan
-            _, _s4_peak = tracemalloc.get_traced_memory()
+            _, _scan_heap_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
-            if _s4_lod_header_written:
+            if _lod_header_written:
                 genes_per_min = n_genes_total / elapsed_s * 60 if elapsed_s > 0 else 0
                 log.info('  scan complete: %d genes  %.1fs  %.1f genes/min',
                          n_genes_total, elapsed_s, genes_per_min)
                 _record_stats('S4', 'lmm_scan', n_genes_total, elapsed_s,
-                              _s4_peak / 1e6, max(0.0, _get_rss_mb() - _rss_s4))
+                              _scan_heap_peak / 1e6, max(0.0, _get_rss_mb() - _rss_scan))
                 # read back only the columns needed for peak reduction — avoids
                 # holding the full (genes × loci) LOD matrix in RAM twice
                 log.info('  computing peak LOD per gene ...')
@@ -2348,8 +2413,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             # save allele effects (peak-locus betas per gene)
             if all_effect_rows:
                 eff_df = pd.DataFrame(all_effect_rows)
-                eff_df.to_csv(py_dir / 's4_allele_effects.csv', index=False)
-                log.info('  s4_allele_effects.csv: %d genes', len(eff_df))
+                eff_df.to_csv(core_dir / 'allele_effects.csv', index=False)
+                log.info('  allele_effects.csv: %d genes', len(eff_df))
 
             # peak LOD per gene — include chr/locus/pos so GxE loop has position without effects file
             if len(lod_df) > 0:
@@ -2362,26 +2427,47 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 del lod_df; gc.collect()
                 if all_effect_rows:
                     _h2_map       = {r['gene']: r['h2']       for r in all_effect_rows}
-                    _tss_map      = {r['gene']: r['tss_mb']   for r in all_effect_rows}
+                    _start_mb_map = {r['gene']: r['start_mb'] for r in all_effect_rows}
                     _nv_map       = {r['gene']: r['n_valid']  for r in all_effect_rows}
                     _rss0_map     = {r['gene']: r['rss0']     for r in all_effect_rows}
                     _rss1_map     = {r['gene']: r['rss1']     for r in all_effect_rows}
                     _r2_map       = {r['gene']: r['r2_peak']  for r in all_effect_rows}
                     _sig2e_map    = {r['gene']: r['sigma2_e'] for r in all_effect_rows}
                     _tau2_map     = {r['gene']: r['tau2']     for r in all_effect_rows}
-                    peak_py['h2']          = peak_py['gene'].map(_h2_map)
-                    peak_py['tss_mb']      = peak_py['gene'].map(_tss_map)
-                    peak_py['cis_dist_mb'] = (
-                        (peak_py['peak_mb'] - peak_py['tss_mb']).abs().round(3))
+                    peak_py['h2']       = peak_py['gene'].map(_h2_map)
+                    peak_py['start_mb'] = peak_py['gene'].map(_start_mb_map)
                     peak_py['n_valid']  = peak_py['gene'].map(_nv_map)
                     peak_py['rss0']     = peak_py['gene'].map(_rss0_map)
                     peak_py['rss1']     = peak_py['gene'].map(_rss1_map)
                     peak_py['r2_peak']  = peak_py['gene'].map(_r2_map)
                     peak_py['sigma2_e'] = peak_py['gene'].map(_sig2e_map)
                     peak_py['tau2']     = peak_py['gene'].map(_tau2_map)
+                # ── near_tss_mb: transcript TSS nearest to peak_mb (post-peak join) ──
+                # cis_dist_mb = peak_mb − near_tss_mb; falls back to start_mb if NaN
+                if _gene_tss is not None and 'peak_mb' in peak_py.columns:
+                    _near: dict[str, float] = {}
+                    for _, _pr in peak_py.iterrows():
+                        _cands = _gene_tss[_gene_tss['gene_name'] == _pr['gene']]
+                        if _cands.empty:
+                            _near[_pr['gene']] = float('nan')
+                        else:
+                            _idx = (_cands['tss_mb'] - _pr['peak_mb']).abs().idxmin()
+                            _near[_pr['gene']] = float(_cands.loc[_idx, 'tss_mb'])
+                    peak_py['near_tss_mb'] = peak_py['gene'].map(_near)
+                if 'peak_mb' in peak_py.columns:
+                    _ref = peak_py['near_tss_mb'] if 'near_tss_mb' in peak_py.columns \
+                        else peak_py.get('start_mb')
+                    if _ref is not None:
+                        peak_py['cis_dist_mb'] = (
+                            peak_py['peak_mb'] - _ref).round(6)
+                        if 'near_tss_mb' in peak_py.columns and 'start_mb' in peak_py.columns:
+                            _mask_nan = peak_py['near_tss_mb'].isna()
+                            peak_py.loc[_mask_nan, 'cis_dist_mb'] = (
+                                peak_py.loc[_mask_nan, 'peak_mb']
+                                - peak_py.loc[_mask_nan, 'start_mb']).round(6)
                 _pk_cols = [
-                    'gene', 'chr', 'tss_mb', 'peak_locus', 'peak_mb', 'cis_dist_mb',
-                    'peak_lod', 'h2', 'n_valid',
+                    'gene', 'chr', 'start_mb', 'near_tss_mb', 'peak_locus', 'peak_mb',
+                    'cis_dist_mb', 'peak_lod', 'h2', 'n_valid',
                     'rss0', 'rss1', 'r2_peak', 'sigma2_e', 'tau2',
                 ]
                 peak_py = peak_py.reindex(
@@ -2417,7 +2503,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     cmp = peak_py.merge(peak_r, on='gene', how='inner')
                     # add _py suffix only in the comparison CSV for side-by-side readability
                     cmp = cmp.rename(columns={'peak_lod': 'peak_lod_py'})
-                    cmp.to_csv(cmp_dir / 's4_peak_lod_comparison.csv', index=False)
+                    cmp.to_csv(cmp_dir / 'peak_lod_comparison.csv', index=False)
                     n_matched = len(cmp)
                     log.info('  matched %d / %d genes to R reference', n_matched, len(peak_py))
 
@@ -2429,21 +2515,26 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             cmp['peak_lod_r'], cmp['peak_lod_py'])
                         max_delta = float((cmp['peak_lod_py'] -
                                            cmp['peak_lod_r']).abs().max())
-                        s4_ok = _check('peak LOD r²', r2, 0.975)
+                        lod_ok = _check('peak LOD r²', r2, 0.975)
                         _check('slope', abs(slope - 1.0), 0.05, '<')
                         log.info('  r²=%.4f  slope=%.3f  intercept=%.3f  '
                                  'max|Δ|=%.3f  n=%d',
                                  r2, slope, intercept, max_delta, n_matched)
 
+                        _sparse_mask = (
+                            cmp['gene'].isin(low_expr_genes)
+                            if low_expr_genes and 'gene' in cmp.columns else None
+                        )
                         fig, _ax = _cmp_scatter(
                             cmp, 'peak_lod_r', 'peak_lod_py',
                             'miQTL (R) peak LOD', 'mosaiQTL (Python) peak LOD',
                             priority_genes={'Cwc22': FOUNDER_COLORS['CASTJ']},
-                            save_path=plt_dir / 's4_peak_lod_scatter.png',
+                            sparse_mask=_sparse_mask,
+                            save_path=plt_dir / 'peak_lod_scatter.png',
                         )
                         plt.close(fig)
 
-                        results['S4_lod_r2'] = s4_ok
+                        results['S4_lod_r2'] = lod_ok
                         results['S4_slope_ok'] = abs(slope - 1.0) < 0.05
                     else:
                         log.warning('  too few matched genes for r²')
@@ -2455,16 +2546,16 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 results['S4_lod_r2'] = None
             _mark_done(py_dir, str(sec))
     elif py_lod_path.exists():
-        log.info('[S4] loading cached s4_lod.csv')
+        log.info('[S4] loading cached lod.csv')
         # reload gate result and scan stats from their checkpoint CSVs so the
         # scan summary at the end of the run shows real values, not N/A
         _gate_csv = py_dir / 'gate_summary.csv'
         if _gate_csv.exists():
             try:
                 _gc = pd.read_csv(_gate_csv)
-                _s4_row = _gc[_gc['gate'] == 'S4_lod_r2']
-                if len(_s4_row) > 0:
-                    _rv = str(_s4_row.iloc[0]['result'])
+                _lod_gate_row = _gc[_gc['gate'] == 'S4_lod_r2']
+                if len(_lod_gate_row) > 0:
+                    _rv = str(_lod_gate_row.iloc[0]['result'])
                     if _rv == 'True':
                         results['S4_lod_r2'] = True
                     elif _rv == 'False':
@@ -2492,9 +2583,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     log.info('[downstream sections] peak_chr=%s', peak_chr)
 
     egenes_df: 'pd.DataFrame | None' = None
-    chr_null_lods_s5: 'dict | None' = None
-    perm_max_lods_s5: 'np.ndarray | None' = None
-    perm_n_s5: int = 0
+    chr_null_lods: 'dict | None' = None
+    perm_max_lods: 'np.ndarray | None' = None
+    perm_n: int = 0
 
     # ─────────────────────────────────────────────────────────────────────────
     # S5 — genome-wide permutation threshold (Churchill & Doerge 1994)
@@ -2510,17 +2601,17 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     if sec in sections:
         log.info('\nS5: genome-wide permutation threshold (1000 perms, median-h² gene)...')
         if not _checkpoint(py_dir, str(sec), force):
-            _rss_s5 = _get_rss_mb()
+            _rss_perm = _get_rss_mb()
             tracemalloc.start()
-            _t_s5 = time.perf_counter()
+            _t_perm = time.perf_counter()
             if not peak_lod_path.exists():
-                log.info('  %s s4_peak_lod.csv not found — run S4 first', SKIP)
+                log.info('  %s peak_lod.csv not found — run S4 first', SKIP)
                 results['S5_perm_threshold'] = None
             else:
                 h5_path = data_dir / 'counts_lognorm.h5'
 
                 # ── pick median-h² gene as representative for permutation ──────
-                # Prefer h² from s4_allele_effects.csv if the column exists
+                # Prefer h² from allele_effects.csv if the column exists
                 # (written when S4 was run with the current code).  When the
                 # on-disk file predates the h² column, estimate h² independently
                 # using estimate_h2_null on a random gene sample — fast (Brent's
@@ -2529,26 +2620,26 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 _perm_id:   str
                 _h2_med:    float
 
-                eff_path_s5 = py_dir / 's4_allele_effects.csv'
+                eff_path_perm = core_dir / 'allele_effects.csv'
                 _h2_from_effects = False
-                if eff_path_s5.exists():
-                    _eff_cols = pd.read_csv(eff_path_s5, nrows=0).columns.tolist()
+                if eff_path_perm.exists():
+                    _eff_cols = pd.read_csv(eff_path_perm, nrows=0).columns.tolist()
                     if 'h2' in _eff_cols:
                         _h2_from_effects = True
 
                 if _h2_from_effects:
-                    _eff_s5    = pd.read_csv(eff_path_s5, usecols=['gene', 'h2'])
-                    _h2_valid  = _eff_s5['h2'].dropna()
+                    _eff_perm    = pd.read_csv(eff_path_perm, usecols=['gene', 'h2'])
+                    _h2_valid  = _eff_perm['h2'].dropna()
                     _h2_med    = float(_h2_valid.median())
-                    _best_row  = _eff_s5.iloc[(_h2_valid - _h2_med).abs().values.argmin()]
+                    _best_row  = _eff_perm.iloc[(_h2_valid - _h2_med).abs().values.argmin()]
                     _perm_gene = str(_best_row['gene'])
-                    _perm_id   = gene_name_to_id.get(_perm_gene, _perm_gene)
+                    _perm_id   = _perm_gene
                     # join peak_lod for chr + LOD of representative gene
-                    _pk_s5_info = (pd.read_csv(peak_lod_path, usecols=['gene', 'chr', 'peak_lod'])
+                    _perm_gene_info = (pd.read_csv(peak_lod_path, usecols=['gene', 'chr', 'peak_lod'])
                                    if peak_lod_path.exists() else None)
                     _rep_info = (
-                        _pk_s5_info[_pk_s5_info['gene'] == _perm_gene].iloc[0]
-                        if _pk_s5_info is not None and (_pk_s5_info['gene'] == _perm_gene).any()
+                        _perm_gene_info[_perm_gene_info['gene'] == _perm_gene].iloc[0]
+                        if _perm_gene_info is not None and (_perm_gene_info['gene'] == _perm_gene).any()
                         else None
                     )
                     if _rep_info is not None:
@@ -2563,49 +2654,49 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 else:
                     # estimate h² on-the-fly from a random sample of peak_lod genes
                     log.info('  estimating h² for representative gene selection ...')
-                    _pk_s5     = pd.read_csv(peak_lod_path)
-                    _sub_s5    = _pk_s5[_pk_s5['chr'].astype(str) == str(peak_chr)]
-                    _samp_s5   = (_sub_s5['gene']
-                                  .sample(min(500, len(_sub_s5)), random_state=1)
+                    _peak_df_perm     = pd.read_csv(peak_lod_path)
+                    _perm_chr_genes    = _peak_df_perm[_peak_df_perm['chr'].astype(str) == str(peak_chr)]
+                    _perm_gene_sample   = (_perm_chr_genes['gene']
+                                  .sample(min(500, len(_perm_chr_genes)), random_state=1)
                                   .tolist())
-                    _samp_ids  = [gene_name_to_id.get(g, g) for g in _samp_s5]
-                    _cts_s5, _lds_s5, _sids_s5 = _load_expression(h5_path, _samp_ids)
-                    _gids_s5   = [meta_geno_map.get(s, s) for s in _sids_s5]
+                    _samp_ids  = _perm_gene_sample
+                    _perm_counts, _perm_loaded, _perm_sids = _load_expression(h5_path, _samp_ids)
+                    _perm_gids   = [meta_geno_map.get(s, s) for s in _perm_sids]
                     _kd_ref    = kinship_decomp[peak_chr]
                     _ev_ref    = _kd_ref['values']
                     _evc_ref   = _kd_ref['vectors']
                     # restrict to samples present in cache
-                    _vsid_s5   = np.array([i for i, g in enumerate(_gids_s5)
+                    _perm_valid_idx   = np.array([i for i, g in enumerate(_perm_gids)
                                            if g in cache.sample_ids])
                     _h2_pairs: list[tuple[str, float]] = []
-                    for _gi5, _gn5 in enumerate(_lds_s5):
-                        _y5 = rint(_cts_s5[_gi5].astype(float))
-                        if np.any(np.isnan(_y5[_vsid_s5])):
+                    for _pgi, _pgn in enumerate(_perm_loaded):
+                        _py = rint(_perm_counts[_pgi].astype(float))
+                        if np.any(np.isnan(_py[_perm_valid_idx])):
                             continue
                         try:
-                            _cov5 = _build_covariates(meta, [_sids_s5[j]
-                                                              for j in _vsid_s5])
-                            _x5   = np.hstack([np.ones((_cov5.shape[0], 1)), _cov5])
-                            _h5, _ = estimate_h2_null(
-                                _evc_ref.T @ _y5[_vsid_s5],
-                                _evc_ref.T @ _x5,
+                            _pcov = _build_covariates(meta, [_perm_sids[j]
+                                                              for j in _perm_valid_idx])
+                            _px   = np.hstack([np.ones((_pcov.shape[0], 1)), _pcov])
+                            _ph2, _ = estimate_h2_null(
+                                _evc_ref.T @ _py[_perm_valid_idx],
+                                _evc_ref.T @ _px,
                                 _ev_ref)
-                            _h2_pairs.append((_gn5, float(_h5)))
+                            _h2_pairs.append((_pgn, float(_ph2)))
                         except Exception:
                             pass
-                    del _cts_s5; gc.collect()
+                    del _perm_counts; gc.collect()
                     if not _h2_pairs:
                         log.warning('  h² estimation failed for all sampled genes; '
                                     'falling back to highest-LOD gene on chr%s', peak_chr)
                         _perm_gene = str(
-                            _sub_s5.loc[_sub_s5['peak_lod'].idxmax(), 'gene'])
+                            _perm_chr_genes.loc[_perm_chr_genes['peak_lod'].idxmax(), 'gene'])
                         _h2_med    = float('nan')
                     else:
                         _h2_arr    = np.array([h for _, h in _h2_pairs])
                         _h2_med    = float(np.median(_h2_arr))
                         _best_idx  = int(np.argmin(np.abs(_h2_arr - _h2_med)))
                         _perm_gene = _h2_pairs[_best_idx][0]
-                    _perm_id = gene_name_to_id.get(_perm_gene, _perm_gene)
+                    _perm_id = _perm_gene
                     log.info('  median h²=%.3f  representative gene: %s', _h2_med, _perm_gene)
 
                 _cts, _lds, _sids = _load_expression(h5_path, [_perm_id])
@@ -2619,7 +2710,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     # genome-wide scan: pass full kinship_decomp so max is taken
                     # across ALL chromosomes per permutation replicate
                     _null = generate_null_outcomes(_y, n_perms=1000, seed=1)
-                    _t_s5_scan = time.perf_counter()
+                    _t_perm_scan = time.perf_counter()
                     _gw_max, _chr_nulls = run_threshold_scans(
                         _null, cache,
                         phenotype=_y,
@@ -2628,26 +2719,26 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         chrom=None,
                         sample_ids=_gids,
                     )
-                    _scan_elapsed_s5 = time.perf_counter() - _t_s5_scan
-                    chr_null_lods_s5 = _chr_nulls
-                    perm_max_lods_s5 = _gw_max
-                    perm_n_s5        = int(np.isfinite(_gw_max).sum())
-                    _perms_per_hr_s5 = round(perm_n_s5 / _scan_elapsed_s5 * 3600, 1)
+                    _perm_scan_elapsed = time.perf_counter() - _t_perm_scan
+                    chr_null_lods = _chr_nulls
+                    perm_max_lods = _gw_max
+                    perm_n        = int(np.isfinite(_gw_max).sum())
+                    _perms_per_hr = round(perm_n / _perm_scan_elapsed * 3600, 1)
 
                     _gw_thr, _ = get_gev_thresholds(_gw_max, percentile=0.95)
-                    log.info('  genome-wide GEV threshold=%.3f  (n_perms=%d)',
-                             _gw_thr, perm_n_s5)
+                    log.info('  genome-wide GEV threshold=%s  (n_perms=%d)',
+                             f'{_gw_thr:.3f}' if _gw_thr is not None else 'n/a', perm_n)
                     log.info('  scan loop: %.0fs for %d perms  (%.1f perms/hr)',
-                             _scan_elapsed_s5, perm_n_s5, _perms_per_hr_s5)
+                             _perm_scan_elapsed, perm_n, _perms_per_hr)
 
                     # save genome-wide null distribution (single file)
                     pd.DataFrame({'max_lod': _gw_max}).to_csv(
-                        py_dir / 's5_perm_max_lods.csv', index=False)
+                        core_dir / 'perm_max_lods.csv', index=False)
 
                     # save per-chromosome nulls for distribution plots
                     for _c5, _c5_null in _chr_nulls.items():
                         pd.DataFrame({'max_lod': _c5_null}).to_csv(
-                            py_dir / f's5_perm_max_lods_chr{_c5}.csv', index=False)
+                            core_dir / f'perm_max_lods_chr{_c5}.csv', index=False)
 
                     # single-row threshold file with genome_wide sentinel
                     # scan_elapsed_s / perms_per_hr mirror R's thresholds_genome.csv
@@ -2657,36 +2748,37 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         'threshold':      _gw_thr,
                         'perm_gene':      _perm_gene,
                         'h2_median':      _h2_med,
-                        'n_perms':        perm_n_s5,
-                        'scan_elapsed_s': round(_scan_elapsed_s5, 1),
-                        'perms_per_hr':   _perms_per_hr_s5,
-                    }]).to_csv(py_dir / 's5_threshold.csv', index=False)
+                        'n_perms':        perm_n,
+                        'scan_elapsed_s': round(_perm_scan_elapsed, 1),
+                        'perms_per_hr':   _perms_per_hr,
+                    }]).to_csv(core_dir / 'threshold.csv', index=False)
 
                     # compare to R peak-chr permutation (approximate — different scope)
                     if r_perm_lod_path.exists():
                         r_max_lods = pd.read_csv(r_perm_lod_path)['max_lod'].values
                         r_thr, _   = get_gev_thresholds(r_max_lods, percentile=0.95)
-                        log.info('  R chr%s GEV=%.3f  delta vs genome-wide=%.3f'
-                                 '  (expected: gw > per-chr)', peak_chr, r_thr,
-                                 _gw_thr - r_thr)
+                        if r_thr is not None and _gw_thr is not None:
+                            log.info('  R chr%s GEV=%.3f  delta vs genome-wide=%.3f'
+                                     '  (expected: gw > per-chr)', peak_chr, r_thr,
+                                     _gw_thr - r_thr)
 
                     results['S5_perm_threshold'] = True
-                    n_genes_s5_total = len(_eff_s5)
+                    n_genes_perm_total = len(_eff_perm)
 
-            _, _s5_peak = tracemalloc.get_traced_memory()
+            _, _perm_heap_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
-            _record_stats('S5', 'permutation', n_genes_s5_total if 'n_genes_s5_total' in locals() else 0,
-                          time.perf_counter() - _t_s5, _s5_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_s5))
+            _record_stats('S5', 'permutation', n_genes_perm_total if 'n_genes_perm_total' in locals() else 0,
+                          time.perf_counter() - _t_perm, _perm_heap_peak / 1e6,
+                          max(0.0, _get_rss_mb() - _rss_perm))
             _mark_done(py_dir, str(sec))
 
-    # ── eGene calling (after S5 — genome-wide threshold from s5_threshold.csv)
+    # ── eGene calling (after S5 — genome-wide threshold from threshold.csv)
     sec = 6
     eqtl_summary_path = py_dir / 'eqtl_summary.csv'
     if peak_lod_path.exists() and not _checkpoint(py_dir, str(sec), force):
         log.info('\n── eGene calling + GxE/PxG ──────────────────────────────────────')
         peak_py_loaded = pd.read_csv(peak_lod_path)
-        py_thr_path = py_dir / 's5_threshold.csv'
+        py_thr_path = core_dir / 'threshold.csv'
         thr: 'float | None' = None
         if py_thr_path.exists():
             _thr_df  = pd.read_csv(py_thr_path)
@@ -2695,7 +2787,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             _gw_thr_val = _thr_map.get('genome_wide')
             thr = _gw_thr_val if _gw_thr_val is not None else _thr_map.get(str(peak_chr))
             if thr is not None:
-                eff_path = py_dir / 's4_allele_effects.csv'
+                eff_path = core_dir / 'allele_effects.csv'
                 eff_tmp: 'pd.DataFrame | None' = None
                 if eff_path.exists():
                     eff_tmp = pd.read_csv(
@@ -2715,23 +2807,23 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                          thr, len(egenes_df), len(peak_py_loaded))
 
             # ── reload perm nulls from CSV when running from checkpoint ─────────
-            if perm_max_lods_s5 is None:
-                _pml_path = py_dir / 's5_perm_max_lods.csv'
+            if perm_max_lods is None:
+                _pml_path = core_dir / 'perm_max_lods.csv'
                 if _pml_path.exists():
-                    perm_max_lods_s5 = pd.read_csv(_pml_path)['max_lod'].values
-                    perm_n_s5 = len(perm_max_lods_s5)
+                    perm_max_lods = pd.read_csv(_pml_path)['max_lod'].values
+                    perm_n = len(perm_max_lods)
                     # load all per-chromosome nulls saved during S5 run
-                    chr_null_lods_s5 = {}
+                    chr_null_lods = {}
                     for _f in sorted(
-                        py_dir.glob('s5_perm_max_lods_chr*.csv'),
+                        core_dir.glob('perm_max_lods_chr*.csv'),
                         key=lambda p: _chr_sort_key(
-                            p.stem.replace('s5_perm_max_lods_chr', '')
+                            p.stem.replace('perm_max_lods_chr', '')
                         ),
                     ):
-                        _ch_key = _f.stem.replace('s5_perm_max_lods_chr', '')
-                        chr_null_lods_s5[_ch_key] = pd.read_csv(_f)['max_lod'].values
-                    if not chr_null_lods_s5:
-                        chr_null_lods_s5 = {peak_chr: perm_max_lods_s5}
+                        _ch_key = _f.stem.replace('perm_max_lods_chr', '')
+                        chr_null_lods[_ch_key] = pd.read_csv(_f)['max_lod'].values
+                    if not chr_null_lods:
+                        chr_null_lods = {peak_chr: perm_max_lods}
 
             # ── genome-wide FWER calling only (Storey q-value disabled) ─────────
             # Storey q-value requires each gene's p-value to be valid under its
@@ -2743,9 +2835,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             # plateauing, and 12.9% of genes had p>0.95 vs the 5% a true uniform
             # null implies. Disabled until S5 produces a per-gene-calibrated null.
             # eGene calling above already uses the genome-wide GEV threshold
-            # (`thr` from s5_threshold.csv) — that FWER gate is unaffected.
-            if perm_max_lods_s5 is not None:
-                egenes_df['perm_n']   = perm_n_s5
+            # (`thr` from threshold.csv) — that FWER gate is unaffected.
+            if perm_max_lods is not None:
+                egenes_df['perm_n']   = perm_n
                 egenes_df['perm_chr'] = peak_chr
 
             # GxE/PxG disabled — not accurate until per-gene permutation null
@@ -2806,16 +2898,43 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             _row['gene'], _row['lod_r'], _row['lod_py'],
                             _row['lod_r'] / _row['lod_py'],
                         )
-            # add h2, tss_mb from allele effects (computed during S4 scan)
-            _eff_sum_path = py_dir / 's4_allele_effects.csv'
+            # add h2, start_mb from allele effects (computed during S4 scan)
+            _eff_sum_path = core_dir / 'allele_effects.csv'
             if _eff_sum_path.exists():
-                _h2_sum = pd.read_csv(_eff_sum_path, usecols=['gene', 'h2', 'tss_mb'])
+                _eff_cols = ['gene', 'h2']
+                _eff_peek = pd.read_csv(_eff_sum_path, nrows=0).columns.tolist()
+                if 'start_mb' in _eff_peek:
+                    _eff_cols.append('start_mb')
+                elif 'tss_mb' in _eff_peek:
+                    _eff_cols.append('tss_mb')
+                _h2_sum = pd.read_csv(_eff_sum_path, usecols=_eff_cols)
+                if 'tss_mb' in _h2_sum.columns:
+                    _h2_sum = _h2_sum.rename(columns={'tss_mb': 'start_mb'})
                 eqtl_sum = eqtl_sum.merge(_h2_sum, on='gene', how='left')
 
-            # cis_dist_mb = |peak_mb - tss_mb| (direct positional context for each eGene)
-            if 'tss_mb' in eqtl_sum.columns:
+            # join near_tss_mb from peak_lod (computed post-peak during S4 scan)
+            if peak_lod_path.exists():
+                _pk_cols_eq = ['gene']
+                _pk_peek = pd.read_csv(peak_lod_path, nrows=0).columns.tolist()
+                for _c in ('near_tss_mb', 'start_mb'):
+                    if _c in _pk_peek and _c not in eqtl_sum.columns:
+                        _pk_cols_eq.append(_c)
+                if len(_pk_cols_eq) > 1:
+                    _pk_tss = pd.read_csv(peak_lod_path, usecols=_pk_cols_eq)
+                    eqtl_sum = eqtl_sum.merge(_pk_tss, on='gene', how='left')
+
+            # cis_dist_mb = peak_mb − near_tss_mb; falls back to start_mb if NaN
+            if 'near_tss_mb' in eqtl_sum.columns:
                 eqtl_sum['cis_dist_mb'] = (
-                    (eqtl_sum['peak_mb'] - eqtl_sum['tss_mb']).abs().round(3))
+                    eqtl_sum['peak_mb'] - eqtl_sum['near_tss_mb']).round(6)
+                if 'start_mb' in eqtl_sum.columns:
+                    _nan_mask = eqtl_sum['near_tss_mb'].isna()
+                    eqtl_sum.loc[_nan_mask, 'cis_dist_mb'] = (
+                        eqtl_sum.loc[_nan_mask, 'peak_mb']
+                        - eqtl_sum.loc[_nan_mask, 'start_mb']).round(6)
+            elif 'start_mb' in eqtl_sum.columns:
+                eqtl_sum['cis_dist_mb'] = (
+                    eqtl_sum['peak_mb'] - eqtl_sum['start_mb']).round(6)
 
             # chi2_haplotype and p_haplotype derived from peak_lod (no extra scan)
             # df = J-1 = 7 for 8-founder additive model
@@ -2823,8 +2942,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             eqtl_sum['p_haplotype'] = sp_stats.chi2.sf(
                 eqtl_sum['chi2_haplotype'].values, df=7)
 
-            col_order = ['gene', 'chr', 'tss_mb', 'peak_locus', 'peak_mb', 'cis_dist_mb',
-                         'peak_lod', 'h2',
+            col_order = ['gene', 'chr', 'start_mb', 'near_tss_mb', 'peak_locus', 'peak_mb',
+                         'cis_dist_mb', 'peak_lod', 'h2',
                          'perm_n', 'perm_chr',
                          'chi2_haplotype', 'p_haplotype',
                          'in_r_egenes']
@@ -2839,6 +2958,22 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         log.info('[eGenes] loaded %d eGenes from checkpoint (%s)',
                  len(egenes_df), eqtl_summary_path.name)
 
+    # gene_meta passed to all streaming scan functions (S7–S11)
+    _gene_meta: 'pd.DataFrame | None' = None
+    _peak_mb_map: 'dict[str, float]' = {}
+    if egenes_df is not None and len(egenes_df) > 0:
+        _gm_cols = [c for c in ['gene', 'near_tss_mb', 'cis_dist_mb', 'peak_lod', 'peak_mb']
+                    if c in egenes_df.columns]
+        _gene_meta = (egenes_df[_gm_cols]
+                      .drop_duplicates('gene')
+                      .rename(columns={'peak_lod': 'peak_lod_lmm', 'peak_mb': 'peak_mb_lmm'})
+                      .copy())
+        _peak_mb_map = {
+            str(r['gene']): float(r['peak_mb_lmm'])
+            for _, r in _gene_meta.iterrows()
+            if pd.notna(r.get('peak_mb_lmm'))
+        }
+
     # ─────────────────────────────────────────────────────────────────────────
     # S7 — MI scan (significant genes on peak_chr)
     # ─────────────────────────────────────────────────────────────────────────
@@ -2846,62 +2981,69 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     r_mi_path = r_data / 'mi_lod_genome.csv'
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
-            _rss_s7 = _get_rss_mb()
+            _rss_mi = _get_rss_mb()
             tracemalloc.start()
-            _t_s7 = time.perf_counter()
+            _t_mi = time.perf_counter()
             log.info('\nS7: MI scan...')
             if egenes_df is None or len(egenes_df) == 0:
                 log.info('  %s no eGenes — run S4+S5 first', SKIP)
                 results['S7_mi_scan'] = None
             else:
                 h5_path = data_dir / 'counts_lognorm.h5'
-                _s7_ids = [gene_name_to_id.get(r['gene'], r['gene'])
+                _mi_ids = [r['gene']
                            for _, r in egenes_df.iterrows()]
-                _s7_counts, _s7_loaded, _s7_sids = _load_expression(h5_path, _s7_ids)
-                _s7_expr = {gid: _s7_counts[i].astype(float)
-                            for i, gid in enumerate(_s7_loaded)}
-                _s7_chr_map = {}
+                _mi_counts, _mi_loaded, _mi_sids = _load_expression(h5_path, _mi_ids)
+                _mi_expr = {gid: _mi_counts[i].astype(float)
+                            for i, gid in enumerate(_mi_loaded)}
+                _mi_chr_map = {}
                 for _, erow in egenes_df.iterrows():
-                    gid = gene_name_to_id.get(erow['gene'], erow['gene'])
-                    _s7_chr_map[gid] = str(erow.get('chr', peak_chr))
-                geno_ids_s7 = [meta_geno_map.get(s, s) for s in _s7_sids]
-                cov_s7 = _build_covariates(meta, _s7_sids)
-                _s7_path = py_dir / 's7_mi_lod.csv'
-                log.info('  scanning %d eGenes via MI (streaming)...', len(_s7_expr))
+                    gid = erow['gene']
+                    _mi_chr_map[gid] = str(erow.get('chr', peak_chr))
+                geno_ids_mi = [meta_geno_map.get(s, s) for s in _mi_sids]
+                cov_mi = _build_covariates(meta, _mi_sids)
+                _mi_out_path = ext_dir / 'mi_lod.csv'
+                log.info('  scanning %d eGenes via MI (streaming)...', len(_mi_expr))
                 mi_df = scan_multi_gene_mi(
-                    _s7_expr, _s7_chr_map, cache,
-                    covariates=cov_s7,
+                    _mi_expr, _mi_chr_map, cache,
+                    covariates=cov_mi,
                     kinship_decomp=kinship_decomp,
-                    sample_ids=geno_ids_s7,
+                    sample_ids=geno_ids_mi,
                     n_imp=11, seed=1,
-                    output_path=_s7_path,
+                    peak_mb_map=_peak_mb_map,
+                    output_path=_mi_out_path,
+                    gene_meta=_gene_meta,
                 )
-                del _s7_expr, _s7_counts
+                del _mi_expr, _mi_counts
                 if not mi_df.empty:
                     log.info('  MI scan complete: %d genes', mi_df['gene'].nunique())
                     results['S7_mi_scan'] = True
                     if r_mi_path.exists():
                         r_mi = pd.read_csv(r_mi_path)
-                        merged_mi = _pos_merge(mi_df, r_mi, 'lod', 'lod')
+                        # peak_only=True → one row per gene; compare peak LOD per gene
+                        r_mi_peak = (r_mi.groupby('gene')['lod'].max()
+                                     .reset_index().rename(columns={'lod': 'r'}))
+                        merged_mi = (mi_df[['gene', 'peak_lod']]
+                                     .rename(columns={'peak_lod': 'py'})
+                                     .merge(r_mi_peak, on='gene', how='inner'))
                         if len(merged_mi) >= 10:
                             r_mi_r, _ = sp_stats.pearsonr(merged_mi['py'],
                                                            merged_mi['r'])
-                            merged_mi.to_csv(cmp_dir / 's7_mi_cmp.csv', index=False)
+                            merged_mi.to_csv(cmp_dir / 'mi_cmp.csv', index=False)
                             _check('MI LOD r', abs(r_mi_r), 0.75)
                             log.info('  vs R: r=%.4f  n=%d', r_mi_r, len(merged_mi))
                             fig, _ax = _cmp_scatter(
                                 merged_mi, 'r', 'py',
                                 'MI LOD (R)', 'MI LOD (Python)',
-                                save_path=plt_dir / 's7_mi_scatter.png',
+                                save_path=plt_dir / 'mi_scatter.png',
                             )
                             plt.close(fig)
                 else:
                     results['S7_mi_scan'] = None
-            _, _s7_peak = tracemalloc.get_traced_memory()
+            _, _mi_heap_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
             _record_stats('S7', 'mi_scan', len(egenes_df) if egenes_df is not None else 0,
-                          time.perf_counter() - _t_s7, _s7_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_s7))
+                          time.perf_counter() - _t_mi, _mi_heap_peak / 1e6,
+                          max(0.0, _get_rss_mb() - _rss_mi))
             _mark_done(py_dir, str(sec))
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -2911,9 +3053,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     r_snp_path = r_data / 'snp_lod_genome.csv'
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
-            _rss_s8 = _get_rss_mb()
+            _rss_snp = _get_rss_mb()
             tracemalloc.start()
-            _t_s8 = time.perf_counter()
+            _t_snp = time.perf_counter()
             log.info('\nS8: SNP scan...')
             if not ALLELE_H5.exists():
                 log.info('  %s founder_alleles.h5 not found at %s — '
@@ -2924,40 +3066,45 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 results['S8_snp_lod_r'] = None
             else:
                 h5_path = data_dir / 'counts_lognorm.h5'
-                _s8_ids = [gene_name_to_id.get(r['gene'], r['gene'])
-                           for _, r in egenes_df.iterrows()]
-                _s8_counts, _s8_loaded, _s8_sids = _load_expression(h5_path, _s8_ids)
-                _s8_expr = {gid: _s8_counts[i].astype(float)
-                            for i, gid in enumerate(_s8_loaded)}
-                _s8_chr_map = {}
+                _snp_ids = [r['gene']
+                            for _, r in egenes_df.iterrows()]
+                _snp_counts, _snp_loaded, _snp_sids = _load_expression(h5_path, _snp_ids)
+                _snp_expr = {gid: _snp_counts[i].astype(float)
+                             for i, gid in enumerate(_snp_loaded)}
+                _snp_chr_map = {}
                 for _, erow in egenes_df.iterrows():
-                    gid = gene_name_to_id.get(erow['gene'], erow['gene'])
-                    _s8_chr_map[gid] = str(erow.get('chr', peak_chr))
-                geno_ids_s8 = [meta_geno_map.get(s, s) for s in _s8_sids]
-                cov_s8 = _build_covariates(meta, _s8_sids)
-                _s8_path = py_dir / 's8_snp_lod.csv'
-                log.info('  scanning %d eGenes via SNP (streaming)...', len(_s8_expr))
+                    gid = erow['gene']
+                    _snp_chr_map[gid] = str(erow.get('chr', peak_chr))
+                geno_ids_snp = [meta_geno_map.get(s, s) for s in _snp_sids]
+                cov_snp = _build_covariates(meta, _snp_sids)
+                _snp_out_path = ext_dir / 'snp_lod.csv'
+                log.info('  scanning %d eGenes via SNP (streaming)...', len(_snp_expr))
                 snp_df = snp_scan_multi_gene(
-                    _s8_expr, _s8_chr_map, cache,
+                    _snp_expr, _snp_chr_map, cache,
                     alleles_h5=str(ALLELE_H5),
-                    covariates=cov_s8,
+                    covariates=cov_snp,
                     kinship_decomp=kinship_decomp,
-                    sample_ids=geno_ids_s8,
+                    sample_ids=geno_ids_snp,
                     founder_col_map=FOUNDER_CODE,
-                    output_path=_s8_path,
+                    output_path=_snp_out_path,
+                    gene_meta=_gene_meta,
                 )
-                del _s8_expr, _s8_counts
+                del _snp_expr, _snp_counts
                 if not snp_df.empty:
-                    snp_df.to_csv(py_dir / 's8_snp_lod.csv', index=False)
                     if r_snp_path.exists():
                         r_snp = pd.read_csv(r_snp_path)
-                        merged_snp = _pos_merge(snp_df, r_snp, 'lod', 'lod')
+                        # peak_only=True → one row per gene; compare peak SNP LOD per gene
+                        r_snp_peak = (r_snp.groupby('gene')['lod'].max()
+                                      .reset_index().rename(columns={'lod': 'r'}))
+                        merged_snp = (snp_df[['gene', 'peak_lod']]
+                                      .rename(columns={'peak_lod': 'py'})
+                                      .merge(r_snp_peak, on='gene', how='inner'))
                         if len(merged_snp) >= 10:
                             r_snp_r, _ = sp_stats.pearsonr(merged_snp['py'],
                                                             merged_snp['r'])
                             slope_snp, *_ = sp_stats.linregress(
                                 merged_snp['r'], merged_snp['py'])
-                            merged_snp.to_csv(cmp_dir / 's8_snp_comparison.csv',
+                            merged_snp.to_csv(cmp_dir / 'snp_comparison.csv',
                                               index=False)
                             log.info('  r=%.4f  slope=%.3f  n=%d/%d',
                                      r_snp_r, slope_snp,
@@ -2965,7 +3112,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             fig, _ax = _cmp_scatter(
                                 merged_snp, 'r', 'py',
                                 'SNP LOD (R)', 'SNP LOD (Python)',
-                                save_path=plt_dir / 's8_snp_scatter.png',
+                                save_path=plt_dir / 'snp_scatter.png',
                             )
                             plt.close(fig)
                             results['S8_snp_lod_r'] = (abs(r_snp_r) >= 0.75 and
@@ -2974,18 +3121,18 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             log.info('  %s too few matched SNPs', SKIP)
                             results['S8_snp_lod_r'] = None
                     else:
-                        log.info('  Python SNP scan complete (%d SNPs across %d genes) '
+                        log.info('  Python SNP scan complete (%d genes) '
                                  '— no R reference yet (run gastroc_miqtl_scan.R S8)',
-                                 len(snp_df), snp_df['gene'].nunique())
+                                 snp_df['gene'].nunique())
                         results['S8_snp_lod_r'] = None
                 else:
                     log.info('  %s SNP scan produced no results', SKIP)
                     results['S8_snp_lod_r'] = None
-            _, _s8_peak = tracemalloc.get_traced_memory()
+            _, _snp_heap_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
             _record_stats('S8', 'snp_scan', len(egenes_df) if egenes_df is not None else 0,
-                          time.perf_counter() - _t_s8, _s8_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_s8))
+                          time.perf_counter() - _t_snp, _snp_heap_peak / 1e6,
+                          max(0.0, _get_rss_mb() - _rss_snp))
             _mark_done(py_dir, str(sec))
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -2996,9 +3143,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     r_med_path = r_data / 'mediation_genome.csv'
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
-            _rss_s9 = _get_rss_mb()
+            _rss_med = _get_rss_mb()
             tracemalloc.start()
-            _t_s9 = time.perf_counter()
+            _t_med = time.perf_counter()
             log.info('\nS9: mediation scan...')
             if egenes_df is None or len(egenes_df) < 2:
                 log.info('  %s need >=2 eGenes — run S4+S5 first', SKIP)
@@ -3028,32 +3175,31 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 # Without this, per-mediator _load_expression calls (up to 90+ per
                 # outcome × N outcomes) each open the file, scan 43k gene IDs, and
                 # decompress 9 column chunks — adding 10–20 min to S9 total runtime.
-                _s9_all_names: set[str] = set(_pairs_by_outcome.keys())
+                _med_all_names: set[str] = set(_pairs_by_outcome.keys())
                 for _ml in _pairs_by_outcome.values():
-                    _s9_all_names.update(_mn for _mn, _ in _ml)
-                _s9_all_ids = list(dict.fromkeys(
-                    gene_name_to_id.get(_nm, _nm) for _nm in _s9_all_names
-                ))
-                _s9_counts, _s9_loaded, _s9_sids = _load_expression(h5_path, _s9_all_ids)
-                _s9_expr = {gid: _s9_counts[i].astype(float)
-                            for i, gid in enumerate(_s9_loaded)}
-                del _s9_counts
+                    _med_all_names.update(_mn for _mn, _ in _ml)
+                _med_all_ids = list(dict.fromkeys(_med_all_names))
+                _med_counts, _med_loaded, _med_sids = _load_expression(h5_path, _med_all_ids)
+                _med_expr = {gid: _med_counts[i].astype(float)
+                             for i, gid in enumerate(_med_loaded)}
+                del _med_counts
                 log.info('  pre-loaded %d gene expressions (%d unique IDs) in 1 HDF5 call',
-                         len(_s9_loaded), len(_s9_all_ids))
+                         len(_med_loaded), len(_med_all_ids))
 
-                geno_ids_s9 = [meta_geno_map.get(s, s) for s in _s9_sids]
-                cov_s9 = _build_covariates(meta, _s9_sids)
-                _med_path = py_dir / 's9_mediation.csv'
+                geno_ids_med = [meta_geno_map.get(s, s) for s in _med_sids]
+                cov_med = _build_covariates(meta, _med_sids)
+                _med_out_path = ext_dir / 'mediation.csv'
                 log.info('  running mediation for %d outcomes (streaming)...',
                          len(_pairs_by_outcome))
                 med_df = mediation_scan_multi_outcome(
-                    _pairs_by_outcome, _s9_expr, cache,
-                    covariates=cov_s9,
+                    _pairs_by_outcome, _med_expr, cache,
+                    covariates=cov_med,
                     kinship_decomp=kinship_decomp,
-                    sample_ids=geno_ids_s9,
-                    output_path=_med_path,
+                    sample_ids=geno_ids_med,
+                    output_path=_med_out_path,
+                    gene_meta=_gene_meta,
                 )
-                del _s9_expr
+                del _med_expr
                 if not med_df.empty:
                     log.info('  mediation complete: %d genes', med_df['gene'].nunique())
                     results['S9_mediation'] = True
@@ -3067,27 +3213,28 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             r_med = r_med.rename(columns={'pos.Mb': 'pos_mb'})
                         if 'lod_mediated' in r_med.columns and 'lod' not in r_med.columns:
                             r_med = r_med.rename(columns={'lod_mediated': 'lod'})
-                        merged_med = _pos_merge(med_df, r_med, 'lod_mediated', 'lod')
+                        merged_med = _pos_merge(med_df, r_med, 'lod_mediated', 'lod',
+                                                left_label='py', right_label='r')
                         if len(merged_med) >= 10:
                             r_m, _ = sp_stats.pearsonr(merged_med['py'],
                                                         merged_med['r'])
-                            merged_med.to_csv(cmp_dir / 's9_mediation_cmp.csv',
+                            merged_med.to_csv(cmp_dir / 'mediation_cmp.csv',
                                               index=False)
                             _check('mediation LOD r', abs(r_m), 0.90)
                             log.info('  vs R: r=%.4f  n=%d', r_m, len(merged_med))
                             fig, _ax = _cmp_scatter(
                                 merged_med, 'r', 'py',
                                 'Mediated LOD (R)', 'Mediated LOD (Python)',
-                                save_path=plt_dir / 's9_mediation_scatter.png',
+                                save_path=plt_dir / 'mediation_scatter.png',
                             )
                             plt.close(fig)
                 else:
                     results['S9_mediation'] = None
-            _, _s9_peak = tracemalloc.get_traced_memory()
+            _, _med_heap_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
             _record_stats('S9', 'mediation', len(egenes_df) if egenes_df is not None else 0,
-                          time.perf_counter() - _t_s9, _s9_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_s9))
+                          time.perf_counter() - _t_med, _med_heap_peak / 1e6,
+                          max(0.0, _get_rss_mb() - _rss_med))
             _mark_done(py_dir, str(sec))
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -3098,40 +3245,41 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     r_ci_path = r_data / 'ci_summary_genome.csv'
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
-            _rss_s10 = _get_rss_mb()
+            _rss_ci = _get_rss_mb()
             tracemalloc.start()
-            _t_s10 = time.perf_counter()
+            _t_ci = time.perf_counter()
             log.info('\nS10: bootstrap CI...')
             if egenes_df is None or len(egenes_df) == 0:
                 log.info('  %s no eGenes — run S4+S5 first', SKIP)
                 results['S10_ci'] = None
             else:
                 h5_path = data_dir / 'counts_lognorm.h5'
-                _s10_ids = [gene_name_to_id.get(r['gene'], r['gene'])
-                            for _, r in egenes_df.iterrows()]
-                _s10_counts, _s10_loaded, _s10_sids = _load_expression(h5_path, _s10_ids)
-                _s10_expr = {gid: _s10_counts[i].astype(float)
-                             for i, gid in enumerate(_s10_loaded)}
-                del _s10_counts
-                _s10_chr_map = {}
-                _s10_peak_map = {}
+                _ci_ids = [r['gene']
+                           for _, r in egenes_df.iterrows()]
+                _ci_counts, _ci_loaded, _ci_sids = _load_expression(h5_path, _ci_ids)
+                _ci_expr = {gid: _ci_counts[i].astype(float)
+                            for i, gid in enumerate(_ci_loaded)}
+                del _ci_counts
+                _ci_chr_map = {}
+                _ci_peak_map = {}
                 for _, erow in egenes_df.iterrows():
-                    gid = gene_name_to_id.get(erow['gene'], erow['gene'])
-                    _s10_chr_map[gid] = str(erow.get('chr', peak_chr))
-                    _s10_peak_map[gid] = float(erow.get('peak_mb', np.nan))
-                geno_ids_s10 = [meta_geno_map.get(s, s) for s in _s10_sids]
-                cov_s10 = _build_covariates(meta, _s10_sids)
-                _s10_path = py_dir / 's10_ci.csv'
-                log.info('  bootstrap CI for %d eGenes (streaming)...', len(_s10_expr))
+                    gid = erow['gene']
+                    _ci_chr_map[gid] = str(erow.get('chr', peak_chr))
+                    _ci_peak_map[gid] = float(erow.get('peak_mb', np.nan))
+                geno_ids_ci = [meta_geno_map.get(s, s) for s in _ci_sids]
+                cov_ci = _build_covariates(meta, _ci_sids)
+                _ci_out_path = ext_dir / 'ci.csv'
+                log.info('  bootstrap CI for %d eGenes (streaming)...', len(_ci_expr))
                 ci_df = ci_scan_multi_gene(
-                    _s10_expr, _s10_chr_map, _s10_peak_map, cache,
-                    covariates=cov_s10,
+                    _ci_expr, _ci_chr_map, _ci_peak_map, cache,
+                    covariates=cov_ci,
                     kinship_decomp=kinship_decomp,
-                    sample_ids=geno_ids_s10,
+                    sample_ids=geno_ids_ci,
                     n_boot=200, seed=1,
-                    output_path=_s10_path,
+                    output_path=_ci_out_path,
+                    gene_meta=_gene_meta,
                 )
-                del _s10_expr
+                del _ci_expr
                 if not ci_df.empty:
                     log.info('  CI complete: %d genes  median width=%.2f Mb',
                              len(ci_df),
@@ -3148,16 +3296,16 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                                 (merged_ci['ci_lo'] <= merged_ci['ci_hi_mb']) &
                                 (merged_ci['ci_hi'] >= merged_ci['ci_lo_mb'])
                             ).mean()
-                            merged_ci.to_csv(cmp_dir / 's10_ci_cmp.csv', index=False)
+                            merged_ci.to_csv(cmp_dir / 'ci_cmp.csv', index=False)
                             log.info('  vs R: CI overlap=%.2f  n=%d',
                                      overlap, len(merged_ci))
                 else:
                     results['S10_ci'] = None
-            _, _s10_peak = tracemalloc.get_traced_memory()
+            _, _ci_heap_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
             _record_stats('S10', 'bootstrap_ci', len(egenes_df) if egenes_df is not None else 0,
-                          time.perf_counter() - _t_s10, _s10_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_s10))
+                          time.perf_counter() - _t_ci, _ci_heap_peak / 1e6,
+                          max(0.0, _get_rss_mb() - _rss_ci))
             _mark_done(py_dir, str(sec))
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -3168,71 +3316,75 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     r_inst_path = r_data / 'instability_genome.csv'
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
-            _rss_s11 = _get_rss_mb()
+            _rss_inst = _get_rss_mb()
             tracemalloc.start()
-            _t_s11 = time.perf_counter()
+            _t_inst = time.perf_counter()
             log.info('\nS11: instability scan...')
             if egenes_df is None or len(egenes_df) == 0:
                 log.info('  %s no eGenes — run S4+S5 first', SKIP)
                 results['S11_instability'] = None
             else:
                 h5_path = data_dir / 'counts_lognorm.h5'
-                _s11_ids = [gene_name_to_id.get(r['gene'], r['gene'])
-                            for _, r in egenes_df.iterrows()]
-                _s11_counts, _s11_loaded, _s11_sids = _load_expression(h5_path, _s11_ids)
-                _s11_expr = {gid: _s11_counts[i].astype(float)
-                             for i, gid in enumerate(_s11_loaded)}
-                del _s11_counts
-                _s11_chr_map = {}
+                _inst_ids = [r['gene']
+                             for _, r in egenes_df.iterrows()]
+                _inst_counts, _inst_loaded, _inst_sids = _load_expression(h5_path, _inst_ids)
+                _inst_expr = {gid: _inst_counts[i].astype(float)
+                              for i, gid in enumerate(_inst_loaded)}
+                del _inst_counts
+                _inst_chr_map = {}
                 for _, erow in egenes_df.iterrows():
-                    gid = gene_name_to_id.get(erow['gene'], erow['gene'])
-                    _s11_chr_map[gid] = str(erow.get('chr', peak_chr))
-                geno_ids_s11 = [meta_geno_map.get(s, s) for s in _s11_sids]
-                cov_s11 = _build_covariates(meta, _s11_sids)
-                _s11_path = py_dir / 's11_instability.csv'
-                log.info('  instability scan for %d eGenes (streaming)...', len(_s11_expr))
+                    gid = erow['gene']
+                    _inst_chr_map[gid] = str(erow.get('chr', peak_chr))
+                geno_ids_inst = [meta_geno_map.get(s, s) for s in _inst_sids]
+                cov_inst = _build_covariates(meta, _inst_sids)
+                _inst_out_path = ext_dir / 'instability.csv'
+                log.info('  instability scan for %d eGenes (streaming)...', len(_inst_expr))
                 inst_df = instability_scan_multi_gene(
-                    _s11_expr, _s11_chr_map, cache,
-                    covariates=cov_s11,
-                    sample_ids=geno_ids_s11,
+                    _inst_expr, _inst_chr_map, cache,
+                    covariates=cov_inst,
+                    sample_ids=geno_ids_inst,
                     n_subsamples=100, seed=1,
-                    output_path=_s11_path,
+                    peak_mb_map=_peak_mb_map,
+                    output_path=_inst_out_path,
+                    gene_meta=_gene_meta,
                 )
-                del _s11_expr
+                del _inst_expr
                 if not inst_df.empty:
                     log.info('  instability complete: %d genes', inst_df['gene'].nunique())
                     results['S11_instability'] = True
                     if r_inst_path.exists():
-                        r_inst      = pd.read_csv(r_inst_path)
-                        merged_inst = _pos_merge(inst_df, r_inst,
-                                                  'lod', 'neg_log10_p')
+                        r_inst = pd.read_csv(r_inst_path)
+                        # peak_only=True → one row per gene; compare peak instability per gene
+                        # R: neg_log10_p (median -log10 F-test p); Python: peak_lod
+                        # Both monotone with instability signal — use Spearman (scale-invariant)
+                        r_inst_peak = (r_inst.groupby('gene')['neg_log10_p'].max()
+                                       .reset_index().rename(columns={'neg_log10_p': 'r'}))
+                        merged_inst = (inst_df[['gene', 'peak_lod']]
+                                       .rename(columns={'peak_lod': 'py'})
+                                       .merge(r_inst_peak, on='gene', how='inner'))
                         if len(merged_inst) >= 10:
-                            # R exports neg_log10_p (median -log10 F-test p across subsamples)
-                            # Python exports lod (mean bootstrap LOD from fixef scan)
-                            # Both are monotone with instability signal but on different scales
-                            # — use Spearman rank correlation which is scale-invariant
                             r_i, _ = sp_stats.spearmanr(merged_inst['py'],
                                                           merged_inst['r'])
-                            merged_inst.to_csv(cmp_dir / 's11_instability_cmp.csv',
+                            merged_inst.to_csv(cmp_dir / 'instability_cmp.csv',
                                                index=False)
                             _check('instability rho', abs(r_i), 0.90)
                             log.info('  vs R (Spearman): rho=%.4f  n=%d'
-                                     '  [py=lod, r=neg_log10_p — rank correlation]',
+                                     '  [py=peak_lod, r=peak neg_log10_p — rank correlation]',
                                      r_i, len(merged_inst))
                             fig, _ax = _cmp_scatter(
                                 merged_inst, 'r', 'py',
                                 'Instability −log₁₀p (R)', 'Instability LOD (Python)',
                                 identity_line=False,
-                                save_path=plt_dir / 's11_instability_scatter.png',
+                                save_path=plt_dir / 'instability_scatter.png',
                             )
                             plt.close(fig)
                 else:
                     results['S11_instability'] = None
-            _, _s11_peak = tracemalloc.get_traced_memory()
+            _, _inst_heap_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
             _record_stats('S11', 'instability', len(egenes_df) if egenes_df is not None else 0,
-                          time.perf_counter() - _t_s11, _s11_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_s11))
+                          time.perf_counter() - _t_inst, _inst_heap_peak / 1e6,
+                          max(0.0, _get_rss_mb() - _rss_inst))
             _mark_done(py_dir, str(sec))
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -3304,7 +3456,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     except Exception as exc:
         log.warning('  descriptive plots raised: %s', exc)
 
-    # ── comparison plots (only when R data present) ───────────────────────────
+    # ── comparison plots (R reference present) ───────────────────────────────────
     if any((r_data / f).exists() for f in
            ['cache_info.csv', 'haplotype_probs.csv', 'kinship_summary.csv']):
         log.info('\n── COMPARISON PLOTS ──────────────────────────────────────────')
@@ -3325,9 +3477,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     r4_val  = results.get('S4_lod_r2')
     gpm_val = None
     if _scan_stats:
-        s4_row = next((r for r in _scan_stats if r['section'] == 'S4'), None)
-        if s4_row and s4_row['elapsed_s'] > 0:
-            gpm_val = s4_row['n_items'] / s4_row['elapsed_s'] * 60
+        scan_stat_row = next((r for r in _scan_stats if r['section'] == 'S4'), None)
+        if scan_stat_row and scan_stat_row['elapsed_s'] > 0:
+            gpm_val = scan_stat_row['n_items'] / scan_stat_row['elapsed_s'] * 60
     log.info('\n── SCAN SUMMARY ──────────────────────────────────────────────')
     log.info('  genes scanned    : %d',  n_genes_scanned)
     log.info('  loci evaluated   : %d',  n_loci_total)
@@ -3372,8 +3524,21 @@ def main() -> None:
     ap.add_argument('--genomecache', default=None,
                     help='path to HAPPY genomecache dir for --build-cache '
                          f'(default: {GENOMECACHE})')
-    ap.add_argument('--sections', default=None,
-                    help='comma-separated section numbers (default: all)')
+    ap.add_argument('--full', action='store_true',
+                    help='run all sections S1–S11')
+    ap.add_argument('--scan', action='store_true',
+                    help='run core scan sections S1–S6 (cache, haplotypes, kinship, '
+                         'LMM scan, permutation, eGene calling; default when no flag given)')
+    ap.add_argument('--mi', action='store_true',
+                    help='run S7 multiple-imputation scan (requires S4+S6 outputs)')
+    ap.add_argument('--snp', action='store_true',
+                    help='run S8 SNP fine-mapping scan (requires S4+S6 outputs)')
+    ap.add_argument('--mediation', action='store_true',
+                    help='run S9 mediation scan (requires S4+S6 outputs)')
+    ap.add_argument('--ci', action='store_true',
+                    help='run S10 bootstrap confidence intervals (requires S4+S6 outputs)')
+    ap.add_argument('--instability', action='store_true',
+                    help='run S11 instability scan (requires S4+S6 outputs)')
     ap.add_argument('--plots-only', action='store_true',
                     help='skip all scans, regenerate descriptive plots from existing py_data/')
     ap.add_argument('--force',    action='store_true',
@@ -3389,7 +3554,55 @@ def main() -> None:
     ap.add_argument('--chr', default='8',
                     help='chromosome(s) to scan: "all" or comma-separated like "8" or '
                          '"1,8,11" (default: 8)')
+    ap.add_argument('--celltype', type=str, default=None,
+                    help='cell type label (e.g. myonuclei); runs scan in '
+                         'celltypes/{ct}/ instead of whole-tissue gastroc_data/')
+    ap.add_argument('--compare-celltypes', action='store_true',
+                    help='cross-cell-type comparison: reads per-CT scan outputs and '
+                         'produces comparison plots; exits after completion')
+    ap.add_argument('--celltypes', nargs='+', default=None, metavar='CT',
+                    help='cell-type labels for --compare-celltypes; auto-discovered '
+                         'from celltypes/<name>/<input-version>/py_data/s4_peak_lod.csv '
+                         'when omitted')
+    ap.add_argument('--rep-gene', default='Piezo1',
+                    help='representative gene for LOD profile overlay in '
+                         '--compare-celltypes (default: Piezo1)')
     args = ap.parse_args()
+
+    # ── --compare-celltypes: cross-CT comparison, exits when done ────────────
+    if args.compare_celltypes:
+        _celltypes_dir = GASTROC_DATA / 'celltypes'
+        if args.celltypes:
+            _cts = [_ct_safe(c) for c in args.celltypes]
+        else:
+            _cts = _ct_discover(_celltypes_dir)
+        if not _cts:
+            log.error('no cell types found under %s', _celltypes_dir)
+            sys.exit(1)
+        log.info('--compare-celltypes  cell_types=%s  rep_gene=%s',
+                 _cts, args.rep_gene)
+        _ct_scan_dirs  = {ct: _ct_resolve_dir(GASTROC_DATA, ct) for ct in _cts}
+        _ct_plot_dirs  = {ct: GASTROC_DATA / 'plots' / 'celltypes' / ct for ct in _cts}
+        _compare_out   = GASTROC_DATA / 'plots' / 'celltypes' / 'compare'
+        _whole_py_data = OUT_DIR / 'py_data'
+        for d in list(_ct_plot_dirs.values()) + [_compare_out]:
+            d.mkdir(parents=True, exist_ok=True)
+        _palette   = _ct_palette(_cts)
+        _threshold = _ct_load_threshold(_whole_py_data)
+        _ct_vs_whole_lod(_cts, _ct_scan_dirs, _whole_py_data,
+                         _ct_plot_dirs, _compare_out, _palette,
+                         _threshold, rep_gene=args.rep_gene)
+        _ct_vs_whole_effects(_cts, _ct_scan_dirs, _whole_py_data, _ct_plot_dirs)
+        _ct_lod_overlay(_cts, _ct_scan_dirs, _whole_py_data,
+                        _compare_out, _palette, _threshold, args.rep_gene)
+        _ct_pairwise_lod(_cts, _ct_scan_dirs, _ct_plot_dirs,
+                         _compare_out, _threshold, rep_gene=args.rep_gene)
+        _ct_pairwise_effects(_cts, _ct_scan_dirs, _ct_plot_dirs)
+        _ct_lod_distributions(_cts, _ct_scan_dirs, _whole_py_data,
+                               _compare_out, _palette, _threshold)
+        _ct_cis_distance(_cts, _ct_scan_dirs, _whole_py_data, _compare_out, _palette)
+        log.info('--compare-celltypes done  outputs → %s', _compare_out)
+        sys.exit(0)
 
     # ── --build-cache: one-time rpy2 step, exits when done ────────────────────
     if args.build_cache:
@@ -3405,9 +3618,26 @@ def main() -> None:
 
     if args.plots_only:
         sections: set[int] = set()
+    elif not any([args.full, args.scan, args.mi, args.snp,
+                  args.mediation, args.ci, args.instability]):
+        sections = set(range(1, 7))    # default: --scan equivalent (S1–S6)
     else:
-        sections = (set(int(s.strip()) for s in args.sections.split(','))
-                    if args.sections else set(range(1, 12)))
+        sections = set()
+        if args.full:
+            sections = set(range(1, 12))
+        else:
+            if args.scan:
+                sections.update(range(1, 7))
+            if args.mi:
+                sections.add(7)
+            if args.snp:
+                sections.add(8)
+            if args.mediation:
+                sections.add(9)
+            if args.ci:
+                sections.add(10)
+            if args.instability:
+                sections.add(11)
 
     # parse scan_type (handle "L:2.5" format)
     scan_type_raw = args.scan_type.upper()
@@ -3426,16 +3656,42 @@ def main() -> None:
     else:
         scan_chr = [c.strip() for c in args.chr.split(',')]
 
+    # ── cell-type mode: redirect data and output dirs ─────────────────────────
+    _ct_label = args.celltype
+    if _ct_label is not None:
+        import re as _re
+        _ct = _re.sub(r'[^a-z0-9]+', '_', _ct_label.lower()).strip('_')
+        _ct_dir     = GASTROC_DATA / 'celltypes' / _ct
+        _plt_dir_ct = GASTROC_DATA / 'plots' / 'celltypes' / _ct
+        _ct_exp_gi  = _ct_dir / f'exp_gene_info_{_ct}.csv'
+        if not _ct_dir.exists():
+            log.error('cell-type directory not found: %s\n'
+                      'Run first: conda run -n bioinfo python validation/convert_h5ad.py'
+                      ' --celltype %s', _ct_dir, _ct_label)
+            sys.exit(1)
+        if not _ct_exp_gi.exists():
+            log.error('exp_gene_info_%s.csv not found — rerun convert_h5ad.py --celltype %s',
+                      _ct, _ct_label)
+            sys.exit(1)
+        _run_data_dir = _ct_dir
+        _run_out_dir  = _ct_dir
+        _plt_override = _plt_dir_ct
+    else:
+        _run_data_dir = GASTROC_DATA
+        _run_out_dir  = OUT_DIR
+        _plt_override = None
+
     scan_desc = scan_type if scan_type != 'L' else f'L ±{window_mb:.1f} Mb'
     log.info('validate_gastroc.py  sections=%s  force=%s  n_genes=%s  '
-             'scan_type=%s  chr=%s',
-             sorted(sections), args.force, args.n_genes, scan_desc, args.chr)
-    log.info('  data_dir = %s', GASTROC_DATA)
-    log.info('  r_data   = %s', GASTROC_DATA / 'r_data')
-    log.info('  out_dir  = %s', OUT_DIR)
+             'scan_type=%s  chr=%s  celltype=%s',
+             sorted(sections), args.force, args.n_genes, scan_desc, args.chr,
+             _ct_label or 'whole_tissue')
+    log.info('  data_dir = %s', _run_data_dir)
+    log.info('  out_dir  = %s', _run_out_dir)
 
-    run(GASTROC_DATA, OUT_DIR, sections, args.force, args.n_genes,
-        scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr)
+    run(_run_data_dir, _run_out_dir, sections, args.force, args.n_genes,
+        scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,
+        celltype=_ct_label, plt_dir_override=_plt_override)
 
 
 if __name__ == '__main__':

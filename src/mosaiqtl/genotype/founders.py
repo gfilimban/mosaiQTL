@@ -60,6 +60,7 @@ STRAIN_ORDER: list[str] = FOUNDER_ORDER + list(F1_COLORS.keys())
 COLOR_NEUTRAL_DARK:  str = '#444444'   # axis lines, tick labels, reference bars
 COLOR_CC_FALLBACK:   str = '#888888'   # CC strains without ancestry probability data
 COLOR_NEUTRAL_LIGHT: str = '#E8E8E8'   # NaN/masked cells in heatmaps
+COLOR_THRESHOLD:     str = '#E8870A'   # LOD threshold lines + quadrant annotations
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
@@ -151,6 +152,23 @@ CCPopulation: Population = Population(
     loco_sufficient=True,
 )
 
+def display_founders(cache_founders: list[str]) -> list[str]:
+    """Map HAPPY cache founder codes (A–H) to FOUNDER_ORDER display names.
+
+    Parameters
+    ----------
+    cache_founders :
+        Founder codes as stored in the genome cache (e.g. ``['A', 'B', ...]``).
+
+    Returns
+    -------
+    list[str]
+        Display names aligned to FOUNDER_ORDER (e.g. ``['AJ', 'B6J', ...]``).
+    """
+    _inv = {v: k for k, v in FOUNDER_CODE.items()}
+    return [_inv.get(f, _inv.get(f.upper(), f)) for f in cache_founders]
+
+
 __all__ = [
     'FOUNDER_ORDER',
     'FOUNDER_CODE',
@@ -160,6 +178,8 @@ __all__ = [
     'COLOR_NEUTRAL_DARK',
     'COLOR_CC_FALLBACK',
     'COLOR_NEUTRAL_LIGHT',
+    'COLOR_THRESHOLD',
+    'display_founders',
     'cc_strain_palette',
     'CCPopulation',
 ]

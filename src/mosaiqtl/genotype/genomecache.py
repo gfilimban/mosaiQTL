@@ -23,7 +23,7 @@ from ..utils import chr_sort_key
 logger = logging.getLogger('mosaiqtl')
 
 # default cc founder strain names (in standard order)
-from .founders import FOUNDER_ORDER as _FOUNDER_ORDER
+from .founders import FOUNDER_ORDER as _FOUNDER_ORDER, F1_COLORS as _F1_COLORS
 CC_FOUNDERS: list[str] = list(_FOUNDER_ORDER)
 
 
@@ -890,6 +890,45 @@ class GenomeCache:
             founders = CC_FOUNDERS
 
         return GenomeCache(sample_ids, founders, data)
+
+    def reorder_to_canonical(self) -> 'GenomeCache':
+        """Return a new GenomeCache with sample axis in canonical strain order.
+
+        Canonical order: Founders (FOUNDER_ORDER) → F1s (F1_COLORS key order)
+        → CC strains (alphanumeric).  No-op if already canonical.
+        """
+        founders_set = set(_FOUNDER_ORDER)
+        f1_set       = set(_F1_COLORS.keys())
+        current      = list(self.sample_ids)
+        cc_strains   = sorted(s for s in current
+                              if s not in founders_set and s not in f1_set)
+
+        canonical  = [s for s in _FOUNDER_ORDER if s in founders_set.intersection(current)]
+        canonical += [s for s in _F1_COLORS.keys() if s in f1_set.intersection(current)]
+        canonical += cc_strains
+
+        if canonical == current:
+            return self
+
+        cur_idx = {s: i for i, s in enumerate(current)}
+        canonical = [s for s in canonical if s in cur_idx]
+        perm = np.array([cur_idx[s] for s in canonical])
+
+        new_data: dict = {}
+        for chrom in self.chromosomes:
+            lids, pos, probs = self.get_chromosome(chrom)
+            new_data[chrom] = {
+                'locus_ids': lids.copy(),
+                'positions': pos.copy(),
+                'probs':     probs[:, perm, :],
+            }
+
+        logger.info('reordered cache to canonical strain order (%d strains)', len(canonical))
+        return GenomeCache(
+            sample_ids=np.array(canonical),
+            founders=list(self.founders),
+            data=new_data,
+        )
 
     def collapse(self, criterion='l2.norm', tol=0.02):
         """collapse adjacent redundant loci into a single representative locus.
