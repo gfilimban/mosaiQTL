@@ -971,7 +971,8 @@ all m genes are null.
 
 | Column | Description |
 |---|---|
-| `gene` | gene name |
+| `gene_name` | gene symbol |
+| `gene_id` | Ensembl gene ID (NaN when gene_info unavailable) |
 | `chr` | chromosome of peak locus |
 | `tss_mb` | TSS position (Mb) |
 | `peak_locus` | peak locus identifier |
@@ -1384,7 +1385,8 @@ Common parameters shared across scan entry-point functions.
 
 | Column | Type | Meaning |
 |---|---|---|
-| `gene` | str | Gene name (symbol) |
+| `gene_name` | str | Gene symbol |
+| `gene_id` | str | Ensembl gene ID (NaN when gene_info unavailable) |
 | `locus` | str | Locus identifier from genome cache (e.g. `rs12345678` or `chr8:45.23`) |
 | `chr` | str | Chromosome (always `.astype(str)` — rule in INVIOLABLE RULES) |
 | `pos_mb` | float | Physical position in megabases (Mb) on the reference genome |
@@ -1414,7 +1416,8 @@ Common parameters shared across scan entry-point functions.
 
 | Column | Type | Meaning |
 |---|---|---|
-| `gene` | str | Gene name |
+| `gene_name` | str | Gene symbol |
+| `gene_id` | str | Ensembl gene ID (NaN when gene_info unavailable) |
 | `locus` | str | Peak locus identifier |
 | `pos_mb` | float | Peak locus position (Mb) |
 | `founder` | str | Founder strain name (e.g. `A/J`, `B6/J`) |
@@ -1425,7 +1428,8 @@ Common parameters shared across scan entry-point functions.
 
 | Column | Type | Meaning |
 |---|---|---|
-| `gene` | str | Gene name |
+| `gene_name` | str | Gene symbol |
+| `gene_id` | str | Ensembl gene ID (NaN when gene_info unavailable) |
 | `chr` | str | Chromosome of peak locus |
 | `tss_mb` | float | TSS position (Mb) |
 | `peak_locus` | str | Peak locus identifier |
@@ -1454,7 +1458,7 @@ Common parameters shared across scan entry-point functions.
 
 | Column | Type | Meaning |
 |---|---|---|
-| `gene` | str | Gene name |
+| `gene_name` | str | Gene symbol |
 | `chr` | str | Chromosome |
 | `ci_lo_mb` | float | Lower bound of LOD-drop or bootstrap CI (Mb) |
 | `ci_hi_mb` | float | Upper bound of CI (Mb) |
@@ -1465,7 +1469,7 @@ Common parameters shared across scan entry-point functions.
 
 | Column | Type | Meaning |
 |---|---|---|
-| `gene` | str | Gene name (from `phenotype_id`) |
+| `gene_name` | str | Gene symbol (from `phenotype_id`) |
 | `snp` | str | SNP identifier |
 | `chr` | str | Chromosome |
 | `pos_mb` | float | SNP position (Mb) |

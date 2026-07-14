@@ -140,7 +140,8 @@ class GenomeCache:
         number of founder strains
     """
 
-    def __init__(self, sample_ids, founders, data=None, _h5_handle=None):
+    def __init__(self, sample_ids, founders, data=None, _h5_handle=None,
+                 _h5_path=None):
         """initialize genome cache.
 
         parameters
@@ -154,12 +155,16 @@ class GenomeCache:
                        'probs': ndarray or h5py.Dataset (n_loci, n_subjects, n_founders)}}
         _h5_handle : h5py.File or None
             open HDF5 file kept alive for lazy probs reads; closed in __del__
+        _h5_path : str or None
+            path to the source HDF5 file; stored so thread workers can open
+            independent handles via GenomeCache.from_hdf5(_h5_path)
         """
         self.sample_ids = np.asarray(sample_ids)
         self.founders = list(founders)
         self.n_founders = len(founders)
         self._data = data if data is not None else {}
         self._h5_handle = _h5_handle
+        self._h5_path = str(_h5_path) if _h5_path is not None else None
         self.crossinfo = None   # DataFrame (strains × A-H) from cc_crossinfo.csv
         self.x_donor   = {}     # strain_id -> founder_col of x-chr donor
         self.chromosomes = sorted(self._data.keys(), key=chr_sort_key)
@@ -282,7 +287,8 @@ class GenomeCache:
                 'probs':     grp['probs'],   # h5py Dataset — NOT loaded into RAM
             }
 
-        return GenomeCache(sample_ids, founders, data, _h5_handle=f)
+        return GenomeCache(sample_ids, founders, data, _h5_handle=f,
+                           _h5_path=filepath)
 
     def to_hdf5(self, filepath):
         """save genome cache to native hdf5 format.

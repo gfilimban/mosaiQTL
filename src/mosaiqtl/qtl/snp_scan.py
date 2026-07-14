@@ -19,6 +19,11 @@ from ..utils import chr_sort_key, _build_gm_idx, _enrich_scan_df
 
 logger = logging.getLogger('mosaiqtl')
 
+SNP_SCAN_COLS: list[str] = [
+    'gene_name', 'snp', 'chr', 'pos_mb', 'lod', 'p_value',
+    'f_stat', 'h2', 'n', 'rss0', 'rss1', 'beta_dosage',
+]
+
 
 def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
                             covariates=None, kinship_decomp=None,
@@ -44,12 +49,12 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
     covariates : np.ndarray (n, p) or None
     kinship_decomp : dict or None
     use_rint : bool  apply RINT to phenotype (default True)
-    phenotype_id : str  stored in 'gene' column of output
+    phenotype_id : str  stored in 'gene_name' column of output
     just_these_snps : list or None  restrict to these snp ids
 
     returns
     -------
-    pd.DataFrame  columns: gene, snp, chr, pos_mb, lod, p_value, f_stat,
+    pd.DataFrame  columns: gene_name, snp, chr, pos_mb, lod, p_value, f_stat,
                            h2, n, rss0, rss1, beta_dosage
         NOT a ScanResult — SNP scan output is per-SNP dosage effects, not
         per-founder haplotype effects.  Do not pass to _scan_to_df or any
@@ -58,6 +63,13 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
     from ..genotype import kinship as kin_module
     from . import lmm as lmm_module
     from ..utils import rint as _rint
+
+    _n_snps_requested = (len(just_these_snps) if just_these_snps is not None
+                         else len(snp_genos))
+    logger.info(
+        'imputed_snp_scan_h2lmm: gene=%s  n_snps=%d',
+        phenotype_id, _n_snps_requested,
+    )
 
     if kinship_decomp is None:
         kd = kin_module.calc_kinship(genomecache, method='loco')
@@ -136,7 +148,7 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
                 y_rot, h_rot, x_rot, eigvals, h2)
 
             results.append({
-                'gene':        phenotype_id,
+                'gene_name':   phenotype_id,
                 'snp':         snp_id,
                 'chr':         chrom,
                 'pos_mb':      snp_pos,
@@ -195,7 +207,7 @@ def imputed_snp_scan_from_db(
 
     returns
     -------
-    pd.DataFrame  columns: gene, snp, chr, pos_mb, lod, p_value, f_stat,
+    pd.DataFrame  columns: gene_name, snp, chr, pos_mb, lod, p_value, f_stat,
                            h2, n, rss0, rss1, beta_dosage
         NOT a ScanResult — use the DataFrame directly; do not pass to
         _scan_to_df or any ScanResult consumer.
@@ -205,7 +217,7 @@ def imputed_snp_scan_from_db(
     alleles_df = load_founder_alleles(alleles_h5, chrom=chrom)
     if alleles_df.empty:
         return pd.DataFrame(
-            columns=['gene', 'snp', 'chr', 'pos_mb', 'lod', 'p_value',
+            columns=['gene_name', 'snp', 'chr', 'pos_mb', 'lod', 'p_value',
                      'f_stat', 'h2', 'n', 'rss0', 'rss1', 'beta_dosage'])
 
     meta_cols = {'marker', 'chr', 'pos_mb', 'pos_bp', 'locus_id'}
@@ -239,7 +251,7 @@ def imputed_snp_scan_from_db(
 
     if not rows:
         return pd.DataFrame(
-            columns=['gene', 'snp', 'chr', 'pos_mb', 'lod', 'p_value',
+            columns=['gene_name', 'snp', 'chr', 'pos_mb', 'lod', 'p_value',
                      'f_stat', 'h2', 'n', 'rss0', 'rss1', 'beta_dosage'])
 
     snp_genos = pd.DataFrame(rows, index=snp_ids)
@@ -565,29 +577,36 @@ def snp_scan_multi_gene(
     peak_only       : bool  when True (default) output one peak-SNP row per gene;
                      when False output all SNPs on the gene's chromosome
     output_path     : Path or None  stream CSV here; None accumulates in RAM
-    gene_meta       : DataFrame keyed by 'gene' — extra columns joined into each row
+    gene_meta       : DataFrame keyed by 'gene_name' — extra columns joined into each row
 
     returns
     -------
-    peak_only=True  — gene, chr, snp [+ gene_meta cols], peak_mb, peak_lod, beta_dosage
-    peak_only=False — gene, chr [+ gene_meta cols], snp, pos_mb, lod, p_value,
+    peak_only=True  — gene_name, chr, snp [+ gene_meta cols], peak_mb, peak_lod, beta_dosage
+    peak_only=False — gene_name, chr [+ gene_meta cols], snp, pos_mb, lod, p_value,
                       f_stat, h2, n, rss0, rss1, beta_dosage
     """
     _gm_idx = _build_gm_idx(gene_meta)
     if peak_only:
-        _id_cols   = ['gene', 'chr', 'snp']
+        _id_cols   = ['gene_name', 'chr', 'snp']
         _data_cols = ['peak_mb', 'peak_lod', 'beta_dosage']
     else:
-        _id_cols   = ['gene', 'chr']
+        _id_cols   = ['gene_name', 'chr']
         _data_cols = ['snp', 'pos_mb', 'lod', 'p_value', 'f_stat', 'h2', 'n',
                       'rss0', 'rss1', 'beta_dosage']
     _first = True
     _buf: 'list[pd.DataFrame]' = []
-    for gene_id, y in expr_cache.items():
+    _n_genes_snp = len(expr_cache)
+    logger.info(
+        'snp_scan_multi_gene: n_genes=%d  alleles_h5=%s',
+        _n_genes_snp, Path(alleles_h5).name,
+    )
+    for _g_snp, (gene_id, y) in enumerate(expr_cache.items()):
         gene_chr = gene_chr_map.get(gene_id, '')
         if not gene_chr:
             logger.warning('snp_scan_multi_gene: no chr for %s — skipped', gene_id)
             continue
+        logger.debug(
+            'snp_scan_multi_gene: [%d/%d] %s', _g_snp + 1, _n_genes_snp, gene_id)
         _kd_g = ({gene_chr: kinship_decomp[gene_chr]}
                  if kinship_decomp is not None else None)
         try:

@@ -214,6 +214,11 @@ def precompute_chromosome(
     locus_ids, positions, probs = genomecache.get_chromosome(chrom)
     nf = genomecache.n_founders
 
+    logger.debug(
+        'precompute_chromosome: chr=%s  n_loci=%d  n_samples=%d  n_founders=%d  model=%s',
+        chrom, len(locus_ids), probs.shape[1], nf, model,
+    )
+
     if model == 'full':
         J = nf
         _ii, _jj = np.triu_indices(J)
@@ -345,6 +350,12 @@ def scan_chromosome(
     -------
     dict: locus_ids, positions, lod, p_value, betas (n_loci, nf)
     """
+    logger.debug(
+        'scan_chromosome: chr=%s  n_loci=%d  h2=%.4f',
+        chr_data['locus_ids'][0].split(':')[0] if len(chr_data['locus_ids']) else '?',
+        len(chr_data['locus_ids']),
+        h2_null,
+    )
     return _scan_chromosome_core(
         y, chr_data['H_t_raw'], x_covariates, eigvals, eigvecs, h2_null,
         chr_data['locus_ids'], chr_data['positions'], chr_data['n_founders'],

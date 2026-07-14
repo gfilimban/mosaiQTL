@@ -222,13 +222,13 @@ def compute_near_tss_mb(
     import pandas as pd
     near: dict[str, float] = {}
     for _, row in peak_df.iterrows():
-        cands = gene_tss_df[gene_tss_df['gene_name'] == row['gene']]
+        cands = gene_tss_df[gene_tss_df['gene_name'] == row['gene_name']]
         if cands.empty:
-            near[row['gene']] = float('nan')
+            near[row['gene_name']] = float('nan')
         else:
             idx = (cands['tss_mb'] - row['peak_mb']).abs().idxmin()
-            near[row['gene']] = float(cands.loc[idx, 'tss_mb'])
-    return peak_df['gene'].map(near)
+            near[row['gene_name']] = float(cands.loc[idx, 'tss_mb'])
+    return peak_df['gene_name'].map(near)
 
 
 def _build_gm_idx(
@@ -238,14 +238,14 @@ def _build_gm_idx(
 
     Parameters
     ----------
-    gene_meta : DataFrame with a 'gene' column, or None.
+    gene_meta : DataFrame with a 'gene_name' column, or None.
 
     Returns
     -------
     dict keyed by gene_id, or None when gene_meta is absent.
     """
-    if gene_meta is not None and not gene_meta.empty and 'gene' in gene_meta.columns:
-        return gene_meta.set_index('gene').to_dict('index')
+    if gene_meta is not None and not gene_meta.empty and 'gene_name' in gene_meta.columns:
+        return gene_meta.set_index('gene_name').to_dict('index')
     return None
 
 
@@ -267,7 +267,7 @@ def _enrich_scan_df(
     df        : per-gene scan result (modified in-place before reorder).
     gene_id   : key into gm_idx.
     gm_idx    : output of _build_gm_idx, or None.
-    id_cols   : identifier columns that lead the output (e.g. ['gene', 'chr']).
+    id_cols   : identifier columns that lead the output (e.g. ['gene_name', 'chr']).
     data_cols : scan-result columns that follow the gene_meta columns.
 
     Returns

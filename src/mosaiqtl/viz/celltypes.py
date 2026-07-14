@@ -192,9 +192,9 @@ def melt_betas(eff_df: pd.DataFrame, value_name: str) -> pd.DataFrame:
     Returns
     -------
     DataFrame
-        Columns: ``gene`` (when present), ``beta_col``, ``value_name``.
+        Columns: ``gene_name`` (when present), ``beta_col``, ``value_name``.
     """
-    id_cols = ['gene'] if 'gene' in eff_df.columns else []
+    id_cols = ['gene_name'] if 'gene_name' in eff_df.columns else []
     beta_present = [c for c in _BETA_COLS if c in eff_df.columns]
     if not beta_present:
         return pd.DataFrame(columns=id_cols + ['beta_col', value_name])
@@ -288,8 +288,8 @@ def load_gene_lod(path: Path, gene: str) -> Optional[pd.DataFrame]:
     try:
         chunks: list[pd.DataFrame] = []
         for chunk in pd.read_csv(path, chunksize=1_000_000):
-            if 'gene' in chunk.columns:
-                hit = chunk[chunk['gene'] == gene]
+            if 'gene_name' in chunk.columns:
+                hit = chunk[chunk['gene_name'] == gene]
                 if not hit.empty:
                     chunks.append(hit.copy())
         if not chunks:
@@ -372,8 +372,8 @@ def ct_vs_whole_lod_scatter(
             ct_df = load_peak_lod(ct_dirs[ct] / 'peak_lod.csv', suffix=ct)
             if ct_df is None:
                 continue
-            merged = whole_df[['gene', 'peak_lod_whole']].merge(
-                ct_df[['gene', f'peak_lod_{ct}']], on='gene', how='inner'
+            merged = whole_df[['gene_name', 'peak_lod_whole']].merge(
+                ct_df[['gene_name', f'peak_lod_{ct}']], on='gene_name', how='inner'
             )
             if merged.empty:
                 logger.warning('ct_vs_whole_lod_scatter: no shared genes for %s', ct)
@@ -392,7 +392,7 @@ def ct_vs_whole_lod_scatter(
             )
             plt.close('all')
             if threshold is not None:
-                _cols = ['gene', 'peak_lod_whole', f'peak_lod_{ct}']
+                _cols = ['gene_name', 'peak_lod_whole', f'peak_lod_{ct}']
                 _w = merged['peak_lod_whole']
                 _c = merged[f'peak_lod_{ct}']
                 _quadrants = {
@@ -451,7 +451,7 @@ def ct_vs_whole_effects_scatter(
                 logger.warning('ct_vs_whole_effects_scatter: no beta columns for %s', ct)
                 continue
 
-            merge_cols = ['gene', 'beta_col'] if 'gene' in whole_long.columns else ['beta_col']
+            merge_cols = ['gene_name', 'beta_col'] if 'gene_name' in whole_long.columns else ['beta_col']
             merged = whole_long[merge_cols + ['beta_whole']].merge(
                 ct_long[merge_cols + [f'beta_{ct}']],
                 on=merge_cols,
@@ -514,8 +514,8 @@ def ct_lod_profile_overlay(
     """
     whole_peak = load_peak_lod(whole_py_data / 'peak_lod.csv')
     peak_chr: Optional[str] = None
-    if whole_peak is not None and 'gene' in whole_peak.columns:
-        row = whole_peak[whole_peak['gene'] == rep_gene]
+    if whole_peak is not None and 'gene_name' in whole_peak.columns:
+        row = whole_peak[whole_peak['gene_name'] == rep_gene]
         if not row.empty:
             peak_chr = str(row['chr'].iloc[0])
     if peak_chr is None:
@@ -646,8 +646,8 @@ def ct_pairwise_lod_scatter(
             if df_x is None or df_y is None:
                 logger.warning('ct_pairwise_lod_scatter: missing data for %s / %s', x_ct, y_ct)
                 continue
-            merged = df_x[['gene', f'peak_lod_{x_ct}']].merge(
-                df_y[['gene', f'peak_lod_{y_ct}']], on='gene', how='inner'
+            merged = df_x[['gene_name', f'peak_lod_{x_ct}']].merge(
+                df_y[['gene_name', f'peak_lod_{y_ct}']], on='gene_name', how='inner'
             )
             if merged.empty:
                 logger.warning('ct_pairwise_lod_scatter: no shared genes %s / %s', x_ct, y_ct)
@@ -666,7 +666,7 @@ def ct_pairwise_lod_scatter(
             )
             plt.close('all')
             if threshold is not None:
-                _cols = ['gene', f'peak_lod_{x_ct}', f'peak_lod_{y_ct}']
+                _cols = ['gene_name', f'peak_lod_{x_ct}', f'peak_lod_{y_ct}']
                 _x = merged[f'peak_lod_{x_ct}']
                 _y = merged[f'peak_lod_{y_ct}']
                 _quadrants = {
@@ -704,8 +704,8 @@ def ct_pairwise_lod_scatter(
                     df_y = ct_frames.get(y_ct)
                     if df_x is None or df_y is None:
                         continue
-                    merged = df_x[['gene', f'peak_lod_{x_ct}']].merge(
-                        df_y[['gene', f'peak_lod_{y_ct}']], on='gene', how='inner'
+                    merged = df_x[['gene_name', f'peak_lod_{x_ct}']].merge(
+                        df_y[['gene_name', f'peak_lod_{y_ct}']], on='gene_name', how='inner'
                     )
                     if merged.empty:
                         continue
@@ -772,8 +772,8 @@ def ct_pairwise_effects_scatter(
                 continue
 
             merge_cols = (
-                ['gene', 'beta_col']
-                if 'gene' in long_x.columns and 'gene' in long_y.columns
+                ['gene_name', 'beta_col']
+                if 'gene_name' in long_x.columns and 'gene_name' in long_y.columns
                 else ['beta_col']
             )
             merged = long_x[merge_cols + [f'beta_{x_ct}']].merge(

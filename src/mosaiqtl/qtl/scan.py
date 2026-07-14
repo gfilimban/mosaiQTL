@@ -183,6 +183,17 @@ def scan_h2lmm(
     if scan_window == "local" and gene_pos_mb is None:
         raise ValueError("scan_window='local' requires gene_pos_mb")
     n = len(phenotype)
+    logger.info(
+        'scan_h2lmm: gene=%s  chr=%s  scan_window=%s  n_samples=%d  use_rint=%s',
+        phenotype_id, gene_chr if gene_chr is not None else 'genome',
+        scan_window, n, use_rint,
+    )
+    if kinship_decomp is None:
+        logger.warning(
+            'scan_h2lmm: no kinship_decomp supplied for %s — computing from genomecache '
+            '(slow; pass pre-computed kinship_decomp for multi-gene scans)',
+            phenotype_id,
+        )
 
     # resolve Z mapping
     sid = list(sample_ids) if sample_ids is not None else list(genomecache.sample_ids)
@@ -196,6 +207,12 @@ def scan_h2lmm(
             f"{phenotype_id}: {n - valid.sum()} samples excluded "
             f"({(~valid_pheno).sum()} NaN pheno, "
             f"{(~valid_sid).sum()} missing geno)"
+        )
+    n_valid = int(valid.sum())
+    if n_valid < 10:
+        logger.warning(
+            'scan_h2lmm: %s has only %d valid samples — LOD estimates unreliable',
+            phenotype_id, n_valid,
         )
 
     y = phenotype[valid].copy()
@@ -287,11 +304,18 @@ def scan_h2lmm(
         all_pval.append(chr_res["p_value"])
         all_betas.append(chr_res["betas"])
 
+    _lod_cat = np.concatenate(all_lod)
+    _peak_idx = int(np.argmax(_lod_cat))
+    _peak_lids = np.concatenate(all_lids)
+    logger.info(
+        'scan_h2lmm: %s done — peak_lod=%.3f  peak_locus=%s',
+        phenotype_id, float(_lod_cat[_peak_idx]), _peak_lids[_peak_idx],
+    )
     return ScanResult(
-        locus_ids=np.concatenate(all_lids),
+        locus_ids=_peak_lids,
         chromosomes=np.concatenate(all_chrs),
         positions=np.concatenate(all_pos),
-        lod=np.concatenate(all_lod),
+        lod=_lod_cat,
         p_value=np.concatenate(all_pval),
         betas=np.vstack(all_betas),
         h2_null=h2_null_dict,
@@ -492,7 +516,7 @@ def scan_multi_gene(
             _lod_path = Path(output_dir) / f"lod_chr{chrom}.csv"
             pd.DataFrame(
                 {
-                    "gene": _chr_gene,
+                    "gene_name": _chr_gene,
                     "chr": chrom,
                     "locus": _chr_locus,
                     "pos_mb": _chr_pos,
@@ -811,6 +835,11 @@ def instability_lm_scan(
     """
     rng = np.random.default_rng(seed)
 
+    logger.info(
+        'instability_lm_scan: gene=%s  n_subsamples=%d  subsample_prop=%.2f',
+        phenotype_id, n_subsamples, subsample_prop,
+    )
+
     # pre-reduce to strain means once so subsample indices are always in [0, n_strains)
     if sample_ids is not None:
         _z, _vs = _resolve_z(list(sample_ids), genomecache)
@@ -941,11 +970,19 @@ def instability_lm_scan(
                 time.perf_counter() - _t_inst,
             )
 
+    _inst_lod = lod_sum / n_subsamples
+    _inst_peak_idx = int(np.argmax(peak_cnt))
+    logger.info(
+        'instability_lm_scan: %s done — peak_freq=%.3f at locus %s',
+        phenotype_id,
+        float(peak_cnt[_inst_peak_idx]) / n_subsamples,
+        lids_all[_inst_peak_idx],
+    )
     return ScanResult(
         locus_ids=lids_all,
         chromosomes=chrs_all,
         positions=pos_all,
-        lod=lod_sum / n_subsamples,
+        lod=_inst_lod,
         p_value=1.0 - peak_cnt / n_subsamples,
         betas=betas_0 if betas_0 is not None else np.empty((0, J)),
         h2_null={},
@@ -998,6 +1035,14 @@ def scan_h2lmm_mi(
         raise ValueError(f"scan_window='{scan_window}' requires gene_chr")
     if scan_window == "local" and gene_pos_mb is None:
         raise ValueError("scan_window='local' requires gene_pos_mb")
+
+    logger.info(
+        'scan_h2lmm_mi: gene=%s  chr=%s  n_imp=%d  n_samples=%d',
+        phenotype_id,
+        gene_chr if gene_chr is not None else 'genome',
+        n_imp,
+        len(phenotype),
+    )
 
     if kinship_decomp is None:
         kd_raw = kin_module.calc_kinship(genomecache, method="loco")
@@ -1091,11 +1136,17 @@ def scan_h2lmm_mi(
             "%s MI chr%s done (%d loci)", phenotype_id, chrom, len(ref["locus_ids"])
         )
 
+    _mi_lod = np.concatenate(all_lod)
+    _mi_peak_idx = int(np.argmax(_mi_lod))
+    logger.info(
+        'scan_h2lmm_mi: %s done — peak_lod=%.3f (mean over %d imputations)',
+        phenotype_id, float(_mi_lod[_mi_peak_idx]), n_imp,
+    )
     return ScanResult(
         locus_ids=np.concatenate(all_lids),
         chromosomes=np.concatenate(all_chrs),
         positions=np.concatenate(all_pos),
-        lod=np.concatenate(all_lod),
+        lod=_mi_lod,
         p_value=np.concatenate(all_pval),
         betas=np.vstack(all_betas),
         h2_null=h2_null_dict,
@@ -1143,27 +1194,34 @@ def scan_multi_gene_mi(
     peak_only      : bool   when True (default) output one peak-locus row per gene;
                      when False output all scanned loci (full per-locus profile)
     output_path    : Path or None  stream CSV here; None accumulates in RAM
-    gene_meta      : DataFrame keyed by 'gene' — extra columns joined into each row
+    gene_meta      : DataFrame keyed by 'gene_name' — extra columns joined into each row
 
     returns
     -------
-    peak_only=True  — gene, chr, locus [+ gene_meta cols], peak_mb, peak_lod
-    peak_only=False — gene, chr [+ gene_meta cols], locus, pos_mb, lod
+    peak_only=True  — gene_name, chr, locus [+ gene_meta cols], peak_mb, peak_lod
+    peak_only=False — gene_name, chr [+ gene_meta cols], locus, pos_mb, lod
     """
     _gm_idx = _build_gm_idx(gene_meta)
     if peak_only:
-        _id_cols   = ['gene', 'chr', 'locus']
+        _id_cols   = ['gene_name', 'chr', 'locus']
         _data_cols = ['peak_mb', 'peak_lod']
     else:
-        _id_cols   = ['gene', 'chr']
+        _id_cols   = ['gene_name', 'chr']
         _data_cols = ['locus', 'pos_mb', 'lod']
     _first = True
     _buf: 'list[pd.DataFrame]' = []
+    _n_genes_mi = len(expr_cache)
+    logger.info(
+        'scan_multi_gene_mi: n_genes=%d  n_imp=%d  scan_window=%s',
+        _n_genes_mi, n_imp,
+        'local' if peak_mb_map else 'cis',
+    )
     for _g, (gene_id, y) in enumerate(expr_cache.items()):
         gene_chr = gene_chr_map.get(gene_id, '')
         if not gene_chr:
             logger.warning('scan_multi_gene_mi: no chr for %s — skipped', gene_id)
             continue
+        logger.debug('scan_multi_gene_mi: [%d/%d] %s', _g + 1, _n_genes_mi, gene_id)
         peak_mb = peak_mb_map.get(gene_id) if peak_mb_map else None
         scan_kw: 'dict' = dict(
             scan_window='local' if peak_mb is not None else 'cis',
@@ -1185,7 +1243,7 @@ def scan_multi_gene_mi(
                 **scan_kw,
             )
             _df = pd.DataFrame({
-                'gene': gene_id,
+                'gene_name': gene_id,
                 'chr': res.chromosomes,
                 'locus': res.locus_ids,
                 'pos_mb': res.positions,
@@ -1248,28 +1306,35 @@ def instability_scan_multi_gene(
     peak_only      : bool   when True (default) output one peak-locus row per gene;
                      when False output all scanned loci
     output_path    : Path or None  stream CSV here; None accumulates in RAM
-    gene_meta      : DataFrame keyed by 'gene' — extra columns joined into each row
+    gene_meta      : DataFrame keyed by 'gene_name' — extra columns joined into each row
 
     returns
     -------
-    peak_only=True  — gene, chr, locus [+ gene_meta cols], peak_mb, peak_lod
-    peak_only=False — gene, chr [+ gene_meta cols], locus, pos_mb, lod
+    peak_only=True  — gene_name, chr, locus [+ gene_meta cols], peak_mb, peak_lod
+    peak_only=False — gene_name, chr [+ gene_meta cols], locus, pos_mb, lod
     """
     _gm_idx = _build_gm_idx(gene_meta)
     if peak_only:
-        _id_cols   = ['gene', 'chr', 'locus']
+        _id_cols   = ['gene_name', 'chr', 'locus']
         _data_cols = ['peak_mb', 'peak_lod']
     else:
-        _id_cols   = ['gene', 'chr']
+        _id_cols   = ['gene_name', 'chr']
         _data_cols = ['locus', 'pos_mb', 'lod']
     _first = True
     _buf: 'list[pd.DataFrame]' = []
+    _n_genes_inst = len(expr_cache)
+    logger.info(
+        'instability_scan_multi_gene: n_genes=%d  n_subsamples=%d',
+        _n_genes_inst, n_subsamples,
+    )
     for _g, (gene_id, y) in enumerate(expr_cache.items()):
         gene_chr = gene_chr_map.get(gene_id, '')
         if not gene_chr:
             logger.warning(
                 'instability_scan_multi_gene: no chr for %s — skipped', gene_id)
             continue
+        logger.debug(
+            'instability_scan_multi_gene: [%d/%d] %s', _g + 1, _n_genes_inst, gene_id)
         try:
             lids_chr, _, pos_chr = genomecache.get_chromosome(gene_chr)
             peak_mb = peak_mb_map.get(gene_id) if peak_mb_map else None
@@ -1291,7 +1356,7 @@ def instability_scan_multi_gene(
                 just_these_loci=loci_set,
             )
             _df = pd.DataFrame({
-                'gene': gene_id,
+                'gene_name': gene_id,
                 'chr': res.chromosomes,
                 'locus': res.locus_ids,
                 'pos_mb': res.positions,
@@ -1354,14 +1419,14 @@ def scan_multi_gene_lmm(
     gene_pos_mb_map: dict {gene_id: float} or None — TSS in Mb; required for 'local'
     window_mb      : float  half-window in Mb for 'local' (default 10.0)
     lod_path       : Path or None  append full per-locus rows here (gene, chr, locus, pos_mb, lod)
-    gene_meta      : DataFrame keyed by 'gene' — extra columns joined into output rows
+    gene_meta      : DataFrame keyed by 'gene_name' — extra columns joined into output rows
     founder_names  : list[str] or None  display names for beta columns; None → genomecache.founders
     model          : str  'additive' (default) or 'full'
 
     returns
     -------
     DataFrame with one row per gene:
-        gene, chr, peak_locus, peak_mb, peak_lod, h2, n_valid,
+        gene_name, chr, peak_locus, peak_mb, peak_lod, h2, n_valid,
         rss0, rss1, r2_peak, sigma2_e, tau2, beta_{founder_names}
         plus any columns from gene_meta.
     """
@@ -1498,7 +1563,7 @@ def scan_multi_gene_lmm(
             _h2f = float(h2) if np.isfinite(h2) else 0.0
 
             row: dict = {
-                'gene':       gene_id,
+                'gene_name':  gene_id,
                 'chr':        str(chrom),
                 'peak_locus': str(lid_arr[peak_idx]),
                 'peak_mb':    float(pos_arr[peak_idx]),
@@ -1518,9 +1583,9 @@ def scan_multi_gene_lmm(
             if lod_path is not None:
                 for _i in range(len(lod_arr)):
                     _lod_rows.append({
-                        'gene':   gene_id,
-                        'chr':    str(chrom),
-                        'locus':  str(lid_arr[_i]),
+                        'gene_name': gene_id,
+                        'chr':       str(chrom),
+                        'locus':     str(lid_arr[_i]),
                         'pos_mb': float(pos_arr[_i]),
                         'lod':    float(lod_arr[_i]),
                     })
@@ -1546,6 +1611,6 @@ def scan_multi_gene_lmm(
 
     result = pd.DataFrame(peak_rows) if peak_rows else pd.DataFrame()
     if gene_meta is not None and not result.empty and not gene_meta.empty:
-        _gm = gene_meta.drop_duplicates(subset='gene')
-        result = result.merge(_gm, on='gene', how='left', suffixes=('', '_meta'))
+        _gm = gene_meta.drop_duplicates(subset='gene_name')
+        result = result.merge(_gm, on='gene_name', how='left', suffixes=('', '_meta'))
     return result
