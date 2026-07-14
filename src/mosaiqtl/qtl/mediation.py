@@ -22,24 +22,27 @@ from ..utils import build_z_matrix, _build_gm_idx, _enrich_scan_df
 
 logger = logging.getLogger('mosaiqtl')
 
-_MED_COLS = [
+MEDIATION_COLS: list[str] = [
     'outcome_id', 'mediator_id', 'chr', 'locus', 'pos_mb',
     'lod_base', 'lod_mediated', 'lod_drop', 'prop_mediated',
     'p_value', 'h2', 'n',
 ]
 
-_FIXEF_COLS = [
+FIXEF_MEDIATION_COLS: list[str] = [
     'outcome_id', 'mediator_id', 'chr', 'locus', 'pos_mb',
     'lod_base', 'lod_mediated', 'lod_drop', 'prop_mediated',
     'p_value', 'n',
 ]
+
+_MED_COLS = MEDIATION_COLS
+_FIXEF_COLS = FIXEF_MEDIATION_COLS
 
 
 def select_cis_mediation_pairs(
     egene_table: pd.DataFrame,
     gene_info: pd.DataFrame,
     window_mb: float = 10.0,
-    gene_col: str = 'gene',
+    gene_col: str = 'gene_name',
     chr_col: str = 'chr',
     peak_mb_col: str = 'peak_mb',
     info_gene_col: str = 'gene_id',
@@ -179,6 +182,20 @@ def mediation_scan_qr(
 
     if scan_window in ('cis', 'local') and gene_chr is None:
         raise ValueError(f"scan_window='{scan_window}' requires gene_chr")
+
+    _n_med = len(med_dict)
+    logger.info(
+        'mediation_scan_qr: outcome=%s  n_mediators=%d  chr=%s  scan_window=%s',
+        outcome_id, _n_med,
+        gene_chr if gene_chr is not None else 'genome',
+        scan_window,
+    )
+    if _n_med < 2:
+        logger.warning(
+            'mediation_scan_qr: %s has fewer than 2 mediators (%d) — '
+            'Woodbury rank-1 update is still valid but results may be unstable',
+            outcome_id, _n_med,
+        )
 
     if kinship_decomp is None:
         kd = kin_module.calc_kinship(genomecache, method='loco')
@@ -325,8 +342,17 @@ def mediation_scan_qr(
                      _ci + 1, n_chroms, chrom, len(lids), n_med,
                      time.perf_counter() - _t0)
 
-    return (pd.concat(rows, ignore_index=True) if rows
-            else pd.DataFrame(columns=_MED_COLS))
+    _result_df = (pd.concat(rows, ignore_index=True) if rows
+                  else pd.DataFrame(columns=_MED_COLS))
+    if not _result_df.empty:
+        _best_row = _result_df.loc[_result_df['lod_drop'].idxmax()]
+        logger.info(
+            'mediation_scan_qr: %s done — best mediator=%s  lod_drop=%.3f',
+            outcome_id, _best_row['mediator_id'], float(_best_row['lod_drop']),
+        )
+    else:
+        logger.info('mediation_scan_qr: %s done — no rows returned', outcome_id)
+    return _result_df
 
 
 def fixef_mediation_scan(outcome, mediator, genomecache,
@@ -472,24 +498,31 @@ def mediation_scan_multi_outcome(
     lod_base_min     : float  minimum base LOD to retain (default 1.5)
     lod_drop_min     : float  minimum LOD drop to retain (default 0.5)
     output_path      : Path or None  stream CSV here; None accumulates in RAM
-    gene_meta        : DataFrame keyed by 'gene' — extra columns joined into each row
+    gene_meta        : DataFrame keyed by 'gene_name' — extra columns joined into each row
 
     Returns
     -------
-    pd.DataFrame columns: gene, chr [+ gene_meta cols], mediator, locus, pos_mb,
+    pd.DataFrame columns: gene_name, chr [+ gene_meta cols], mediator, locus, pos_mb,
         lod_base, lod_mediated, lod_drop, prop_mediated, p_value, h2, n
     """
     _OUT_COLS = [
-        'gene', 'chr', 'mediator', 'locus', 'pos_mb',
+        'gene_name', 'chr', 'mediator', 'locus', 'pos_mb',
         'lod_base', 'lod_mediated', 'lod_drop', 'prop_mediated',
         'p_value', 'h2', 'n',
     ]
     _gm_idx    = _build_gm_idx(gene_meta)
-    _id_cols   = ['gene', 'chr']
+    _id_cols   = ['gene_name', 'chr']
     _data_cols = _OUT_COLS[2:]
     _first = True
     _buf: 'list[pd.DataFrame]' = []
     _n = len(pairs_by_outcome)
+
+    _total_pairs = sum(len(v) for v in pairs_by_outcome.values())
+    logger.info(
+        'mediation_scan_multi_outcome: n_outcomes=%d  total_pairs=%d  '
+        'lod_base_min=%.1f  lod_drop_min=%.1f',
+        _n, _total_pairs, lod_base_min, lod_drop_min,
+    )
 
     for _i, (outcome_id, med_list) in enumerate(pairs_by_outcome.items()):
         if outcome_id not in expr_cache:
@@ -515,7 +548,7 @@ def mediation_scan_multi_outcome(
             )
             if not _df.empty:
                 _df = _df.rename(columns={
-                    'outcome_id': 'gene', 'mediator_id': 'mediator'})
+                    'outcome_id': 'gene_name', 'mediator_id': 'mediator'})
                 _df = _df[
                     (_df['lod_base'] >= lod_base_min) &
                     (_df['lod_drop'] >= lod_drop_min)

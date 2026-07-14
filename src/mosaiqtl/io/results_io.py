@@ -72,14 +72,14 @@ def scan_result_to_df(scan: 'ScanResult', gene_name: str) -> pd.DataFrame:
     scan:
         Completed scan result from ``scan_h2lmm`` or equivalent.
     gene_name:
-        String written to the ``gene`` column — typically the gene symbol.
+        String written to the ``gene_name`` column — typically the gene symbol.
 
     Returns
     -------
-    DataFrame with columns: gene, chr, locus, pos_mb, lod.
+    DataFrame with columns: gene_name, chr, locus, pos_mb, lod.
     """
     return pd.DataFrame({
-        'gene':   gene_name,
+        'gene_name': gene_name,
         'chr':    np.asarray(scan.chromosomes),
         'locus':  np.asarray(scan.locus_ids),
         'pos_mb': np.asarray(scan.positions),

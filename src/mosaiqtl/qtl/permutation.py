@@ -35,6 +35,8 @@ from ..utils import _build_gm_idx, _enrich_scan_df
 
 logger = logging.getLogger('mosaiqtl')
 
+CI_COLS: list[str] = ['gene_name', 'chr', 'peak_mb', 'ci_lo', 'ci_hi', 'ci_width_mb']
+
 __all__ = [
     'KinshipSingularError',
     'generate_null_outcomes',
@@ -298,6 +300,16 @@ def run_threshold_scans(null_outcomes, genomecache,
         raise ValueError(
             f"permutation_method must be 'plain' or 'parametric', got {permutation_method!r}")
 
+    n_perms_req = null_outcomes.shape[1]
+    _chrs_req = ([chrom] if chrom is not None
+                 else [c for c in genomecache.chromosomes])
+    logger.info(
+        'run_threshold_scans: n_perms=%d  n_chr=%d  ref_chrom=%s  method=%s  fix_h2=True',
+        n_perms_req, len(_chrs_req),
+        ref_chrom if ref_chrom is not None else 'auto',
+        permutation_method,
+    )
+
     # build kinship decomp if not supplied
     if kinship_decomp is None:
         kd = kin_module.calc_kinship(genomecache, method='loco')
@@ -374,6 +386,13 @@ def run_threshold_scans(null_outcomes, genomecache,
         h2_fixed[c], _ = lmm_module.estimate_h2_null(
             evc.T @ y0, evc.T @ x_scan, ev, method='ml')
 
+    _ref_chr_used = next(iter(h2_fixed)) if h2_fixed else 'none'
+    _ref_h2 = h2_fixed.get(_ref_chr_used, float('nan'))
+    logger.info(
+        'run_threshold_scans: h² estimated on %d chromosomes — ref_chr=%s  h2=%.4f',
+        len(h2_fixed), _ref_chr_used, _ref_h2,
+    )
+
     n_perms  = null_outcomes.shape[1]
     max_lods = np.zeros(n_perms)
     rng      = np.random.default_rng(seed) if permutation_method == 'parametric' else None
@@ -413,13 +432,23 @@ def run_threshold_scans(null_outcomes, genomecache,
     for c in chrs:
         ev, evc = _ev_evc(c)
         h2 = h2_fixed[c]
-        chr_max = lmm_module.scan_chromosome_batch(
-            null_mat_gw, genomecache, c, x_scan, ev, evc, h2,
-            z_mat=z_mat, batch_size=batch_size)
+        try:
+            chr_max = lmm_module.scan_chromosome_batch(
+                null_mat_gw, genomecache, c, x_scan, ev, evc, h2,
+                z_mat=z_mat, batch_size=batch_size)
+        except KinshipSingularError as exc:
+            logger.warning('run_threshold_scans: chr%s skipped — %s', c, exc)
+            chr_null_lods[c] = np.zeros(n_perms_req)
+            continue
         chr_null_lods[c] = chr_max
         max_lods = np.maximum(max_lods, chr_max)
         logger.info('  [batch] chr%s  max_lod=%.3f', c, float(chr_max.max()))
 
+    _gw_threshold_95 = float(np.quantile(max_lods[max_lods > 0], 0.95)) if (max_lods > 0).any() else float('nan')
+    logger.info(
+        'run_threshold_scans: done  n_perms=%d  genome-wide 95th pct LOD=%.3f',
+        n_perms_req, _gw_threshold_95,
+    )
     return max_lods, chr_null_lods
 
 
@@ -454,11 +483,21 @@ def get_gev_thresholds(
     """
     finite = max_lods[np.isfinite(max_lods)]
     if len(finite) < 10:
+        logger.warning(
+            'get_gev_thresholds: only %d finite values — need ≥10; returning None',
+            len(finite),
+        )
         return None, None
     try:
         c, loc, scale = genextreme.fit(finite)
         threshold = float(genextreme.ppf(percentile, c, loc=loc, scale=scale))
-    except Exception:
+    except Exception as exc:
+        _emp = float(np.quantile(finite, percentile))
+        logger.warning(
+            'get_gev_thresholds: GEV fit failed (%s) — returning None '
+            '(empirical %.0f%% quantile was %.3f)',
+            exc, percentile * 100, _emp,
+        )
         return None, None
 
     params = {
@@ -467,6 +506,10 @@ def get_gev_thresholds(
         'n_perms': len(finite),
         'empirical_quantile': float(np.quantile(finite, percentile)),
     }
+    logger.debug(
+        'get_gev_thresholds: n=%d  shape=%.4f  loc=%.4f  scale=%.4f  threshold=%.3f',
+        len(finite), float(c), float(loc), float(scale), threshold,
+    )
     return threshold, params
 
 
@@ -516,6 +559,13 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
 
     chrs = ([peak_chrom] if peak_chrom is not None
             else [c for c in genomecache.chromosomes if c in kinship_decomp])
+
+    _n_boot = bootstrap_outcomes.shape[1]
+    logger.info(
+        'run_positional_scans: n_boot=%d  n_chr=%d  chr=%s',
+        _n_boot, len(chrs),
+        peak_chrom if peak_chrom is not None else 'all',
+    )
 
     n = bootstrap_outcomes.shape[0]
     x = (covariates if covariates is not None
@@ -579,6 +629,10 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
         'n_boot': n_boot, 'n_valid': len(valid),
         'alpha': ci_alpha,
     }
+    logger.info(
+        'run_positional_scans: done  n_boot=%d  CI=[%.3f, %.3f] Mb  width=%.3f Mb',
+        _n_boot, lo, hi, hi - lo,
+    )
     return peak_pos, ci_info
 
 
@@ -614,17 +668,22 @@ def ci_scan_multi_gene(
     seed           : int  base seed; incremented per gene
     use_rint       : bool
     output_path    : Path or None  stream CSV here; None accumulates in RAM
-    gene_meta      : DataFrame keyed by 'gene' — extra columns joined into each row
+    gene_meta      : DataFrame keyed by 'gene_name' — extra columns joined into each row
 
     returns
     -------
-    pd.DataFrame  columns: gene, chr [+ gene_meta cols], peak_mb, ci_lo, ci_hi, ci_width_mb
+    pd.DataFrame  columns: gene_name, chr [+ gene_meta cols], peak_mb, ci_lo, ci_hi, ci_width_mb
     """
     _gm_idx    = _build_gm_idx(gene_meta)
-    _id_cols   = ['gene', 'chr']
+    _id_cols   = ['gene_name', 'chr']
     _data_cols = ['peak_mb', 'ci_lo', 'ci_hi', 'ci_width_mb']
     _first = True
     _buf: 'list[pd.DataFrame]' = []
+    _n_genes_ci = len(expr_cache)
+    logger.info(
+        'ci_scan_multi_gene: n_genes=%d  n_boot=%d',
+        _n_genes_ci, n_boot,
+    )
     for _g, (gene_id, y) in enumerate(expr_cache.items()):
         gene_chr = gene_chr_map.get(gene_id, '')
         peak_mb = peak_mb_map.get(gene_id)
@@ -632,6 +691,7 @@ def ci_scan_multi_gene(
             logger.warning(
                 'ci_scan_multi_gene: missing chr/peak_mb for %s — skipped', gene_id)
             continue
+        logger.debug('ci_scan_multi_gene: [%d/%d] %s', _g + 1, _n_genes_ci, gene_id)
         _kd_g = ({gene_chr: kinship_decomp[gene_chr]}
                  if kinship_decomp is not None else None)
         try:
@@ -648,7 +708,7 @@ def ci_scan_multi_gene(
             )
             del boot_out, ci_mbs
             _df = pd.DataFrame([{
-                'gene':        gene_id,
+                'gene_name':   gene_id,
                 'chr':         gene_chr,
                 'peak_mb':     float(peak_mb),
                 'ci_lo':       ci_info['ci_lo'],
