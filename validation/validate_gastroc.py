@@ -2398,7 +2398,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 # read back only the columns needed for peak reduction — avoids
                 # holding the full (genes × loci) LOD matrix in RAM twice
                 log.info('  computing peak LOD per gene ...')
-                lod_df = pd.read_csv(py_lod_path, usecols=['gene_name', 'chr', 'locus', 'pos_mb', 'lod'])
+                lod_df = pd.read_csv(py_lod_path, usecols=['gene_name', 'chr', 'locus', 'pos_mb', 'lod'],
+                             dtype={'chr': str}, low_memory=False)
             else:
                 log.warning('  no LOD rows produced — check chr/gene_info alignment')
                 lod_df = pd.DataFrame(columns=['gene_name', 'chr', 'locus', 'pos_mb', 'lod'])
@@ -2407,7 +2408,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             if all_effect_rows:
                 eff_df = pd.DataFrame(all_effect_rows)
                 if 'gene_id' in gene_info.columns:
-                    _gid_map = gene_info.set_index('gene_name')['gene_id']
+                    _gid_map = gene_info.drop_duplicates('gene_name').set_index('gene_name')['gene_id']
                     eff_df.insert(1, 'gene_id', eff_df['gene_name'].map(_gid_map))
                 _beta_cols = [c for c in eff_df.columns if c.startswith('beta_')]
                 eff_df = eff_df.reindex(
@@ -2468,7 +2469,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 peak_py = peak_py.reindex(
                     columns=[c for c in PEAK_LOD_COLS if c in peak_py.columns])
                 if 'gene_id' in gene_info.columns:
-                    _gid_map = gene_info.set_index('gene_name')['gene_id']
+                    _gid_map = gene_info.drop_duplicates('gene_name').set_index('gene_name')['gene_id']
                     peak_py.insert(1, 'gene_id', peak_py['gene_name'].map(_gid_map))
                 peak_py.to_csv(peak_lod_path, index=False)
 
@@ -2895,7 +2896,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             # h2, start_mb, near_tss_mb, cis_dist_mb already present from peak_lod.csv
             # gene_id join + chi2/p_haplotype + canonical col_order via package function
             if 'gene_id' not in eqtl_sum.columns and 'gene_id' in gene_info.columns:
-                _gid_map = gene_info.set_index('gene_name')['gene_id']
+                _gid_map = gene_info.drop_duplicates('gene_name').set_index('gene_name')['gene_id']
                 eqtl_sum.insert(1, 'gene_id', eqtl_sum['gene_name'].map(_gid_map))
             eqtl_sum = finalize_egene_summary(eqtl_sum)
             eqtl_sum.to_csv(eqtl_summary_path, index=False)
