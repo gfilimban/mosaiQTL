@@ -213,6 +213,7 @@ def scan_vqtl(counts, subject_ids, genomecache,
         covariates=cov_aligned,
         kinship_decomp=kinship_decomp,
         use_rint=use_rint,
+        scan_window='genome',
         phenotype_id=f'{gene_id}_vqtl',
     )
 
@@ -231,6 +232,7 @@ def scan_vqtl(counts, subject_ids, genomecache,
             covariates=cov_aligned,
             kinship_decomp=kinship_decomp,
             use_rint=use_rint,
+            scan_window='genome',
             phenotype_id=f'{gene_id}_mean',
         )
 

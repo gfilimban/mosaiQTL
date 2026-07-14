@@ -18,6 +18,7 @@ target chromosome contribution is subtracted before dividing.
 supports: overall, loco, and per-chromosome kinship.
 """
 
+import time
 import numpy as np
 import logging
 
@@ -46,6 +47,14 @@ def calc_kinship(genomecache, method='loco'):
     -------
     dict  {'overall': K} | {chrom: K}  each K is (n, n)
     """
+    n_chr = len(genomecache.chromosomes)
+    n_strains = len(genomecache.sample_ids)
+    logger.info(
+        'calc_kinship: method=%r  n_chr=%d  n_strains=%d',
+        method, n_chr, n_strains,
+    )
+    _t0 = time.perf_counter()
+
     chr_num   = {}   # {chrom: Σ_l p_l p_l^T}
     chr_nloci = {}   # {chrom: number of loci}
 
@@ -64,17 +73,22 @@ def calc_kinship(genomecache, method='loco'):
         return K / d if d > 0 else K
 
     if method == 'overall':
-        return {'overall': _norm(num_tot / nloci_tot)}
-
+        result = {'overall': _norm(num_tot / nloci_tot)}
     elif method == 'loco':
-        return {c: _norm((num_tot - chr_num[c]) / (nloci_tot - chr_nloci[c]))
-                for c in chr_num}
-
+        result = {c: _norm((num_tot - chr_num[c]) / (nloci_tot - chr_nloci[c]))
+                  for c in chr_num}
     elif method == 'chr':
-        return {c: _norm(chr_num[c] / chr_nloci[c]) for c in chr_num}
-
+        result = {c: _norm(chr_num[c] / chr_nloci[c]) for c in chr_num}
     else:
         raise ValueError(f'unknown kinship method: {method!r}')
+
+    _example = next(iter(result.values()))
+    _mean_diag = float(np.diag(_example).mean())
+    logger.info(
+        'calc_kinship: done  n_keys=%d  mean_diag=%.4f  elapsed=%.1fs',
+        len(result), _mean_diag, time.perf_counter() - _t0,
+    )
+    return result
 
 
 def decomp_kinship(kinship_dict):
@@ -91,6 +105,12 @@ def decomp_kinship(kinship_dict):
     -------
     dict  {key: {'values': λ, 'vectors': U}}  eigenvalues descending
     """
+    n_keys = len(kinship_dict)
+    _example_k = next(iter(kinship_dict.values()))
+    logger.info(
+        'decomp_kinship: n_matrices=%d  n_strains=%d',
+        n_keys, _example_k.shape[0],
+    )
     result = {}
     for key, k in kinship_dict.items():
         vals, vecs = np.linalg.eigh((k + k.T) / 2.0)   # symmetrize → eigh
@@ -99,5 +119,10 @@ def decomp_kinship(kinship_dict):
             'values':  np.maximum(vals[order], 0.0),    # floor negative noise
             'vectors': vecs[:, order],
         }
-        logger.debug(f'kinship[{key}]: top-3 λ={result[key]["values"][:3]}')
+        _ev = result[key]['values']
+        logger.debug(
+            'decomp_kinship[%s]: n=%d  λ_range=[%.4f, %.4f]  top-3=%s',
+            key, len(_ev), float(_ev[-1]), float(_ev[0]),
+            ', '.join(f'{v:.4f}' for v in _ev[:3]),
+        )
     return result

@@ -92,8 +92,8 @@ def coef_profile(
 
     for fi, fname in enumerate(founders):
         color = FOUNDER_COLORS.get(fname, COLOR_CC_FALLBACK)
-        ax.plot(positions, full[:, fi], color=color, linewidth=linewidth,
-                alpha=alpha, label=fname, zorder=2)
+        sns.lineplot(x=positions, y=full[:, fi], color=color, linewidth=linewidth,
+                     alpha=alpha, label=fname, zorder=2, errorbar=None, ax=ax)
 
     ax.axhline(0, color=COLOR_NEUTRAL_DARK, linewidth=0.5, zorder=1)
     ax.set_xlim(float(positions[0]), float(positions[-1]))
@@ -153,8 +153,9 @@ def coef_profile_genome(
         for fi, fname in enumerate(founders):
             color = FOUNDER_COLORS.get(fname, COLOR_CC_FALLBACK)
             label = fname if not legend_drawn else None
-            ax.plot(pos + offset, full[:, fi], color=color,
-                    linewidth=linewidth, alpha=alpha, label=label, zorder=2)
+            sns.lineplot(x=pos + offset, y=full[:, fi], color=color,
+                         linewidth=linewidth, alpha=alpha, label=label,
+                         zorder=2, errorbar=None, ax=ax)
         legend_drawn = True
         xticks.append(float(offset + (pos[-1] - pos[0]) / 2))
         xlabels.append(chrom)
@@ -332,8 +333,8 @@ def effect_caterpillar(
     colors = [FOUNDER_COLORS.get(f, COLOR_CC_FALLBACK) for f in founders]
 
     if connect:
-        ax.plot(full_b, y, color=COLOR_NEUTRAL_DARK, linewidth=0.8,
-                zorder=1, alpha=0.5)
+        sns.lineplot(x=full_b, y=y, color=COLOR_NEUTRAL_DARK, linewidth=0.8,
+                     zorder=1, alpha=0.5, errorbar=None, ax=ax)
     if ci_wide is not None:
         for i in range(J):
             ax.plot(ci_wide[i], [y[i], y[i]], color=colors[i],
@@ -580,11 +581,11 @@ def effects_per_chr(
             continue
 
         gene = prio.get(c)
-        if gene and gene in eff_c['gene'].values:
-            row = eff_c[eff_c['gene'] == gene].iloc[0]
+        if gene and gene in eff_c['gene_name'].values:
+            row = eff_c[eff_c['gene_name'] == gene].iloc[0]
         else:
             row = eff_c.loc[eff_c['peak_lod'].idxmax()]
-            gene = str(row['gene'])
+            gene = str(row['gene_name'])
 
         betas = np.array([float(row[b]) for b in beta_cols])
         fig, ax = plt.subplots(figsize=(7, 3), dpi=300)
@@ -645,7 +646,7 @@ def genome_effects_grid(
 
         row = eff_c.loc[eff_c['peak_lod'].idxmax()]
         betas = np.array([float(row[b]) for b in beta_cols])
-        gene = str(row['gene'])
+        gene = str(row['gene_name'])
 
         effect_bars(betas, founders, ax=ax)
         ax.set_xlabel('')

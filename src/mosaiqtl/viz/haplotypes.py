@@ -186,9 +186,9 @@ def pxg(
             continue
         color = FOUNDER_COLORS.get(fname, COLOR_CC_FALLBACK)
         x_vals = fi + rng.uniform(-jitter, jitter, size=mask.sum())
-        ax.scatter(x_vals, phenotype[mask], color=color, s=point_size,
-                   alpha=alpha, zorder=3, edgecolors='white', linewidths=0.4,
-                   label=fname)
+        sns.scatterplot(x=x_vals, y=phenotype[mask], color=color, s=point_size,
+                        alpha=alpha, zorder=3, edgecolors='white', linewidths=0.4,
+                        label=fname, ax=ax)
 
     ax.set_xticks(np.arange(len(founders)))
     ax.set_xticklabels(founders, rotation=45, ha='right', fontsize=8)

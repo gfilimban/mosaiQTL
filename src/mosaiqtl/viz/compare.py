@@ -89,7 +89,7 @@ def lod_scatter(
         cbar_label: Colorbar label (default ``'peak LOD score'``).
         priority_genes: ``{gene_name: color_hex}`` dict; matching rows are
             overlaid as bold annotated points at higher z-order.  Requires a
-            ``'gene'`` column in *df*.
+            ``'gene_name'`` column in *df*.
         sparse_mask: Boolean Series; ``True`` rows are drawn grey (collapsed
             loci), ``False`` rows are colored by peak LOD score.
         threshold: Genome-wide FWER LOD-score threshold applied to both axes
@@ -148,9 +148,9 @@ def lod_scatter(
     g.ax_joint.set_ylim(0, _lim)
     g.ax_joint.plot([0, _lim], [0, _lim], 'k--', linewidth=0.8, alpha=0.5)
 
-    if priority_genes and 'gene' in df.columns:
+    if priority_genes and 'gene_name' in df.columns:
         for gene, color in priority_genes.items():
-            sub = df[df['gene'] == gene]
+            sub = df[df['gene_name'] == gene]
             if sub.empty:
                 continue
             for _, row in sub.iterrows():
@@ -377,14 +377,12 @@ def allele_effects_comparison(
     cbar.ax.tick_params(labelsize=8)
 
     lim = float(np.abs(np.concatenate([b_m, a_m])).max()) * 1.05
-    # y = 2x diagonal (expected scale difference)
-    ax.plot([-lim, lim], [-2 * lim, 2 * lim],
-            color=COLOR_NEUTRAL_DARK, lw=0.8, ls='--',
-            label='y = 2x (expected)')
-    # y = x identity
-    ax.plot([-lim, lim], [-lim, lim],
-            color=COLOR_CC_FALLBACK, lw=0.5, ls='-', alpha=0.5,
-            label='y = x')
+    sns.lineplot(x=[-lim, lim], y=[-2 * lim, 2 * lim],
+                 color=COLOR_NEUTRAL_DARK, linewidth=0.8, linestyle='--',
+                 label='y = 2x (expected)', errorbar=None, ax=ax)
+    sns.lineplot(x=[-lim, lim], y=[-lim, lim],
+                 color=COLOR_CC_FALLBACK, linewidth=0.5, linestyle='-',
+                 alpha=0.5, label='y = x', errorbar=None, ax=ax)
 
     r2_val = float(np.corrcoef(a_m, b_m)[0, 1]) ** 2 if mask.sum() >= 2 else float('nan')
 
@@ -446,14 +444,14 @@ def lod_profiles_comparison(
         axes = [axes]
 
     for ax, gene in zip(axes, genes):
-        g_a = df_a[df_a['gene'] == gene].sort_values('pos_mb')
+        g_a = df_a[df_a['gene_name'] == gene].sort_values('pos_mb')
         ax.fill_between(g_a['pos_mb'], g_a['lod'],
                         alpha=0.15, color=color_a, zorder=1)
         sns.lineplot(x=g_a['pos_mb'], y=g_a['lod'],
                      color=color_a, lw=1.2, label=label_a, ax=ax, zorder=3)
 
-        if df_b is not None and gene in df_b['gene'].values:
-            g_b = df_b[df_b['gene'] == gene].sort_values('pos_mb')
+        if df_b is not None and gene in df_b['gene_name'].values:
+            g_b = df_b[df_b['gene_name'] == gene].sort_values('pos_mb')
             sns.lineplot(x=g_b['pos_mb'], y=g_b['lod'],
                          color=color_b, lw=1, linestyle='--', label=label_b,
                          alpha=0.85, ax=ax, zorder=2)
@@ -580,11 +578,12 @@ def kinship_comparison(
     flat_b = k_b.ravel()
     mask = np.isfinite(flat_a) & np.isfinite(flat_b)
 
-    ax.scatter(flat_b[mask], flat_a[mask], s=2, alpha=0.3,
-               color=_COLOR_A, linewidths=0, rasterized=True)
+    sns.scatterplot(x=flat_b[mask], y=flat_a[mask], s=2, alpha=0.3,
+                    color=_COLOR_A, linewidths=0, rasterized=True, ax=ax)
 
     lim = max(flat_a[mask].max(), flat_b[mask].max()) * 1.05
-    ax.plot([0, lim], [0, lim], color=COLOR_NEUTRAL_DARK, lw=0.8, ls='--')
+    sns.lineplot(x=[0, lim], y=[0, lim], color=COLOR_NEUTRAL_DARK,
+                 linewidth=0.8, linestyle='--', errorbar=None, ax=ax)
 
     r2_val = float(np.corrcoef(flat_a[mask], flat_b[mask])[0, 1]) ** 2
 
@@ -1004,9 +1003,9 @@ def nb_vs_lmm_comparison(
                     s=12, alpha=0.6, linewidths=0, ax=ax)
 
     lim = max(lm_c[mask].max(), nb_c[mask].max()) * 1.05
-    # identity line — keep as ax.plot (not a data trace)
-    ax.plot([0, lim], [0, lim], color=COLOR_CC_FALLBACK, lw=0.8, ls='--',
-            alpha=0.5, label='y = x')
+    sns.lineplot(x=[0, lim], y=[0, lim], color=COLOR_CC_FALLBACK,
+                 linewidth=0.8, linestyle='--', alpha=0.5, label='y = x',
+                 errorbar=None, ax=ax)
 
     if mask.sum() >= 2:
         r_val = float(np.corrcoef(lm_c[mask], nb_c[mask])[0, 1])

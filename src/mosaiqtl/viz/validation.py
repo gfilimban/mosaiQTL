@@ -251,10 +251,11 @@ def plot_pvalue_qq(scan_result, save_path=None):
     observed = -np.log10(pvals)
     expected = -np.log10(np.arange(1, n + 1) / (n + 1))
 
-    ax.scatter(expected, observed, s=10, alpha=0.6, color=_COLOR_PY,
-               edgecolors='none', rasterized=True)
-    ax.plot([0, max(expected)], [0, max(expected)], '--',
-            color=_COLOR_R, linewidth=1, label='$y = x$ (null)')
+    sns.scatterplot(x=expected, y=observed, s=10, alpha=0.6, color=_COLOR_PY,
+                    edgecolors='none', rasterized=True, ax=ax)
+    sns.lineplot(x=[0, max(expected)], y=[0, max(expected)], linestyle='--',
+                 color=_COLOR_R, linewidth=1, label='$y = x$ (null)',
+                 errorbar=None, ax=ax)
 
     # genomic inflation factor
     lambda_gc = np.median(pvals) / 0.5
@@ -292,12 +293,13 @@ def plot_dispersion_vs_truth(phi_estimated, phi_true, save_path=None):
     phi_e = phi_estimated[valid]
     phi_t = phi_true[valid]
 
-    ax.scatter(phi_t, phi_e, s=20, alpha=0.6, color=_COLOR_DISP,
-               edgecolors='white', linewidth=0.3)
+    sns.scatterplot(x=phi_t, y=phi_e, s=20, alpha=0.6, color=_COLOR_DISP,
+                    edgecolors='white', linewidth=0.3, ax=ax)
 
     # diagonal
     lims = [0, max(phi_t.max(), phi_e.max()) * 1.1]
-    ax.plot(lims, lims, '--', color=_COLOR_R, linewidth=1, label='$y = x$')
+    sns.lineplot(x=lims, y=lims, linestyle='--', color=_COLOR_R,
+                 linewidth=1, label='$y = x$', errorbar=None, ax=ax)
 
     # correlation
     corr = np.corrcoef(phi_t, phi_e)[0, 1]
@@ -350,12 +352,13 @@ def plot_lod_correlation(py_scan_result, r_results_csv, save_path=None):
 
     fig, ax = plt.subplots(figsize=(5, 5))
 
-    ax.scatter(merged['lod_r'], merged['lod_py'], s=12, alpha=0.6,
-               color=_COLOR_PY, edgecolors='none', rasterized=True)
+    sns.scatterplot(x=merged['lod_r'], y=merged['lod_py'], s=12, alpha=0.6,
+                    color=_COLOR_PY, edgecolors='none', rasterized=True, ax=ax)
 
     # diagonal
     lims = [0, max(merged['lod_r'].max(), merged['lod_py'].max()) * 1.1]
-    ax.plot(lims, lims, '--', color=_COLOR_R, linewidth=1, label='$y = x$')
+    sns.lineplot(x=lims, y=lims, linestyle='--', color=_COLOR_R,
+                 linewidth=1, label='$y = x$', errorbar=None, ax=ax)
 
     # correlation
     corr = np.corrcoef(merged['lod_r'], merged['lod_py'])[0, 1]
@@ -667,10 +670,11 @@ def plot_mi_scan_comparison(py_mi_result, r_mi_csv, save_path=None):
         return None, None
 
     fig, ax = plt.subplots(figsize=(5, 5))
-    ax.scatter(merged['lod_r'], merged['lod_py'], s=12, alpha=0.6,
-               color=_COLOR_PY, edgecolors='none', rasterized=True)
+    sns.scatterplot(x=merged['lod_r'], y=merged['lod_py'], s=12, alpha=0.6,
+                    color=_COLOR_PY, edgecolors='none', rasterized=True, ax=ax)
     lims = [0, max(merged['lod_r'].max(), merged['lod_py'].max()) * 1.1]
-    ax.plot(lims, lims, '--', color=_COLOR_R, linewidth=1)
+    sns.lineplot(x=lims, y=lims, linestyle='--', color=_COLOR_R,
+                 linewidth=1, errorbar=None, ax=ax)
     corr = np.corrcoef(merged['lod_r'], merged['lod_py'])[0, 1]
     ax.text(0.05, 0.95, f'$r$ = {corr:.6f}\n$n$ = {len(merged)}',
             transform=ax.transAxes, fontsize=10, va='top')
@@ -712,10 +716,11 @@ def plot_mediation_comparison(py_mediation_df, r_mediation_csv,
     r_col = f'{mediator_col}_r' if f'{mediator_col}_r' in merged.columns else mediator_col
 
     fig, ax = plt.subplots(figsize=(5, 5))
-    ax.scatter(merged[r_col], merged[py_col], s=12, alpha=0.6,
-               color=_COLOR_PY, edgecolors='none', rasterized=True)
+    sns.scatterplot(x=merged[r_col], y=merged[py_col], s=12, alpha=0.6,
+                    color=_COLOR_PY, edgecolors='none', rasterized=True, ax=ax)
     lims = [0, max(merged[r_col].max(), merged[py_col].max()) * 1.1]
-    ax.plot(lims, lims, '--', color=_COLOR_R, linewidth=1)
+    sns.lineplot(x=lims, y=lims, linestyle='--', color=_COLOR_R,
+                 linewidth=1, errorbar=None, ax=ax)
     corr = np.corrcoef(merged[r_col], merged[py_col])[0, 1]
     ax.text(0.05, 0.95, f'$r$ = {corr:.6f}',
             transform=ax.transAxes, fontsize=10, va='top')
@@ -753,10 +758,11 @@ def plot_instability_comparison(py_instability, r_instability_csv,
         return None, None
 
     fig, ax = plt.subplots(figsize=(5, 5))
-    ax.scatter(merged['lod_r'], merged['lod_py'], s=12, alpha=0.6,
-               color=_COLOR_PY, edgecolors='none', rasterized=True)
+    sns.scatterplot(x=merged['lod_r'], y=merged['lod_py'], s=12, alpha=0.6,
+                    color=_COLOR_PY, edgecolors='none', rasterized=True, ax=ax)
     lims = [0, max(merged['lod_r'].max(), merged['lod_py'].max()) * 1.1]
-    ax.plot(lims, lims, '--', color=_COLOR_R, linewidth=1)
+    sns.lineplot(x=lims, y=lims, linestyle='--', color=_COLOR_R,
+                 linewidth=1, errorbar=None, ax=ax)
     corr = np.corrcoef(merged['lod_r'], merged['lod_py'])[0, 1]
     ax.text(0.05, 0.95, f'$r$ = {corr:.6f}',
             transform=ax.transAxes, fontsize=10, va='top')
@@ -786,11 +792,11 @@ def plot_phi_distribution(phi_shrunk, phi_raw=None, save_path=None):
     set_style()
     fig, ax = plt.subplots(figsize=(6, 4))
     bins = np.linspace(0, max(float(np.nanpercentile(phi_shrunk, 99)), 1e-3), 40)
-    ax.hist(phi_shrunk[~np.isnan(phi_shrunk)], bins=bins,
-            color=_COLOR_PY, alpha=0.7, label='shrunk φ')
+    sns.histplot(phi_shrunk[~np.isnan(phi_shrunk)], bins=bins,
+                 color=_COLOR_PY, alpha=0.7, label='shrunk φ', ax=ax, linewidth=0)
     if phi_raw is not None:
-        ax.hist(phi_raw[~np.isnan(phi_raw)], bins=bins,
-                color=_COLOR_R, alpha=0.4, label='raw φ')
+        sns.histplot(phi_raw[~np.isnan(phi_raw)], bins=bins,
+                     color=_COLOR_R, alpha=0.4, label='raw φ', ax=ax, linewidth=0)
         ax.legend(fontsize=9)
     ax.set_xlim(left=0)
     ax.set_xlabel('overdispersion φ')
@@ -826,10 +832,11 @@ def plot_nb_vs_lmm_comparison(nb_scan_result, lmm_scan_result, save_path=None):
         return None, None
 
     fig, ax = plt.subplots(figsize=(5, 5))
-    ax.scatter(merged['lod_lmm'], merged['lod_nb'], s=12, alpha=0.6,
-               color=_COLOR_PY, edgecolors='none', rasterized=True)
+    sns.scatterplot(x=merged['lod_lmm'], y=merged['lod_nb'], s=12, alpha=0.6,
+                    color=_COLOR_PY, edgecolors='none', rasterized=True, ax=ax)
     lims = [0, max(merged['lod_lmm'].max(), merged['lod_nb'].max()) * 1.1]
-    ax.plot(lims, lims, '--', color=_COLOR_R, linewidth=1, alpha=0.5, label='y = x')
+    sns.lineplot(x=lims, y=lims, linestyle='--', color=_COLOR_R,
+                 linewidth=1, alpha=0.5, label='y = x', errorbar=None, ax=ax)
     if len(merged) > 2:
         corr = np.corrcoef(merged['lod_lmm'], merged['lod_nb'])[0, 1]
         ax.text(0.05, 0.95, f'$r$ = {corr:.3f}',

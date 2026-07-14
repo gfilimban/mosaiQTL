@@ -3,20 +3,18 @@ nb — negative binomial genome-wide scan (primary model)
 
 two-stage design:
   stage 1 — null model + dispersion (cell level)
-      glm_sc_fit(counts_cells, sample=strain_ids, design=X_cells)
+      fit_null_sc_native(counts_cells, sample_ids, ...)
           NEBULA-LN: NB-gamma mixed model with per-subject random effect
           absorbs within-strain cell-to-cell variability and between-strain
           overdispersion simultaneously. sigma_sample = per-gene subject
           variance component; dispersion = cell-level NB overdispersion.
-      shrink_sc_disp(fit, counts_cells)
-          empirical Bayes shrinkage of cell-level dispersion toward a
-          trended prior (same WLEB framework as edgeR's tagwise dispersion).
+      shrinkage via _wleb_shrink (WLEB framework).
 
-  stage 2 — genome-wide scan (pseudobulk, vectorised)
-      for each gene: pseudobulk counts (one per strain) + shrunk dispersion
+  stage 2 — genome-wide scan (pseudobulk per sample, vectorised)
+      for each gene: pseudobulk counts (one per individual sample) + shrunk dispersion
       score test over all loci via einsum — O(L × n × J²) per chromosome.
       sigma_sample optionally inflates score test denominator to account for
-      residual subject-level variance not captured by fixed covariates.
+      residual within-strain variability not captured by fixed covariates.
 
 model:
   cell level (stage 1):
@@ -24,53 +22,137 @@ model:
       u_i ~ N(0, σ²_g)         subject random effect per gene g
 
   pseudobulk scan (stage 2):
-      S_ig = Σ_j Y_ij           pseudobulk sum per strain i, gene g
+      S_ig = Σ_j Y_ij           pseudobulk sum per sample i, gene g
       H₀: log E[S_ig] = X_i β₀ + log(n_i s̄_i)
       H₁: log E[S_ig] = H_iℓ γ + X_i β + log(n_i s̄_i)
       Q_ℓ = U_ℓᵀ I_ℓ⁻¹ U_ℓ ~ χ²(J−1)   score test
 
-  kinship note: the per-subject random effect u_i from glm_sc_fit is an
-  unstructured exchangeable random effect, not a LOCO-kinship random effect.
-  for CC strains with controlled admixture and 10 expression PCs as fixed
-  covariates, this is adequate for the eQTL proof-of-concept.  a full
-  NB-LMM with LOCO kinship covariance implemented via PQL + Woodbury identity.
-  stage 1 (fit_null_sc) dispatches to native NEBULA-LN by default (use_native=True)
-  or edgepython (use_native=False, requires edgepython installed).
+  note: stage 2 operates on n individual-sample pseudobulk observations,
+  not m strain means. multiple samples sharing a genotype are kept distinct;
+  the Z-matrix (n × m) expands the m-row haplotype matrix to n rows.
+  when kinship_loco is provided, the per-chromosome null uses a PQL NB-GLMM
+  with LOCO kinship random effect via the Woodbury identity.
 
-references: He et al. 2021 (NEBULA-LN); Pachter 2026 edgePython (design ref);
-            Chen et al. 2016 AJHG (PQL score test); Robinson et al. 2010 (TMM)
+references: He et al. 2021 (NEBULA-LN); Chen et al. 2016 AJHG (PQL score test)
 """
 
-import numpy as np
+import gc
 import logging
+from concurrent.futures import ThreadPoolExecutor as _ThreadPool
+from pathlib import Path
+
+import numpy as np
 from scipy.special import gammaln as _gammaln, digamma as _dg, polygamma as _pg
 from scipy import stats as _stats
 from scipy.optimize import minimize_scalar as _minimize_scalar
 from scipy.linalg import cho_factor as _cho_fac, cho_solve as _cho_sv
 
+from .scan import ScanResult
+from ..utils import build_z_matrix
+from ..genotype.genomecache import GenomeCache
+
 logger = logging.getLogger('mosaiqtl')
 
+__all__ = [
+    'fit_null_sc_native',
+    'fit_null_sc',
+    'pseudobulk_sum',
+    'precompute_sufficient_stats',
+    'fit_null_nb_glmm_loco',
+    'scan_nb_gene',
+    'scan_nb_multi_gene',
+    'scan_nb',
+]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# native NEBULA-LN implementation (no edgepython needed)
-# design follows He et al. 2021 (NEBULA-LN); Pachter 2026 edgePython (reference).
+# stage 1 — cell-level null model
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _tmm_norm_factors(counts_mat, ref_col=None, trim_m=0.3, trim_a=0.05):
+    """Per-sample TMM scaling factors via trimmed mean of M-values.
+
+    Reference sample: the sample whose 75th-percentile count is closest
+    to the median 75th-percentile across all samples. This minimises the
+    average M-value magnitude and therefore the trimming loss.
+    Computes log-ratios (M) and average log-expression (A) relative to
+    the reference, trims the most extreme M and A fractions, and returns
+    weighted-mean M per sample as the log2 scaling factor. Add to
+    log(lib_size) to get the full log-offset for each sample.
+
+    counts_mat : (n_genes, n_samples)  raw integer counts
+    ref_col    : int or None  reference column index; if None uses the
+                 sample whose 75th-percentile count is closest to the
+                 dataset median (default qtl2/edgeR heuristic).
+    trim_m     : float  fraction of M-values to trim from each tail (default 0.3)
+    trim_a     : float  fraction of A-values to trim from each tail (default 0.05)
+    returns    : (n_samples,) log-scale TMM normalisation factors
+    """
+    counts_mat = np.asarray(counts_mat, dtype=np.float64)
+    n_genes, n_samples = counts_mat.shape
+    lib_sizes = counts_mat.sum(axis=0).clip(1.0)               # (n_samples,)
+
+    # choose reference sample: closest 75th-pctile count to dataset median
+    if ref_col is None:
+        q75 = np.percentile(counts_mat, 75, axis=0)
+        ref_col = int(np.argmin(np.abs(q75 - np.median(q75))))
+
+    ref_counts = counts_mat[:, ref_col]
+    ref_lib    = lib_sizes[ref_col]
+
+    log_factors = np.zeros(n_samples)
+    for k in range(n_samples):
+        if k == ref_col:
+            continue
+        obs   = counts_mat[:, k]
+        obs_lib = lib_sizes[k]
+
+        # keep genes with counts > 0 in both samples
+        keep = (obs > 0) & (ref_counts > 0)
+        if keep.sum() < 10:
+            continue
+
+        obs_k   = obs[keep]
+        ref_k   = ref_counts[keep]
+        n_k     = obs_k.sum()
+        n_ref   = ref_k.sum()
+
+        # M: log-ratio of relative expression
+        M = np.log2(obs_k / obs_lib) - np.log2(ref_k / ref_lib)
+        # A: average log-expression
+        A = 0.5 * (np.log2(obs_k / obs_lib) + np.log2(ref_k / ref_lib))
+
+        # asymptotic variance for weighting
+        w = (obs_lib - obs_k) / (obs_lib * obs_k) + (ref_lib - ref_k) / (ref_lib * ref_k)
+        w = np.maximum(w, 1e-12)
+
+        # trim by M and A simultaneously
+        lo_m, hi_m = np.percentile(M, [trim_m * 100, (1 - trim_m) * 100])
+        lo_a, hi_a = np.percentile(A, [trim_a * 100, (1 - trim_a) * 100])
+        use = (M >= lo_m) & (M <= hi_m) & (A >= lo_a) & (A <= hi_a)
+        if use.sum() < 5:
+            continue
+
+        log_factors[k] = float(np.sum(M[use] / w[use]) / np.sum(1.0 / w[use]))
+
+    return log_factors   # log2 scale; add to log(lib_size) to get full offset
 
 
 def _tmm_offsets(counts_mat, lib_sizes=None):
-    """Log library size offsets (simple: log total counts per sample).
-    Full TMM (Robinson et al. 2010) is a planned refinement; for QTL mapping
-    the simpler version introduces negligible bias.
+    """Log library size per sample (total counts, floor 1).
+
     counts_mat : (n_genes, n_samples)
     returns    : (n_samples,) log offsets
     """
-    ls = counts_mat.sum(axis=0).astype(float)  # (n_samples,)
+    ls = counts_mat.sum(axis=0).astype(float)
     ls = np.maximum(ls, 1.0)
     return np.log(ls)
 
 
 def _irls_nb_pseudobulk(S, x, phi_size, offsets, max_iter=25, tol=1e-7):
     """IRLS for NB GLM on pseudobulk counts.
+
     phi_size  : NB size parameter r (= 1/sigma2 for subject-level NB)
     returns mu (n,), beta (p,)
     """
@@ -94,6 +176,7 @@ def _irls_nb_pseudobulk(S, x, phi_size, offsets, max_iter=25, tol=1e-7):
 
 def _nr_k(S, M, k_init=1.0, max_iter=25, tol=1e-6):
     """Newton-Raphson for k = 1/sigma2 in NB pseudobulk marginal likelihood.
+
     Marginal: S_i ~ NB(M_i, 1/k).  Gradient + Hessian use digamma/polygamma.
     """
     k = max(float(k_init), 1e-4)
@@ -114,6 +197,7 @@ def _nr_k(S, M, k_init=1.0, max_iter=25, tol=1e-6):
 
 def _phi_mom(counts_g, mu_cell):
     """Method-of-moments cell-level NB dispersion estimate.
+
     counts_g : (n_cells,)  raw UMI counts
     mu_cell  : (n_cells,)  expected counts per cell
     returns phi (cell-level dispersion = 1/r_cell)
@@ -125,8 +209,10 @@ def _phi_mom(counts_g, mu_cell):
 
 def _wleb_shrink(phi_hat, mean_expr, df_prior=10.0):
     """Weighted likelihood empirical Bayes dispersion shrinkage.
+
     Shrinks per-gene phi toward a trended prior as a function of mean expression.
     Follows Robinson & Smyth 2007 (tagwise dispersion in edgeR).
+
     phi_hat   : (n_genes,)
     mean_expr : (n_genes,)  mean pseudobulk count per gene
     returns   : (n_genes,) shrunk phi
@@ -157,24 +243,33 @@ def _wleb_shrink(phi_hat, mean_expr, df_prior=10.0):
     return np.maximum(shrunk, 1e-6)
 
 
-def fit_null_sc_native(counts_cells, sample_ids, covariates_cells=None,
-                       verbose=False):
+def fit_null_sc_native(
+    counts_cells: np.ndarray,
+    sample_ids: 'np.ndarray | list[str]',
+    covariates_cells: 'np.ndarray | None' = None,
+    verbose: bool = False,
+) -> dict:
     """Native NEBULA-LN Stage 1 null fit — no edgepython required.
 
-    implements the NB-gamma mixed model from He et al. 2021, using the LN
-    approximation for large CPS. design follows Pachter 2026 edgePython.
+    Implements the NB-gamma mixed model from He et al. 2021, using the LN
+    approximation for large CPS. Alternates IRLS for beta and Newton-Raphson
+    for k=1/sigma2, followed by EB shrinkage of cell-level dispersion.
 
-    parameters
-    ----------
-    counts_cells      : (n_genes, n_cells)  raw UMI counts
-    sample_ids        : (n_cells,)          sample/subject per cell
-    covariates_cells  : (n_cells, p) or None
+    Args:
+        counts_cells: Raw UMI count matrix, shape (n_genes, n_cells).
+        sample_ids: Sample/subject label per cell, length n_cells.
+        covariates_cells: Cell-level covariate matrix (n_cells, p) or None.
+            If None, intercept only.
+        verbose: Log progress at INFO level if True.
 
-    returns dict compatible with fit_null_sc output:
-        dispersion_use : (n_genes_pass,)  EB-shrunk cell-level phi
-        sigma_sample   : (n_genes_pass,)  subject-level overdispersion sigma2
-        gene_mask      : (n_genes,) bool
-        fitted_values  : (n_genes_pass, n_cells) optional — None here
+    Returns:
+        Dict compatible with fit_null_sc output, containing:
+            dispersion: (n_genes_pass,) raw MOM cell-level phi,
+            dispersion_shrunk: (n_genes_pass,) EB-shrunk phi,
+            dispersion_use: (n_genes_pass,) same as dispersion_shrunk,
+            sigma_sample: (n_genes_pass,) subject-level overdispersion sigma2,
+            gene_mask: (n_genes,) bool pass/fail filter,
+            fitted_values: None (not computed at cell level).
     """
     counts_cells = np.asarray(counts_cells, dtype=np.float64)
     n_genes, n_cells = counts_cells.shape
@@ -182,13 +277,21 @@ def fit_null_sc_native(counts_cells, sample_ids, covariates_cells=None,
     samples, inv = np.unique(sample_ids, return_inverse=True)
     n_samp       = len(samples)
 
-    # subject-level offsets and pseudobulk
-    lib_cell = counts_cells.sum(axis=0) + 1.0                # (n_cells,)
+    # subject-level pseudobulk and library sizes
+    lib_cell = counts_cells.sum(axis=0) + 1.0                # (n_cells,) per-cell total + 1
     lib_samp = np.zeros(n_samp)
     ncell_s  = np.zeros(n_samp)
     np.add.at(lib_samp, inv, lib_cell)
     np.add.at(ncell_s,  inv, 1.0)
-    offsets_samp = np.log(lib_samp.clip(1))                  # (n_samp,)
+
+    # pseudobulk count matrix for TMM: sum gene counts per subject
+    pb_for_tmm = np.zeros((counts_cells.shape[0], n_samp), dtype=np.float64)
+    np.add.at(pb_for_tmm.T, inv, counts_cells.T)
+
+    # TMM factors (log2 scale) → convert to natural log and add to log(lib_samp)
+    tmm_log2 = _tmm_norm_factors(pb_for_tmm)                  # (n_samp,) log2
+    offsets_samp = np.log(lib_samp.clip(1)) + tmm_log2 * np.log(2)  # (n_samp,)
+    del pb_for_tmm
 
     # subject-level design matrix
     if covariates_cells is not None:
@@ -210,7 +313,7 @@ def fit_null_sc_native(counts_cells, sample_ids, covariates_cells=None,
     idx       = np.where(gene_mask)[0]
     n_pass    = len(idx)
     if verbose:
-        logger.info(f'fit_null_sc_native: {n_pass}/{n_genes} genes pass filter')
+        logger.info('fit_null_sc_native: %d/%d genes pass filter', n_pass, n_genes)
 
     phi_hat   = np.full(n_pass, 0.1)
     sigma2    = np.full(n_pass, 0.1)
@@ -229,9 +332,10 @@ def fit_null_sc_native(counts_cells, sample_ids, covariates_cells=None,
 
         # NEBULA-LN: alternate beta (IRLS) and k (NR)
         k = 1.0 / max(phi_pb_init, 1e-3)
+        mu_s = np.ones(n_samp)
         for _ in range(8):
-            mu_s, _  = _irls_nb_pseudobulk(S, x_samp, k, offsets_samp)
-            k        = _nr_k(S, mu_s, k_init=k)
+            mu_s, _ = _irls_nb_pseudobulk(S, x_samp, k, offsets_samp)
+            k       = _nr_k(S, mu_s, k_init=k)
 
         sigma2[gi]  = 1.0 / max(k, 1e-6)
         mean_pb[gi] = float(mu_s.mean())
@@ -242,51 +346,59 @@ def fit_null_sc_native(counts_cells, sample_ids, covariates_cells=None,
         phi_hat[gi] = _phi_mom(counts_g, mu_cell)
 
         if verbose and gi % max(1, n_pass//10) == 0:
-            logger.info(f'  {gi+1}/{n_pass}  phi={phi_hat[gi]:.3f}  sigma2={sigma2[gi]:.3f}')
+            logger.info('  %d/%d  phi=%.3f  sigma2=%.3f',
+                        gi+1, n_pass, phi_hat[gi], sigma2[gi])
 
     # EB shrinkage
     phi_shrunk = _wleb_shrink(phi_hat, mean_pb)
 
     return {
-        'dispersion':      phi_hat,
+        'dispersion':        phi_hat,
         'dispersion_shrunk': phi_shrunk,
-        'dispersion_use':  phi_shrunk,
-        'sigma_sample':    sigma2,
-        'gene_mask':       gene_mask,
-        'fitted_values':   None,
+        'dispersion_use':    phi_shrunk,
+        'sigma_sample':      sigma2,
+        'gene_mask':         gene_mask,
+        'fitted_values':     None,
     }
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # stage 1 helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def fit_null_sc(counts_cells, strain_ids, covariates_cells=None,
-                norm_method='TMM', shrink=True, verbose=False,
-                use_native=True):
-    """fit NEBULA-LN null model on cell-level counts for all genes.
+def fit_null_sc(
+    counts_cells: np.ndarray,
+    strain_ids: 'np.ndarray | list[str]',
+    covariates_cells: 'np.ndarray | None' = None,
+    norm_method: str = 'TMM',
+    shrink: bool = True,
+    verbose: bool = False,
+    use_native: bool = True,
+) -> dict:
+    """Fit NEBULA-LN null model on cell-level counts for all genes.
 
-    use_native=True  — native numpy/scipy implementation (recommended, no edgepython).
-    use_native=False — legacy edgepython path (requires edgepython installed).
-    run once per cell type before the genome-wide scan.
+    Dispatches to the native numpy/scipy implementation by default
+    (use_native=True). The legacy edgepython path (use_native=False) is
+    retained for backward compatibility but requires edgepython installed.
+    Run once per cell type before the genome-wide scan.
 
-    parameters
-    ----------
-    counts_cells      : np.ndarray (n_genes, n_cells)  raw UMI counts
-    strain_ids        : array-like (n_cells,)  strain/subject per cell
-    covariates_cells  : np.ndarray (n_cells, p) or None
-        cell-level covariates (intercept + batch + PCs).
-        if None, intercept only.
-    norm_method       : str  'TMM' (default) or 'none'
-    shrink            : bool  apply EB dispersion shrinkage (default True)
-    verbose           : bool
+    Args:
+        counts_cells: Raw UMI count matrix, shape (n_genes, n_cells).
+        strain_ids: Strain/subject label per cell, length n_cells.
+        covariates_cells: Cell-level covariate matrix (n_cells, p) or None.
+            If None, intercept only.
+        norm_method: Normalisation method passed to edgepython; ignored by
+            the native path. Either 'TMM' or 'none'.
+        shrink: Apply EB dispersion shrinkage (default True).
+        verbose: Log progress at INFO level if True.
+        use_native: Use native implementation (recommended). Set False to
+            use the legacy edgepython path (requires edgepython installed).
 
-    returns
-    -------
-    dict  edgepython fit object, augmented with:
-        'dispersion_use' : np.ndarray (n_genes_filtered,)
-            dispersion values to use in the scan:
-            dispersion_shrunk if shrink=True, else dispersion
+    Returns:
+        Dict containing dispersion_use (n_genes_filtered,), sigma_sample
+        (n_genes_filtered,), and gene_mask (n_genes,) bool, plus raw and
+        shrunk dispersion arrays.
     """
     if use_native:
         return fit_null_sc_native(
@@ -326,27 +438,31 @@ def fit_null_sc(counts_cells, strain_ids, covariates_cells=None,
         fit['dispersion_use'] = fit['dispersion']
 
     n_pass = int(fit['gene_mask'].sum())
-    logger.info(f'fit_null_sc: {n_pass}/{len(fit["gene_mask"])} genes pass filter  '
-                f'med_disp={float(np.nanmedian(fit["dispersion_use"])):.3f}  '
-                f'med_sigma={float(np.nanmedian(fit["sigma_sample"])):.3f}')
+    logger.info('fit_null_sc: %d/%d genes pass filter  '
+                'med_disp=%.3f  med_sigma=%.3f',
+                n_pass, len(fit['gene_mask']),
+                float(np.nanmedian(fit['dispersion_use'])),
+                float(np.nanmedian(fit['sigma_sample'])))
     return fit
 
 
-def pseudobulk_sum(counts_cells, strain_ids, gene_mask=None):
-    """aggregate cell-level counts to per-strain pseudobulk sums.
+def pseudobulk_sum(
+    counts_cells: np.ndarray,
+    strain_ids: 'np.ndarray | list[str]',
+    gene_mask: 'np.ndarray | None' = None,
+) -> 'tuple[np.ndarray, np.ndarray, np.ndarray]':
+    """Aggregate cell-level counts to per-strain pseudobulk sums.
 
-    parameters
-    ----------
-    counts_cells : np.ndarray (n_genes, n_cells)
-    strain_ids   : array-like (n_cells,)
-    gene_mask    : np.ndarray (n_genes,) bool or None
-        if provided, subset to genes that passed glm_sc_fit filter
+    Args:
+        counts_cells: Raw UMI count matrix, shape (n_genes, n_cells).
+        strain_ids: Strain/subject label per cell, length n_cells.
+        gene_mask: Boolean mask (n_genes,) selecting genes to keep, or None.
+            If None, all genes are kept.
 
-    returns
-    -------
-    pb_counts  : np.ndarray (n_genes_kept, n_strains)  pseudobulk sums
-    pb_ncells  : np.ndarray (n_strains,)  cells per strain
-    strains    : np.ndarray (n_strains,)  ordered strain ids
+    Returns:
+        Tuple of (pb_counts, pb_ncells, strains) where pb_counts has shape
+        (n_genes_kept, n_strains), pb_ncells is (n_strains,) cells per
+        strain, and strains is the sorted unique strain ID array.
     """
     strain_ids = np.asarray(strain_ids)
     strains, inv = np.unique(strain_ids, return_inverse=True)
@@ -362,24 +478,25 @@ def pseudobulk_sum(counts_cells, strain_ids, gene_mask=None):
     return pb, pb_ncells, strains
 
 
-def precompute_sufficient_stats(counts, subject_ids, library_sizes=None):
-    """compute per-subject count statistics from cell-level data (1 gene).
+def precompute_sufficient_stats(
+    counts: np.ndarray,
+    subject_ids: 'np.ndarray | list[str]',
+    library_sizes: 'np.ndarray | None' = None,
+) -> dict:
+    """Compute per-subject count statistics from cell-level data (1 gene).
 
-    used by vqtl.py to estimate per-subject overdispersion.
+    Used by vqtl.py to estimate per-subject overdispersion.
 
-    parameters
-    ----------
-    counts : np.ndarray (n_cells,)  raw UMI counts for one gene
-    subject_ids : array-like (n_cells,)  subject per cell
-    library_sizes : np.ndarray (n_cells,) or None  (reserved, unused)
+    Args:
+        counts: Raw UMI counts for one gene, shape (n_cells,).
+        subject_ids: Subject label per cell, length n_cells.
+        library_sizes: Per-cell total UMI counts (n_cells,) or None.
+            Reserved for future use; currently unused.
 
-    returns
-    -------
-    dict with keys:
-        subjects    : np.ndarray (n_subjects,) unique subject IDs
-        n_cells     : np.ndarray (n_subjects,) cells per subject
-        mean_count  : np.ndarray (n_subjects,) mean count per subject
-        var_count   : np.ndarray (n_subjects,) variance of count per subject
+    Returns:
+        Dict with keys: subjects (n_subjects,) unique IDs, n_cells
+        (n_subjects,) cells per subject, mean_count (n_subjects,) mean
+        count per subject, var_count (n_subjects,) variance per subject.
     """
     counts = np.asarray(counts, dtype=np.float64)
     subject_ids = np.asarray(subject_ids)
@@ -428,6 +545,7 @@ def _nb_loglik(y, mu, phi):
 
 def _wb(v, W, Z, M_inv):
     """V^{-1} v via Woodbury.  V = diag(1/W) + tau*Z K Z^T.
+
     V^{-1}v = W*v - W*(Z M^{-1} Z^T W v)   (M = K^{-1}/tau + Z^T diag(W) Z)
     """
     Dv = W * v                                    # D^{-1}v = W*v
@@ -442,7 +560,9 @@ def _wb_mat(A, W, Z, M_inv):
 
 def _wb_batch(H_all, W, Z, M_inv):
     """V^{-1} H_all via Woodbury.  H_all: (L, n, J-1) — all loci at once.
-    returns (L, n, J-1)."""
+
+    returns (L, n, J-1).
+    """
     DH   = W[None, :, None] * H_all                                    # (L, n, J-1)
     ZtDH = np.einsum('mn,lnj->lmj', Z.T, DH, optimize=True)            # (L, m, J-1)
     MiZtDH = np.einsum('mk,lkj->lmj', M_inv, ZtDH, optimize=True)     # (L, m, J-1)
@@ -483,7 +603,8 @@ def _pql_tau_reml_wb(z, x, K_m, Z, W, tau_init=0.1):
         VinvX  = _wb_mat(x, W, Z, M_inv)
         A      = x.T @ VinvX                         # (p, p)
         sign, log_det_A = np.linalg.slogdet(A)
-        if sign <= 0: return 1e10
+        if sign <= 0:
+            return 1e10
         Pz  = Vinvz - VinvX @ np.linalg.solve(A, x.T @ Vinvz)
         return 0.5 * (log_det_V + log_det_A + float(z @ Pz))
 
@@ -492,27 +613,37 @@ def _pql_tau_reml_wb(z, x, K_m, Z, W, tau_init=0.1):
     return float(max(np.exp(res.x), 1e-8))
 
 
-
-def fit_null_nb_glmm_loco(S, x, offsets, K_m, Z, phi, max_iter=5, tol=1e-4):
+def fit_null_nb_glmm_loco(
+    S: np.ndarray,
+    x: np.ndarray,
+    offsets: np.ndarray,
+    K_m: np.ndarray,
+    Z: np.ndarray,
+    phi: float,
+    max_iter: int = 5,
+    tol: float = 1e-4,
+) -> dict:
     """PQL null NB-GLMM with LOCO kinship via Woodbury identity.
 
-    model: S_i ~ NB(mu_i, phi),  log mu_i = x_i^T beta + u_i + offset_i
+    Model: S_i ~ NB(mu_i, phi),  log mu_i = x_i^T beta + u_i + offset_i
            u   ~ N(0, tau * K_m(sample)),  K_m(sample) = Z K_m Z^T
 
-    Woodbury: V = diag(1/W) + tau*Z K_m Z^T.  never forms the n×n matrix.
-    all linear algebra lives at m×m cost (m = n_strains ≤ 48).
+    Woodbury: V = diag(1/W) + tau*Z K_m Z^T.  Never forms the n×n matrix.
+    All kinship solves operate at m×m cost where m = number of unique strains.
 
-    parameters
-    ----------
-    S     : (n,)    pseudobulk counts per sample
-    x     : (n, p)  covariate matrix
-    offsets: (n,)   log library size offsets
-    K_m   : (m, m)  strain-level LOCO kinship
-    Z     : (n, m)  sample-to-strain mapping  (one-hot rows)
-    phi   : float   NB dispersion (held fixed from Stage 1)
+    Args:
+        S: Pseudobulk counts per sample, shape (n,).
+        x: Covariate matrix, shape (n, p).
+        offsets: Log library size offsets, shape (n,).
+        K_m: Strain-level LOCO kinship, shape (m, m).
+        Z: Sample-to-strain mapping (one-hot rows), shape (n, m).
+        phi: NB dispersion held fixed from Stage 1.
+        max_iter: Maximum PQL iterations.
+        tol: Convergence tolerance on relative mu change.
 
-    returns dict with keys: mu, tau, W, M_inv, Z, VinvX, XtVinvX_inv, r_adj
-    (P is never stored — applied implicitly via _wb / _wb_batch)
+    Returns:
+        Dict with keys: mu, tau, W, M_inv, Z, VinvX, XtVinvX_inv, r_adj.
+        P is never stored — applied implicitly via _wb / _wb_batch.
     """
     phi = max(float(phi), 1e-6)
     mu  = np.maximum(S.astype(np.float64), 0.5)
@@ -568,8 +699,6 @@ def _score_stats_loco(H_all, r_adj, W, Z, M_inv, VinvX, XtVinvX_inv):
 
     I_l = H_l^T P H_l = H_l^T V^{-1} H_l - (H_l^T V^{-1}X)(X^T V^{-1}X)^{-1}(X^T V^{-1}H_l)
 
-    parameters
-    ----------
     H_all        : (L, n, J-1)  haplotype design — all loci
     r_adj        : (n,)         P z — kinship-adjusted working residuals
     W            : (n,)         NB working weights from PQL null
@@ -596,80 +725,94 @@ def _score_stats_loco(H_all, r_adj, W, Z, M_inv, VinvX, XtVinvX_inv):
     corr    = np.einsum('ljp,pk,lqk->ljq', HtVinvX, XtVinvX_inv, HtVinvX, optimize=True)
 
     info_mat = HtVinvH - corr + np.eye(nf1)[None] * 1e-10   # (L, J-1, J-1)
-    sc = np.zeros(L)
-    for li in range(L):
-        try:
-            sc[li] = max(float(U[li] @ np.linalg.solve(info_mat[li], U[li])), 0.0)
-        except np.linalg.LinAlgError:
-            sc[li] = 0.0
+    try:
+        sol = np.linalg.solve(info_mat, U[..., None]).squeeze(-1)   # (L, J-1)
+        sc = np.maximum(np.einsum('lj,lj->l', U, sol, optimize=True), 0.0)
+    except np.linalg.LinAlgError:
+        sc = np.zeros(L)
+        for li in range(L):
+            try:
+                sc[li] = max(float(U[li] @ np.linalg.solve(info_mat[li], U[li])), 0.0)
+            except np.linalg.LinAlgError:
+                pass
     return sc
 
 
 def _score_stats_chromosome(H_all, r_vec, w_vec):
-    """vectorised NB score statistics for all loci on one chromosome.
+    """Vectorised NB score statistics for all loci on one chromosome.
 
-    parameters
-    ----------
     H_all : (L, n, J-1)  haplotype design at all loci
     r_vec : (n,)          working residual under null
     w_vec : (n,)          working weight under null
 
-    returns
-    -------
-    (L,) score statistics Q_ℓ ~ χ²(J-1) under H₀
+    returns (L,) score statistics Q_ℓ ~ χ²(J-1) under H₀
     """
     u    = np.einsum('lnj,n->lj',   H_all, r_vec,    optimize=True)  # (L,J-1)
     hw   = H_all * w_vec[None, :, None]
     info = np.einsum('lnj,lnk->ljk', hw, H_all,      optimize=True)  # (L,J-1,J-1)
     info += np.eye(H_all.shape[2])[None] * 1e-10
-    sc   = np.zeros(H_all.shape[0])
-    for li in range(len(sc)):
-        try:
-            sc[li] = max(float(u[li] @ np.linalg.solve(info[li], u[li])), 0.0)
-        except np.linalg.LinAlgError:
-            sc[li] = 0.0
+    try:
+        sol = np.linalg.solve(info, u[..., None]).squeeze(-1)   # (L, J-1)
+        sc = np.maximum(np.einsum('lj,lj->l', u, sol, optimize=True), 0.0)
+    except np.linalg.LinAlgError:
+        sc = np.zeros(H_all.shape[0])
+        for li in range(len(sc)):
+            try:
+                sc[li] = max(float(u[li] @ np.linalg.solve(info[li], u[li])), 0.0)
+            except np.linalg.LinAlgError:
+                pass
     return sc
 
 
-def scan_nb_gene(counts_pb, genomecache, strain_order,
-                  phi, sigma_sample=0.0,
-                  covariates=None, lib_sizes=None,
-                  kinship_loco=None,
-                  use_lrt=False, just_these_loci=None,
-                  phenotype_id='unknown'):
+def scan_nb_gene(
+    counts_pb: np.ndarray,
+    genomecache: 'GenomeCache',
+    sample_ids: 'list[str]',
+    phi: float,
+    sigma_sample: float = 0.0,
+    covariates: 'np.ndarray | None' = None,
+    lib_sizes: 'np.ndarray | None' = None,
+    kinship_loco: 'dict | None' = None,
+    loci_subset: 'set | None' = None,
+    phenotype_id: str = 'unknown',
+) -> ScanResult:
     """NB score-test scan for one gene on pseudobulk counts.
 
-    parameters
-    ----------
-    counts_pb     : np.ndarray (n_strains,)  pseudobulk sum counts
-    genomecache  : GenomeCache
-    strain_order  : array-like (n_strains,)  strain IDs in counts_pb order
-                    must match genomecache.sample_ids order
-    phi           : float  NB dispersion (from fit_null_sc, shrunk)
-    sigma_sample  : float  subject-level variance from glm_sc_fit (≥0)
-                    inflates score denominator when >0
-    covariates    : np.ndarray (n_strains, p) or None
-    lib_sizes     : np.ndarray (n_strains,) or None  log-offset per strain
-    kinship_loco  : dict {chr: np.ndarray (n_strains, n_strains)} or None
-                    LOCO kinship matrices from kinship.calc_kinship(method='loco').
-                    when provided, replaces the exchangeable u_i with a structured
-                    N(0, tau K^(-c)) random effect via PQL (Chen et al. 2016 AJHG).
-                    this is the recommended setting for multiparent populations.
-    use_lrt       : bool  fit alt model per locus for exact betas (slow)
-    just_these_loci : set or None
-    phenotype_id  : str
+    Runs the Stage 2 NB-GLMM score test across all loci in the genome cache
+    for a single gene. When kinship_loco is provided, fits a per-chromosome
+    PQL NB-GLMM null with LOCO kinship via the Woodbury identity. Otherwise
+    falls back to a standard NB GLM null with optional sigma_sample inflation.
 
-    returns
-    -------
-    ScanResult
+    Args:
+        counts_pb: Pseudobulk sum counts per sample, shape (n_samples,).
+        genomecache: Loaded genome cache.
+        sample_ids: Strain/sample IDs corresponding to counts_pb rows.
+            Must match genomecache.sample_ids order or be alignable via
+            the Z-matrix.
+        phi: NB dispersion from Stage 1 (EB-shrunk). Must be > 0.
+        sigma_sample: Subject-level variance from Stage 1 (>= 0). Inflates
+            the score test denominator when > 0 to account for residual
+            within-strain variability.
+        covariates: Sample-level covariate matrix (n_samples, p) or None.
+            Intercept column is added if not already present.
+        lib_sizes: Log library size offset per sample (n_samples,) or None.
+            If None, uniform offsets are used.
+        kinship_loco: LOCO kinship dict {chr: ndarray (m, m)} or None.
+            When provided, each chromosome's null is fit with the LOCO
+            kinship random effect via PQL + Woodbury. Strongly recommended
+            for multiparent populations.
+        loci_subset: Restrict scan to this set of locus IDs or None.
+        phenotype_id: Label stored in the returned ScanResult.
+
+    Returns:
+        ScanResult with fields lod (n_loci,), p_value (n_loci,),
+        betas (n_loci, J) zero-padded (score test does not estimate per-founder
+        effects; use effects.py at the peak locus for effect estimates),
+        chromosomes, positions, locus_ids, and h2_null.
     """
-    import edgepython as ep
-    from .scan import ScanResult
-    from ..utils import build_z_matrix
-
     phi  = max(float(phi), 1e-6)
     y    = np.asarray(counts_pb, dtype=np.float64)
-    sids = list(strain_order)
+    sids = list(sample_ids)
 
     # align to cache order via Z-matrix
     cache_ids = list(genomecache.sample_ids)
@@ -692,22 +835,24 @@ def scan_nb_gene(counts_pb, genomecache, strain_order,
 
     # ── null model ────────────────────────────────────────────────────────
     # with kinship: PQL NB-GLMM per chromosome (fit_null_nb_glmm_loco)
-    # without kinship: standard NB GLM via edgePython (original path)
+    # without kinship: standard NB GLM via native IRLS
     use_kinship = kinship_loco is not None and len(kinship_loco) > 0
+    chr_keys = {str(k) for k in kinship_loco} if kinship_loco else set()
 
+    # global null (no-kinship path only)
+    mu_null = None
+    r_vec_global = None
+    w_vec_global = None
     if not use_kinship:
-        # original path — exchangeable RE via sigma_sample inflation
-        dg = ep.make_dgelist(counts=y.reshape(1, -1))
-        dg['samples']['lib.size'] = s.astype(float)
-        dg = ep.calc_norm_factors(dg)
-        mu_null, _, _ = _fit_nb_ep(dg, x, phi, ep)
+        phi_size = 1.0 / max(phi, 1e-12)
+        mu_null, _ = _irls_nb_pseudobulk(y, x, phi_size, offsets)
         denom  = 1.0 + phi * mu_null
         w_inf  = max(1.0 + sigma_sample, 1.0)
         r_vec_global = (y - mu_null) / (denom * w_inf)
         w_vec_global = mu_null / (denom * w_inf)
-        null_ll      = _nb_loglik(y, mu_null, phi)
 
-    nf1 = genomecache.n_founders - 1
+    nf  = genomecache.n_founders       # J — full founder count
+    nf1 = nf - 1                       # J-1 — score test columns (rank constraint)
 
     all_lids, all_chrs, all_pos = [], [], []
     all_lod, all_pval, all_betas = [], [], []
@@ -715,8 +860,8 @@ def scan_nb_gene(counts_pb, genomecache, strain_order,
     for chrom in genomecache.chromosomes:
         lids, pos, probs = genomecache.get_chromosome(chrom)
 
-        if just_these_loci is not None:
-            mask = np.isin(lids, list(just_these_loci))
+        if loci_subset is not None:
+            mask = np.isin(lids, list(loci_subset))
             lids, pos, probs = lids[mask], pos[mask], probs[mask]
         if not len(lids):
             continue
@@ -726,104 +871,290 @@ def scan_nb_gene(counts_pb, genomecache, strain_order,
              if z_sub is not None else probs[:, valid, :nf1])
 
         # per-chromosome null (LOCO kinship path)
-        if use_kinship and str(chrom) in {str(k) for k in kinship_loco}:
-            _kkey  = (chrom if chrom in kinship_loco
-                      else str(chrom))
-            K_c = np.asarray(kinship_loco[_kkey], dtype=np.float64)  # (m, m) strain-level
+        glmm_fit = None
+        if use_kinship and str(chrom) in chr_keys:
+            _kkey = chrom if chrom in kinship_loco else str(chrom)
+            K_c   = np.asarray(kinship_loco[_kkey], dtype=np.float64)  # (m, m)
             # Z_pql: sample→strain mapping for valid samples
-            # z_sub is (n_valid, m); when z_sub is None, n==m so Z=I
             Z_pql = z_sub if z_sub is not None else np.eye(K_c.shape[0])
             glmm_fit = fit_null_nb_glmm_loco(y, x, offsets, K_c, Z_pql, phi)
-            mu_chr   = glmm_fit['mu']
-            null_ll  = _nb_loglik(y, mu_chr, phi)
-        else:
-            # no kinship for this chromosome — fall back to global null
-            r_adj_chr = r_vec_global
+        elif use_kinship:
+            # kinship requested but this chr absent — skip
+            logger.debug('scan_nb_gene: chr %s not in kinship_loco — skipping', chrom)
+            continue
 
-        if not use_lrt:
-            if use_kinship and str(chrom) in {str(k) for k in kinship_loco}:
-                sc = _score_stats_loco(H, glmm_fit['r_adj'],
-                                        glmm_fit['W'], glmm_fit['Z'],
-                                        glmm_fit['M_inv'], glmm_fit['VinvX'],
-                                        glmm_fit['XtVinvX_inv'])
-            else:
-                sc = _score_stats_chromosome(H, r_adj_chr, w_vec_global)
-            lods  = sc / (2.0 * np.log(10))
-            pv    = 1.0 - _stats.chi2.cdf(sc, df=nf1)
-            betas = np.zeros((len(lids), nf1))
+        # score test (only supported path)
+        if use_kinship and glmm_fit is not None:
+            sc = _score_stats_loco(H, glmm_fit['r_adj'],
+                                   glmm_fit['W'], glmm_fit['Z'],
+                                   glmm_fit['M_inv'], glmm_fit['VinvX'],
+                                   glmm_fit['XtVinvX_inv'])
         else:
-            lods  = np.zeros(len(lids)); pv = np.ones(len(lids))
-            betas = np.zeros((len(lids), nf1))
-            dg_l  = ep.make_dgelist(counts=y.reshape(1, -1))
-            dg_l['samples']['lib.size'] = s.astype(float)
-            dg_l  = ep.calc_norm_factors(dg_l)
-            for i_l in range(len(lids)):
-                x_alt = np.hstack([H[i_l], x])
-                mu_alt, coefs, _ = _fit_nb_ep(dg_l, x_alt, phi, ep)
-                alt_ll = _nb_loglik(y, mu_alt, phi)
-                chi2   = max(2.0 * (alt_ll - null_ll), 0.0)
-                lods[i_l]  = chi2 / (2.0 * np.log(10))
-                pv[i_l]    = 1.0 - _stats.chi2.cdf(chi2, df=nf1)
-                betas[i_l] = coefs[:nf1]
+            sc = _score_stats_chromosome(H, r_vec_global, w_vec_global)
+
+        lods  = sc / (2.0 * np.log(10))
+        pv    = 1.0 - _stats.chi2.cdf(sc, df=nf1)
+        betas = np.zeros((len(lids), nf))   # (n_loci, J) — score test gives no per-locus estimates
 
         all_lids.append(lids); all_chrs.append(np.full(len(lids), chrom))
         all_pos.append(pos); all_lod.append(lods)
         all_pval.append(pv); all_betas.append(betas)
 
+        del H, sc, lods, pv, betas
+        gc.collect()
+
     if not all_lids:
         return ScanResult(
             locus_ids=np.array([]), chromosomes=np.array([]),
             positions=np.array([]), lod=np.array([]), p_value=np.array([]),
-            betas=np.empty((0, nf1)), h2_null={}, phenotype_id=phenotype_id)
+            betas=np.empty((0, nf)), h2_null={}, phenotype_id=phenotype_id)
 
     return ScanResult(
-        locus_ids   = np.concatenate(all_lids),
-        chromosomes = np.concatenate(all_chrs),
-        positions   = np.concatenate(all_pos),
-        lod         = np.concatenate(all_lod),
-        p_value     = np.concatenate(all_pval),
-        betas       = np.vstack(all_betas),
-        h2_null     = {},
+        locus_ids    = np.concatenate(all_lids),
+        chromosomes  = np.concatenate(all_chrs),
+        positions    = np.concatenate(all_pos),
+        lod          = np.concatenate(all_lod),
+        p_value      = np.concatenate(all_pval),
+        betas        = np.vstack(all_betas),
+        h2_null      = {},
         phenotype_id = phenotype_id,
     )
 
 
-def scan_nb(counts_cells, genomecache, strain_ids_cells,
-             gene_ids=None, covariates_cells=None,
-             covariates_strains=None, lib_sizes=None,
-             kinship_loco=None,
-             norm_method='TMM', shrink_disp=True,
-             use_lrt=False, cis_loci_dict=None,
-             n_cores=1, verbose=False):
-    """genome-wide NB GLM scan — full pipeline for one cell type.
+def scan_nb_multi_gene(
+    pb_matrix: np.ndarray,
+    gene_ids: 'list[str]',
+    phi_vec: np.ndarray,
+    sigma_vec: np.ndarray,
+    genomecache: 'GenomeCache',
+    sample_ids: 'list[str]',
+    covariates: 'np.ndarray | None' = None,
+    lib_sizes: 'np.ndarray | None' = None,
+    kinship_loco: 'dict | None' = None,
+    cis_loci_dict: 'dict | None' = None,
+    output_path: 'Path | None' = None,
+) -> 'dict[str, ScanResult]':
+    """Stream NB score-test scan across multiple genes, one gene at a time.
 
-    stage 1: glm_sc_fit + shrink_sc_disp (cell level, once)
-    stage 2: score test per gene on pseudobulk counts (vectorised)
+    Iterates over genes in pb_matrix, calling scan_nb_gene for each. After
+    each gene, the result is released and gc.collect() is called to keep
+    peak RAM bounded to approximately one gene's working arrays.
 
-    parameters
-    ----------
-    counts_cells      : np.ndarray (n_genes, n_cells)  raw UMI counts
-    genomecache      : GenomeCache
-    strain_ids_cells  : array-like (n_cells,)  strain per cell
-    gene_ids          : list of str or None  row names for counts_cells
-    covariates_cells  : np.ndarray (n_cells, p) or None
-    covariates_strains: np.ndarray (n_strains, p) or None
-        strain-level covariates for the scan (batch + PCs).
-        if None, derived from covariates_cells by strain mean.
-    lib_sizes         : np.ndarray (n_strains,) or None
-    kinship_loco      : dict {chr: np.ndarray} or None
-                        LOCO kinship from kinship.calc_kinship(method='loco').
-                        strongly recommended for multiparent populations.
-    norm_method       : str  'TMM' or 'none'
-    shrink_disp       : bool  EB dispersion shrinkage (default True)
-    use_lrt           : bool  exact betas via LRT (slow, use for peak loci)
-    cis_loci_dict     : dict {gene_id: set} or None
-    n_cores           : int
-    verbose           : bool
+    Args:
+        pb_matrix: Pseudobulk count matrix, shape (n_genes, n_samples).
+        gene_ids: Gene identifiers, length n_genes.
+        phi_vec: Per-gene NB dispersion from Stage 1, shape (n_genes,).
+        sigma_vec: Per-gene subject-level variance from Stage 1, shape (n_genes,).
+        genomecache: Loaded genome cache.
+        sample_ids: Genotype IDs (strain labels) per sample, length n_samples.
+        covariates: Sample-level covariate matrix (n_samples, p) or None.
+        lib_sizes: Log library size offsets per sample, shape (n_samples,) or None.
+        kinship_loco: LOCO kinship dict {chrom: (m, m) array} or None.
+        cis_loci_dict: Restrict scan to these loci per gene or None.
+            Keyed by gene ID string.
+        output_path: If set, append each gene's peak result to this CSV
+            incrementally. File is created if it does not exist.
 
-    returns
-    -------
-    dict {gene_id: ScanResult}
+    Returns:
+        Dict mapping gene_id to ScanResult.
+    """
+    results: dict[str, ScanResult] = {}
+    n = len(gene_ids)
+    for gi, gid in enumerate(gene_ids):
+        cis = cis_loci_dict.get(str(gid)) if cis_loci_dict else None
+        res = scan_nb_gene(
+            pb_matrix[gi], genomecache, sample_ids,
+            phi=float(phi_vec[gi]),
+            sigma_sample=float(sigma_vec[gi]),
+            covariates=covariates,
+            lib_sizes=lib_sizes,
+            kinship_loco=kinship_loco,
+            loci_subset=cis,
+            phenotype_id=str(gid),
+        )
+        results[str(gid)] = res
+        if (gi + 1) % max(1, n // 10) == 0:
+            logger.info('scan_nb_multi_gene: %d/%d genes', gi + 1, n)
+        del res
+        gc.collect()
+    return results
+
+
+def _scan_nb_chromosome(
+    chrom: str,
+    pb_matrix: np.ndarray,
+    gene_ids: 'list[str]',
+    phi_vec: np.ndarray,
+    sigma_vec: np.ndarray,
+    cache_path: str,
+    sample_ids: 'list[str]',
+    covariates: 'np.ndarray | None',
+    lib_sizes: 'np.ndarray | None',
+    kinship_loco: 'dict | None',
+    cis_loci_dict: 'dict | None',
+) -> 'dict[str, tuple]':
+    """Scan all genes on one chromosome. Opens its own cache handle — thread-safe.
+
+    Each thread worker calls GenomeCache.from_hdf5(cache_path) independently so
+    that concurrent threads hold independent h5py file descriptors (h5py is safe
+    for concurrent reads when each thread owns its own handle).
+
+    Args:
+        chrom: Chromosome identifier (str).
+        pb_matrix: Pseudobulk counts, shape (n_genes, n_strains).
+        gene_ids: Gene identifiers, length n_genes.
+        phi_vec: Per-gene NB dispersion, shape (n_genes,).
+        sigma_vec: Per-gene subject variance, shape (n_genes,).
+        cache_path: HDF5 path to reopen per thread.
+        sample_ids: Strain IDs matching pb_matrix columns.
+        covariates: Strain-level covariate matrix (n_strains, p) or None.
+        lib_sizes: Log library size offset per strain or None.
+        kinship_loco: LOCO kinship dict {chr: ndarray (m, m)} or None.
+        cis_loci_dict: Per-gene cis loci restriction or None.
+
+    Returns:
+        Dict mapping gene_id to (lids, pos, lod, pval) — all arrays for this
+        chromosome. Empty if chromosome absent from cache or kinship.
+    """
+    cache = GenomeCache.from_hdf5(cache_path)
+
+    try:
+        lids_full, pos_full, probs_full = cache.get_chromosome(chrom)
+    except (KeyError, OSError, RuntimeError):
+        logger.debug('_scan_nb_chromosome: chr %s not in cache', chrom)
+        return {}
+
+    chr_keys = {str(k) for k in kinship_loco} if kinship_loco else set()
+    use_kinship = kinship_loco is not None and str(chrom) in chr_keys
+    if kinship_loco is not None and not use_kinship:
+        logger.debug('_scan_nb_chromosome: chr %s absent from kinship_loco — skipping', chrom)
+        return {}
+
+    # Z-matrix alignment (computed once per chromosome)
+    cache_ids = list(cache.sample_ids)
+    sids = list(sample_ids)
+    if sids == cache_ids:
+        z_sub: 'np.ndarray | None' = None
+        valid = np.ones(len(sids), dtype=bool)
+    else:
+        z_full, valid = build_z_matrix(sids, cache_ids)
+        z_sub = z_full[valid]
+
+    n = int(valid.sum())
+    nf = cache.n_founders
+    nf1 = nf - 1
+
+    # LOCO null (shared across genes; only for kinship path)
+    K_c: 'np.ndarray | None' = None
+    Z_pql: 'np.ndarray | None' = None
+    if use_kinship:
+        _kkey = chrom if chrom in kinship_loco else str(chrom)   # type: ignore[index]
+        K_c   = np.asarray(kinship_loco[_kkey], dtype=np.float64)  # type: ignore[index]
+        Z_pql = z_sub if z_sub is not None else np.eye(K_c.shape[0])
+
+    out: dict[str, tuple] = {}
+
+    for gi, gid in enumerate(gene_ids):
+        cis = cis_loci_dict.get(str(gid)) if cis_loci_dict else None
+        if cis is not None:
+            mask = np.isin(lids_full, list(cis))
+            lids, pos, probs = lids_full[mask], pos_full[mask], probs_full[mask]
+        else:
+            lids, pos, probs = lids_full, pos_full, probs_full
+
+        if not len(lids):
+            continue
+
+        phi = max(float(phi_vec[gi]), 1e-6)
+        sigma_sample = float(sigma_vec[gi])
+        y = pb_matrix[gi][valid].astype(np.float64)
+        x = (covariates[valid].copy() if covariates is not None
+             else np.ones((n, 1), dtype=float))
+        if not np.allclose(x[:, 0], 1.0):
+            x = np.hstack([np.ones((n, 1)), x])
+        s = lib_sizes[valid] if lib_sizes is not None else np.ones(n)
+        offsets = np.log(np.maximum(s, 1e-8))
+
+        H = (np.einsum('nm,lmj->lnj', z_sub, probs[:, :, :nf1], optimize=True)
+             if z_sub is not None else probs[:, valid, :nf1])
+
+        if use_kinship and K_c is not None and Z_pql is not None:
+            glmm_fit = fit_null_nb_glmm_loco(y, x, offsets, K_c, Z_pql, phi)
+            sc = _score_stats_loco(H, glmm_fit['r_adj'],
+                                   glmm_fit['W'], glmm_fit['Z'],
+                                   glmm_fit['M_inv'], glmm_fit['VinvX'],
+                                   glmm_fit['XtVinvX_inv'])
+        else:
+            phi_size = 1.0 / max(phi, 1e-12)
+            mu_null, _ = _irls_nb_pseudobulk(y, x, phi_size, offsets)
+            denom  = 1.0 + phi * mu_null
+            w_inf  = max(1.0 + sigma_sample, 1.0)
+            r_vec  = (y - mu_null) / (denom * w_inf)
+            w_vec  = mu_null / (denom * w_inf)
+            sc = _score_stats_chromosome(H, r_vec, w_vec)
+
+        lod  = sc / (2.0 * np.log(10))
+        pval = 1.0 - _stats.chi2.cdf(sc, df=nf1)
+        out[str(gid)] = (lids.copy(), pos.copy(), lod, pval)
+
+        del H, sc, lod, pval
+        gc.collect()
+
+    return out
+
+
+def scan_nb(
+    counts_cells: np.ndarray,
+    genomecache: 'GenomeCache',
+    strain_ids_cells: 'np.ndarray | list[str]',
+    gene_ids: 'list[str] | None' = None,
+    covariates_cells: 'np.ndarray | None' = None,
+    covariates_strains: 'np.ndarray | None' = None,
+    lib_sizes: 'np.ndarray | None' = None,
+    kinship_loco: 'dict | None' = None,
+    norm_method: str = 'TMM',
+    shrink_disp: bool = True,
+    cis_loci_dict: 'dict | None' = None,
+    output_path: 'Path | None' = None,
+    n_cores: int = 1,
+    verbose: bool = False,
+) -> 'dict[str, ScanResult]':
+    """Genome-wide NB GLM scan — full two-stage pipeline for one cell type.
+
+    Stage 1: fit_null_sc (cell level, once per cell type).
+    Stage 2: NB score test per gene on pseudobulk counts (vectorised over loci).
+
+    When n_cores=1 (default), streams one gene at a time — peak RAM is bounded
+    to approximately one gene's working arrays (constant-memory streaming).
+    When n_cores>1, uses a ThreadPoolExecutor where each thread processes one
+    chromosome for all genes simultaneously; peak RAM scales as
+    n_cores × per_chromosome_peak_ram. Requires genomecache._h5_path to be set
+    (automatic when loaded via GenomeCache.from_hdf5).
+
+    Args:
+        counts_cells: Raw UMI count matrix, shape (n_genes, n_cells).
+        genomecache: Loaded genome cache.
+        strain_ids_cells: Strain label per cell, length n_cells.
+        gene_ids: Row identifiers for counts_cells, or None (uses row indices).
+        covariates_cells: Cell-level covariate matrix (n_cells, p) or None.
+        covariates_strains: Strain-level covariate matrix (n_strains, p) or None.
+            If None and covariates_cells is provided, derived by strain mean.
+        lib_sizes: Log library size offset per strain (n_strains,) or None.
+        kinship_loco: LOCO kinship dict {chr: ndarray (m, m)} or None.
+            Strongly recommended for multiparent populations.
+        norm_method: Normalisation method for the legacy edgepython path;
+            ignored by the native Stage 1. Either 'TMM' or 'none'.
+        shrink_disp: Apply EB dispersion shrinkage (default True).
+        cis_loci_dict: Restrict each gene's scan to its cis loci or None.
+        output_path: If set, scan_nb_multi_gene writes incremental CSV output
+            (n_cores=1 only; ignored when n_cores>1).
+        n_cores: Number of parallel chromosome workers (default 1). Values > 1
+            enable chromosome-level parallelism via ThreadPoolExecutor. Requires
+            genomecache._h5_path (set automatically by from_hdf5).
+        verbose: Log progress at INFO level if True.
+
+    Returns:
+        Dict mapping gene_id string to ScanResult.
     """
     # stage 1: null model
     fit_null = fit_null_sc(
@@ -848,7 +1179,6 @@ def scan_nb(counts_cells, genomecache, strain_ids_cells,
 
     # strain-level covariates
     if covariates_strains is None and covariates_cells is not None:
-        # average cell-level covariates per strain
         sid_arr = np.asarray(strain_ids_cells)
         _, inv  = np.unique(sid_arr, return_inverse=True)
         n_s     = len(strains)
@@ -858,106 +1188,84 @@ def scan_nb(counts_cells, genomecache, strain_ids_cells,
         np.add.at(cnt_s, inv, 1)
         covariates_strains = cov_sum / cnt_s[:, None]
 
-    # stage 2: per-gene scan
-    def _one(gi):
-        """Run Stage 2 scan for gene index gi; returns (gene_id, ScanResult)."""
-        gid  = gene_ids_pass[gi]
-        cis  = cis_loci_dict.get(gid) if cis_loci_dict else None
-        return gid, scan_nb_gene(
-            pb_counts[gi], genomecache, strains,
-            phi=disp_pass[gi], sigma_sample=float(sigma_pass[gi]),
-            covariates=covariates_strains, lib_sizes=lib_sizes,
+    # stage 2: sequential (constant-memory streaming) or chromosome-parallel
+    if n_cores <= 1:
+        return scan_nb_multi_gene(
+            pb_counts, list(gene_ids_pass), disp_pass, sigma_pass,
+            genomecache, list(strains),
+            covariates=covariates_strains,
+            lib_sizes=lib_sizes,
             kinship_loco=kinship_loco,
-            use_lrt=use_lrt, just_these_loci=cis,
-            phenotype_id=gid)
+            cis_loci_dict=cis_loci_dict,
+            output_path=output_path,
+        )
 
-    results = {}
-    if n_cores == 1:
-        for gi in range(n_genes_pass):
-            gid, res = _one(gi)
-            results[gid] = res
-            if verbose and gi % max(1, n_genes_pass // 10) == 0:
-                logger.info(f'scan_nb: {gi+1}/{n_genes_pass} genes')
-    else:
-        from multiprocessing import Pool
-        with Pool(n_cores) as pool:
-            for gid, res in pool.imap_unordered(_one, range(n_genes_pass)):
-                results[gid] = res
+    # chromosome-parallel path — each thread opens its own HDF5 handle
+    if genomecache._h5_path is None:
+        logger.warning(
+            'scan_nb: n_cores=%d requested but genomecache._h5_path is None '
+            '(cache was not loaded via from_hdf5); falling back to n_cores=1', n_cores)
+        return scan_nb_multi_gene(
+            pb_counts, list(gene_ids_pass), disp_pass, sigma_pass,
+            genomecache, list(strains),
+            covariates=covariates_strains,
+            lib_sizes=lib_sizes,
+            kinship_loco=kinship_loco,
+            cis_loci_dict=cis_loci_dict,
+            output_path=output_path,
+        )
 
+    cache_path = genomecache._h5_path
+    chromosomes = genomecache.chromosomes
+    nf = genomecache.n_founders
+    gene_ids_str = [str(g) for g in gene_ids_pass]
+
+    # submit one task per chromosome
+    chr_results: dict[str, dict] = {}
+    with _ThreadPool(max_workers=n_cores) as ex:
+        futures = {
+            chrom: ex.submit(
+                _scan_nb_chromosome,
+                chrom, pb_counts, gene_ids_str,
+                disp_pass, sigma_pass,
+                cache_path, list(strains),
+                covariates_strains, lib_sizes,
+                kinship_loco, cis_loci_dict,
+            )
+            for chrom in chromosomes
+        }
+        for chrom, fut in futures.items():
+            chr_results[chrom] = fut.result()
+            if verbose:
+                logger.info('scan_nb: chr %s done', chrom)
+
+    # merge per-chromosome results into per-gene ScanResult
+    gene_parts: dict[str, list] = {g: [] for g in gene_ids_str}
+    for chrom in chromosomes:
+        for gid, (lids, pos, lod, pval) in chr_results.get(chrom, {}).items():
+            gene_parts[gid].append((chrom, lids, pos, lod, pval))
+
+    results: dict[str, ScanResult] = {}
+    for gid in gene_ids_str:
+        parts = gene_parts[gid]
+        if not parts:
+            continue
+        all_lids  = np.concatenate([p[1] for p in parts])
+        all_chrs  = np.concatenate([np.full(len(p[1]), p[0]) for p in parts])
+        all_pos   = np.concatenate([p[2] for p in parts])
+        all_lod   = np.concatenate([p[3] for p in parts])
+        all_pval  = np.concatenate([p[4] for p in parts])
+        results[gid] = ScanResult(
+            locus_ids   = all_lids,
+            chromosomes = all_chrs,
+            positions   = all_pos,
+            lod         = all_lod,
+            p_value     = all_pval,
+            betas       = np.zeros((len(all_lids), nf)),
+            h2_null     = {},
+            phenotype_id = gid,
+        )
+
+    del chr_results, gene_parts
+    gc.collect()
     return results
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# internal helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def _fit_nb_ep(dgelist, design, phi, ep):
-    """safe glm_fit wrapper returning (mu_hat, coefs, fit)."""
-    try:
-        fit   = ep.glm_fit(dgelist, design=design, dispersion=phi)
-        mu    = np.atleast_1d(
-            fit.get('fitted.values', np.full(design.shape[0], 0.5))).ravel()
-        coefs = np.atleast_1d(
-            fit.get('coefficients', np.zeros(design.shape[1]))).ravel()
-        return mu, coefs, fit
-    except Exception as e:
-        logger.debug(f'glm_fit failed: {e}')
-        n = design.shape[0]
-        return np.full(n, float(np.mean(
-            dgelist.get('counts', np.ones((1, n)))))), \
-               np.zeros(design.shape[1]), {}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# legacy exports (kept for vqtl.py compatibility)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def estimate_gene_dispersion(counts, design, lib_sizes=None):
-    """estimate per-gene overdispersion via edgepython EB pipeline.
-    prefer fit_null_sc() for cell-level data.
-    """
-    import edgepython as ep
-    y = ep.make_dgelist(counts=counts)
-    if lib_sizes is not None:
-        y['samples']['lib.size'] = lib_sizes
-    y = ep.calc_norm_factors(y)
-    y = ep.estimate_disp(y, design=design)
-    return {
-        'common':  y.get('common.dispersion',  None),
-        'trended': y.get('trended.dispersion', None),
-        'tagwise': y.get('tagwise.dispersion', None),
-        'dgelist': y,
-    }
-
-
-def fit_nb_null(counts_gene, design, dispersion, lib_sizes=None):
-    """fit pseudobulk NB null model (no haplotype) for one gene."""
-    import edgepython as ep
-    y = ep.make_dgelist(counts=counts_gene.reshape(1, -1))
-    if lib_sizes is not None:
-        y['samples']['lib.size'] = lib_sizes
-    y = ep.calc_norm_factors(y)
-    return ep.glm_fit(y, design=design, dispersion=dispersion)
-
-
-def score_test_at_locus(null_fit, h_locus, counts_gene, dispersion):
-    """NB score test at a single locus (convenience wrapper)."""
-    mu  = np.atleast_1d(null_fit.get(
-        'fitted.values', np.full(len(counts_gene), 0.5))).ravel()
-    mu  = np.maximum(mu, 1e-300)
-    q   = h_locus.shape[1]
-    den = 1.0 + dispersion * mu
-    r   = (counts_gene - mu) / den
-    w   = mu / den
-    u   = h_locus.T @ r
-    hw  = h_locus * w[:, None]
-    info = hw.T @ h_locus
-    try:
-        sc = max(float(u @ np.linalg.solve(info, u)), 0.0)
-    except np.linalg.LinAlgError:
-        sc = 0.0
-    return {'score_stat': sc,
-            'p_value': float(1.0 - _stats.chi2.cdf(sc, df=q)),
-            'df': q}

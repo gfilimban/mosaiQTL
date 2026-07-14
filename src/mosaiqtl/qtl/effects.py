@@ -118,6 +118,11 @@ def get_allele_effects(
     if founder_names is None:
         founder_names = list(genomecache.founders)
 
+    logger.info(
+        'get_allele_effects: gene/locus=%s  chr=%s  method=%s  n_founders=%d',
+        locus_id, chrom, method, len(founder_names),
+    )
+
     # ── resolve Z and validity ────────────────────────────────────────────────
     sid       = (list(sample_ids) if sample_ids is not None
                  else list(genomecache.sample_ids))
@@ -170,6 +175,13 @@ def get_allele_effects(
     p   = x.shape[1]
     J   = h.shape[1]
     q   = int(np.linalg.matrix_rank(G, tol=1e-10))
+
+    if q < J - 1:
+        logger.warning(
+            'get_allele_effects: G rank=%d < J-1=%d at locus %s — '
+            'rcond clamps applied via pinv; one or more founders have near-zero representation',
+            q, J - 1, locus_id,
+        )
 
     # ── solve for betas and compute covariance ────────────────────────────────
     if method == 'fixef':
