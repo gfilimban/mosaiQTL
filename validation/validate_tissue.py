@@ -405,6 +405,8 @@ def _make_descriptive_plots(
     peak_chr:       str,
     priority_gene:  dict[str, str] | None = None,
     low_expr_genes: set[str] | None = None,
+    gene_info:      'pd.DataFrame | None' = None,
+    gtf_path:       'str | None' = None,
 ) -> None:
     """qtl2charts-inspired descriptive plots from Python outputs only.
 
@@ -716,11 +718,33 @@ def _make_descriptive_plots(
                     for g, t in zip(_eff['gene_name'], _eff[_start_col])
                     if pd.notna(t)
                 }
+            # build gene-body table for the gene track (start_mb / end_mb in Mb)
+            _genes_df: 'pd.DataFrame | None' = None
+            if gene_info is not None and 'start' in gene_info.columns:
+                _gi = gene_info[['gene_name', 'chr', 'start', 'end', 'strand']].copy() \
+                    if 'strand' in gene_info.columns \
+                    else gene_info[['gene_name', 'chr', 'start', 'end']].copy()
+                _gi['start_mb'] = _gi['start'] / 1e6
+                _gi['end_mb']   = _gi['end']   / 1e6
+                _genes_df = _gi.drop(columns=['start', 'end'])
+
+            # near_tss_mb_map: TSS of the nearest gene to the QTL peak
+            _near_tss_map: 'dict | None' = None
+            if 'near_tss_mb' in _eff.columns:
+                _near_tss_map = {
+                    str(g): float(t)
+                    for g, t in zip(_eff['gene_name'], _eff['near_tss_mb'])
+                    if pd.notna(t)
+                }
+
             _lp_figs = _viz_locus_panels_per_chr(
                 _lod_df, _eff, _fnames,
                 _thr_by_chr or None,
                 priority_genes=PRIORITY_GENE,
                 tss_mb_map=_start_mb_map,
+                near_tss_mb_map=_near_tss_map,
+                genes_df=_genes_df,
+                gtf_path=gtf_path,
             )
             for _lp_c, _lp_fig in _lp_figs.items():
                 _lp_fig.savefig(_lp_dir / f'locus_panel_chr{_lp_c}.png', dpi=300, transparent=True)
@@ -3432,6 +3456,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             cache=cache, kinship_decomp=kinship_decomp,
             founders=list(cache.founders), peak_chr=peak_chr,
             priority_gene=PRIORITY_GENE, low_expr_genes=low_expr_genes,
+            gene_info=gene_info, gtf_path=args.gtf,
         )
     except Exception as exc:
         log.warning('  descriptive plots raised: %s', exc)
@@ -3554,6 +3579,10 @@ def main() -> None:
     ap.add_argument('--rep-gene', default='Piezo1',
                     help='representative gene for LOD profile overlay in '
                          '--compare-celltypes (default: Piezo1)')
+    ap.add_argument('--gtf', default=None, metavar='PATH',
+                    help='path to .gtf or .gtf.gz annotation file (e.g. GENCODE vM36); '
+                         'when provided, locus panel gene tracks show real '
+                         'exon/intron/CDS structure instead of plain gene-body bars')
     args = ap.parse_args()
 
     # ── resolve tissue data root ──────────────────────────────────────────────
