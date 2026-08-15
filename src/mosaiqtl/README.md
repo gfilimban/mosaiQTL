@@ -16,8 +16,14 @@ Python package root. Install with `pip install -e '.[dev]'`.
 
 ## Entry point
 
-`cli.py` (Click) — not listed above because it is auto-generated at install time via
-`pyproject.toml` entry point `mosaiqtl = mosaiqtl.cli:cli`.
+One registered entry point (see `pyproject.toml`):
+
+```
+build-cache  →  mosaiqtl.genotype.genomecache:build
+```
+
+Full CLI subcommands (`fit-null`, `scan`, `permute`, `effects`, `report`) are planned
+but not yet implemented — see `GOALS.md` DESIGN-02/DESIGN-08.
 
 ## Key design rules
 

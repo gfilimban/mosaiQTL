@@ -1835,7 +1835,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         celltype: str | None = None,
         plt_dir_override: Path | None = None,
         tissue: str = 'gastroc',
-        priority_gene: dict[str, str] | None = None) -> dict:
+        priority_gene: dict[str, str] | None = None,
+        gtf_path: str | None = None) -> dict:
     """run tissue characterization sections; return gate results dict.
 
     Parameters
@@ -3456,7 +3457,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             cache=cache, kinship_decomp=kinship_decomp,
             founders=list(cache.founders), peak_chr=peak_chr,
             priority_gene=PRIORITY_GENE, low_expr_genes=low_expr_genes,
-            gene_info=gene_info, gtf_path=args.gtf,
+            gene_info=gene_info, gtf_path=gtf_path,
         )
     except Exception as exc:
         log.warning('  descriptive plots raised: %s', exc)
@@ -3715,7 +3716,7 @@ def main() -> None:
     run(_run_data_dir, _run_out_dir, sections, args.force, args.n_genes,
         scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,
         celltype=_ct_label, plt_dir_override=_plt_override,
-        tissue=tissue)
+        tissue=tissue, gtf_path=args.gtf)
 
 
 if __name__ == '__main__':
