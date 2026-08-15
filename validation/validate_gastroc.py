@@ -3436,7 +3436,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     log.info('  eGenes called    : %d',  n_egenes)
     log.info('  scan type        : %s',  scan_type)
     log.info('  peak chr         : %s',  peak_chr)
-    log.info('  LMM scan LOD r²  : %s',  r4_val if r4_val is not None else 'N/A')
+    log.info('  LMM scan LOD r²  : %s',  lmm_lod_r2 if lmm_lod_r2 is not None else 'N/A')
     log.info('  throughput (py)  : %s',
              f'{gpm_val:.1f} genes/min' if gpm_val else 'N/A')
     r_timing = r_data / 'timing_chr.csv'

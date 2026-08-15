@@ -1,19 +1,25 @@
 /*
  * MERGE_RESULTS — concatenate per-chromosome LOD CSVs into lod_genome.csv
+ *
+ * Input  : [celltype, [lod_chr*.csv, ...]]  (groupTuple output from LMM_SCAN)
+ * Output : [celltype, lod_genome.csv]
+ *
+ * One job per cell type, fires after all its chr jobs complete.
+ * Published to {output_dir}/{celltype}/lod_genome.csv.
  */
 
 process MERGE_RESULTS {
 
     label 'process_single'
-    tag   'merge'
+    tag   "${celltype}"
 
-    publishDir "${params.output_dir}", mode: 'copy'
+    publishDir "${params.output_dir}/${celltype}", mode: 'copy'
 
     input:
-    path lod_csvs
+    tuple val(celltype), path(lod_csvs)
 
     output:
-    path 'lod_genome.csv'
+    tuple val(celltype), path('lod_genome.csv')
 
     stub:
     """
@@ -22,23 +28,9 @@ process MERGE_RESULTS {
 
     script:
     """
-    python - <<'PYEOF'
-import glob
-import pandas as pd
-
-csvs = sorted(glob.glob('lod_chr*.csv'))
-if not csvs:
-    raise FileNotFoundError('no per-chr LOD CSVs found')
-
-# natural sort: chr1 < chr2 < ... < chr19 < chrX
-def _chr_key(path):
-    stem = path.split('lod_chr')[1].replace('.csv', '')
-    return (0, int(stem)) if stem.isdigit() else (1, stem)
-
-pd.concat(
-    [pd.read_csv(f) for f in sorted(csvs, key=_chr_key)],
-    ignore_index=True,
-).to_csv('lod_genome.csv', index=False)
-PYEOF
+    python ${projectDir}/workflow/scripts/merge_lod_csvs.py \
+        --celltype ${celltype} \
+        --output   lod_genome.csv \
+        ${lod_csvs}
     """
 }
