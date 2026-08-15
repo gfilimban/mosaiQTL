@@ -2573,7 +2573,7 @@ def _gene_track(
 
         # Feature colors: CDS=NODJ blue, UTR=muted slate, intron/arrow=neutral
         _CLR_CDS    = FOUNDER_COLORS['NODJ']      # #4A90C4 blue — coding exons
-        _CLR_UTR    = FOUNDER_COLORS['129J']       # #808080-ish — untranslated
+        _CLR_UTR    = FOUNDER_COLORS['129S1J']     # muted warm tone — untranslated
         _CLR_BB     = COLOR_NEUTRAL_DARK           # thin intron backbone
         _CLR_ARROW  = COLOR_CC_FALLBACK            # chevron direction markers
 
