@@ -2529,6 +2529,15 @@ def _gene_track(
         (genes_df['end_mb'] >= lo) & (genes_df['start_mb'] <= hi)
     ].copy().sort_values('start_mb').reset_index(drop=True)
 
+    # When exon_df is available, restrict to canonically annotated genes only
+    # (Ensembl_canonical from GTF) — avoids drowning the highlight gene in a
+    # dense crowd of gene_info entries.  The highlight gene is always kept.
+    if exon_df is not None and not exon_df.empty and 'gene_name' in exon_df.columns:
+        _annotated = set(exon_df['gene_name'].unique())
+        if highlight_gene:
+            _annotated.add(highlight_gene)
+        vis = vis[vis[gname_col].isin(_annotated)].reset_index(drop=True)
+
     row_ends: list[float] = []
     row_idx:  list[int]   = []
     _GAP = 0.08  # Mb min gap before a row is reused
@@ -2807,12 +2816,32 @@ def locus_panel(
     has_zoom  = tss_mb is not None
     has_track = genes_df is not None and has_zoom
 
-    # ── build panel layout ────────────────────────────────────────────────────
+    # ── pre-compute zoom bounds (needed before panel layout) ──────────────────
+    zoom_lo: Optional[float] = None
+    zoom_hi: Optional[float] = None
+    if has_zoom:
+        anchor  = peak_pos if peak_pos is not None else tss_mb
+        zoom_lo = min(tss_mb, anchor) - zoom_window_mb   # type: ignore[arg-type]
+        zoom_hi = max(tss_mb, anchor) + zoom_window_mb   # type: ignore[arg-type]
+
+    # ── load exon/CDS/UTR annotation (needed before panel layout for height) ──
+    _exon_df: Optional[pd.DataFrame] = None
+    if has_track and zoom_lo is not None and zoom_hi is not None and gtf_path and chrom:
+        try:
+            from ..io.annotation_io import load_exons_from_gtf
+            _exon_df = load_exons_from_gtf(gtf_path, chrom, zoom_lo, zoom_hi)
+        except Exception as _exc:  # noqa: BLE001
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                'locus_panel: GTF load failed (%s); falling back to gene-body bars', _exc,
+            )
+
+    # ── build panel layout: gene track | zoom | full chr | founder effects ────
     ratios: list[float] = (
-        ([2.0] if has_betas else [])
-        + [1.0]
+        ([0.65] if has_track else [])
         + ([1.0] if has_zoom else [])
-        + ([0.4] if has_track else [])
+        + [1.0]
+        + ([2.0] if has_betas else [])
     )
     fig_h = 2.5 * sum(ratios)
 
@@ -2828,47 +2857,24 @@ def locus_panel(
     if chrom:
         title = f'{title}  chr{chrom}' if title else f'chr{chrom}'
 
-    # ── panel 1: founder effect bars ─────────────────────────────────────────
-    if has_betas:
-        ax_eff = axes_flat[ax_idx]; ax_idx += 1
-        _effect_bars(peak_betas, founders, ax=ax_eff)
-        ax_eff.set_xlabel('')
-        if title:
-            ax_eff.set_title(title, fontsize=9)
-        sns.despine(ax=ax_eff)
-
-    # ── panel 2: full-chromosome LOD profile ─────────────────────────────────
-    ax_full = axes_flat[ax_idx]; ax_idx += 1
-    lod_profile(positions, lod, ax=ax_full, chrom=chrom,
-                threshold=threshold, peak_pos=peak_pos, fill=True,
-                tss_mb=tss_mb)
-    ax_full.set_title('')
-    if tss_mb is not None:
-        _ylim2 = ax_full.get_ylim()
-        _arrow_y = _ylim2[1] * 0.06
-        ax_full.annotate(
-            '', xy=(tss_mb + 0.3, _arrow_y), xytext=(tss_mb, _arrow_y),
-            arrowprops=dict(arrowstyle='->', color=COLOR_CC_FALLBACK, lw=1.0),
+    # ── panel 1: IGV gene body track (top) ───────────────────────────────────
+    if has_track and zoom_lo is not None and zoom_hi is not None:
+        ax_track = axes_flat[ax_idx]; ax_idx += 1
+        _gene_track(
+            ax_track, genes_df,                              # type: ignore[arg-type]
+            (zoom_lo, zoom_hi),
+            highlight_gene=highlight_gene,
+            peak_pos=peak_pos,
+            near_tss_mb=near_tss_mb,
+            exon_df=_exon_df,
         )
-        _gene_label = highlight_gene or ''
-        if _gene_label:
-            ax_full.text(tss_mb, _arrow_y + _ylim2[1] * 0.04,
-                         _gene_label, fontsize=7, ha='left',
-                         color=COLOR_CC_FALLBACK, va='bottom')
-    if not has_betas and title:
-        ax_full.text(0.02, 0.96, title, transform=ax_full.transAxes,
-                     fontsize=9, va='top', fontweight='bold',
-                     color=FOUNDER_COLORS['NODJ'])
-    sns.despine(ax=ax_full)
+        if title:
+            ax_track.set_title(title, fontsize=9)
+        ax_track.set_xlabel('')
 
-    # ── panel 3: zoomed cis-window ────────────────────────────────────────────
-    zoom_lo: Optional[float] = None
-    zoom_hi: Optional[float] = None
-    if has_zoom:
+    # ── panel 2: zoomed cis-window LOD ───────────────────────────────────────
+    if has_zoom and zoom_lo is not None and zoom_hi is not None:
         ax_zoom = axes_flat[ax_idx]; ax_idx += 1
-        anchor  = peak_pos if peak_pos is not None else tss_mb
-        zoom_lo = min(tss_mb, anchor) - zoom_window_mb   # type: ignore[arg-type]
-        zoom_hi = max(tss_mb, anchor) + zoom_window_mb   # type: ignore[arg-type]
 
         mask = (positions >= zoom_lo) & (positions <= zoom_hi)
         pos_z = positions[mask]
@@ -2888,37 +2894,42 @@ def locus_panel(
             ax_zoom.axvline(near_tss_mb, color=FOUNDER_COLORS['CASTJ'],
                             linewidth=0.9, linestyle='--', zorder=2,
                             label='near TSS', alpha=0.8)
-        ax_zoom.set_xlabel('' if has_track else f'chr{chrom} position (Mb)')
+        if not has_track and title:
+            ax_zoom.set_title(title, fontsize=9)
+        ax_zoom.set_xlabel(f'chr{chrom} position (Mb)')
         ax_zoom.legend(fontsize=7, frameon=False, loc='upper right')
         sns.despine(ax=ax_zoom)
 
-    # ── panel 4: IGV gene body track ─────────────────────────────────────────
-    if has_track and zoom_lo is not None and zoom_hi is not None:
-        ax_track = axes_flat[ax_idx]
-
-        # load real exon/CDS/UTR structure when a GTF is provided
-        _exon_df: Optional[pd.DataFrame] = None
-        if gtf_path is not None and chrom:
-            try:
-                from ..io.annotation_io import load_exons_from_gtf
-                _exon_df = load_exons_from_gtf(
-                    gtf_path, chrom, zoom_lo, zoom_hi,
-                )
-            except Exception as _exc:  # noqa: BLE001
-                import logging as _logging
-                _logging.getLogger(__name__).warning(
-                    'locus_panel: GTF load failed (%s); falling back to gene-body bars', _exc,
-                )
-
-        _gene_track(
-            ax_track, genes_df,                              # type: ignore[arg-type]
-            (zoom_lo, zoom_hi),
-            highlight_gene=highlight_gene,
-            peak_pos=peak_pos,
-            near_tss_mb=near_tss_mb,
-            exon_df=_exon_df,
+    # ── panel 3: full-chromosome LOD profile ─────────────────────────────────
+    ax_full = axes_flat[ax_idx]; ax_idx += 1
+    lod_profile(positions, lod, ax=ax_full, chrom=chrom,
+                threshold=threshold, peak_pos=peak_pos, fill=True,
+                tss_mb=tss_mb)
+    ax_full.set_title('')
+    if tss_mb is not None:
+        _ylim2 = ax_full.get_ylim()
+        _arrow_y = _ylim2[1] * 0.06
+        ax_full.annotate(
+            '', xy=(tss_mb + 0.3, _arrow_y), xytext=(tss_mb, _arrow_y),
+            arrowprops=dict(arrowstyle='->', color=COLOR_CC_FALLBACK, lw=1.0),
         )
-        ax_track.set_xlabel(f'chr{chrom} position (Mb)')
+        _gene_label = highlight_gene or ''
+        if _gene_label:
+            ax_full.text(tss_mb, _arrow_y + _ylim2[1] * 0.04,
+                         _gene_label, fontsize=7, ha='left',
+                         color=COLOR_CC_FALLBACK, va='bottom')
+    if not has_betas and not has_zoom and not has_track and title:
+        ax_full.text(0.02, 0.96, title, transform=ax_full.transAxes,
+                     fontsize=9, va='top', fontweight='bold',
+                     color=FOUNDER_COLORS['NODJ'])
+    sns.despine(ax=ax_full)
+
+    # ── panel 4: founder effect bars (bottom) ────────────────────────────────
+    if has_betas:
+        ax_eff = axes_flat[ax_idx]
+        _effect_bars(peak_betas, founders, ax=ax_eff)
+        ax_eff.set_xlabel('')
+        sns.despine(ax=ax_eff)
 
     fig.tight_layout()
     return fig
