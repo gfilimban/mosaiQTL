@@ -6,24 +6,24 @@ Whole-tissue mode (default):
         counts_lognorm.h5   metadata.csv   exp_gene_info_{tissue}.csv
 
 Cell-type mode (--celltype / --all_celltypes):
-    reads cell-type h5ad (one obs per sample × cell type)
-    subsets to the requested cell type
+    reads cell-type h5ad (one obs per sample × subtype)
+    subsets to the requested subtype
     writes counts_lognorm.h5 AND exp_gene_info_{ct}.csv to --out/celltypes/{ct}/
     metadata.csv is shared from --out/ (same samples for all cell types)
 
-    --all_celltypes converts every cell type in the h5ad in one pass.
-    --exclude_celltypes skips named cell types (default: low-quality).
+    --all_celltypes converts every subtype in the h5ad in one pass.
+    --exclude_celltypes skips named subtypes (default: low-quality).
 
-Gene info output (exp_gene_info_*.csv) includes tss_bp computed from strand:
-    tss_bp = start  for + strand genes
-    tss_bp = end    for - strand genes   (TSS is at the 3' end of the annotation)
-This is the value used downstream for cis_dist_mb = (locus_pos - tss_bp) / 1e6.
+Gene coordinates (gene_id, chr, start, end, strand) are read directly from
+adata.var — no external gene_info CSV required.  tss_bp is derived from those
+columns (start for + strand, end for - strand) and written to exp_gene_info_*.csv
+for use downstream as cis_dist_mb = (locus_pos - tss_bp) / 1e6.
 
 Usage:
-    python validation/convert_h5ad.py --tissue gastroc
-    python validation/convert_h5ad.py --tissue gastroc --celltype myonuclei
-    python validation/convert_h5ad.py --tissue gastroc --list_celltypes
-    python validation/convert_h5ad.py --tissue ctxhipp --out validation/ctxhipp_data \\
+    python validation/tools/convert_h5ad.py --tissue gastroc
+    python validation/tools/convert_h5ad.py --tissue gastroc --celltype myonuclei
+    python validation/tools/convert_h5ad.py --tissue gastroc --list_celltypes
+    python validation/tools/convert_h5ad.py --tissue ctxhipp --out validation/ctxhipp_data \\
         --h5ad /path/to/ctxhipp_all_ctpb.h5ad --all_celltypes
 """
 from __future__ import annotations
@@ -51,9 +51,6 @@ _DEFAULT_BULK_H5AD = (pathlib.Path.home() / 'Documents/journey/learning/graduate
 _DEFAULT_CT_H5AD   = (pathlib.Path.home() / 'Documents/journey/learning/graduate'
                       '/lab/projects/igvf/analysis/qtl/input/adata'
                       '/gastroc_all_pb.h5ad')
-
-# global gene universe — generated once from GENCODE vM36 GTF, tissue-agnostic
-_GLOBAL_GENE_INFO = pathlib.Path(__file__).parent / 'input' / 'gene_info.vm36.csv'
 
 
 def _add_tss_bp(df: pd.DataFrame) -> pd.DataFrame:
@@ -92,16 +89,19 @@ def _ct_safe(cell_type: str) -> str:
 
 
 def _detect_celltype_col(obs: pd.DataFrame) -> str:
-    """Return the obs column holding cell type labels.
+    """Return the obs column holding cell type labels at pseudobulk resolution.
 
-    Checks 'celltype' first (gastroc), then 'subtype' (ctxhipp).
+    Prefers 'subtype' because pseudobulks are built at subtype resolution;
+    'celltype' is a coarser grouping label and may map multiple subtypes to
+    the same mouse, breaking the assumption of one obs per (sample, label).
+    Falls back to 'celltype' for h5ads that lack a subtype column (e.g. gastroc bulk).
     Raises ValueError if neither is present.
     """
-    for col in ('celltype', 'subtype'):
+    for col in ('subtype', 'celltype'):
         if col in obs.columns:
             return col
     raise ValueError(
-        f'no cell type column found in obs; expected "celltype" or "subtype". '
+        f'no cell type column found in obs; expected "subtype" or "celltype". '
         f'Available columns: {list(obs.columns)}')
 
 
@@ -115,37 +115,6 @@ def _metadata_cols(obs: pd.DataFrame) -> list[str]:
     optional = ['body_weight_g', 'tissue_weight_mg']
     return base + [c for c in optional if c in obs.columns]
 
-
-def _enrich_var(adata: 'anndata.AnnData') -> 'anndata.AnnData':
-    """Merge GENCODE vM36 coordinates onto adata.var in place.
-
-    Adds gene_id, chr, start, end, strand, tss_bp columns to adata.var if not
-    already present.  var_names are assumed to be gene symbols (gene_name).
-    Returns the same AnnData (mutated in place for efficiency).
-    """
-    if not _GLOBAL_GENE_INFO.exists():
-        log.warning('global gene info not found at %s — var will lack coordinates',
-                    _GLOBAL_GENE_INFO)
-        return adata
-    coord_cols = ['gene_name', 'gene_id', 'chr', 'start', 'end', 'strand']
-    gi = pd.read_csv(_GLOBAL_GENE_INFO, usecols=coord_cols)
-    gi = gi.drop_duplicates('gene_name').set_index('gene_name')
-    # strip version suffix from gene_id (ENSMUSG00000102693.2 → ENSMUSG00000102693)
-    gi['gene_id'] = gi['gene_id'].str.replace(r'\.\d+$', '', regex=True)
-    # tss_bp: start for + strand, end for - strand
-    tss = gi['start'].copy().astype('float64')
-    tss[gi['strand'] == '-'] = gi.loc[gi['strand'] == '-', 'end'].astype('float64')
-    tss[gi['strand'].isna()] = float('nan')
-    gi['tss_bp'] = tss.astype('Int64')
-
-    new_cols = [c for c in ('gene_id', 'chr', 'start', 'end', 'strand', 'tss_bp')
-                if c not in adata.var.columns]
-    if new_cols:
-        adata.var = adata.var.join(gi[new_cols], how='left')
-        n_missing = adata.var['gene_id'].isna().sum() if 'gene_id' in new_cols else 0
-        if n_missing:
-            log.warning('  %d var genes not found in gene_info.vm36.csv', n_missing)
-    return adata
 
 
 def _cpm_filter(X: np.ndarray, lib_sizes: np.ndarray, var: pd.DataFrame,
@@ -261,46 +230,14 @@ def init_celltypes(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str) 
 
     # ── exp_gene_info_{tissue}.csv: coordinates for ALL genes in var_names ───
     # No CPM filter — per-CT filtering is done in convert_celltype().
-    if not _GLOBAL_GENE_INFO.exists():
-        log.warning('global gene info not found at %s — coordinate columns will be NaN',
-                    _GLOBAL_GENE_INFO)
-        global_gi: pd.DataFrame = pd.DataFrame(
-            columns=['gene_name', 'gene_id', 'chr', 'start', 'end', 'strand'])
-    else:
-        global_gi = pd.read_csv(_GLOBAL_GENE_INFO,
-                                usecols=['gene_name', 'gene_id', 'chr', 'start', 'end', 'strand'])
-
-    # primary join: var_names → gene_name (gene symbols)
-    exp_gene_info = (
-        pd.DataFrame({'gene_name': adata.var_names})
-        .merge(global_gi, on='gene_name', how='left')
-    )
-    # fallback join for ENSMUSG IDs stored as var_names (no gene symbol):
-    # match stripped var_name → stripped gene_id in global_gi
-    missing_mask = exp_gene_info['gene_id'].isna()
-    if missing_mask.any():
-        gi_id = (global_gi.copy()
-                 .assign(gene_id_stripped=global_gi['gene_id']
-                         .str.replace(r'\.\d+$', '', regex=True))
-                 .drop_duplicates('gene_id_stripped')
-                 .set_index('gene_id_stripped'))
-        var_stripped = exp_gene_info.loc[missing_mask, 'gene_name'].str.replace(
-            r'\.\d+$', '', regex=True)
-        resolved = var_stripped.map(gi_id['gene_id'].to_dict())
-        # fill in gene_id (and other cols) for resolved rows
-        for col in ('gene_id', 'chr', 'start', 'end', 'strand'):
-            if col in gi_id.columns:
-                exp_gene_info.loc[missing_mask, col] = var_stripped.map(
-                    gi_id[col].to_dict()).values
-        still_missing = exp_gene_info['gene_id'].isna().sum()
-        log.info('  coordinate lookup: %d primary matches, %d via gene_id fallback, '
-                 '%d unresolved (no coordinates)',
-                 int((~missing_mask).sum()),
-                 int(missing_mask.sum()) - int(still_missing),
-                 int(still_missing))
-    else:
-        log.info('  all %d genes resolved via gene_name', adata.n_vars)
-
+    # Coordinates come directly from adata.var (gene_id, chr, start, end, strand).
+    coord_cols = [c for c in ('gene_id', 'chr', 'start', 'end', 'strand')
+                  if c in adata.var.columns]
+    exp_gene_info = adata.var[coord_cols].copy().reset_index(names='gene_name')
+    n_missing_coords = exp_gene_info[coord_cols].isna().any(axis=1).sum()
+    if n_missing_coords:
+        log.warning('  %d genes missing one or more coordinate columns in adata.var',
+                    n_missing_coords)
     exp_gene_info = _add_tss_bp(exp_gene_info)
     exp_gene_info = _strip_gene_id_version(exp_gene_info)
     exp_path = out_dir / f'exp_gene_info_{tissue}.csv'
@@ -340,29 +277,17 @@ def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str) -> None
     obs.reset_index(drop=True).to_csv(meta_path, index=False)
 
     # ── exp_gene_info_{tissue}.csv ────────────────────────────────────────────
-    # coordinates + strand from global GENCODE gene universe; CPM stats from filter
-    if not _GLOBAL_GENE_INFO.exists():
-        log.warning('global gene info not found at %s — skipping coordinate annotation',
-                    _GLOBAL_GENE_INFO)
-        global_gi: pd.DataFrame = pd.DataFrame(columns=['gene_name', 'gene_id', 'chr',
-                                                         'start', 'end', 'strand'])
-    else:
-        global_gi = pd.read_csv(_GLOBAL_GENE_INFO,
-                                 usecols=['gene_name', 'gene_id', 'chr', 'start', 'end', 'strand'])
-
+    # coordinates from adata.var; CPM stats from filter report
+    coord_cols = [c for c in ('gene_id', 'chr', 'start', 'end', 'strand')
+                  if c in adata.var.columns]
     cpm_stats_cols = ['gene_name', 'total_counts', 'mean_counts', 'n_cells_by_counts',
                       'pct_dropout_by_counts', 'n_samples_cpm_gt1', 'frac_samples_cpm_gt1',
                       'mean_cpm', 'median_cpm', 'n_samples_zero', 'frac_samples_zero']
     exp_gene_info = (
-        pd.DataFrame({'gene_name': adata.var_names})
-        .merge(global_gi, on='gene_name', how='left')
+        adata.var[coord_cols].copy().reset_index(names='gene_name')
         .merge(report[[c for c in cpm_stats_cols if c in report.columns]],
                on='gene_name', how='left')
     )
-    n_missing = exp_gene_info['gene_id'].isna().sum()
-    if n_missing:
-        log.warning('  %d genes not found in global gene_info — chr/start/end/strand will be NaN',
-                    n_missing)
     exp_gene_info = _add_tss_bp(exp_gene_info)
     exp_gene_info = _strip_gene_id_version(exp_gene_info)
     exp_path = out_dir / f'exp_gene_info_{tissue}.csv'
@@ -487,19 +412,11 @@ def convert_celltype(h5ad_path: pathlib.Path, celltype: str,
         'frac_samples_zero':    ((X_valid == 0).sum(axis=0) / n_valid).round(4),
     })
 
-    # ── exp_gene_info_{ct}.csv: coordinates + CT CPM stats ───────────────────
-    if _GLOBAL_GENE_INFO.exists():
-        global_gi = pd.read_csv(_GLOBAL_GENE_INFO,
-                                usecols=['gene_name', 'gene_id', 'chr', 'start', 'end', 'strand'])
-    else:
-        log.warning('global gene info not found at %s — coordinate columns will be NaN',
-                    _GLOBAL_GENE_INFO)
-        global_gi = pd.DataFrame(columns=['gene_name', 'gene_id', 'chr', 'start', 'end', 'strand'])
-
+    # ── exp_gene_info_{ct}.csv: coordinates from adata.var + CT CPM stats ────
+    coord_cols = [c for c in ('gene_id', 'chr', 'start', 'end', 'strand')
+                  if c in adata.var.columns]
     exp_gene_info_ct = (
-        pd.DataFrame({'gene_name': adata.var_names})
-        .merge(global_gi[['gene_name', 'gene_id', 'chr', 'start', 'end', 'strand']],
-               on='gene_name', how='left')
+        adata.var[coord_cols].copy().reset_index(names='gene_name')
         .merge(ct_stats, on='gene_name', how='left')
     )
     exp_gene_info_ct = _add_tss_bp(exp_gene_info_ct)

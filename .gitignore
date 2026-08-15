@@ -29,7 +29,7 @@ memory/
 docs/superpowers/
 .aider*
 
-# nextflow runtime
+# nextflow runtime — generated at runtime, can be very large
 .nextflow/
 .nextflow.log
 work/
