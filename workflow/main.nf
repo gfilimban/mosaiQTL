@@ -32,8 +32,6 @@
  *   {output_dir}/kinship_loco.h5                  — shared, written once
  */
 
-nextflow.enable.dsl = 2
-
 include { KINSHIP_LOCO  } from '../modules/local/kinship_loco'
 include { LMM_SCAN      } from '../modules/local/lmm_scan'
 include { MERGE_RESULTS } from '../modules/local/merge_results'

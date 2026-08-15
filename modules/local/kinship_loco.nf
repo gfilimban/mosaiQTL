@@ -17,15 +17,15 @@ process KINSHIP_LOCO {
     output:
     path 'kinship_loco.h5', emit: kinship_h5
 
-    stub:
-    """
-    touch kinship_loco.h5
-    """
-
     script:
     """
     python ${projectDir}/workflow/scripts/build_kinship_loco.py \\
         --cache  ${genomecache} \\
         --output kinship_loco.h5
+    """
+
+    stub:
+    """
+    touch kinship_loco.h5
     """
 }

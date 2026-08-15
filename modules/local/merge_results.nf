@@ -13,7 +13,7 @@ process MERGE_RESULTS {
     label 'process_single'
     tag   "${celltype}"
 
-    publishDir "${params.output_dir}/${celltype}", mode: 'copy'
+    publishDir { "${params.output_dir}/${celltype}" }, mode: 'copy'
 
     input:
     tuple val(celltype), path(lod_csvs)
@@ -21,16 +21,16 @@ process MERGE_RESULTS {
     output:
     tuple val(celltype), path('lod_genome.csv')
 
-    stub:
-    """
-    touch lod_genome.csv
-    """
-
     script:
     """
     python ${projectDir}/workflow/scripts/merge_lod_csvs.py \
         --celltype ${celltype} \
         --output   lod_genome.csv \
         ${lod_csvs}
+    """
+
+    stub:
+    """
+    touch lod_genome.csv
     """
 }

@@ -13,7 +13,7 @@ process LMM_SCAN {
     label 'process_medium'
     tag   "${celltype}/chr${chrom}"
 
-    publishDir "${params.output_dir}/${celltype}/lod", mode: 'copy'
+    publishDir { "${params.output_dir}/${celltype}/lod" }, mode: 'copy'
 
     input:
     path  genomecache
@@ -22,11 +22,6 @@ process LMM_SCAN {
 
     output:
     tuple val(celltype), path("lod_chr${chrom}.csv")
-
-    stub:
-    """
-    touch lod_chr${chrom}.csv
-    """
 
     script:
     """
@@ -39,5 +34,10 @@ process LMM_SCAN {
         --scan-window ${params.scan_window} \\
         --window-mb   ${params.window_mb} \\
         --output-dir  .
+    """
+
+    stub:
+    """
+    touch lod_chr${chrom}.csv
     """
 }
