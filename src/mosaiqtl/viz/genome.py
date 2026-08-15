@@ -147,7 +147,7 @@ def lod_profile(
         ax.text(0.98, 0.96, f'h²={h2:.2f}', transform=ax.transAxes,
                 fontsize=10, va='top', ha='right', color=COLOR_NEUTRAL_DARK)
     if label:
-        ax.legend(frameon=False, fontsize=9)
+        ax.legend(frameon=False, fontsize=9, loc="upper right")
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
@@ -574,7 +574,7 @@ def lod_histogram(
         ax.axvline(threshold, color=FOUNDER_COLORS['PWKJ'],
                    linewidth=1.0, linestyle='--',
                    label=f'threshold = {threshold:.1f}')
-        ax.legend(fontsize=8, frameon=False)
+        ax.legend(fontsize=8, frameon=False, loc='upper right')
 
     ax.set_xlim(left=0)
     ax.set_ylim(bottom=0)
@@ -982,7 +982,7 @@ def library_size_qc(
                 alpha=0.8, width=0.8, ax=ax, errorbar=None)
     ax.axhline(float(np.median(library_sizes)), color=FOUNDER_COLORS['PWKJ'],
                linewidth=0.9, linestyle='--', label='median')
-    ax.legend(fontsize=8, frameon=False)
+    ax.legend(fontsize=8, frameon=False, loc='upper right')
 
     if sample_ids is not None and n <= 60:
         ax.set_xticks(x)
@@ -1668,7 +1668,7 @@ def perm_threshold_comparison(
     ax.set_ylabel('FWER Threshold (LOD)', fontsize=13, fontweight='bold')
     ax.tick_params(labelsize=11)
     ax.set_ylim(bottom=0)
-    ax.legend(fontsize=9, frameon=False)
+    ax.legend(fontsize=9, frameon=False, loc='upper right')
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
@@ -1813,7 +1813,7 @@ def scan_throughput(
     ax.set_ylabel('Throughput (genes/min)', fontsize=13, fontweight='bold')
     ax.tick_params(labelsize=11)
     ax.set_ylim(bottom=0)
-    ax.legend(fontsize=9, frameon=False)
+    ax.legend(fontsize=9, frameon=False, loc='upper right')
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
@@ -2352,6 +2352,7 @@ def locus_panels_per_chr(
     near_tss_mb_map: Optional[dict[str, float]] = None,
     genes_df: Optional[pd.DataFrame] = None,
     zoom_window_mb: float = 1.0,
+    gtf_path: Optional[str] = None,
 ) -> dict[str, plt.Figure]:
     """Per-chromosome locus panels (founder effects + LOD profile + zoom).
 
@@ -2383,6 +2384,10 @@ def locus_panels_per_chr(
         adds an IGV gene body track below the zoom panel.
     zoom_window_mb : float
         Margin around the [TSS, peak] interval in the zoom panel. Default 1.0 Mb.
+    gtf_path : str, optional
+        Path to a ``.gtf`` or ``.gtf.gz`` file.  When provided, real
+        exon/CDS/UTR intervals are loaded per panel and passed to the gene
+        track — one GTF read per chromosome panel.
 
     Returns
     -------
@@ -2453,6 +2458,7 @@ def locus_panels_per_chr(
             threshold=thr_val,
             chrom=c,
             highlight_gene=top_gene,
+            gtf_path=gtf_path,
         )
         out[c] = fig
 
@@ -2472,45 +2478,60 @@ def _gene_track(
     highlight_gene: Optional[str] = None,
     peak_pos: Optional[float] = None,
     near_tss_mb: Optional[float] = None,
+    exon_df: Optional[pd.DataFrame] = None,
 ) -> None:
-    """Draw a compact IGV-style gene body track on *ax*.
+    """Draw an IGV-style gene body track on *ax*.
 
-    Genes overlapping *xlim* are packed into rows (greedy, up to 4 rows) and
-    rendered as horizontal bars with strand arrows at the TSS end.  *peak_pos*
-    and *near_tss_mb* are drawn as vertical lines so their position relative to
-    surrounding gene bodies is immediately readable.
+    When *exon_df* is supplied (from :func:`~mosaiqtl.io.annotation_io.load_exons_from_gtf`),
+    each gene is rendered with its real transcript/exon/CDS/UTR structure:
+
+    * Thin intron backbone spanning the full canonical transcript extent.
+    * UTR blocks (``feature == 'UTR'`` or exon portions not covered by CDS)
+      at medium height.
+    * CDS blocks at full height.
+    * Directional chevrons (›/‹) in every intron gap.
+    * TSS arrowhead at the 5′ end.
+
+    When *exon_df* is ``None``, only a thin backbone with chevrons is drawn
+    (honest representation when annotation data is unavailable).
+
+    *peak_pos* and *near_tss_mb* are drawn as vertical lines so their
+    position relative to surrounding gene bodies is immediately readable.
 
     Parameters
     ----------
     ax : plt.Axes
         Target axes — fully styled by this function.
     genes_df : pd.DataFrame
-        Must have ``start_mb`` and ``end_mb`` columns plus either ``gene_name``
-        or ``gene_id``.  Optional ``strand`` column (``'+'`` / ``'-'``).
+        Gene-level table; must have ``start_mb``, ``end_mb``, and either
+        ``gene_name`` or ``gene_id``.  Optional ``strand`` column.
+        Used for row-packing only (not for exon rendering).
     xlim : tuple[float, float]
         Visible x-range in Mb — should match the zoom panel directly above.
     highlight_gene : str, optional
-        The gene being scanned; drawn in NODJ blue, others in CC-fallback grey.
+        The gene being scanned; drawn in NODJ blue, others in grey.
     peak_pos : float, optional
         QTL peak locus (Mb); solid red vertical line.
     near_tss_mb : float, optional
-        TSS of the nearest gene to the peak (Mb); dashed green vertical line
-        with a downward-triangle marker at top so it reads distinctly from the
-        peak line.
+        TSS of the nearest gene to the peak (Mb); dashed green vertical line.
+    exon_df : pd.DataFrame, optional
+        Output of ``load_exons_from_gtf``; columns ``gene_name``, ``feature``
+        (``'transcript'`` / ``'exon'`` / ``'CDS'`` / ``'UTR'``), ``start_mb``,
+        ``end_mb``, ``strand``.
     """
     lo, hi = xlim
-    gname_col  = 'gene_name' if 'gene_name' in genes_df.columns else 'gene_id'
+    span      = hi - lo
+    gname_col = 'gene_name' if 'gene_name' in genes_df.columns else 'gene_id'
     has_strand = 'strand' in genes_df.columns
 
-    # filter to genes that overlap the visible range
+    # ── filter genes_df to visible window and pack into rows ──────────────────
     vis = genes_df[
         (genes_df['end_mb'] >= lo) & (genes_df['start_mb'] <= hi)
     ].copy().sort_values('start_mb').reset_index(drop=True)
 
-    # greedy interval row-packing
     row_ends: list[float] = []
     row_idx:  list[int]   = []
-    _GAP = 0.08   # Mb min inter-gene gap before reusing a row
+    _GAP = 0.08  # Mb min gap before a row is reused
     for _, g in vis.iterrows():
         s = max(float(g['start_mb']), lo)
         placed = False
@@ -2524,83 +2545,187 @@ def _gene_track(
             row_ends.append(min(float(g['end_mb']), hi))
             row_idx.append(len(row_ends) - 1)
 
-    n_rows     = max(len(row_ends), 1)
-    _BODY_H    = 0.30
-    _ARROW_DX  = min(0.06, (hi - lo) * 0.025)
-    _LABEL_MIN = (hi - lo) * 0.03   # skip label if gene narrower than this
+    n_rows = max(len(row_ends), 1)
 
-    # draw gene bodies
+    # heights for each feature tier (IGV convention: CDS tallest, UTR medium,
+    # backbone thinnest)
+    _H_BACKBONE = 0.06
+    _H_UTR      = 0.14
+    _H_CDS      = 0.26
+    _LABEL_MIN  = span * 0.025
+    _CHEV_SPACE = max(span * 0.025, 0.008)  # Mb between chevrons
+
+    # index exon_df by gene for fast lookup
+    _exon_by_gene: dict[str, pd.DataFrame] = {}
+    if exon_df is not None and not exon_df.empty:
+        for gn, grp in exon_df.groupby('gene_name'):
+            _exon_by_gene[str(gn)] = grp.reset_index(drop=True)
+
+    # ── draw each gene ────────────────────────────────────────────────────────
     for (_, g), ri in zip(vis.iterrows(), row_idx):
-        s  = float(g['start_mb'])
-        e  = float(g['end_mb'])
-        gn = str(g[gname_col])
-        y  = float(ri)
+        g_s  = float(g['start_mb'])
+        g_e  = float(g['end_mb'])
+        gn   = str(g[gname_col])
+        y    = float(ri)
         is_hl = (gn == highlight_gene)
         clr   = FOUNDER_COLORS['NODJ'] if is_hl else COLOR_CC_FALLBACK
-        alpha = 0.95 if is_hl else 0.50
-        lw    = 0.0
+        alpha = 0.95 if is_hl else 0.55
 
-        vis_s = max(s, lo)
-        vis_e = min(e, hi)
+        strand = '+'
+        if has_strand:
+            strand = str(g.get('strand', '+'))
+        tss_pos = g_s if strand == '+' else g_e
+
+        ann = _exon_by_gene.get(gn)  # per-gene annotation from exon_df
+
+        # ── backbone extent: transcript record > exon span > gene span ────────
+        if ann is not None:
+            tx = ann[ann['feature'] == 'transcript']
+            if not tx.empty:
+                back_s = float(tx['start_mb'].min())
+                back_e = float(tx['end_mb'].max())
+                # strand from annotation is authoritative
+                strand = str(tx.iloc[0]['strand'])
+                tss_pos = back_s if strand == '+' else back_e
+            else:
+                back_s = float(ann['start_mb'].min())
+                back_e = float(ann['end_mb'].max())
+        else:
+            back_s, back_e = g_s, g_e
+
+        vis_back_s = max(back_s, lo)
+        vis_back_e = min(back_e, hi)
+        if vis_back_e <= vis_back_s:
+            continue
+
+        # 1. thin intron backbone
         ax.broken_barh(
-            [(vis_s, vis_e - vis_s)],
-            (y - _BODY_H / 2, _BODY_H),
+            [(vis_back_s, vis_back_e - vis_back_s)],
+            (y - _H_BACKBONE / 2, _H_BACKBONE),
             facecolors=clr, edgecolors='none', alpha=alpha,
-            linewidth=lw, zorder=2,
+            linewidth=0.0, zorder=2,
         )
 
-        # strand arrow at TSS end
-        if has_strand:
-            strand  = str(g.get('strand', '+'))
-            tss_pos = s if strand == '+' else e
-            dx      = _ARROW_DX if strand == '+' else -_ARROW_DX
-            if lo <= tss_pos <= hi:
-                ax.annotate(
-                    '', xy=(tss_pos + dx, y), xytext=(tss_pos, y),
-                    xycoords='data', textcoords='data',
-                    arrowprops=dict(
-                        arrowstyle='->', color=clr,
-                        lw=0.9, mutation_scale=9,
-                    ),
-                    zorder=3,
-                )
+        if ann is not None:
+            exons = ann[ann['feature'] == 'exon'].sort_values('start_mb')
+            cds   = ann[ann['feature'] == 'CDS']
+            utrs  = ann[ann['feature'] == 'UTR']
 
-        # gene name — centred above body, only when wide enough
-        ctr = (vis_s + vis_e) / 2
-        if (vis_e - vis_s) >= _LABEL_MIN:
+            # 2a. exon blocks at UTR height (includes UTR + CDS)
+            for _, ex in exons.iterrows():
+                ex_s = max(float(ex['start_mb']), lo)
+                ex_e = min(float(ex['end_mb']), hi)
+                if ex_e > ex_s:
+                    ax.broken_barh(
+                        [(ex_s, ex_e - ex_s)],
+                        (y - _H_UTR / 2, _H_UTR),
+                        facecolors=clr, edgecolors='none', alpha=alpha,
+                        linewidth=0.0, zorder=3,
+                    )
+
+            # 2b. CDS blocks raised to full CDS height
+            for _, cd in cds.iterrows():
+                cd_s = max(float(cd['start_mb']), lo)
+                cd_e = min(float(cd['end_mb']), hi)
+                if cd_e > cd_s:
+                    ax.broken_barh(
+                        [(cd_s, cd_e - cd_s)],
+                        (y - _H_CDS / 2, _H_CDS),
+                        facecolors=clr, edgecolors='none', alpha=alpha,
+                        linewidth=0.0, zorder=4,
+                    )
+
+            # 2c. explicit UTR records — redraw at UTR height to ensure they
+            # sit at the correct tier even if a CDS record overlaps
+            for _, ut in utrs.iterrows():
+                ut_s = max(float(ut['start_mb']), lo)
+                ut_e = min(float(ut['end_mb']), hi)
+                if ut_e > ut_s:
+                    ax.broken_barh(
+                        [(ut_s, ut_e - ut_s)],
+                        (y - _H_UTR / 2, _H_UTR),
+                        facecolors=clr, edgecolors='none', alpha=alpha,
+                        linewidth=0.0, zorder=5,
+                    )
+
+            # 3. directional chevrons in intron gaps
+            exon_intervals = sorted(
+                [(float(r['start_mb']), float(r['end_mb'])) for _, r in exons.iterrows()],
+            )
+            # gaps between consecutive exons, clipped to visible window
+            chevron = '›' if strand == '+' else '‹'
+            prev_e = vis_back_s
+            for ex_s_raw, ex_e_raw in exon_intervals:
+                gap_s = max(prev_e, lo)
+                gap_e = min(ex_s_raw, hi)
+                if gap_e > gap_s + _CHEV_SPACE:
+                    for cx in np.arange(gap_s + _CHEV_SPACE / 2, gap_e, _CHEV_SPACE):
+                        ax.text(cx, y, chevron, fontsize=5, ha='center', va='center',
+                                color=clr, alpha=max(alpha - 0.2, 0.3),
+                                clip_on=True, zorder=3)
+                prev_e = max(prev_e, ex_e_raw)
+            # gap after last exon to transcript end
+            gap_s = max(prev_e, lo)
+            gap_e = min(vis_back_e, hi)
+            if gap_e > gap_s + _CHEV_SPACE:
+                for cx in np.arange(gap_s + _CHEV_SPACE / 2, gap_e, _CHEV_SPACE):
+                    ax.text(cx, y, chevron, fontsize=5, ha='center', va='center',
+                            color=clr, alpha=max(alpha - 0.2, 0.3),
+                            clip_on=True, zorder=3)
+        else:
+            # no annotation — chevrons across full visible extent
+            chevron = '›' if strand == '+' else '‹'
+            for cx in np.arange(vis_back_s + _CHEV_SPACE / 2, vis_back_e, _CHEV_SPACE):
+                ax.text(cx, y, chevron, fontsize=5, ha='center', va='center',
+                        color=clr, alpha=max(alpha - 0.2, 0.3),
+                        clip_on=True, zorder=3)
+
+        # 4. TSS arrowhead
+        _arrow_dx = min(0.04, span * 0.018)
+        if lo <= tss_pos <= hi:
+            dx = _arrow_dx if strand == '+' else -_arrow_dx
+            ax.annotate(
+                '', xy=(tss_pos + dx, y), xytext=(tss_pos, y),
+                xycoords='data', textcoords='data',
+                arrowprops=dict(arrowstyle='->', color=clr, lw=1.1, mutation_scale=10),
+                zorder=6,
+            )
+
+        # 5. gene name label — above the tallest block, centred on visible span
+        ctr = (vis_back_s + vis_back_e) / 2
+        label_y = y + _H_CDS / 2 + 0.05
+        if (vis_back_e - vis_back_s) >= _LABEL_MIN:
             ax.text(
-                ctr, y + _BODY_H / 2 + 0.05, gn,
+                ctr, label_y, gn,
                 fontsize=5.5, ha='center', va='bottom',
-                color=clr, clip_on=True, zorder=4,
+                color=clr, clip_on=True, zorder=7,
                 fontweight='bold' if is_hl else 'normal',
             )
 
-    # vertical annotations — drawn last so they sit above gene bodies
+    # ── vertical annotations ──────────────────────────────────────────────────
     y_top = n_rows - 0.5
 
     if peak_pos is not None and lo <= peak_pos <= hi:
         ax.axvline(peak_pos, color=FOUNDER_COLORS['PWKJ'],
-                   lw=1.3, ls='-', zorder=6, alpha=0.9)
-        ax.text(peak_pos + (hi - lo) * 0.008, y_top,
+                   lw=1.3, ls='-', zorder=8, alpha=0.9)
+        ax.text(peak_pos + span * 0.008, y_top,
                 'peak', fontsize=6, color=FOUNDER_COLORS['PWKJ'],
                 ha='left', va='top', fontweight='bold', clip_on=True)
 
     if near_tss_mb is not None and lo <= near_tss_mb <= hi:
         _clr = FOUNDER_COLORS['CASTJ']
-        ax.axvline(near_tss_mb, color=_clr,
-                   lw=1.2, ls='--', zorder=6, alpha=0.9)
+        ax.axvline(near_tss_mb, color=_clr, lw=1.2, ls='--', zorder=8, alpha=0.9)
         ax.scatter([near_tss_mb], [y_top], marker='v',
-                   s=20, color=_clr, zorder=7, clip_on=True)
-        ax.text(near_tss_mb + (hi - lo) * 0.008, y_top - 0.15,
+                   s=20, color=_clr, zorder=9, clip_on=True)
+        ax.text(near_tss_mb + span * 0.008, y_top - 0.15,
                 'near TSS', fontsize=6, color=_clr,
                 ha='left', va='top', clip_on=True)
 
-    # axis style — minimal chrome, x shared with zoom panel above
+    # ── axis styling ──────────────────────────────────────────────────────────
     ax.set_xlim(lo, hi)
-    ax.set_ylim(-0.55, n_rows - 0.35)
+    ax.set_ylim(-0.60, n_rows - 0.25)
     ax.set_yticks([])
-    ax.set_ylabel('genes', fontsize=7, rotation=0,
-                  labelpad=30, va='center')
+    ax.set_ylabel('genes', fontsize=7, rotation=0, labelpad=30, va='center')
     ax.yaxis.set_label_position('right')
     ax.tick_params(axis='x', labelsize=7)
     for sp in ('left', 'top', 'right'):
@@ -2625,6 +2750,7 @@ def locus_panel(
     threshold: Optional[float] = None,
     chrom: str = '',
     highlight_gene: Optional[str] = None,
+    gtf_path: Optional[str] = None,
 ) -> plt.Figure:
     """Locus view: founder effect bars + full LOD profile + zoom + gene track.
 
@@ -2667,6 +2793,11 @@ def locus_panel(
         Chromosome label for the x-axis.
     highlight_gene : str, optional
         Gene name shown in the figure title and highlighted in the gene track.
+    gtf_path : str, optional
+        Path to a ``.gtf`` or ``.gtf.gz`` file (e.g. GENCODE vM36).  When
+        provided together with *genes_df* and *tss_mb*, exon/CDS/UTR intervals
+        are loaded for the zoom window and passed to the gene track so real
+        exon/intron structure is drawn instead of plain gene-body bars.
 
     Returns
     -------
@@ -2758,18 +2889,34 @@ def locus_panel(
                             linewidth=0.9, linestyle='--', zorder=2,
                             label='near TSS', alpha=0.8)
         ax_zoom.set_xlabel('' if has_track else f'chr{chrom} position (Mb)')
-        ax_zoom.legend(fontsize=7, frameon=False)
+        ax_zoom.legend(fontsize=7, frameon=False, loc='upper right')
         sns.despine(ax=ax_zoom)
 
     # ── panel 4: IGV gene body track ─────────────────────────────────────────
     if has_track and zoom_lo is not None and zoom_hi is not None:
         ax_track = axes_flat[ax_idx]
+
+        # load real exon/CDS/UTR structure when a GTF is provided
+        _exon_df: Optional[pd.DataFrame] = None
+        if gtf_path is not None and chrom:
+            try:
+                from ..io.annotation_io import load_exons_from_gtf
+                _exon_df = load_exons_from_gtf(
+                    gtf_path, chrom, zoom_lo, zoom_hi,
+                )
+            except Exception as _exc:  # noqa: BLE001
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    'locus_panel: GTF load failed (%s); falling back to gene-body bars', _exc,
+                )
+
         _gene_track(
             ax_track, genes_df,                              # type: ignore[arg-type]
             (zoom_lo, zoom_hi),
             highlight_gene=highlight_gene,
             peak_pos=peak_pos,
             near_tss_mb=near_tss_mb,
+            exon_df=_exon_df,
         )
         ax_track.set_xlabel(f'chr{chrom} position (Mb)')
 
