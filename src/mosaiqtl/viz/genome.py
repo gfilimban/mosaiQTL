@@ -2524,19 +2524,21 @@ def _gene_track(
     gname_col = 'gene_name' if 'gene_name' in genes_df.columns else 'gene_id'
     has_strand = 'strand' in genes_df.columns
 
-    # ── filter genes_df to visible window and pack into rows ──────────────────
+    # ── filter genes_df to visible window ────────────────────────────────────
     vis = genes_df[
         (genes_df['end_mb'] >= lo) & (genes_df['start_mb'] <= hi)
     ].copy().sort_values('start_mb').reset_index(drop=True)
 
-    # When exon_df is available, restrict to canonically annotated genes only
-    # (Ensembl_canonical from GTF) — avoids drowning the highlight gene in a
-    # dense crowd of gene_info entries.  The highlight gene is always kept.
-    if exon_df is not None and not exon_df.empty and 'gene_name' in exon_df.columns:
-        _annotated = set(exon_df['gene_name'].unique())
-        if highlight_gene:
-            _annotated.add(highlight_gene)
-        vis = vis[vis[gname_col].isin(_annotated)].reset_index(drop=True)
+    # ── single-gene mode: one gene fills the track as the x-axis reference ───
+    _single = len(vis) == 1
+
+    # heights scale with mode: single-gene uses large blocks so CDS/UTR are
+    # clearly readable; multi-gene uses compact heights for row packing
+    _H_BACKBONE = 0.10  if _single else 0.06
+    _H_UTR      = 0.38  if _single else 0.14
+    _H_CDS      = 0.60  if _single else 0.26
+    _LABEL_MIN  = span * 0.025
+    _CHEV_SPACE = max(span * 0.020, 0.006)  # Mb between chevrons
 
     row_ends: list[float] = []
     row_idx:  list[int]   = []
@@ -2555,14 +2557,6 @@ def _gene_track(
             row_idx.append(len(row_ends) - 1)
 
     n_rows = max(len(row_ends), 1)
-
-    # heights for each feature tier (IGV convention: CDS tallest, UTR medium,
-    # backbone thinnest)
-    _H_BACKBONE = 0.06
-    _H_UTR      = 0.14
-    _H_CDS      = 0.26
-    _LABEL_MIN  = span * 0.025
-    _CHEV_SPACE = max(span * 0.025, 0.008)  # Mb between chevrons
 
     # index exon_df by gene for fast lookup
     _exon_by_gene: dict[str, pd.DataFrame] = {}
@@ -2702,11 +2696,12 @@ def _gene_track(
 
         # 5. gene name label — above the tallest block, centred on visible span
         ctr = (vis_back_s + vis_back_e) / 2
-        label_y = y + _H_CDS / 2 + 0.05
+        label_y = y + _H_CDS / 2 + 0.04
+        _lbl_fs = 8.0 if _single else 5.5
         if (vis_back_e - vis_back_s) >= _LABEL_MIN:
             ax.text(
                 ctr, label_y, gn,
-                fontsize=5.5, ha='center', va='bottom',
+                fontsize=_lbl_fs, ha='center', va='bottom',
                 color=clr, clip_on=True, zorder=7,
                 fontweight='bold' if is_hl else 'normal',
             )
@@ -2732,7 +2727,11 @@ def _gene_track(
 
     # ── axis styling ──────────────────────────────────────────────────────────
     ax.set_xlim(lo, hi)
-    ax.set_ylim(-0.60, n_rows - 0.25)
+    if _single:
+        # tight y-range so the blocks fill the panel height
+        ax.set_ylim(-0.85, 0.85)
+    else:
+        ax.set_ylim(-0.60, n_rows - 0.25)
     ax.set_yticks([])
     ax.set_ylabel('genes', fontsize=7, rotation=0, labelpad=30, va='center')
     ax.yaxis.set_label_position('right')
@@ -2838,7 +2837,7 @@ def locus_panel(
 
     # ── build panel layout: gene track | zoom | full chr | founder effects ────
     ratios: list[float] = (
-        ([0.65] if has_track else [])
+        ([0.8] if has_track else [])
         + ([1.0] if has_zoom else [])
         + [1.0]
         + ([2.0] if has_betas else [])
@@ -2857,11 +2856,19 @@ def locus_panel(
     if chrom:
         title = f'{title}  chr{chrom}' if title else f'chr{chrom}'
 
-    # ── panel 1: IGV gene body track (top) ───────────────────────────────────
+    # ── panel 1: IGV gene body track (top) — highlight gene only ────────────
     if has_track and zoom_lo is not None and zoom_hi is not None:
         ax_track = axes_flat[ax_idx]; ax_idx += 1
+        # restrict to the scanned gene only — it serves as the x-axis reference
+        _gn_col_lp = 'gene_name' if 'gene_name' in genes_df.columns else 'gene_id'  # type: ignore[union-attr]
+        if highlight_gene is not None:
+            _track_genes = genes_df[genes_df[_gn_col_lp] == highlight_gene]  # type: ignore[index]
+            if _track_genes.empty:
+                _track_genes = genes_df  # type: ignore[assignment]
+        else:
+            _track_genes = genes_df  # type: ignore[assignment]
         _gene_track(
-            ax_track, genes_df,                              # type: ignore[arg-type]
+            ax_track, _track_genes,
             (zoom_lo, zoom_hi),
             highlight_gene=highlight_gene,
             peak_pos=peak_pos,
