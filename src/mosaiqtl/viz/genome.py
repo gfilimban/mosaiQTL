@@ -2352,7 +2352,7 @@ def locus_panels_per_chr(
     tss_mb_map: Optional[dict[str, float]] = None,
     near_tss_mb_map: Optional[dict[str, float]] = None,
     genes_df: Optional[pd.DataFrame] = None,
-    zoom_window_mb: float = 1.0,
+    zoom_window_mb: float = 2.0,
     gtf_path: Optional[str] = None,
 ) -> dict[str, plt.Figure]:
     """Per-chromosome locus panels (founder effects + LOD profile + zoom).
@@ -2915,7 +2915,7 @@ def locus_panel(
     tss_mb: Optional[float] = None,
     near_tss_mb: Optional[float] = None,
     genes_df: Optional[pd.DataFrame] = None,
-    zoom_window_mb: float = 1.0,
+    zoom_window_mb: float = 2.0,
     threshold: Optional[float] = None,
     chrom: str = '',
     highlight_gene: Optional[str] = None,
