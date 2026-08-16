@@ -2655,7 +2655,7 @@ def _gene_track(
             _leg_handles = [
                 _mpatch.Patch(facecolor=_CLR_CDS,   label='CDS',    alpha=_a),
                 _mpatch.Patch(facecolor=_CLR_UTR,   label='UTR',    alpha=_a),
-                _mpatch.Patch(facecolor=_CLR_BB,    label='intron', alpha=0.7),
+                _mpatch.Patch(facecolor=_CLR_BB,    label='exon',   alpha=0.7),
             ]
             ax.legend(handles=_leg_handles, fontsize=6.5, frameon=False,
                       loc='lower right', ncol=3, handlelength=1.0,
@@ -3039,32 +3039,47 @@ def locus_panel(
         if title:
             ax_track.set_title(title, fontsize=9)
         ax_track.set_xlabel('')
-        # read back the xlim that _gene_track set (gene body extent)
-        # so the zoom LOD panel below can share the exact same x-axis
-        _track_xlim: tuple[float, float] = ax_track.get_xlim()
+        # capture gene-body xlim so the zoom panel can shade it as a reference span
+        _gene_body_xlim: tuple[float, float] = ax_track.get_xlim()
     else:
-        _track_xlim = (zoom_lo, zoom_hi)  # type: ignore[assignment]
+        _gene_body_xlim = (zoom_lo, zoom_hi) if zoom_lo is not None else (0.0, 0.0)
 
-    # ── panel 2: zoomed cis-window LOD — x-axis matches gene track ──────────
+    # ── panel 2: zoomed cis-window LOD — ±window_mb around peak ─────────────
+    # x-axis = zoom_lo..zoom_hi so the LOD bump is visible.
+    # Gene body extent is shaded in blue so it's spatially anchored to the
+    # gene track above.  Peak and TSS lines carry through from the full-chr
+    # view below, creating a drill-down visual hierarchy:
+    #   full chr → zoom window (shaded in chr panel) → gene body (shaded in zoom panel)
     if has_zoom and zoom_lo is not None and zoom_hi is not None:
         ax_zoom = axes_flat[ax_idx]; ax_idx += 1
 
-        _z_lo, _z_hi = _track_xlim
-        mask = (positions >= _z_lo) & (positions <= _z_hi)
+        mask = (positions >= zoom_lo) & (positions <= zoom_hi)
         pos_z = positions[mask]
         lod_z = lod[mask]
 
         if pos_z.size > 0:
             lod_profile(pos_z, lod_z, ax=ax_zoom, chrom=chrom,
                         threshold=threshold, peak_pos=None, fill=True)
-        ax_zoom.set_xlim(_z_lo, _z_hi)
+        ax_zoom.set_xlim(zoom_lo, zoom_hi)
 
-        ax_zoom.axvline(tss_mb, color=COLOR_NEUTRAL_DARK,
-                        linewidth=0.9, linestyle='--', zorder=2, label='TSS')
-        if peak_pos is not None:
+        # shade gene body so viewer can locate the gene within the LOD curve
+        if has_track:
+            _gb_lo, _gb_hi = _gene_body_xlim
+            _span_lo = max(_gb_lo, zoom_lo)
+            _span_hi = min(_gb_hi, zoom_hi)
+            if _span_hi > _span_lo:
+                ax_zoom.axvspan(_span_lo, _span_hi,
+                                alpha=0.10, color=FOUNDER_COLORS['NODJ'],
+                                zorder=0, label='gene body')
+
+        # consistent reference lines — same colors as full-chr panel
+        if tss_mb is not None and zoom_lo <= tss_mb <= zoom_hi:
+            ax_zoom.axvline(tss_mb, color=COLOR_NEUTRAL_DARK,
+                            linewidth=0.9, linestyle='--', zorder=2, label='TSS')
+        if peak_pos is not None and zoom_lo <= peak_pos <= zoom_hi:
             ax_zoom.axvline(peak_pos, color=FOUNDER_COLORS['PWKJ'],
-                            linewidth=0.9, linestyle=':', zorder=2, label='peak')
-        if near_tss_mb is not None and _z_lo <= near_tss_mb <= _z_hi:
+                            linewidth=1.2, linestyle='-', zorder=2, label='peak')
+        if near_tss_mb is not None and zoom_lo <= near_tss_mb <= zoom_hi:
             ax_zoom.axvline(near_tss_mb, color=FOUNDER_COLORS['CASTJ'],
                             linewidth=0.9, linestyle='--', zorder=2,
                             label='near TSS', alpha=0.8)
@@ -3080,6 +3095,12 @@ def locus_panel(
                 threshold=threshold, peak_pos=peak_pos, fill=True,
                 tss_mb=tss_mb)
     ax_full.set_title('')
+
+    # shade the zoom window so the viewer can see which region was drilled into
+    if zoom_lo is not None and zoom_hi is not None:
+        ax_full.axvspan(zoom_lo, zoom_hi,
+                        alpha=0.10, color=COLOR_NEUTRAL_DARK, zorder=0)
+
     if tss_mb is not None:
         _ylim2 = ax_full.get_ylim()
         _arrow_y = _ylim2[1] * 0.06
