@@ -2574,7 +2574,7 @@ def _gene_track(
 
         # Feature colors: CDS=NODJ blue, UTR=muted slate, intron/arrow=neutral
         _CLR_CDS    = FOUNDER_COLORS['NODJ']      # #4A90C4 blue — coding exons
-        _CLR_UTR    = FOUNDER_COLORS['129S1J']     # muted warm tone — untranslated
+        _CLR_UTR    = FOUNDER_COLORS['B6J']        # neutral grey — untranslated regions
         _CLR_BB     = COLOR_NEUTRAL_DARK           # thin intron backbone
         _CLR_ARROW  = COLOR_CC_FALLBACK            # chevron direction markers
 
@@ -2653,9 +2653,9 @@ def _gene_track(
             # 3d. feature legend — small proxy patches in lower-right corner
             import matplotlib.patches as _mpatch
             _leg_handles = [
-                _mpatch.Patch(facecolor=_CLR_CDS,   label='CDS',    alpha=_a),
+                _mpatch.Patch(facecolor=_CLR_CDS,   label='exon',   alpha=_a),
                 _mpatch.Patch(facecolor=_CLR_UTR,   label='UTR',    alpha=_a),
-                _mpatch.Patch(facecolor=_CLR_BB,    label='exon',   alpha=0.7),
+                _mpatch.Patch(facecolor=_CLR_BB,    label='intron', alpha=0.7),
             ]
             ax.legend(handles=_leg_handles, fontsize=6.5, frameon=False,
                       loc='lower right', ncol=3, handlelength=1.0,
