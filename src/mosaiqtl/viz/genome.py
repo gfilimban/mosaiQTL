@@ -111,7 +111,8 @@ def lod_profile(
     if marker_rug:
         sns.rugplot(x=positions, ax=ax, color=COLOR_CC_FALLBACK,
                     alpha=0.4, height=0.03)
-    ax.set_xlim(float(positions[0]), float(positions[-1]))
+    if positions[0] != positions[-1]:
+        ax.set_xlim(float(positions[0]), float(positions[-1]))
     ax.set_ylim(0, max(float(lod.max()) * 1.18, 1.0))
     ax.set_xlabel(f'Chr {chrom} position (Mb)' if chrom else 'Position (Mb)',
                   fontsize=13, fontweight='bold')
