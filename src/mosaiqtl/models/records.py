@@ -28,10 +28,10 @@ from typing import Literal, Optional
 
 import numpy as np
 
-DataGranularity = Literal['single-cell', 'pseudobulk', 'bulk']
-HaplotypeModel  = Literal['additive', 'full', 'mi']
-TestStatistic   = Literal['score', 'lrt', 'f_test']
-ScanModel       = Literal['nb-glmm', 'lmm']
+DataGranularity = Literal["single-cell", "pseudobulk", "bulk"]
+HaplotypeModel = Literal["additive", "full", "mi"]
+TestStatistic = Literal["score", "lrt", "f_test"]
+ScanModel = Literal["nb-glmm", "lmm"]
 # Population is str (not Literal) — open to any multiparent population or organism.
 # current values: 'cc', 'do', 'mpp', 'f2', 'structured'
 #   'mpp'        — any generic MPP; MAGIC (19 founders) is the reference example
@@ -56,15 +56,15 @@ class LMMResult:
     rss_alt  : float  weighted RSS under alternative
     """
 
-    lod:      float
-    p_value:  float
-    h2:       float
-    f_stat:   float
-    betas:    np.ndarray
+    lod: float
+    p_value: float
+    h2: float
+    f_stat: float
+    betas: np.ndarray
     sigma2_g: float
     sigma2_e: float
     rss_null: float
-    rss_alt:  float
+    rss_alt: float
 
 
 @dataclass(slots=True)
@@ -86,10 +86,10 @@ class ScanResult:
     """
 
     gene_id: str
-    lod:     np.ndarray
-    loci:    list[str]
-    pos_mb:  np.ndarray
-    chr:     str
+    lod: np.ndarray
+    loci: list[str]
+    pos_mb: np.ndarray
+    chr: str
 
 
 @dataclass(slots=True)
@@ -114,13 +114,13 @@ class FounderEffect:
         upper bound of 95% confidence interval
     """
 
-    founder:  str
+    founder: str
     estimate: float
-    se:       float
-    z_score:  float
-    p_value:  float
-    ci_lo:    float
-    ci_hi:    float
+    se: float
+    z_score: float
+    p_value: float
+    ci_lo: float
+    ci_hi: float
 
 
 @dataclass(slots=True)
@@ -146,15 +146,15 @@ class VQTLResult:
     n_samples : int
     """
 
-    scan_result:      ScanResult
+    scan_result: ScanResult
     mean_scan_result: ScanResult
-    phi_estimates:    np.ndarray
-    phi_method:       str
-    gene_id:          str
-    cell_type:        Optional[str]          = field(default=None)
+    phi_estimates: np.ndarray
+    phi_method: str
+    gene_id: str
+    cell_type: Optional[str] = field(default=None)
     data_granularity: Optional[DataGranularity] = field(default=None)
-    model:            Optional[ScanModel]    = field(default=None)
-    n_samples:        int                    = field(default=0)
+    model: Optional[ScanModel] = field(default=None)
+    n_samples: int = field(default=0)
 
 
 @dataclass(slots=True)
@@ -186,15 +186,15 @@ class ProvenanceRecord:
         cis window half-width in Mb
     """
 
-    git_hash:        str
-    seed:            int
-    timestamp:       str
-    scan_window:     str
+    git_hash: str
+    seed: int
+    timestamp: str
+    scan_window: str
     phenotype_input: str
-    offset:          str
-    covariates:      str
-    n_perms:         int
-    cis_window_mb:   float
+    offset: str
+    covariates: str
+    n_perms: int
+    cis_window_mb: float
 
 
 @dataclass(slots=True)
@@ -262,29 +262,29 @@ class QTLResult:
         full scan configuration for exact reproduction (DESIGN-06)
     """
 
-    gene_id:            str
-    gene_name:          str
-    cell_type:          Optional[str]
-    data_granularity:   DataGranularity
-    population:         str
-    model:              ScanModel
-    test_statistic:     TestStatistic
-    haplotype:          HaplotypeModel
-    gene_chr:           str
-    gene_tss_mb:        float
-    peak_locus:         str
-    peak_chr:           str
-    peak_pos_mb:        float
-    lod:                float
-    lod_threshold:      float
-    p_value:            float
-    q_value:            float
-    n_loci_tested:      int
-    n_perms:            int
-    n_samples:          int
-    locus_type:         Literal['cis', 'local', 'trans']
+    gene_id: str
+    gene_name: str
+    cell_type: Optional[str]
+    data_granularity: DataGranularity
+    population: str
+    model: ScanModel
+    test_statistic: TestStatistic
+    haplotype: HaplotypeModel
+    gene_chr: str
+    gene_tss_mb: float
+    peak_locus: str
+    peak_chr: str
+    peak_pos_mb: float
+    lod: float
+    lod_threshold: float
+    p_value: float
+    q_value: float
+    n_loci_tested: int
+    n_perms: int
+    n_samples: int
+    locus_type: Literal["cis", "local", "trans"]
     distance_to_tss_mb: float
-    cis_window_mb:      float
-    founder_effects:    dict[str, FounderEffect]
+    cis_window_mb: float
+    founder_effects: dict[str, FounderEffect]
     variance_explained: float
-    provenance:         ProvenanceRecord
+    provenance: ProvenanceRecord

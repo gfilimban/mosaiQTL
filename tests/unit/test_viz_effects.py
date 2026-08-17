@@ -4,12 +4,13 @@ import sys
 from pathlib import Path
 
 import matplotlib
-matplotlib.use('Agg')
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
+sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
 from mosaiqtl.viz.effects import (
     coef_profile,
@@ -22,13 +23,13 @@ from mosaiqtl.viz.effects import (
 from mosaiqtl.genotype.founders import FOUNDER_ORDER  # noqa: F401
 
 N_FOUNDERS = 8
-N_LOCI     = 20
+N_LOCI = 20
 
 
 @pytest.fixture(autouse=True)
 def close_figures():
     yield
-    plt.close('all')
+    plt.close("all")
 
 
 def _betas(seed=0):
@@ -41,6 +42,7 @@ def _positions():
 
 
 # ── _recover_full_betas ───────────────────────────────────────────────────────
+
 
 class TestRecoverFullBetas:
     def test_length(self):
@@ -57,9 +59,10 @@ class TestRecoverFullBetas:
 
 # ── coef_profile ──────────────────────────────────────────────────────────────
 
+
 class TestCoefProfile:
     def test_returns_axes(self):
-        ax = coef_profile(_positions(), _betas(), chrom='1')
+        ax = coef_profile(_positions(), _betas(), chrom="1")
         assert isinstance(ax, plt.Axes)
 
     def test_accepts_existing_ax(self):
@@ -74,19 +77,22 @@ class TestCoefProfile:
 
 # ── coef_profile_genome ───────────────────────────────────────────────────────
 
+
 class TestCoefProfileGenome:
     def test_returns_figure(self):
         import matplotlib.figure
+
         rng = np.random.default_rng(1)
         scans = {
-            '1': (_positions(), rng.standard_normal((N_LOCI, N_FOUNDERS - 1))),
-            '2': (_positions(), rng.standard_normal((N_LOCI, N_FOUNDERS - 1))),
+            "1": (_positions(), rng.standard_normal((N_LOCI, N_FOUNDERS - 1))),
+            "2": (_positions(), rng.standard_normal((N_LOCI, N_FOUNDERS - 1))),
         }
         fig = coef_profile_genome(scans)
         assert isinstance(fig, matplotlib.figure.Figure)
 
 
 # ── effect_bars ───────────────────────────────────────────────────────────────
+
 
 class TestEffectBars:
     def test_returns_axes(self):
@@ -105,6 +111,7 @@ class TestEffectBars:
 
 # ── effect_caterpillar ────────────────────────────────────────────────────────
 
+
 class TestEffectCaterpillar:
     def test_returns_axes(self):
         rng = np.random.default_rng(4)
@@ -115,15 +122,16 @@ class TestEffectCaterpillar:
     def test_with_ci(self):
         rng = np.random.default_rng(4)
         betas = rng.standard_normal(N_FOUNDERS - 1)
-        half  = np.abs(rng.standard_normal(N_FOUNDERS)) * 0.5
+        half = np.abs(rng.standard_normal(N_FOUNDERS)) * 0.5
         # ci_wide: (J, 2) [lower, upper] per founder
-        ci_wide   = np.column_stack([-half, half])
+        ci_wide = np.column_stack([-half, half])
         ci_narrow = np.column_stack([-half * 0.5, half * 0.5])
         ax = effect_caterpillar(betas, ci_wide=ci_wide, ci_narrow=ci_narrow)
         assert isinstance(ax, plt.Axes)
 
 
 # ── dispersion_distribution ───────────────────────────────────────────────────
+
 
 class TestDispersionDistribution:
     def test_returns_axes(self):

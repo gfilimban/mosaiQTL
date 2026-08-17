@@ -1,6 +1,7 @@
 # tests/test_utils.py — unit tests for mosaiqtl.utils
 import numpy as np
 import sys, os
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from mosaiqtl.utils import rint, build_z_matrix, align_samples
@@ -31,7 +32,7 @@ class TestRint:
 
 class TestBuildZMatrix:
     def test_identity_when_matching(self):
-        sids = ['A', 'B', 'C']
+        sids = ["A", "B", "C"]
         Z, valid = build_z_matrix(sids, sids)
         assert Z.shape == (3, 3)
         assert np.allclose(Z, np.eye(3))
@@ -39,15 +40,15 @@ class TestBuildZMatrix:
 
     def test_expansion_shape(self):
         # 4 observations from 2 strains
-        sids       = ['s1', 's1', 's2', 's2']
-        cache_sids = ['s1', 's2']
+        sids = ["s1", "s1", "s2", "s2"]
+        cache_sids = ["s1", "s2"]
         Z, valid = build_z_matrix(sids, cache_sids)
         assert Z.shape == (4, 2)
-        assert Z.sum(axis=1).max() == 1   # each sample maps to exactly 1 strain
+        assert Z.sum(axis=1).max() == 1  # each sample maps to exactly 1 strain
 
     def test_missing_flagged(self):
-        sids       = ['s1', 'UNKNOWN', 's2']
-        cache_sids = ['s1', 's2']
+        sids = ["s1", "UNKNOWN", "s2"]
+        cache_sids = ["s1", "s2"]
         _, valid = build_z_matrix(sids, cache_sids)
         assert not valid[1]
         assert valid[0] and valid[2]
@@ -55,23 +56,23 @@ class TestBuildZMatrix:
 
 class TestAlignSamples:
     def test_full_overlap(self):
-        a = ['s1', 's2', 's3']
-        b = ['s3', 's1', 's2']
+        a = ["s1", "s2", "s3"]
+        b = ["s3", "s1", "s2"]
         ia, ib, shared = align_samples(a, b)
-        assert set(shared) == {'s1', 's2', 's3'}
+        assert set(shared) == {"s1", "s2", "s3"}
         # alignment must be consistent
         for i, j in zip(ia, ib):
             assert a[i] == b[j]
 
     def test_partial_overlap(self):
-        a = ['s1', 's2', 's3']
-        b = ['s2', 's4']
+        a = ["s1", "s2", "s3"]
+        b = ["s2", "s4"]
         ia, ib, shared = align_samples(a, b)
-        assert shared == ['s2']
-        assert a[ia[0]] == 's2'
-        assert b[ib[0]] == 's2'
+        assert shared == ["s2"]
+        assert a[ia[0]] == "s2"
+        assert b[ib[0]] == "s2"
 
     def test_no_overlap_returns_empty(self):
-        ia, ib, shared = align_samples(['s1'], ['s2'])
+        ia, ib, shared = align_samples(["s1"], ["s2"])
         assert len(shared) == 0
         assert len(ia) == 0

@@ -184,14 +184,17 @@ def scan_h2lmm(
         raise ValueError("scan_window='local' requires gene_pos_mb")
     n = len(phenotype)
     logger.info(
-        'scan_h2lmm: gene=%s  chr=%s  scan_window=%s  n_samples=%d  use_rint=%s',
-        phenotype_id, gene_chr if gene_chr is not None else 'genome',
-        scan_window, n, use_rint,
+        "scan_h2lmm: gene=%s  chr=%s  scan_window=%s  n_samples=%d  use_rint=%s",
+        phenotype_id,
+        gene_chr if gene_chr is not None else "genome",
+        scan_window,
+        n,
+        use_rint,
     )
     if kinship_decomp is None:
         logger.warning(
-            'scan_h2lmm: no kinship_decomp supplied for %s — computing from genomecache '
-            '(slow; pass pre-computed kinship_decomp for multi-gene scans)',
+            "scan_h2lmm: no kinship_decomp supplied for %s — computing from genomecache "
+            "(slow; pass pre-computed kinship_decomp for multi-gene scans)",
             phenotype_id,
         )
 
@@ -211,8 +214,9 @@ def scan_h2lmm(
     n_valid = int(valid.sum())
     if n_valid < 10:
         logger.warning(
-            'scan_h2lmm: %s has only %d valid samples — LOD estimates unreliable',
-            phenotype_id, n_valid,
+            "scan_h2lmm: %s has only %d valid samples — LOD estimates unreliable",
+            phenotype_id,
+            n_valid,
         )
 
     y = phenotype[valid].copy()
@@ -272,9 +276,7 @@ def scan_h2lmm(
         if fixed_h2_dict is not None and chrom in fixed_h2_dict:
             h2 = fixed_h2_dict[chrom]
         else:
-            h2, _ = lmm_module.estimate_h2_null(
-                y_rot, x_rot, evals, method="ml"
-            )
+            h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, evals, method="ml")
         h2_null_dict[chrom] = h2
 
         cd = lmm_module.precompute_chromosome(
@@ -308,8 +310,10 @@ def scan_h2lmm(
     _peak_idx = int(np.argmax(_lod_cat))
     _peak_lids = np.concatenate(all_lids)
     logger.info(
-        'scan_h2lmm: %s done — peak_lod=%.3f  peak_locus=%s',
-        phenotype_id, float(_lod_cat[_peak_idx]), _peak_lids[_peak_idx],
+        "scan_h2lmm: %s done — peak_lod=%.3f  peak_locus=%s",
+        phenotype_id,
+        float(_lod_cat[_peak_idx]),
+        _peak_lids[_peak_idx],
     )
     return ScanResult(
         locus_ids=_peak_lids,
@@ -836,8 +840,10 @@ def instability_lm_scan(
     rng = np.random.default_rng(seed)
 
     logger.info(
-        'instability_lm_scan: gene=%s  n_subsamples=%d  subsample_prop=%.2f',
-        phenotype_id, n_subsamples, subsample_prop,
+        "instability_lm_scan: gene=%s  n_subsamples=%d  subsample_prop=%.2f",
+        phenotype_id,
+        n_subsamples,
+        subsample_prop,
     )
 
     # pre-reduce to strain means once so subsample indices are always in [0, n_strains)
@@ -973,7 +979,7 @@ def instability_lm_scan(
     _inst_lod = lod_sum / n_subsamples
     _inst_peak_idx = int(np.argmax(peak_cnt))
     logger.info(
-        'instability_lm_scan: %s done — peak_freq=%.3f at locus %s',
+        "instability_lm_scan: %s done — peak_freq=%.3f at locus %s",
         phenotype_id,
         float(peak_cnt[_inst_peak_idx]) / n_subsamples,
         lids_all[_inst_peak_idx],
@@ -1037,9 +1043,9 @@ def scan_h2lmm_mi(
         raise ValueError("scan_window='local' requires gene_pos_mb")
 
     logger.info(
-        'scan_h2lmm_mi: gene=%s  chr=%s  n_imp=%d  n_samples=%d',
+        "scan_h2lmm_mi: gene=%s  chr=%s  n_imp=%d  n_samples=%d",
         phenotype_id,
-        gene_chr if gene_chr is not None else 'genome',
+        gene_chr if gene_chr is not None else "genome",
         n_imp,
         len(phenotype),
     )
@@ -1085,9 +1091,7 @@ def scan_h2lmm_mi(
         )
         _yr = _evc.T @ y_base
         _xr = _evc.T @ x_base
-        _h2, _ = lmm_module.estimate_h2_null(
-            _yr, _xr, _ev, method="ml"
-        )
+        _h2, _ = lmm_module.estimate_h2_null(_yr, _xr, _ev, method="ml")
         fixed_h2[_c] = _h2
 
     # ── one pass per chromosome — all n_imp imputations vectorised ──────────
@@ -1139,8 +1143,10 @@ def scan_h2lmm_mi(
     _mi_lod = np.concatenate(all_lod)
     _mi_peak_idx = int(np.argmax(_mi_lod))
     logger.info(
-        'scan_h2lmm_mi: %s done — peak_lod=%.3f (mean over %d imputations)',
-        phenotype_id, float(_mi_lod[_mi_peak_idx]), n_imp,
+        "scan_h2lmm_mi: %s done — peak_lod=%.3f (mean over %d imputations)",
+        phenotype_id,
+        float(_mi_lod[_mi_peak_idx]),
+        n_imp,
     )
     return ScanResult(
         locus_ids=np.concatenate(all_lids),
@@ -1156,20 +1162,20 @@ def scan_h2lmm_mi(
 
 
 def scan_multi_gene_mi(
-    expr_cache: 'dict[str, np.ndarray]',
-    gene_chr_map: 'dict[str, str]',
-    genomecache: 'GenomeCache',  # type: ignore[name-defined]  # noqa: F821
-    covariates: 'np.ndarray | None' = None,
-    kinship_decomp: 'dict | None' = None,
-    sample_ids: 'list[str] | None' = None,
+    expr_cache: "dict[str, np.ndarray]",
+    gene_chr_map: "dict[str, str]",
+    genomecache: "GenomeCache",  # type: ignore[name-defined]  # noqa: F821
+    covariates: "np.ndarray | None" = None,
+    kinship_decomp: "dict | None" = None,
+    sample_ids: "list[str] | None" = None,
     n_imp: int = 11,
     seed: int = 1,
     use_rint: bool = True,
-    peak_mb_map: 'dict[str, float] | None' = None,
+    peak_mb_map: "dict[str, float] | None" = None,
     window_mb: float = 10.0,
     peak_only: bool = True,
-    output_path: 'Path | None' = None,
-    gene_meta: 'pd.DataFrame | None' = None,
+    output_path: "Path | None" = None,
+    gene_meta: "pd.DataFrame | None" = None,
 ) -> pd.DataFrame:
     """multiple-imputation scan over a set of genes, streaming to disk.
 
@@ -1203,36 +1209,38 @@ def scan_multi_gene_mi(
     """
     _gm_idx = _build_gm_idx(gene_meta)
     if peak_only:
-        _id_cols   = ['gene_name', 'chr', 'locus']
-        _data_cols = ['peak_mb', 'peak_lod']
+        _id_cols = ["gene_name", "chr", "locus"]
+        _data_cols = ["peak_mb", "peak_lod"]
     else:
-        _id_cols   = ['gene_name', 'chr']
-        _data_cols = ['locus', 'pos_mb', 'lod']
+        _id_cols = ["gene_name", "chr"]
+        _data_cols = ["locus", "pos_mb", "lod"]
     _first = True
-    _buf: 'list[pd.DataFrame]' = []
+    _buf: "list[pd.DataFrame]" = []
     _n_genes_mi = len(expr_cache)
     logger.info(
-        'scan_multi_gene_mi: n_genes=%d  n_imp=%d  scan_window=%s',
-        _n_genes_mi, n_imp,
-        'local' if peak_mb_map else 'cis',
+        "scan_multi_gene_mi: n_genes=%d  n_imp=%d  scan_window=%s",
+        _n_genes_mi,
+        n_imp,
+        "local" if peak_mb_map else "cis",
     )
     for _g, (gene_id, y) in enumerate(expr_cache.items()):
-        gene_chr = gene_chr_map.get(gene_id, '')
+        gene_chr = gene_chr_map.get(gene_id, "")
         if not gene_chr:
-            logger.warning('scan_multi_gene_mi: no chr for %s — skipped', gene_id)
+            logger.warning("scan_multi_gene_mi: no chr for %s — skipped", gene_id)
             continue
-        logger.debug('scan_multi_gene_mi: [%d/%d] %s', _g + 1, _n_genes_mi, gene_id)
+        logger.debug("scan_multi_gene_mi: [%d/%d] %s", _g + 1, _n_genes_mi, gene_id)
         peak_mb = peak_mb_map.get(gene_id) if peak_mb_map else None
-        scan_kw: 'dict' = dict(
-            scan_window='local' if peak_mb is not None else 'cis',
+        scan_kw: "dict" = dict(
+            scan_window="local" if peak_mb is not None else "cis",
             gene_chr=gene_chr,
         )
         if peak_mb is not None:
-            scan_kw['gene_pos_mb'] = peak_mb
-            scan_kw['window_mb'] = window_mb
+            scan_kw["gene_pos_mb"] = peak_mb
+            scan_kw["window_mb"] = window_mb
         try:
             res = scan_h2lmm_mi(
-                y, genomecache,
+                y,
+                genomecache,
                 covariates=covariates,
                 kinship_decomp=kinship_decomp,
                 sample_ids=sample_ids,
@@ -1242,47 +1250,53 @@ def scan_multi_gene_mi(
                 phenotype_id=gene_id,
                 **scan_kw,
             )
-            _df = pd.DataFrame({
-                'gene_name': gene_id,
-                'chr': res.chromosomes,
-                'locus': res.locus_ids,
-                'pos_mb': res.positions,
-                'lod': res.lod,
-            })
+            _df = pd.DataFrame(
+                {
+                    "gene_name": gene_id,
+                    "chr": res.chromosomes,
+                    "locus": res.locus_ids,
+                    "pos_mb": res.positions,
+                    "lod": res.lod,
+                }
+            )
             del res
             if peak_only and not _df.empty:
-                _df = (_df.loc[[_df['lod'].idxmax()]]
-                         .rename(columns={'pos_mb': 'peak_mb', 'lod': 'peak_lod'}))
+                _df = _df.loc[[_df["lod"].idxmax()]].rename(
+                    columns={"pos_mb": "peak_mb", "lod": "peak_lod"}
+                )
             _df = _enrich_scan_df(_df, gene_id, _gm_idx, _id_cols, _data_cols)
             if output_path is not None:
-                _df.to_csv(output_path, mode='a', header=_first, index=False)
+                _df.to_csv(output_path, mode="a", header=_first, index=False)
                 _first = False
             else:
                 _buf.append(_df)
             del _df
         except Exception as exc:
-            logger.warning('scan_multi_gene_mi: %s failed — %s', gene_id, exc)
+            logger.warning("scan_multi_gene_mi: %s failed — %s", gene_id, exc)
     gc.collect()
     if output_path is not None:
-        return (pd.read_csv(output_path)
-                if output_path.exists() and not _first else pd.DataFrame())
+        return (
+            pd.read_csv(output_path)
+            if output_path.exists() and not _first
+            else pd.DataFrame()
+        )
     return pd.concat(_buf, ignore_index=True) if _buf else pd.DataFrame()
 
 
 def instability_scan_multi_gene(
-    expr_cache: 'dict[str, np.ndarray]',
-    gene_chr_map: 'dict[str, str]',
-    genomecache: 'GenomeCache',  # type: ignore[name-defined]  # noqa: F821
-    covariates: 'np.ndarray | None' = None,
-    sample_ids: 'list[str] | None' = None,
+    expr_cache: "dict[str, np.ndarray]",
+    gene_chr_map: "dict[str, str]",
+    genomecache: "GenomeCache",  # type: ignore[name-defined]  # noqa: F821
+    covariates: "np.ndarray | None" = None,
+    sample_ids: "list[str] | None" = None,
     n_subsamples: int = 100,
     subsample_prop: float = 0.63,
     seed: int = 1,
-    peak_mb_map: 'dict[str, float] | None' = None,
+    peak_mb_map: "dict[str, float] | None" = None,
     window_mb: float = 10.0,
     peak_only: bool = True,
-    output_path: 'Path | None' = None,
-    gene_meta: 'pd.DataFrame | None' = None,
+    output_path: "Path | None" = None,
+    gene_meta: "pd.DataFrame | None" = None,
 ) -> pd.DataFrame:
     """instability scan over a set of genes, streaming to disk.
 
@@ -1315,38 +1329,43 @@ def instability_scan_multi_gene(
     """
     _gm_idx = _build_gm_idx(gene_meta)
     if peak_only:
-        _id_cols   = ['gene_name', 'chr', 'locus']
-        _data_cols = ['peak_mb', 'peak_lod']
+        _id_cols = ["gene_name", "chr", "locus"]
+        _data_cols = ["peak_mb", "peak_lod"]
     else:
-        _id_cols   = ['gene_name', 'chr']
-        _data_cols = ['locus', 'pos_mb', 'lod']
+        _id_cols = ["gene_name", "chr"]
+        _data_cols = ["locus", "pos_mb", "lod"]
     _first = True
-    _buf: 'list[pd.DataFrame]' = []
+    _buf: "list[pd.DataFrame]" = []
     _n_genes_inst = len(expr_cache)
     logger.info(
-        'instability_scan_multi_gene: n_genes=%d  n_subsamples=%d',
-        _n_genes_inst, n_subsamples,
+        "instability_scan_multi_gene: n_genes=%d  n_subsamples=%d",
+        _n_genes_inst,
+        n_subsamples,
     )
     for _g, (gene_id, y) in enumerate(expr_cache.items()):
-        gene_chr = gene_chr_map.get(gene_id, '')
+        gene_chr = gene_chr_map.get(gene_id, "")
         if not gene_chr:
             logger.warning(
-                'instability_scan_multi_gene: no chr for %s — skipped', gene_id)
+                "instability_scan_multi_gene: no chr for %s — skipped", gene_id
+            )
             continue
         logger.debug(
-            'instability_scan_multi_gene: [%d/%d] %s', _g + 1, _n_genes_inst, gene_id)
+            "instability_scan_multi_gene: [%d/%d] %s", _g + 1, _n_genes_inst, gene_id
+        )
         try:
             lids_chr, _, pos_chr = genomecache.get_chromosome(gene_chr)
             peak_mb = peak_mb_map.get(gene_id) if peak_mb_map else None
             if peak_mb is not None:
                 loci_set = {
-                    lid for lid, p in zip(lids_chr, pos_chr)
+                    lid
+                    for lid, p in zip(lids_chr, pos_chr)
                     if abs(p - peak_mb) <= window_mb
                 }
             else:
                 loci_set = set(lids_chr)
             res = instability_lm_scan(
-                y, genomecache,
+                y,
+                genomecache,
                 covariates=covariates,
                 sample_ids=sample_ids,
                 n_subsamples=n_subsamples,
@@ -1355,49 +1374,54 @@ def instability_scan_multi_gene(
                 phenotype_id=gene_id,
                 just_these_loci=loci_set,
             )
-            _df = pd.DataFrame({
-                'gene_name': gene_id,
-                'chr': res.chromosomes,
-                'locus': res.locus_ids,
-                'pos_mb': res.positions,
-                'lod': res.lod,
-            })
+            _df = pd.DataFrame(
+                {
+                    "gene_name": gene_id,
+                    "chr": res.chromosomes,
+                    "locus": res.locus_ids,
+                    "pos_mb": res.positions,
+                    "lod": res.lod,
+                }
+            )
             del res
             if peak_only and not _df.empty:
-                _df = (_df.loc[[_df['lod'].idxmax()]]
-                         .rename(columns={'pos_mb': 'peak_mb', 'lod': 'peak_lod'}))
+                _df = _df.loc[[_df["lod"].idxmax()]].rename(
+                    columns={"pos_mb": "peak_mb", "lod": "peak_lod"}
+                )
             _df = _enrich_scan_df(_df, gene_id, _gm_idx, _id_cols, _data_cols)
             if output_path is not None:
-                _df.to_csv(output_path, mode='a', header=_first, index=False)
+                _df.to_csv(output_path, mode="a", header=_first, index=False)
                 _first = False
             else:
                 _buf.append(_df)
             del _df
         except Exception as exc:
-            logger.warning(
-                'instability_scan_multi_gene: %s failed — %s', gene_id, exc)
+            logger.warning("instability_scan_multi_gene: %s failed — %s", gene_id, exc)
     gc.collect()
     if output_path is not None:
-        return (pd.read_csv(output_path)
-                if output_path.exists() and not _first else pd.DataFrame())
+        return (
+            pd.read_csv(output_path)
+            if output_path.exists() and not _first
+            else pd.DataFrame()
+        )
     return pd.concat(_buf, ignore_index=True) if _buf else pd.DataFrame()
 
 
 def scan_multi_gene_lmm(
-    expr_cache: 'dict[str, np.ndarray]',
-    gene_chr_map: 'dict[str, str]',
-    genomecache: 'GenomeCache',  # type: ignore[name-defined]  # noqa: F821
-    covariates: 'np.ndarray | None' = None,
-    kinship_decomp: 'dict | None' = None,
-    sample_ids: 'list[str] | None' = None,
+    expr_cache: "dict[str, np.ndarray]",
+    gene_chr_map: "dict[str, str]",
+    genomecache: "GenomeCache",  # type: ignore[name-defined]  # noqa: F821
+    covariates: "np.ndarray | None" = None,
+    kinship_decomp: "dict | None" = None,
+    sample_ids: "list[str] | None" = None,
     use_rint: bool = True,
-    scan_window: str = 'cis',
-    gene_pos_mb_map: 'dict[str, float] | None' = None,
+    scan_window: str = "cis",
+    gene_pos_mb_map: "dict[str, float] | None" = None,
     window_mb: float = 10.0,
-    lod_path: 'Path | None' = None,
-    gene_meta: 'pd.DataFrame | None' = None,
-    founder_names: 'list[str] | None' = None,
-    model: str = 'additive',
+    lod_path: "Path | None" = None,
+    gene_meta: "pd.DataFrame | None" = None,
+    founder_names: "list[str] | None" = None,
+    model: str = "additive",
 ) -> pd.DataFrame:
     """streaming LMM scan over a set of genes; returns peak statistics DataFrame.
 
@@ -1430,27 +1454,29 @@ def scan_multi_gene_lmm(
         rss0, rss1, r2_peak, sigma2_e, tau2, beta_{founder_names}
         plus any columns from gene_meta.
     """
-    if scan_window in ('cis', 'local') and not gene_chr_map:
+    if scan_window in ("cis", "local") and not gene_chr_map:
         raise ValueError(f"scan_window='{scan_window}' requires gene_chr_map")
-    if scan_window == 'local' and gene_pos_mb_map is None:
+    if scan_window == "local" and gene_pos_mb_map is None:
         raise ValueError("scan_window='local' requires gene_pos_mb_map")
 
     if kinship_decomp is None:
-        kd_raw = kin_module.calc_kinship(genomecache, method='loco')
+        kd_raw = kin_module.calc_kinship(genomecache, method="loco")
         kinship_decomp = kin_module.decomp_kinship(kd_raw)
 
     sid = list(sample_ids) if sample_ids is not None else list(genomecache.sample_ids)
     z_mat, valid_sid = _resolve_z(sid, genomecache)
 
-    x = (covariates[valid_sid].copy()
-         if covariates is not None
-         else np.ones((int(valid_sid.sum()), 1)))
+    x = (
+        covariates[valid_sid].copy()
+        if covariates is not None
+        else np.ones((int(valid_sid.sum()), 1))
+    )
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((len(x), 1)), x])
 
     n_valid = int(valid_sid.sum())
-    p_cov   = x.shape[1]
-    z_sub   = z_mat[valid_sid] if z_mat is not None else None
+    p_cov = x.shape[1]
+    z_sub = z_mat[valid_sid] if z_mat is not None else None
 
     _fcodes = list(genomecache.founders)
     if founder_names is not None:
@@ -1458,27 +1484,28 @@ def scan_multi_gene_lmm(
     else:
         try:
             from ..genotype.founders import FOUNDER_CODE  # noqa: PLC0415
+
             _fc_inv = {v: k for k, v in FOUNDER_CODE.items()}
             _fnames = [_fc_inv.get(f, f) for f in _fcodes]
         except Exception:
             _fnames = _fcodes
-    beta_cols = [f'beta_{fn}' for fn in _fnames]
+    beta_cols = [f"beta_{fn}" for fn in _fnames]
     n_f = len(beta_cols)
 
-    gene_ids   = list(expr_cache.keys())
+    gene_ids = list(expr_cache.keys())
     chrom_list = [c for c in genomecache.chromosomes if c in kinship_decomp]
-    if scan_window in ('cis', 'local'):
-        chrs_needed = {str(gene_chr_map.get(g, '')) for g in gene_ids}
-        chrom_list  = [c for c in chrom_list if str(c) in chrs_needed]
+    if scan_window in ("cis", "local"):
+        chrs_needed = {str(gene_chr_map.get(g, "")) for g in gene_ids}
+        chrom_list = [c for c in chrom_list if str(c) in chrs_needed]
 
-    peak_rows: 'list[dict]' = []
+    peak_rows: "list[dict]" = []
     _lod_first = True
     t_total = time.perf_counter()
 
     for ci, chrom in enumerate(chrom_list, 1):
         t_chr = time.perf_counter()
-        ev  = kinship_decomp[chrom]['values']
-        evc = kinship_decomp[chrom]['vectors']
+        ev = kinship_decomp[chrom]["values"]
+        evc = kinship_decomp[chrom]["vectors"]
 
         if z_sub is not None:
             _K_m = (evc * ev) @ evc.T
@@ -1492,15 +1519,14 @@ def scan_multi_gene_lmm(
             genomecache, chrom, evals, evecs, z_sub, model
         )
 
-        if scan_window in ('cis', 'local'):
+        if scan_window in ("cis", "local"):
             genes_this_chr = [
-                g for g in gene_ids
-                if str(gene_chr_map.get(g, '')) == str(chrom)
+                g for g in gene_ids if str(gene_chr_map.get(g, "")) == str(chrom)
             ]
         else:
             genes_this_chr = gene_ids
 
-        _lod_rows: 'list[dict]' = []
+        _lod_rows: "list[dict]" = []
 
         for gene_id in genes_this_chr:
             y_raw = expr_cache[gene_id]
@@ -1510,38 +1536,40 @@ def scan_multi_gene_lmm(
 
             y_rot = evecs.T @ y_g
             x_rot = evecs.T @ x
-            h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, evals, method='ml')
+            h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, evals, method="ml")
 
             try:
-                chr_res = lmm_module.scan_chromosome(
-                    y_g, chr_data, x, evals, evecs, h2
-                )
+                chr_res = lmm_module.scan_chromosome(y_g, chr_data, x, evals, evecs, h2)
             except Exception as exc:
                 logger.warning(
-                    'scan_multi_gene_lmm: %s on chr%s failed — %s',
-                    gene_id, chrom, exc,
+                    "scan_multi_gene_lmm: %s on chr%s failed — %s",
+                    gene_id,
+                    chrom,
+                    exc,
                 )
                 continue
 
-            lod_arr  = chr_res['lod']
-            pos_arr  = chr_res['positions']
-            lid_arr  = np.asarray(chr_res['locus_ids'])
-            rss0     = chr_res.get('rss0', float('nan'))
-            rss1_arr = chr_res.get('rss1', None)
-            betas_all = chr_res.get('betas', None)   # (n_loci, J)
+            lod_arr = chr_res["lod"]
+            pos_arr = chr_res["positions"]
+            lid_arr = np.asarray(chr_res["locus_ids"])
+            rss0 = chr_res.get("rss0", float("nan"))
+            rss1_arr = chr_res.get("rss1", None)
+            betas_all = chr_res.get("betas", None)  # (n_loci, J)
 
-            if scan_window == 'local' and gene_pos_mb_map is not None:
-                tss  = float(gene_pos_mb_map[gene_id])
+            if scan_window == "local" and gene_pos_mb_map is not None:
+                tss = float(gene_pos_mb_map[gene_id])
                 mask = np.abs(pos_arr - tss) <= window_mb
                 if not mask.any():
                     logger.debug(
-                        '%s: no loci within %.1fMb on chr%s',
-                        gene_id, window_mb, chrom,
+                        "%s: no loci within %.1fMb on chr%s",
+                        gene_id,
+                        window_mb,
+                        chrom,
                     )
                     continue
-                lod_arr   = lod_arr[mask]
-                pos_arr   = pos_arr[mask]
-                lid_arr   = lid_arr[mask]
+                lod_arr = lod_arr[mask]
+                pos_arr = pos_arr[mask]
+                lid_arr = lid_arr[mask]
                 if rss1_arr is not None:
                     rss1_arr = rss1_arr[mask]
                 if betas_all is not None:
@@ -1550,67 +1578,81 @@ def scan_multi_gene_lmm(
             if len(lod_arr) == 0:
                 continue
 
-            peak_idx  = int(np.argmax(lod_arr))
-            rss1_peak = float(rss1_arr[peak_idx]) if rss1_arr is not None else float('nan')
-            betas_pk  = (betas_all[peak_idx]
-                         if betas_all is not None
-                         else np.full(n_f, float('nan')))
+            peak_idx = int(np.argmax(lod_arr))
+            rss1_peak = (
+                float(rss1_arr[peak_idx]) if rss1_arr is not None else float("nan")
+            )
+            betas_pk = (
+                betas_all[peak_idx]
+                if betas_all is not None
+                else np.full(n_f, float("nan"))
+            )
 
-            _ok  = (n_valid > p_cov
-                    and np.isfinite(rss0) and rss0 > 0
-                    and np.isfinite(rss1_peak))
-            _df  = max(n_valid - p_cov, 1)
+            _ok = (
+                n_valid > p_cov
+                and np.isfinite(rss0)
+                and rss0 > 0
+                and np.isfinite(rss1_peak)
+            )
+            _df = max(n_valid - p_cov, 1)
             _h2f = float(h2) if np.isfinite(h2) else 0.0
 
             row: dict = {
-                'gene_name':  gene_id,
-                'chr':        str(chrom),
-                'peak_locus': str(lid_arr[peak_idx]),
-                'peak_mb':    float(pos_arr[peak_idx]),
-                'peak_lod':   float(lod_arr[peak_idx]),
-                'h2':         float(h2),
-                'n_valid':    n_valid,
-                'rss0':       float(rss0),
-                'rss1':       rss1_peak,
-                'r2_peak':    round((rss0 - rss1_peak) / rss0, 6) if _ok else float('nan'),
-                'sigma2_e':   round(rss0 * (1 - _h2f) / _df, 6) if _ok else float('nan'),
-                'tau2':       round(rss0 * _h2f / _df, 6) if _ok else float('nan'),
+                "gene_name": gene_id,
+                "chr": str(chrom),
+                "peak_locus": str(lid_arr[peak_idx]),
+                "peak_mb": float(pos_arr[peak_idx]),
+                "peak_lod": float(lod_arr[peak_idx]),
+                "h2": float(h2),
+                "n_valid": n_valid,
+                "rss0": float(rss0),
+                "rss1": rss1_peak,
+                "r2_peak": round((rss0 - rss1_peak) / rss0, 6) if _ok else float("nan"),
+                "sigma2_e": round(rss0 * (1 - _h2f) / _df, 6) if _ok else float("nan"),
+                "tau2": round(rss0 * _h2f / _df, 6) if _ok else float("nan"),
             }
             for fi, bcol in enumerate(beta_cols):
-                row[bcol] = float(betas_pk[fi]) if fi < len(betas_pk) else float('nan')
+                row[bcol] = float(betas_pk[fi]) if fi < len(betas_pk) else float("nan")
             peak_rows.append(row)
 
             if lod_path is not None:
                 for _i in range(len(lod_arr)):
-                    _lod_rows.append({
-                        'gene_name': gene_id,
-                        'chr':       str(chrom),
-                        'locus':     str(lid_arr[_i]),
-                        'pos_mb': float(pos_arr[_i]),
-                        'lod':    float(lod_arr[_i]),
-                    })
+                    _lod_rows.append(
+                        {
+                            "gene_name": gene_id,
+                            "chr": str(chrom),
+                            "locus": str(lid_arr[_i]),
+                            "pos_mb": float(pos_arr[_i]),
+                            "lod": float(lod_arr[_i]),
+                        }
+                    )
 
         if lod_path is not None and _lod_rows:
             pd.DataFrame(_lod_rows).to_csv(
-                lod_path, mode='a', header=_lod_first, index=False
+                lod_path, mode="a", header=_lod_first, index=False
             )
             _lod_first = False
         del _lod_rows
 
         logger.info(
-            '[%d] scan_multi_gene_lmm chr%s: %d genes  %.1fs',
-            ci, chrom, len(genes_this_chr), time.perf_counter() - t_chr,
+            "[%d] scan_multi_gene_lmm chr%s: %d genes  %.1fs",
+            ci,
+            chrom,
+            len(genes_this_chr),
+            time.perf_counter() - t_chr,
         )
         del chr_data
         gc.collect()
 
     logger.info(
-        'scan_multi_gene_lmm: %d genes  %d chromosomes  %.1fs total',
-        len(gene_ids), len(chrom_list), time.perf_counter() - t_total,
+        "scan_multi_gene_lmm: %d genes  %d chromosomes  %.1fs total",
+        len(gene_ids),
+        len(chrom_list),
+        time.perf_counter() - t_total,
     )
 
     result = pd.DataFrame(peak_rows) if peak_rows else pd.DataFrame()
     if gene_meta is not None and not result.empty and not gene_meta.empty:
-        _gm = gene_meta.drop_duplicates(subset='gene_name')
-        result = result.merge(_gm, on='gene_name', how='left', suffixes=('', '_meta'))
+        _gm = gene_meta.drop_duplicates(subset="gene_name")
+        result = result.merge(_gm, on="gene_name", how="left", suffixes=("", "_meta"))
     return result

@@ -7,14 +7,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
+sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
 from mosaiqtl.qtl.fdr import storey_qvalue
 
-_FIXTURE = Path(__file__).parents[1] / 'fixtures' / 'data' / 'qvalue_reference.csv'
+_FIXTURE = Path(__file__).parents[1] / "fixtures" / "data" / "qvalue_reference.csv"
 
 
 # ── π₀ estimation ────────────────────────────────────────────────────────────
+
 
 class TestPi0Estimation:
     def test_uniform_null_pi0_near_one(self):
@@ -40,6 +41,7 @@ class TestPi0Estimation:
 
 
 # ── q-value properties ────────────────────────────────────────────────────────
+
 
 class TestQvalueProperties:
     def test_qvalues_in_unit_interval(self):
@@ -107,23 +109,26 @@ class TestQvalueProperties:
 
 # ── fixture comparison against R reference implementation ─────────────────────
 
+
 class TestAgainstRFixture:
-    @pytest.mark.skipif(not _FIXTURE.exists(),
-                        reason='qvalue_reference.csv fixture not found')
+    @pytest.mark.skipif(
+        not _FIXTURE.exists(), reason="qvalue_reference.csv fixture not found"
+    )
     def test_pi0_close_to_r(self):
         df = pd.read_csv(_FIXTURE)
-        pv = df['p_value'].to_numpy()
+        pv = df["p_value"].to_numpy()
         _, pi0_py = storey_qvalue(pv)
-        pi0_r = float(df['pi0'].iloc[0])
+        pi0_r = float(df["pi0"].iloc[0])
         # within 10% of R reference (scipy vs R spline smoothing penalty differ)
         assert abs(pi0_py - pi0_r) / pi0_r < 0.10
 
-    @pytest.mark.skipif(not _FIXTURE.exists(),
-                        reason='qvalue_reference.csv fixture not found')
+    @pytest.mark.skipif(
+        not _FIXTURE.exists(), reason="qvalue_reference.csv fixture not found"
+    )
     def test_qvalues_corr_with_r(self):
         df = pd.read_csv(_FIXTURE)
-        pv = df['p_value'].to_numpy()
+        pv = df["p_value"].to_numpy()
         q_py, _ = storey_qvalue(pv)
-        q_r = df['q_value'].to_numpy()
+        q_r = df["q_value"].to_numpy()
         corr = float(np.corrcoef(q_py, q_r)[0, 1])
         assert corr >= 0.99

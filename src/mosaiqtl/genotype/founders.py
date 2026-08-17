@@ -18,62 +18,69 @@ from typing import Optional
 from mosaiqtl.models.config import Population
 
 FOUNDER_ORDER: list[str] = [
-    'AJ', 'B6J', '129S1J', 'NODJ', 'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ',
+    "AJ",
+    "B6J",
+    "129S1J",
+    "NODJ",
+    "NZOJ",
+    "CASTJ",
+    "PWKJ",
+    "WSBJ",
 ]
 
 FOUNDER_CODE: dict[str, str] = {
-    'AJ':    'A',
-    'B6J':   'B',
-    '129S1J':'C',
-    'NODJ':  'D',
-    'NZOJ':  'E',
-    'CASTJ': 'F',
-    'PWKJ':  'G',
-    'WSBJ':  'H',
+    "AJ": "A",
+    "B6J": "B",
+    "129S1J": "C",
+    "NODJ": "D",
+    "NZOJ": "E",
+    "CASTJ": "F",
+    "PWKJ": "G",
+    "WSBJ": "H",
 }
 
 FOUNDER_COLORS: dict[str, str] = {
-    'AJ':    '#F4C245',
-    'B6J':   '#C0BFBF',
-    '129S1J':'#DA9CC1',
-    'NODJ':  '#4F6EAF',
-    'NZOJ':  '#52A5DB',
-    'CASTJ': '#55AF5B',
-    'PWKJ':  '#D83026',
-    'WSBJ':  '#683C91',
+    "AJ": "#F4C245",
+    "B6J": "#C0BFBF",
+    "129S1J": "#DA9CC1",
+    "NODJ": "#4F6EAF",
+    "NZOJ": "#52A5DB",
+    "CASTJ": "#55AF5B",
+    "PWKJ": "#D83026",
+    "WSBJ": "#683C91",
 }
 
 F1_COLORS: dict[str, str] = {
-    'B6AF1J':    '#DAC082',
-    'B6129S1F1J':'#CDADC0',
-    'B6CASTF1J': '#8AB78D',
-    'B6NODF1J':  '#8796B7',
-    'B6NZOF1J':  '#89B2CD',
-    'B6PWKF1J':  '#CC7772',
-    'B6WSBF1J':  '#947DA8',
+    "B6AF1J": "#DAC082",
+    "B6129S1F1J": "#CDADC0",
+    "B6CASTF1J": "#8AB78D",
+    "B6NODF1J": "#8796B7",
+    "B6NZOF1J": "#89B2CD",
+    "B6PWKF1J": "#CC7772",
+    "B6WSBF1J": "#947DA8",
 }
 
 # canonical plot axis order: founders → F1s → CC strains (caller appends CC alphanumeric)
 STRAIN_ORDER: list[str] = FOUNDER_ORDER + list(F1_COLORS.keys())
 
 # neutral greys used in plots — defined here so no module ever hardcodes hex
-COLOR_NEUTRAL_DARK:  str = '#444444'   # axis lines, tick labels, reference bars
-COLOR_CC_FALLBACK:   str = '#888888'   # CC strains without ancestry probability data
-COLOR_NEUTRAL_LIGHT: str = '#E8E8E8'   # NaN/masked cells in heatmaps
-COLOR_THRESHOLD:     str = '#E8870A'   # LOD threshold lines + quadrant annotations
+COLOR_NEUTRAL_DARK: str = "#444444"  # axis lines, tick labels, reference bars
+COLOR_CC_FALLBACK: str = "#888888"  # CC strains without ancestry probability data
+COLOR_NEUTRAL_LIGHT: str = "#E8E8E8"  # NaN/masked cells in heatmaps
+COLOR_THRESHOLD: str = "#E8870A"  # LOD threshold lines + quadrant annotations
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
     """Convert '#RRGGBB' hex string to (r, g, b) floats in [0, 1]."""
-    h = hex_color.lstrip('#')
-    return tuple(int(h[i:i+2], 16) / 255.0 for i in (0, 2, 4))  # type: ignore[return-value]
+    h = hex_color.lstrip("#")
+    return tuple(  # type: ignore[return-value]
+        int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4)  # noqa: E203
+    )
 
 
 def _rgb_to_hex(r: float, g: float, b: float) -> str:
     """Convert (r, g, b) floats in [0, 1] to '#RRGGBB' hex string."""
-    return '#{:02X}{:02X}{:02X}'.format(
-        round(r * 255), round(g * 255), round(b * 255)
-    )
+    return "#{:02X}{:02X}{:02X}".format(round(r * 255), round(g * 255), round(b * 255))
 
 
 def _blend_hex(color_a: str, color_b: str, t: float = 0.5) -> str:
@@ -107,12 +114,12 @@ def cc_strain_palette(
     palette: dict[str, str] = {}
     for strain in sorted(cc_strains):
         if haplotype_probs is None or strain not in haplotype_probs:
-            palette[strain] = '#888888'
+            palette[strain] = "#888888"
             continue
 
         probs = list(haplotype_probs[strain])
         if len(probs) != len(FOUNDER_ORDER):
-            palette[strain] = '#888888'
+            palette[strain] = "#888888"
             continue
 
         # find two dominant founders
@@ -121,7 +128,7 @@ def cc_strain_palette(
         i2, p2 = indexed[1]
         total = p1 + p2
         if total < 1e-9:
-            palette[strain] = '#888888'
+            palette[strain] = "#888888"
             continue
 
         t = p2 / total  # blend weight toward second-dominant founder
@@ -139,18 +146,19 @@ def cc_strain_palette(
 # CCPopulation — default Population instance for 8-founder CC/DO mice (mm39)
 # ---------------------------------------------------------------------------
 CCPopulation: Population = Population(
-    name='cc',
+    name="cc",
     founders=FOUNDER_ORDER,
     colors=FOUNDER_COLORS,
     f1_colors=F1_COLORS,
     has_sex_chromosomes=True,
-    sex_chromosome='chrX',
-    x_donors=[],   # set by caller when sex-chromosome QTL handling is needed
+    sex_chromosome="chrX",
+    x_donors=[],  # set by caller when sex-chromosome QTL handling is needed
     genotyping_error_prob=0.002,
     n_gen=1,
     inbred=True,
     loco_sufficient=True,
 )
+
 
 def display_founders(cache_founders: list[str]) -> list[str]:
     """Map HAPPY cache founder codes (A–H) to FOUNDER_ORDER display names.
@@ -170,16 +178,16 @@ def display_founders(cache_founders: list[str]) -> list[str]:
 
 
 __all__ = [
-    'FOUNDER_ORDER',
-    'FOUNDER_CODE',
-    'FOUNDER_COLORS',
-    'F1_COLORS',
-    'STRAIN_ORDER',
-    'COLOR_NEUTRAL_DARK',
-    'COLOR_CC_FALLBACK',
-    'COLOR_NEUTRAL_LIGHT',
-    'COLOR_THRESHOLD',
-    'display_founders',
-    'cc_strain_palette',
-    'CCPopulation',
+    "FOUNDER_ORDER",
+    "FOUNDER_CODE",
+    "FOUNDER_COLORS",
+    "F1_COLORS",
+    "STRAIN_ORDER",
+    "COLOR_NEUTRAL_DARK",
+    "COLOR_CC_FALLBACK",
+    "COLOR_NEUTRAL_LIGHT",
+    "COLOR_THRESHOLD",
+    "display_founders",
+    "cc_strain_palette",
+    "CCPopulation",
 ]

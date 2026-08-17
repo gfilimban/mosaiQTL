@@ -1,22 +1,22 @@
 """anndata_io — helpers for loading expression data from HDF5 and AnnData files."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import numpy as np
 
-
 __all__ = [
-    'load_expression_h5',
+    "load_expression_h5",
 ]
 
 
 def load_expression_h5(
     h5_path: Path,
     genes_wanted: list[str],
-    counts_key: str = 'counts',
-    genes_key: str = 'genes',
-    samples_key: str = 'samples',
+    counts_key: str = "counts",
+    genes_key: str = "genes",
+    samples_key: str = "samples",
 ) -> tuple[np.ndarray, list[str], list[str]]:
     """Load a subset of genes from a row-major expression HDF5 file.
 
@@ -55,11 +55,12 @@ def load_expression_h5(
         the same file — the sample axis never changes.
     """
     import h5py  # optional dep — only needed when this function is called
-    with h5py.File(h5_path, 'r') as f:
-        all_genes   = np.array(f[genes_key]).astype(str).tolist()
+
+    with h5py.File(h5_path, "r") as f:
+        all_genes = np.array(f[genes_key]).astype(str).tolist()
         all_samples = np.array(f[samples_key]).astype(str).tolist()
-        counts_ds   = f[counts_key]   # (n_genes_total, n_samples)
-        wanted_set  = set(genes_wanted)
+        counts_ds = f[counts_key]  # (n_genes_total, n_samples)
+        wanted_set = set(genes_wanted)
         idx = [i for i, g in enumerate(all_genes) if g in wanted_set]
         if not idx:
             return np.empty((0, len(all_samples)), dtype=np.float32), [], all_samples

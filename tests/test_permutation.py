@@ -2,6 +2,7 @@
 import numpy as np
 import pytest
 import sys, os
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from mosaiqtl.qtl.permutation import generate_null_outcomes, get_gev_thresholds
@@ -10,15 +11,15 @@ from mosaiqtl.qtl.permutation import generate_null_outcomes, get_gev_thresholds
 class TestGenerateNullOutcomes:
     def setup_method(self):
         self.rng = np.random.default_rng(0)
-        self.y   = self.rng.standard_normal(50)
+        self.y = self.rng.standard_normal(50)
 
     def test_permutation_shape(self):
-        M = generate_null_outcomes(self.y, n_perms=20, method='permutation', seed=1)
+        M = generate_null_outcomes(self.y, n_perms=20, method="permutation", seed=1)
         assert M.shape == (50, 20)
 
     def test_permutation_preserves_values(self):
-        '''each permuted column is a rearrangement of y.'''
-        M = generate_null_outcomes(self.y, n_perms=5, method='permutation', seed=1)
+        """each permuted column is a rearrangement of y."""
+        M = generate_null_outcomes(self.y, n_perms=5, method="permutation", seed=1)
         for col in range(5):
             np.testing.assert_array_equal(np.sort(M[:, col]), np.sort(self.y))
 
@@ -28,18 +29,19 @@ class TestGenerateNullOutcomes:
         np.testing.assert_array_equal(M1, M2)
 
     def test_bootstrap_shape(self):
-        M = generate_null_outcomes(self.y, n_perms=20, method='bootstrap', seed=1)
+        M = generate_null_outcomes(self.y, n_perms=20, method="bootstrap", seed=1)
         assert M.shape == (50, 20)
 
     def test_bootstrap_centred(self):
-        '''bootstrap resamples from centred y → column means near 0.'''
-        M = generate_null_outcomes(self.y - self.y.mean(), n_perms=200,
-                                    method='bootstrap', seed=1)
+        """bootstrap resamples from centred y → column means near 0."""
+        M = generate_null_outcomes(
+            self.y - self.y.mean(), n_perms=200, method="bootstrap", seed=1
+        )
         assert abs(M.mean()) < 0.2
 
     def test_invalid_method_raises(self):
         with pytest.raises(ValueError):
-            generate_null_outcomes(self.y, method='jackknife')
+            generate_null_outcomes(self.y, method="jackknife")
 
 
 class TestGetGevThresholds:
@@ -54,13 +56,13 @@ class TestGetGevThresholds:
         assert isinstance(params, dict)
 
     def test_threshold_above_median(self):
-        '''95th pct threshold must exceed median of max-LOD dist.'''
+        """95th pct threshold must exceed median of max-LOD dist."""
         thr, _ = get_gev_thresholds(self.max_lods, percentile=0.95)
         assert thr > float(np.median(self.max_lods))
 
     def test_params_keys(self):
         _, p = get_gev_thresholds(self.max_lods)
-        for k in ('c', 'loc', 'scale', 'threshold', 'n_perms', 'empirical_quantile'):
+        for k in ("c", "loc", "scale", "threshold", "n_perms", "empirical_quantile"):
             assert k in p
 
     def test_higher_percentile_higher_threshold(self):

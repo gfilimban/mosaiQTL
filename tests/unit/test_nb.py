@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest  # noqa: F401
 
-sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
+sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
 from mosaiqtl.qtl.nb import (
     pseudobulk_sum,
@@ -16,8 +16,8 @@ from mosaiqtl.qtl.nb import (
     fit_null_sc_native,
 )
 
-
 # ── pseudobulk_sum ────────────────────────────────────────────────────────────
+
 
 class TestPseudobulkSum:
     def test_shape(self, counts_cells, cell_sample_ids):
@@ -54,6 +54,7 @@ class TestPseudobulkSum:
 
 # ── _tmm_offsets ──────────────────────────────────────────────────────────────
 
+
 class TestTmmOffsets:
     def test_shape(self):
         rng = np.random.default_rng(0)
@@ -74,6 +75,7 @@ class TestTmmOffsets:
 
 # ── _nb_loglik ────────────────────────────────────────────────────────────────
 
+
 class TestNbLoglik:
     def test_returns_float(self):
         rng = np.random.default_rng(0)
@@ -91,13 +93,14 @@ class TestNbLoglik:
     def test_higher_loglik_for_better_fit(self):
         y = np.array([10.0, 10.0, 10.0, 10.0])
         mu_good = np.array([10.0, 10.0, 10.0, 10.0])
-        mu_bad  = np.array([1.0,  1.0,  1.0,  1.0])
+        mu_bad = np.array([1.0, 1.0, 1.0, 1.0])
         ll_good = _nb_loglik(y, mu_good, 0.5)
-        ll_bad  = _nb_loglik(y, mu_bad,  0.5)
+        ll_bad = _nb_loglik(y, mu_bad, 0.5)
         assert ll_good > ll_bad
 
 
 # ── _irls_nb_pseudobulk ───────────────────────────────────────────────────────
+
 
 class TestIrlsNbPseudobulk:
     def test_returns_mu_beta(self):
@@ -130,6 +133,7 @@ class TestIrlsNbPseudobulk:
 
 # ── fit_null_sc_native (Stage 1) ──────────────────────────────────────────────
 
+
 class TestFitNullScNative:
     def test_returns_dict(self, counts_cells, cell_sample_ids):
         result = fit_null_sc_native(counts_cells, cell_sample_ids)
@@ -137,35 +141,43 @@ class TestFitNullScNative:
 
     def test_required_keys(self, counts_cells, cell_sample_ids):
         result = fit_null_sc_native(counts_cells, cell_sample_ids)
-        for key in ('dispersion', 'dispersion_shrunk', 'dispersion_use',
-                    'sigma_sample', 'gene_mask'):
+        for key in (
+            "dispersion",
+            "dispersion_shrunk",
+            "dispersion_use",
+            "sigma_sample",
+            "gene_mask",
+        ):
             assert key in result
 
     def test_phi_positive(self, counts_cells, cell_sample_ids):
         result = fit_null_sc_native(counts_cells, cell_sample_ids)
-        phi = result['dispersion']
+        phi = result["dispersion"]
         assert np.all(phi[~np.isnan(phi)] > 0)
 
     def test_gene_mask_shape(self, counts_cells, cell_sample_ids):
         result = fit_null_sc_native(counts_cells, cell_sample_ids)
-        assert result['gene_mask'].shape == (counts_cells.shape[0],)
+        assert result["gene_mask"].shape == (counts_cells.shape[0],)
 
     def test_gene_mask_bool(self, counts_cells, cell_sample_ids):
         result = fit_null_sc_native(counts_cells, cell_sample_ids)
-        assert result['gene_mask'].dtype == bool
+        assert result["gene_mask"].dtype == bool
 
-    def test_with_covariates(self, counts_cells, cell_sample_ids, sample_ids,
-                              sample_sex):
+    def test_with_covariates(
+        self, counts_cells, cell_sample_ids, sample_ids, sample_sex
+    ):
         # build per-cell covariate (sex of the sample each cell belongs to)
         sample_to_sex = dict(zip(sample_ids, sample_sex))
         cov_cells = np.array([sample_to_sex[s] for s in cell_sample_ids])
         cov_cells = cov_cells.reshape(-1, 1)
         result = fit_null_sc_native(
-            counts_cells, cell_sample_ids, covariates_cells=cov_cells)
-        assert 'dispersion' in result
+            counts_cells, cell_sample_ids, covariates_cells=cov_cells
+        )
+        assert "dispersion" in result
 
-    def test_gene_mask_is_all_true_with_enough_cells(self, counts_cells,
-                                                       cell_sample_ids):
+    def test_gene_mask_is_all_true_with_enough_cells(
+        self, counts_cells, cell_sample_ids
+    ):
         result = fit_null_sc_native(counts_cells, cell_sample_ids)
         # all 4 genes have many cells; mask should be all True
-        assert result['gene_mask'].sum() == counts_cells.shape[0]
+        assert result["gene_mask"].sum() == counts_cells.shape[0]

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
+sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
 from mosaiqtl.qtl.permutation import (
     generate_null_outcomes,
@@ -18,39 +18,39 @@ from mosaiqtl.qtl.permutation import (
     _null_fit_params,
 )
 
-
 # ── generate_null_outcomes ────────────────────────────────────────────────────
+
 
 class TestGenerateNullOutcomes:
     def test_permutation_shape(self):
         rng = np.random.default_rng(0)
         y = rng.standard_normal(20)
-        null = generate_null_outcomes(y, n_perms=50, method='permutation')
+        null = generate_null_outcomes(y, n_perms=50, method="permutation")
         assert null.shape == (20, 50)
 
     def test_bootstrap_shape(self):
         rng = np.random.default_rng(1)
         y = rng.standard_normal(15)
-        null = generate_null_outcomes(y, n_perms=30, method='bootstrap')
+        null = generate_null_outcomes(y, n_perms=30, method="bootstrap")
         assert null.shape == (15, 30)
 
     def test_permutation_preserves_values(self):
         y = np.arange(10, dtype=float)
-        null = generate_null_outcomes(y, n_perms=20, method='permutation')
+        null = generate_null_outcomes(y, n_perms=20, method="permutation")
         for col in range(null.shape[1]):
             assert set(null[:, col]) == set(y)
 
     def test_bootstrap_centred(self):
         rng = np.random.default_rng(2)
         y = rng.standard_normal(50) + 10.0  # large non-zero mean
-        null = generate_null_outcomes(y, n_perms=100, method='bootstrap')
+        null = generate_null_outcomes(y, n_perms=100, method="bootstrap")
         # each column is drawn from centred distribution
         assert null.mean() == pytest.approx(0.0, abs=2.0)
 
     def test_invalid_method_raises(self):
         y = np.ones(10)
-        with pytest.raises(ValueError, match='method'):
-            generate_null_outcomes(y, n_perms=5, method='invalid')
+        with pytest.raises(ValueError, match="method"):
+            generate_null_outcomes(y, n_perms=5, method="invalid")
 
     def test_reproducible_with_seed(self):
         rng = np.random.default_rng(3)
@@ -68,6 +68,7 @@ class TestGenerateNullOutcomes:
 
 
 # ── get_gev_thresholds ────────────────────────────────────────────────────────
+
 
 class TestGetGevThresholds:
     def test_returns_float_and_dict(self):
@@ -87,8 +88,15 @@ class TestGetGevThresholds:
         rng = np.random.default_rng(12)
         max_lods = rng.exponential(2.0, 100)
         _, params = get_gev_thresholds(max_lods)
-        for key in ('c', 'loc', 'scale', 'threshold', 'percentile',
-                    'n_perms', 'empirical_quantile'):
+        for key in (
+            "c",
+            "loc",
+            "scale",
+            "threshold",
+            "percentile",
+            "n_perms",
+            "empirical_quantile",
+        ):
             assert key in params
 
     def test_too_few_values_returns_none(self):
@@ -108,113 +116,125 @@ class TestGetGevThresholds:
         max_lods_inf = np.append(max_lods, [np.inf, np.nan])
         thresh, params = get_gev_thresholds(max_lods_inf)
         assert np.isfinite(thresh)
-        assert params['n_perms'] == 100
+        assert params["n_perms"] == 100
 
 
 # ── run_threshold_scans ───────────────────────────────────────────────────────
 
+
 class TestRunThresholdScans:
-    def test_returns_array(self, tiny_cache, tiny_kinship,
-                           tiny_strain_phenotype, tiny_strain_covariates):
+    def test_returns_array(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tiny_strain_covariates
+    ):
         from mosaiqtl.genotype.kinship import decomp_kinship
+
         kd = decomp_kinship(tiny_kinship)
         n_perms = 5
-        null = generate_null_outcomes(
-            tiny_strain_phenotype, n_perms=n_perms, seed=42)
+        null = generate_null_outcomes(tiny_strain_phenotype, n_perms=n_perms, seed=42)
         max_lods, chr_nulls = run_threshold_scans(
-            null, tiny_cache,
+            null,
+            tiny_cache,
             phenotype=tiny_strain_phenotype,
             covariates=tiny_strain_covariates,
             kinship_decomp=kd,
             kinship_loco=tiny_kinship,
-
             use_rint=False,
         )
         assert max_lods.shape == (n_perms,)
         assert isinstance(chr_nulls, dict)
 
-    def test_max_lods_nonnegative(self, tiny_cache, tiny_kinship,
-                                   tiny_strain_phenotype):
+    def test_max_lods_nonnegative(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+    ):
         from mosaiqtl.genotype.kinship import decomp_kinship
+
         kd = decomp_kinship(tiny_kinship)
-        null = generate_null_outcomes(
-            tiny_strain_phenotype, n_perms=3, seed=1)
+        null = generate_null_outcomes(tiny_strain_phenotype, n_perms=3, seed=1)
         max_lods, _ = run_threshold_scans(
-            null, tiny_cache,
+            null,
+            tiny_cache,
             phenotype=tiny_strain_phenotype,
             kinship_decomp=kd,
             kinship_loco=tiny_kinship,
-
             use_rint=False,
         )
         assert np.all(max_lods >= -1e-8)
 
-    def test_single_chrom_mode(self, tiny_cache, tiny_kinship,
-                                tiny_strain_phenotype):
+    def test_single_chrom_mode(self, tiny_cache, tiny_kinship, tiny_strain_phenotype):
         from mosaiqtl.genotype.kinship import decomp_kinship
+
         kd = decomp_kinship(tiny_kinship)
-        null = generate_null_outcomes(
-            tiny_strain_phenotype, n_perms=3, seed=2)
+        null = generate_null_outcomes(tiny_strain_phenotype, n_perms=3, seed=2)
         max_lods, chr_nulls = run_threshold_scans(
-            null, tiny_cache,
+            null,
+            tiny_cache,
             phenotype=tiny_strain_phenotype,
             kinship_decomp=kd,
             kinship_loco=tiny_kinship,
-            chrom='1',
-
+            chrom="1",
             use_rint=False,
         )
         assert max_lods.shape == (3,)
-        assert list(chr_nulls.keys()) == ['1']
+        assert list(chr_nulls.keys()) == ["1"]
 
-    def test_no_phenotype_raises(self, tiny_cache, tiny_kinship,
-                                 tiny_strain_phenotype):
+    def test_no_phenotype_raises(self, tiny_cache, tiny_kinship, tiny_strain_phenotype):
         from mosaiqtl.genotype.kinship import decomp_kinship
+
         kd = decomp_kinship(tiny_kinship)
-        null = generate_null_outcomes(
-            tiny_strain_phenotype, n_perms=2, seed=4)
-        with pytest.raises(ValueError, match='phenotype required'):
-            run_threshold_scans(null, tiny_cache, kinship_decomp=kd,
-                                kinship_loco=tiny_kinship, phenotype=None)
+        null = generate_null_outcomes(tiny_strain_phenotype, n_perms=2, seed=4)
+        with pytest.raises(ValueError, match="phenotype required"):
+            run_threshold_scans(
+                null,
+                tiny_cache,
+                kinship_decomp=kd,
+                kinship_loco=tiny_kinship,
+                phenotype=None,
+            )
 
 
 # ── run_positional_scans ──────────────────────────────────────────────────────
 
+
 class TestRunPositionalScans:
-    def test_returns_array_and_dict(self, tiny_cache, tiny_kinship,
-                                    tiny_strain_phenotype, tiny_strain_covariates):
+    def test_returns_array_and_dict(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tiny_strain_covariates
+    ):
         from mosaiqtl.genotype.kinship import decomp_kinship
+
         kd = decomp_kinship(tiny_kinship)
         boot = generate_null_outcomes(
-            tiny_strain_phenotype, n_perms=10,
-            method='bootstrap', seed=99)
+            tiny_strain_phenotype, n_perms=10, method="bootstrap", seed=99
+        )
         peak_pos, ci = run_positional_scans(
-            boot, tiny_cache,
+            boot,
+            tiny_cache,
             phenotype=tiny_strain_phenotype,
             covariates=tiny_strain_covariates,
             kinship_decomp=kd,
             use_rint=False,
         )
         assert peak_pos.shape == (10,)
-        assert 'ci_lo' in ci and 'ci_hi' in ci
+        assert "ci_lo" in ci and "ci_hi" in ci
 
-    def test_ci_ordered(self, tiny_cache, tiny_kinship,
-                         tiny_strain_phenotype):
+    def test_ci_ordered(self, tiny_cache, tiny_kinship, tiny_strain_phenotype):
         from mosaiqtl.genotype.kinship import decomp_kinship
+
         kd = decomp_kinship(tiny_kinship)
         boot = generate_null_outcomes(
-            tiny_strain_phenotype, n_perms=20,
-            method='bootstrap', seed=77)
+            tiny_strain_phenotype, n_perms=20, method="bootstrap", seed=77
+        )
         _, ci = run_positional_scans(
-            boot, tiny_cache,
+            boot,
+            tiny_cache,
             phenotype=tiny_strain_phenotype,
             kinship_decomp=kd,
             use_rint=False,
         )
-        assert ci['ci_lo'] <= ci['ci_hi']
+        assert ci["ci_lo"] <= ci["ci_hi"]
 
 
 # ── parametric permutation helpers ───────────────────────────────────────────
+
 
 class TestParametricHelpers:
     """unit tests for _null_fit_params, _draw_kinship_re, _parametric_null_col."""
@@ -264,24 +284,26 @@ class TestParametricHelpers:
         with pytest.raises(KinshipSingularError):
             _draw_kinship_re(K_bad, sigma2_g=1.0, rng=rng)
 
-    def test_run_threshold_scans_parametric_shape(self, tiny_cache, tiny_kinship,
-                                                   tiny_strain_phenotype,
-                                                   tiny_strain_covariates):
+    def test_run_threshold_scans_parametric_shape(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tiny_strain_covariates
+    ):
         """parametric mode returns (n_perms,) max-LOD array."""
         from mosaiqtl.genotype.kinship import decomp_kinship
+
         kd = decomp_kinship(tiny_kinship)
         n_perms = 5
         # null_outcomes used only for n_perms in parametric mode
         dummy = np.empty((len(tiny_strain_phenotype), n_perms))
         c0 = list(tiny_cache.chromosomes)[0]
         max_lods, chr_nulls = run_threshold_scans(
-            dummy, tiny_cache,
+            dummy,
+            tiny_cache,
             phenotype=tiny_strain_phenotype,
             covariates=tiny_strain_covariates,
             kinship_decomp=kd,
             kinship_loco=tiny_kinship,
             chrom=c0,
-            permutation_method='parametric',
+            permutation_method="parametric",
             use_rint=False,
             seed=99,
         )
@@ -290,16 +312,19 @@ class TestParametricHelpers:
         assert c0 in chr_nulls and chr_nulls[c0].shape == (n_perms,)
 
     def test_run_threshold_scans_parametric_without_kinship_loco(
-            self, tiny_cache, tiny_kinship, tiny_strain_phenotype):
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+    ):
         from mosaiqtl.genotype.kinship import decomp_kinship
+
         kd = decomp_kinship(tiny_kinship)
         n_perms = 3
         dummy = np.empty((len(tiny_strain_phenotype), n_perms))
         max_lods, _ = run_threshold_scans(
-            dummy, tiny_cache,
+            dummy,
+            tiny_cache,
             phenotype=tiny_strain_phenotype,
             kinship_decomp=kd,
-            permutation_method='parametric',
+            permutation_method="parametric",
         )
         assert max_lods.shape == (n_perms,)
         assert np.all(max_lods >= 0)

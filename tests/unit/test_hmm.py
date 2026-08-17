@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
+sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
 from mosaiqtl.genotype.hmm import (
     build_diplotype_states,
@@ -23,10 +23,11 @@ from mosaiqtl.genotype.hmm import (
 )
 
 N_FOUNDERS = 8
-N_STATES   = N_FOUNDERS * (N_FOUNDERS + 1) // 2  # 36
+N_STATES = N_FOUNDERS * (N_FOUNDERS + 1) // 2  # 36
 
 
 # ── diplotype state index ─────────────────────────────────────────────────────
+
 
 class TestBuildDiplotype:
     def test_state_count(self):
@@ -84,6 +85,7 @@ class TestDiplotypeToAlleleProbs:
 
 # ── transition / emission ─────────────────────────────────────────────────────
 
+
 class TestHaldane:
     def test_zero_distance(self):
         assert haldane_recomb(0.0) == pytest.approx(0.0)
@@ -122,9 +124,14 @@ class TestTransitionMatrix:
 class TestBuildEmissionMatrix:
     def _make_founder_genos(self, n_markers):
         rng = np.random.default_rng(0)
-        choices = ['A', 'B']
-        return np.array([[rng.choice(choices) for _ in range(N_FOUNDERS)]
-                         for _ in range(n_markers)], dtype=object)
+        choices = ["A", "B"]
+        return np.array(
+            [
+                [rng.choice(choices) for _ in range(N_FOUNDERS)]
+                for _ in range(n_markers)
+            ],
+            dtype=object,
+        )
 
     def test_shape(self):
         n = 10
@@ -145,20 +152,23 @@ class TestBuildEmissionMatrix:
 
     def test_missing_founder_uniform(self):
         # marker with all-missing founders → uniform 1/3 per obs
-        fg = np.full((1, N_FOUNDERS), '-', dtype=object)
+        fg = np.full((1, N_FOUNDERS), "-", dtype=object)
         E = build_emission_matrix(fg, None, n_founders=N_FOUNDERS)
-        np.testing.assert_allclose(E[0], 1/3, atol=1e-10)
+        np.testing.assert_allclose(E[0], 1 / 3, atol=1e-10)
 
 
 # ── forward-backward ──────────────────────────────────────────────────────────
+
 
 def _make_hmm_inputs(n_markers=10, seed=42):
     """Helper: build obs_seq, E, T_list, init for forward-backward tests."""
     rng = np.random.default_rng(seed)
     init = cc_inbred_init(N_FOUNDERS)
 
-    fg = np.array([[rng.choice(['A', 'B']) for _ in range(N_FOUNDERS)]
-                   for _ in range(n_markers)], dtype=object)
+    fg = np.array(
+        [[rng.choice(["A", "B"]) for _ in range(N_FOUNDERS)] for _ in range(n_markers)],
+        dtype=object,
+    )
     E = build_emission_matrix(fg, None, n_founders=N_FOUNDERS)
 
     T_list = [transition_matrix(0.01) for _ in range(n_markers - 1)]
@@ -198,6 +208,7 @@ class TestForwardBackward:
 
 # ── init distributions ────────────────────────────────────────────────────────
 
+
 class TestInitDistributions:
     def test_uniform_sum_to_one(self):
         init = uniform_init(N_FOUNDERS)
@@ -222,6 +233,7 @@ class TestInitDistributions:
 
 
 # ── pseudomarker grid ─────────────────────────────────────────────────────────
+
 
 class TestAugmentedPositions:
     def test_returns_sorted(self):
@@ -254,7 +266,8 @@ class TestInterpolatePosteriors:
         gmap_cM = np.linspace(0.0, 50.0, n_markers)
         step_cM = 10.0
         gamma_all, all_pos, is_real = interpolate_posteriors(
-            gamma, alpha, beta, E, obs, gmap_cM, step_cM, N_FOUNDERS)
+            gamma, alpha, beta, E, obs, gmap_cM, step_cM, N_FOUNDERS
+        )
         expected = len(_augmented_positions(gmap_cM, step_cM)[0])
         assert gamma_all.shape == (expected, N_STATES)
 
@@ -264,20 +277,29 @@ class TestInterpolatePosteriors:
         gamma, alpha, beta = forward_backward(obs, E, T, init)
         gmap_cM = np.linspace(0.0, 40.0, n_markers)
         gamma_all, _, _ = interpolate_posteriors(
-            gamma, alpha, beta, E, obs, gmap_cM, 8.0, N_FOUNDERS)
+            gamma, alpha, beta, E, obs, gmap_cM, 8.0, N_FOUNDERS
+        )
         np.testing.assert_allclose(gamma_all.sum(axis=1), 1.0, atol=1e-6)
 
 
 # ── calc_genoprob_cc (top-level) ──────────────────────────────────────────────
 
+
 class TestCalcGenoprobCC:
     def _make_inputs(self, n_markers=8, n_cc=3):
         rng = np.random.default_rng(42)
-        choices = ['A', 'B']
-        geno = np.array([[rng.choice(choices) for _ in range(n_cc)]
-                         for _ in range(n_markers)], dtype=object)
-        fg   = np.array([[rng.choice(choices) for _ in range(N_FOUNDERS)]
-                         for _ in range(n_markers)], dtype=object)
+        choices = ["A", "B"]
+        geno = np.array(
+            [[rng.choice(choices) for _ in range(n_cc)] for _ in range(n_markers)],
+            dtype=object,
+        )
+        fg = np.array(
+            [
+                [rng.choice(choices) for _ in range(N_FOUNDERS)]
+                for _ in range(n_markers)
+            ],
+            dtype=object,
+        )
         gmap = np.linspace(0.0, 0.5, n_markers)  # Morgans
         return geno, fg, gmap
 
@@ -294,8 +316,9 @@ class TestCalcGenoprobCC:
 
     def test_shape_diplotype(self):
         geno, fg, gmap = self._make_inputs(6, 2)
-        probs = calc_genoprob_cc(geno, fg, gmap, n_founders=N_FOUNDERS,
-                                  return_additive=False)
+        probs = calc_genoprob_cc(
+            geno, fg, gmap, n_founders=N_FOUNDERS, return_additive=False
+        )
         assert probs.shape == (2, N_STATES, 6)
 
     def test_with_pseudomarkers(self):

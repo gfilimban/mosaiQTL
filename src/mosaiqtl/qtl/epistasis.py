@@ -14,16 +14,23 @@ import pandas as pd
 import logging
 from scipy import stats as sp_stats
 
-logger = logging.getLogger('mosaiqtl')
+logger = logging.getLogger("mosaiqtl")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # scan_epistasis
 # ─────────────────────────────────────────────────────────────────────────────
 
-def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
-                   covariates=None, kinship_decomp=None,
-                   phenotype_id='unknown'):
+
+def scan_epistasis(
+    phenotype,
+    genomecache,
+    locus_a,
+    locus_b,
+    covariates=None,
+    kinship_decomp=None,
+    phenotype_id="unknown",
+):
     """pairwise GxG interaction test at haplotype resolution.
 
     tests whether the combination of founder haplotypes at two loci
@@ -66,7 +73,7 @@ def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
     from . import lmm as lmm_module
 
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genomecache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method="loco")
         kinship_decomp = kin_module.decomp_kinship(kd)
 
     # locate locus_a and locus_b in cache
@@ -76,42 +83,45 @@ def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
             lids, pos, probs = genomecache.get_chromosome(chrom)
             idx = np.where(lids == locus_id)[0]
             if len(idx):
-                return chrom, probs[idx[0]]   # (n, J)
-        raise KeyError(f'locus {locus_id!r} not found in cache')
+                return chrom, probs[idx[0]]  # (n, J)
+        raise KeyError(f"locus {locus_id!r} not found in cache")
 
     chr_a, h_a = _get_locus_probs(locus_a)
     chr_b, h_b = _get_locus_probs(locus_b)
 
     valid = ~np.isnan(phenotype)
-    y     = phenotype[valid].copy()
-    n     = len(y)
+    y = phenotype[valid].copy()
+    n = len(y)
 
-    x = (covariates[valid].copy() if covariates is not None
-         else np.ones((n, 1), dtype=float))
+    x = (
+        covariates[valid].copy()
+        if covariates is not None
+        else np.ones((n, 1), dtype=float)
+    )
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((n, 1)), x])
 
     nf1 = genomecache.n_founders - 1
-    ha  = h_a[valid, :nf1]   # (n, J-1) locus a haplotype design
-    hb  = h_b[valid, :nf1]   # (n, J-1) locus b haplotype design
+    ha = h_a[valid, :nf1]  # (n, J-1) locus a haplotype design
+    hb = h_b[valid, :nf1]  # (n, J-1) locus b haplotype design
 
     # Khatri-Rao row-wise outer product: (H^a ⊗ H^b)
     # shape: (n, (J-1)²) — each row is ha[i] ⊗ hb[i]
-    hab = ha[:, :, None] * hb[:, None, :]              # (n, J-1, J-1)
-    hab = hab.reshape(n, nf1 * nf1)                    # (n, (J-1)²)
+    hab = ha[:, :, None] * hb[:, None, :]  # (n, J-1, J-1)
+    hab = hab.reshape(n, nf1 * nf1)  # (n, (J-1)²)
 
     # choose kinship from locus_a chromosome (arbitrary; both loci share same y)
     chrom_k = chr_a if chr_a in kinship_decomp else chr_b
-    ev  = kinship_decomp[chrom_k]['values']
-    evc = kinship_decomp[chrom_k]['vectors'][valid]
+    ev = kinship_decomp[chrom_k]["values"]
+    evc = kinship_decomp[chrom_k]["vectors"][valid]
 
-    y_rot   = evc.T @ y
-    x_rot   = evc.T @ x
-    ha_rot  = evc.T @ ha
-    hb_rot  = evc.T @ hb
+    y_rot = evc.T @ y
+    x_rot = evc.T @ x
+    ha_rot = evc.T @ ha
+    hb_rot = evc.T @ hb
     hab_rot = evc.T @ hab
 
-    h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, ev, method='ml')
+    h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, ev, method="ml")
 
     # additive model: [Ha Hb X]
     z_add = np.hstack([ha_rot, hb_rot, x_rot])
@@ -121,19 +131,19 @@ def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
     z_int = np.hstack([ha_rot, hb_rot, hab_rot, x_rot])
     res_int = _wls_lod(y_rot, x_rot, z_int, ev, h2, n)
 
-    lod_epi = max(res_int['lod'] - res_add['lod'], 0.0)
-    chi2    = 2.0 * lod_epi * np.log(10)              # approx LRT statistic
-    p_epi   = float(1.0 - sp_stats.chi2.cdf(chi2, df=nf1 * nf1))
+    lod_epi = max(res_int["lod"] - res_add["lod"], 0.0)
+    chi2 = 2.0 * lod_epi * np.log(10)  # approx LRT statistic
+    p_epi = float(1.0 - sp_stats.chi2.cdf(chi2, df=nf1 * nf1))
 
     q = nf1
     return {
-        'lod_additive':    res_add['lod'],
-        'lod_interaction': res_int['lod'],
-        'lod_epistasis':   lod_epi,
-        'p_epistasis':     p_epi,
-        'betas_a':         res_int['betas'][:q],
-        'betas_b':         res_int['betas'][q:2*q],
-        'betas_int':       res_int['betas'][2*q:],
+        "lod_additive": res_add["lod"],
+        "lod_interaction": res_int["lod"],
+        "lod_epistasis": lod_epi,
+        "p_epistasis": p_epi,
+        "betas_a": res_int["betas"][:q],
+        "betas_b": res_int["betas"][q : 2 * q],  # noqa: E203
+        "betas_int": res_int["betas"][2 * q :],  # noqa: E203
     }
 
 
@@ -141,8 +151,10 @@ def scan_epistasis(phenotype, genomecache, locus_a, locus_b,
 # test_haplotype_combinations
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_haplotype_combinations(phenotype, genomecache, locus_a, locus_b,
-                                 sample_ids=None, min_strains=3):
+
+def test_haplotype_combinations(
+    phenotype, genomecache, locus_a, locus_b, sample_ids=None, min_strains=3
+):
     """founder-pair mean expression heatmap at two peak loci.
 
     for each pair (f_a, f_b) of founder haplotypes, subsets strains that
@@ -170,7 +182,7 @@ def test_haplotype_combinations(phenotype, genomecache, locus_a, locus_b,
         NaN when fewer than min_strains strains in that cell
     """
     founders = list(genomecache.founders)
-    J        = len(founders)
+    J = len(founders)
 
     def _get_hard_calls(locus_id):
         """return hard-call founder assignment per strain."""
@@ -178,10 +190,10 @@ def test_haplotype_combinations(phenotype, genomecache, locus_a, locus_b,
             lids, _, probs = genomecache.get_chromosome(chrom)
             idx = np.where(lids == locus_id)[0]
             if len(idx):
-                return np.argmax(probs[idx[0]], axis=1)   # (n_strains,)
-        raise KeyError(f'locus {locus_id!r} not found')
+                return np.argmax(probs[idx[0]], axis=1)  # (n_strains,)
+        raise KeyError(f"locus {locus_id!r} not found")
 
-    calls_a = _get_hard_calls(locus_a)   # (m,) index into founders
+    calls_a = _get_hard_calls(locus_a)  # (m,) index into founders
     calls_b = _get_hard_calls(locus_b)
 
     # align phenotype to cache strain order
@@ -192,13 +204,14 @@ def test_haplotype_combinations(phenotype, genomecache, locus_a, locus_b,
         phenotype = np.asarray(phenotype)
         if sample_ids is not None:
             sid_map = {s: i for i, s in enumerate(sample_ids)}
-            y_arr   = np.array([phenotype[sid_map[s]] if s in sid_map else np.nan
-                                for s in strains])
+            y_arr = np.array(
+                [phenotype[sid_map[s]] if s in sid_map else np.nan for s in strains]
+            )
         else:
-            y_arr = phenotype   # assume already aligned to cache order
+            y_arr = phenotype  # assume already aligned to cache order
 
     # build J×J mean matrix
-    mat   = np.full((J, J), np.nan)
+    mat = np.full((J, J), np.nan)
     for fa in range(J):
         for fb in range(J):
             mask = (calls_a == fa) & (calls_b == fb) & ~np.isnan(y_arr)
@@ -212,8 +225,15 @@ def test_haplotype_combinations(phenotype, genomecache, locus_a, locus_b,
 # scan_conditional
 # ─────────────────────────────────────────────────────────────────────────────
 
-def scan_conditional(scan_result, genomecache, covariates=None,
-                     kinship_decomp=None, n_signals=3, lod_drop_threshold=1.5):
+
+def scan_conditional(
+    scan_result,
+    genomecache,
+    covariates=None,
+    kinship_decomp=None,
+    n_signals=3,
+    lod_drop_threshold=1.5,
+):
     """forward-stepwise multi-signal decomposition (Layer 3b).
 
     conditions on the peak-locus BLUP (best linear unbiased predictor of the
@@ -249,7 +269,7 @@ def scan_conditional(scan_result, genomecache, covariates=None,
         return [scan_result]
 
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genomecache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method="loco")
         kinship_decomp = kin_module.decomp_kinship(kd)
 
     signals = [scan_result]
@@ -264,9 +284,9 @@ def scan_conditional(scan_result, genomecache, covariates=None,
     # ── simplified peak-drop approach (no y required) ─────────────────────────
     # for each additional signal: find the highest-LOD locus NOT within
     # lod_drop_threshold of any already-found peak locus.
-    peak_positions = [scan_result.peak_locus()['position']]
-    lod             = scan_result.lod.copy()
-    positions       = scan_result.positions
+    peak_positions = [scan_result.peak_locus()["position"]]
+    lod = scan_result.lod.copy()
+    positions = scan_result.positions
 
     for _ in range(n_signals - 1):
         # mask out any position within 5 Mb of an existing peak
@@ -275,26 +295,26 @@ def scan_conditional(scan_result, genomecache, covariates=None,
             near_peak |= np.abs(positions - pp) < 5e6  # 5 Mb exclusion zone
 
         residual_lod = np.where(near_peak, -np.inf, lod)
-        best_i       = int(np.argmax(residual_lod))
-        best_lod     = float(residual_lod[best_i])
+        best_i = int(np.argmax(residual_lod))
+        best_lod = float(residual_lod[best_i])
 
         if best_lod < lod_drop_threshold:
-            break   # no more signals above threshold
+            break  # no more signals above threshold
 
         # create a synthetic ScanResult for this secondary peak's neighbourhood
         chrom = scan_result.chromosomes[best_i]
-        cis   = np.abs(positions - positions[best_i]) < 5e6
-        cis  &= scan_result.chromosomes == chrom
+        cis = np.abs(positions - positions[best_i]) < 5e6
+        cis &= scan_result.chromosomes == chrom
 
         secondary = ScanResult(
-            locus_ids    = scan_result.locus_ids[cis],
-            chromosomes  = scan_result.chromosomes[cis],
-            positions    = positions[cis],
-            lod          = lod[cis],
-            p_value      = scan_result.p_value[cis],
-            betas        = scan_result.betas[cis],
-            h2_null      = scan_result.h2_null,
-            phenotype_id = f'{scan_result.phenotype_id}_signal{len(signals)+1}',
+            locus_ids=scan_result.locus_ids[cis],
+            chromosomes=scan_result.chromosomes[cis],
+            positions=positions[cis],
+            lod=lod[cis],
+            p_value=scan_result.p_value[cis],
+            betas=scan_result.betas[cis],
+            h2_null=scan_result.h2_null,
+            phenotype_id=f"{scan_result.phenotype_id}_signal{len(signals)+1}",
         )
         signals.append(secondary)
         peak_positions.append(positions[best_i])
@@ -302,9 +322,15 @@ def scan_conditional(scan_result, genomecache, covariates=None,
     return signals
 
 
-def scan_conditional_with_y(phenotype, scan_result, genomecache,
-                              covariates=None, kinship_decomp=None,
-                              n_signals=3, lod_drop_threshold=1.5):
+def scan_conditional_with_y(
+    phenotype,
+    scan_result,
+    genomecache,
+    covariates=None,
+    kinship_decomp=None,
+    n_signals=3,
+    lod_drop_threshold=1.5,
+):
     """full BLUP-conditioning version of scan_conditional (requires phenotype).
 
     this is the preferred form — it computes the exact BLUP residual
@@ -325,50 +351,59 @@ def scan_conditional_with_y(phenotype, scan_result, genomecache,
     from .scan import scan_h2lmm
 
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genomecache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method="loco")
         kinship_decomp = kin_module.decomp_kinship(kd)
 
-    valid  = ~np.isnan(phenotype)
-    y      = phenotype[valid].copy()
-    x = (covariates[valid].copy() if covariates is not None
-         else np.ones((len(y), 1), dtype=float))
+    valid = ~np.isnan(phenotype)
+    y = phenotype[valid].copy()
+    x = (
+        covariates[valid].copy()
+        if covariates is not None
+        else np.ones((len(y), 1), dtype=float)
+    )
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((len(y), 1)), x])
 
     signals = [scan_result]
-    y_res   = y.copy()   # residual phenotype updated each iteration
+    y_res = y.copy()  # residual phenotype updated each iteration
 
     for sig_i in range(1, n_signals):
         if not len(signals[-1].lod):
             break
-        prev  = signals[-1]
-        pi    = int(np.argmax(prev.lod))
+        prev = signals[-1]
+        pi = int(np.argmax(prev.lod))
         chrom = str(prev.chromosomes[pi])
-        lid   = str(prev.locus_ids[pi])
+        lid = str(prev.locus_ids[pi])
 
         # get haplotype probs at peak locus
         lids_c, _, probs_c = genomecache.get_chromosome(chrom)
         loc_idx = np.where(lids_c == lid)[0]
         if not len(loc_idx):
             break
-        h_peak = probs_c[loc_idx[0]][valid, :genomecache.n_founders - 1]
+        h_peak = probs_c[loc_idx[0]][valid, : genomecache.n_founders - 1]
 
         # BLUP of haplotype effect at peak locus using LOCO kinship
         if chrom not in kinship_decomp:
             break
-        ev  = kinship_decomp[chrom]['values']
-        evc = kinship_decomp[chrom]['vectors'][valid]
+        ev = kinship_decomp[chrom]["values"]
+        evc = kinship_decomp[chrom]["vectors"][valid]
         h2, _ = lmm_module.estimate_h2_null(evc.T @ y_res, evc.T @ x, ev)
-        res = lmm_module.fit_lmm_at_locus(evc.T @ y_res, evc.T @ h_peak,
-                                            evc.T @ x, ev, h2)
-        blup_hat = h_peak @ res.betas   # predicted haplotype contribution (n,)
-        y_res    = y_res - blup_hat     # condition out peak haplotype BLUP
+        res = lmm_module.fit_lmm_at_locus(
+            evc.T @ y_res, evc.T @ h_peak, evc.T @ x, ev, h2
+        )
+        blup_hat = h_peak @ res.betas  # predicted haplotype contribution (n,)
+        y_res = y_res - blup_hat  # condition out peak haplotype BLUP
 
         # rescan residuals
-        sr_next = scan_h2lmm(y_res, genomecache, x,
-                              kinship_decomp, use_rint=False,
-                              phenotype_id=f'{scan_result.phenotype_id}_s{sig_i+1}',
-                              scan_window='genome')
+        sr_next = scan_h2lmm(
+            y_res,
+            genomecache,
+            x,
+            kinship_decomp,
+            use_rint=False,
+            phenotype_id=f"{scan_result.phenotype_id}_s{sig_i+1}",
+            scan_window="genome",
+        )
         if sr_next.lod.max() < lod_drop_threshold:
             break
         signals.append(sr_next)
@@ -380,18 +415,21 @@ def scan_conditional_with_y(phenotype, scan_result, genomecache,
 # internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _wls_lod(y_rot, x_rot, z_rot, eigvals, h2, n):
     """weighted least squares LOD and betas for an arbitrary design matrix z."""
     delta = h2 / max(1 - h2, 1e-10)
     w_inv = 1.0 / (delta * eigvals + 1.0)
-    xw    = x_rot * w_inv[:, None]
-    zw    = z_rot * w_inv[:, None]
+    xw = x_rot * w_inv[:, None]
+    zw = z_rot * w_inv[:, None]
     try:
         b_null = np.linalg.solve(xw.T @ x_rot, xw.T @ y_rot)
-        b_alt  = np.linalg.solve(zw.T @ z_rot, zw.T @ y_rot)
+        b_alt = np.linalg.solve(zw.T @ z_rot, zw.T @ y_rot)
     except np.linalg.LinAlgError:
-        return {'lod': 0.0, 'betas': np.zeros(z_rot.shape[1])}
-    e0   = y_rot - x_rot @ b_null; rss0 = float(e0 @ (e0 * w_inv))
-    e1   = y_rot - z_rot @ b_alt;  rss1 = float(e1 @ (e1 * w_inv))
-    lod  = max((n / 2.0) * np.log10(rss0 / max(rss1, 1e-30)), 0.0)
-    return {'lod': lod, 'betas': b_alt}
+        return {"lod": 0.0, "betas": np.zeros(z_rot.shape[1])}
+    e0 = y_rot - x_rot @ b_null
+    rss0 = float(e0 @ (e0 * w_inv))
+    e1 = y_rot - z_rot @ b_alt
+    rss1 = float(e1 @ (e1 * w_inv))
+    lod = max((n / 2.0) * np.log10(rss0 / max(rss1, 1e-30)), 0.0)
+    return {"lod": lod, "betas": b_alt}

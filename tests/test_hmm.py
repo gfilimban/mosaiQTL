@@ -2,16 +2,22 @@
 import numpy as np
 import pytest
 import sys, os
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from mosaiqtl.genotype.hmm import (build_diplotype_states, diplotype_to_allele_probs,
-                            haldane_recomb, transition_matrix, uniform_init)
+from mosaiqtl.genotype.hmm import (
+    build_diplotype_states,
+    diplotype_to_allele_probs,
+    haldane_recomb,
+    transition_matrix,
+    uniform_init,
+)
 
 
 class TestBuildDiplotypeStates:
     def test_count_8_founders(self):
         states, _ = build_diplotype_states(8)
-        assert len(states) == 36   # 8*(8+1)/2
+        assert len(states) == 36  # 8*(8+1)/2
 
     def test_count_2_founders(self):
         states, _ = build_diplotype_states(2)
@@ -29,7 +35,7 @@ class TestBuildDiplotypeStates:
 
 class TestDiplotypeToAlleleProbs:
     def test_homozygous_maps_to_one(self):
-        '''uniform prob on (0,0) diplotype → allele 0 prob = 1.0.'''
+        """uniform prob on (0,0) diplotype → allele 0 prob = 1.0."""
         states, idx = build_diplotype_states(8)
         dp = np.zeros(len(states))
         dp[idx[(0, 0)]] = 1.0
@@ -64,7 +70,7 @@ class TestHaldaneRecomb:
         assert haldane_recomb(0.0) == 0.0
 
     def test_max_half(self):
-        '''r → 0.5 as d → ∞.'''
+        """r → 0.5 as d → ∞."""
         assert haldane_recomb(100.0) == pytest.approx(0.5, abs=1e-6)
 
     def test_symmetric(self):
@@ -72,13 +78,15 @@ class TestHaldaneRecomb:
 
     def test_known_value(self):
         # r = 0.5*(1 - exp(-0.2)) ≈ 0.09063
-        np.testing.assert_allclose(haldane_recomb(0.1), 0.5*(1-np.exp(-0.2)), rtol=1e-10)
+        np.testing.assert_allclose(
+            haldane_recomb(0.1), 0.5 * (1 - np.exp(-0.2)), rtol=1e-10
+        )
 
 
 class TestTransitionMatrix:
     def setup_method(self):
-        self.r  = 0.1
-        self.T  = transition_matrix(self.r, n_founders=8, n_gen=1)
+        self.r = 0.1
+        self.T = transition_matrix(self.r, n_founders=8, n_gen=1)
         self.ns = 36
 
     def test_shape(self):
@@ -91,7 +99,7 @@ class TestTransitionMatrix:
         assert np.all(self.T >= 0)
 
     def test_identity_at_r0(self):
-        '''r=0 → no recombination → transition matrix = identity.'''
+        """r=0 → no recombination → transition matrix = identity."""
         T0 = transition_matrix(0.0, n_founders=8, n_gen=1)
         np.testing.assert_allclose(T0, np.eye(self.ns), atol=1e-10)
 

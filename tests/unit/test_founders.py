@@ -3,8 +3,7 @@ import re
 import sys
 from pathlib import Path
 
-
-sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
+sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 from mosaiqtl.genotype.founders import (
     FOUNDER_COLORS,
     FOUNDER_ORDER,
@@ -25,9 +24,9 @@ class TestFounderOrder:
         assert set(FOUNDER_COLORS.keys()) == set(FOUNDER_ORDER)
 
     def test_founder_colors_valid_hex(self):
-        pattern = re.compile(r'^#[0-9A-Fa-f]{6}$')
+        pattern = re.compile(r"^#[0-9A-Fa-f]{6}$")
         for name, color in FOUNDER_COLORS.items():
-            assert pattern.match(color), f'{name}: {color!r} is not valid hex'
+            assert pattern.match(color), f"{name}: {color!r} is not valid hex"
 
 
 class TestF1Colors:
@@ -35,9 +34,9 @@ class TestF1Colors:
         assert len(F1_COLORS) == 7
 
     def test_f1_colors_valid_hex(self):
-        pattern = re.compile(r'^#[0-9A-Fa-f]{6}$')
+        pattern = re.compile(r"^#[0-9A-Fa-f]{6}$")
         for name, color in F1_COLORS.items():
-            assert pattern.match(color), f'{name}: {color!r} is not valid hex'
+            assert pattern.match(color), f"{name}: {color!r} is not valid hex"
 
 
 class TestStrainOrder:
@@ -50,50 +49,49 @@ class TestStrainOrder:
 
 class TestCcStrainPalette:
     def test_cc_palette_returns_dict(self):
-        result = cc_strain_palette(['CC001', 'CC002'])
+        result = cc_strain_palette(["CC001", "CC002"])
         assert isinstance(result, dict)
-        assert set(result.keys()) == {'CC001', 'CC002'}
+        assert set(result.keys()) == {"CC001", "CC002"}
 
     def test_cc_palette_no_probs_returns_grey(self):
-        result = cc_strain_palette(['CC001'])
-        assert result['CC001'] == '#888888'
+        result = cc_strain_palette(["CC001"])
+        assert result["CC001"] == "#888888"
 
     def test_cc_palette_with_probs_valid_hex(self):
         # A/J-dominant strain
-        probs = {'CC001': [0.9, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
-        result = cc_strain_palette(['CC001'], haplotype_probs=probs)
-        pattern = re.compile(r'^#[0-9A-Fa-f]{6}$')
-        assert pattern.match(result['CC001'])
+        probs = {"CC001": [0.9, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+        result = cc_strain_palette(["CC001"], haplotype_probs=probs)
+        pattern = re.compile(r"^#[0-9A-Fa-f]{6}$")
+        assert pattern.match(result["CC001"])
 
     def test_cc_palette_pure_founder_matches_founder_color(self):
         # strain with 100% A/J ancestry → should equal A/J color
-        probs = {'CC001': [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
-        result = cc_strain_palette(['CC001'], haplotype_probs=probs)
-        assert result['CC001'].upper() == FOUNDER_COLORS['AJ'].upper()
+        probs = {"CC001": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+        result = cc_strain_palette(["CC001"], haplotype_probs=probs)
+        assert result["CC001"].upper() == FOUNDER_COLORS["AJ"].upper()
 
     def test_cc_palette_sorted_keys(self):
-        strains = ['CC010', 'CC002', 'CC005']
+        strains = ["CC010", "CC002", "CC005"]
         result = cc_strain_palette(strains)
         assert list(result.keys()) == sorted(strains)
 
 
 class TestNoInlineHexElsewhere:
     def test_no_inline_hex_outside_founders(self):
-        src = Path(__file__).parents[2] / 'src' / 'mosaiqtl'
+        src = Path(__file__).parents[2] / "src" / "mosaiqtl"
         hex_re = re.compile(r"'#[0-9A-Fa-f]{6}'|\"#[0-9A-Fa-f]{6}\"")
         # compare.py approved exception: #4F6EAF (Python series) and #D83026 (R series)
         # are the only two hardcoded hex values permitted outside founders.py.
-        _approved = {'compare.py'}
+        _approved = {"compare.py"}
         violations = []
-        for py_file in src.rglob('*.py'):
-            if py_file.name == 'founders.py':
+        for py_file in src.rglob("*.py"):
+            if py_file.name == "founders.py":
                 continue
             if py_file.name in _approved:
                 continue
             text = py_file.read_text()
             if hex_re.search(text):
                 violations.append(str(py_file.relative_to(src.parent.parent)))
-        assert not violations, (
-            'hardcoded hex colors found outside founders.py:\n' +
-            '\n'.join(violations)
-        )
+        assert (
+            not violations
+        ), "hardcoded hex colors found outside founders.py:\n" + "\n".join(violations)

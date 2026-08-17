@@ -51,32 +51,79 @@ logger = logging.getLogger("mosaiqtl")
 # canonical output schemas
 # ─────────────────────────────────────────────────────────────────────────────
 
-LOD_COLS: list[str] = ['gene_name', 'chr', 'locus', 'pos_mb', 'lod']
+LOD_COLS: list[str] = ["gene_name", "chr", "locus", "pos_mb", "lod"]
 
 ALLELE_EFFECTS_BASE_COLS: list[str] = [
-    'gene_name', 'gene_id', 'chr', 'start_mb',
-    'peak_locus', 'peak_mb', 'peak_lod', 'h2',
-    'n_valid', 'rss0', 'rss1', 'r2_peak', 'sigma2_e', 'tau2',
+    "gene_name",
+    "gene_id",
+    "chr",
+    "start_mb",
+    "peak_locus",
+    "peak_mb",
+    "peak_lod",
+    "h2",
+    "n_valid",
+    "rss0",
+    "rss1",
+    "r2_peak",
+    "sigma2_e",
+    "tau2",
 ]
 
 PEAK_LOD_COLS: list[str] = [
-    'gene_name', 'gene_id', 'chr', 'start_mb', 'near_tss_mb',
-    'peak_locus', 'peak_mb', 'cis_dist_mb', 'peak_lod', 'h2',
-    'n_valid', 'rss0', 'rss1', 'r2_peak', 'sigma2_e', 'tau2',
+    "gene_name",
+    "gene_id",
+    "chr",
+    "start_mb",
+    "near_tss_mb",
+    "peak_locus",
+    "peak_mb",
+    "cis_dist_mb",
+    "peak_lod",
+    "h2",
+    "n_valid",
+    "rss0",
+    "rss1",
+    "r2_peak",
+    "sigma2_e",
+    "tau2",
 ]
 
 EGENE_SUMMARY_COLS: list[str] = [
-    'gene_name', 'gene_id', 'chr', 'start_mb', 'near_tss_mb',
-    'peak_locus', 'peak_mb', 'cis_dist_mb', 'peak_lod', 'h2',
-    'perm_n', 'perm_chr', 'chi2_haplotype', 'p_haplotype', 'in_r_egenes',
+    "gene_name",
+    "gene_id",
+    "chr",
+    "start_mb",
+    "near_tss_mb",
+    "peak_locus",
+    "peak_mb",
+    "cis_dist_mb",
+    "peak_lod",
+    "h2",
+    "perm_n",
+    "perm_chr",
+    "chi2_haplotype",
+    "p_haplotype",
+    "in_r_egenes",
 ]
 
 __all__ = [
-    'LOD_COLS', 'ALLELE_EFFECTS_BASE_COLS', 'PEAK_LOD_COLS', 'EGENE_SUMMARY_COLS',
-    'MEDIATION_COLS', 'FIXEF_MEDIATION_COLS', 'SNP_SCAN_COLS', 'CI_COLS',
-    'call_egenes', 'finalize_egene_summary',
-    'discover', 'characterize', 'resolve',
-    'DiscoveryResult', 'CharacterizationResult', 'ResolutionResult',
+    "LOD_COLS",
+    "ALLELE_EFFECTS_BASE_COLS",
+    "PEAK_LOD_COLS",
+    "EGENE_SUMMARY_COLS",
+    "MEDIATION_COLS",
+    "FIXEF_MEDIATION_COLS",
+    "SNP_SCAN_COLS",
+    "CI_COLS",
+    "call_egenes",
+    "finalize_egene_summary",
+    "discover",
+    "characterize",
+    "resolve",
+    "DiscoveryResult",
+    "CharacterizationResult",
+    "ResolutionResult",
 ]
 
 
