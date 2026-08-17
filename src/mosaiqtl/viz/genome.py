@@ -121,9 +121,10 @@ def lod_profile(
     if threshold is not None:
         ax.axhline(threshold, color=COLOR_NEUTRAL_DARK, linewidth=0.8,
                    linestyle='--', zorder=1)
-        ax.text(float(positions[-1]), threshold + 0.05 * ax.get_ylim()[1],
-                f'thr={threshold:.2f}', fontsize=10, ha='right', va='bottom',
-                color=COLOR_NEUTRAL_DARK)
+        # left-side label via yaxis transform (x=axes, y=data) — avoids right-side clashes
+        ax.text(0.01, threshold, f'thr={threshold:.2f}', fontsize=9,
+                ha='left', va='bottom', color=COLOR_NEUTRAL_DARK,
+                transform=ax.get_yaxis_transform())
     if tss_mb is not None:
         ax.axvline(tss_mb, color=COLOR_CC_FALLBACK, lw=0.9, ls='--',
                    zorder=1, label='TSS')
@@ -136,19 +137,22 @@ def lod_profile(
             _ann = f'LOD={peak_lod:.1f}'
             if locus_id:
                 _ann = f'{locus_id}\n{_ann}'
+            # flip ha so annotation does not run past the plot edge
+            _x_mid = float(positions[0] + positions[-1]) / 2.0
+            _peak_ha = 'right' if float(peak_pos) > _x_mid else 'left'
             ax.text(peak_pos, peak_lod, _ann,
                     fontsize=10, color=FOUNDER_COLORS['PWKJ'],
-                    va='bottom', ha='left')
-    # gene name label
+                    va='bottom', ha=_peak_ha)
+    # gene name label — upper-left
     if gene:
         ax.text(0.02, 0.96, gene, transform=ax.transAxes,
                 fontsize=10, va='top', fontweight='bold', color=color)
-    # h² annotation in upper-right corner
+    # h² — bottom-right so it never clashes with legend at upper-right
     if h2 is not None:
-        ax.text(0.98, 0.96, f'h²={h2:.2f}', transform=ax.transAxes,
-                fontsize=10, va='top', ha='right', color=COLOR_NEUTRAL_DARK)
+        ax.text(0.98, 0.04, f'h²={h2:.2f}', transform=ax.transAxes,
+                fontsize=9, va='bottom', ha='right', color=COLOR_NEUTRAL_DARK)
     if label:
-        ax.legend(frameon=False, fontsize=9, loc="upper right")
+        ax.legend(frameon=False, fontsize=9, loc='upper right')
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
@@ -1095,9 +1099,13 @@ def perm_distribution(
         _, ax = plt.subplots(figsize=(6, 5), dpi=300)
 
     vals = max_lods[np.isfinite(max_lods)]
+    if len(vals) == 0:
+        ax.text(0.5, 0.5, 'no permutation data', transform=ax.transAxes,
+                ha='center', va='center', fontsize=11, color=COLOR_CC_FALLBACK)
+        return ax
+
     sns.histplot(vals, bins=bins, stat='density', color=FOUNDER_COLORS['NZOJ'],
-                 alpha=0.55, ax=ax, linewidth=0,
-                 label=f'Permutations (n={len(vals):,})')
+                 alpha=0.55, ax=ax, linewidth=0, label='permutations')
 
     c, loc, scale = genextreme.fit(vals, f0=None)
     xr = np.linspace(vals.min() - 0.5, vals.max() + 1.5, 300)
@@ -1106,24 +1114,19 @@ def perm_distribution(
                  linewidth=2.0, errorbar=None, ax=ax, label='GEV fit')
 
     if threshold is not None:
-        ax.axvline(threshold, color=FOUNDER_COLORS['PWKJ'], linewidth=1.5,
-                   linestyle='--', label=f'95th pctile = {threshold:.2f}')
-        # shade tail above threshold
+        # value in legend label — not repeated in info box
+        ax.axvline(threshold, color=FOUNDER_COLORS['WSBJ'], linewidth=1.5,
+                   linestyle='--', label=f'p95 = {threshold:.2f}')
         tail_x = xr[xr >= threshold]
         ax.fill_between(tail_x, genextreme.pdf(tail_x, c, loc, scale),
-                        alpha=0.25, color=FOUNDER_COLORS['PWKJ'])
-        n_above = int((vals >= threshold).sum())
-        ax.text(threshold + 0.05 * (vals.max() - vals.min()),
-                ax.get_ylim()[1] * 0.92 if ax.get_ylim()[1] > 0 else 0.1,
-                f'{n_above}/{len(vals)}\nexceed thr',
-                fontsize=10, color=FOUNDER_COLORS['PWKJ'], va='top')
+                        alpha=0.20, color=FOUNDER_COLORS['WSBJ'])
 
     if obs_lods is not None:
         obs_f = obs_lods[np.isfinite(obs_lods)]
         sns.rugplot(x=obs_f, ax=ax, color=COLOR_CC_FALLBACK,
                     alpha=0.5, height=0.04, zorder=0)
 
-    # info box in top-left corner (no title)
+    # info box — count only; threshold value is in the legend label
     _parts: list[str] = [f'n_perms = {len(vals):,}']
     if ref_gene:
         _parts.append(f'ref_gene = {ref_gene}')
@@ -1194,8 +1197,9 @@ def egene_lod_distribution(
                  alpha=0.85, ax=ax, linewidth=0, label='eGenes')
 
     if threshold is not None:
+        # value in legend label — not repeated in info box
         ax.axvline(threshold, color=FOUNDER_COLORS['PWKJ'], linewidth=1.5,
-                   linestyle='--', label='GEV 95%')
+                   linestyle='--', label=f'GEV 95%  ({threshold:.2f})')
 
     ax.set_xlabel('Peak LOD Score', fontsize=11)
     ax.set_ylabel('Gene count', fontsize=11)
@@ -1207,8 +1211,6 @@ def egene_lod_distribution(
         f'eGenes  = {n_egene:,}',
         f'total   = {n_total:,}',
     ]
-    if threshold is not None:
-        info_lines.append(f'FWER thr = {threshold:.2f}')
     ax.text(
         0.02, 0.97, '\n'.join(info_lines),
         transform=ax.transAxes, fontsize=9, va='top', ha='left',
@@ -1535,8 +1537,9 @@ def instability_lod_overlay(
 
     lines1, labels1 = ax.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
+    # lower-left: gene text occupies upper-left; info box occupies upper-right
     ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8,
-              frameon=False, loc='upper left')
+              frameon=False, loc='lower left')
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
@@ -1612,7 +1615,8 @@ def mi_scan_overlay(
     ax.tick_params(labelsize=11)
     ax.set_xlim(float(pos[0]), float(pos[-1]))
     ax.set_ylim(0, max(float(np.concatenate([scan, mi]).max()) * 1.2, 1.0))
-    ax.legend(fontsize=8, frameon=False, loc='upper left')
+    # lower-left: gene text occupies upper-left; info box occupies upper-right
+    ax.legend(fontsize=8, frameon=False, loc='lower left')
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
@@ -3089,10 +3093,12 @@ def locus_panel(
                             linewidth=1.2, linestyle='-', zorder=2, label='peak')
             if peak_locus:
                 _yl = ax_zoom.get_ylim()
+                # flip ha so rotated text does not run toward legend (upper-right)
+                _pl_ha = 'right' if float(peak_pos) > (zoom_lo + zoom_hi) / 2.0 else 'left'
                 ax_zoom.text(
                     peak_pos, _yl[1] * 0.97, peak_locus,
                     fontsize=6, color=FOUNDER_COLORS['PWKJ'],
-                    ha='left', va='top', rotation=90,
+                    ha=_pl_ha, va='top', rotation=90,
                     clip_on=True, zorder=5,
                 )
         if near_tss_mb is not None and zoom_lo <= near_tss_mb <= zoom_hi:
