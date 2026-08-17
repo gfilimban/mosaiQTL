@@ -570,10 +570,15 @@ def _make_descriptive_plots(
     # ── threshold lookup (genome-wide scalar from threshold.csv) ──────────
     # Primary: core/threshold.csv (written by this script after permutation).
     # Fallback: r_data/thresholds_chr.csv (R reference, available earlier).
+    # NOTE: data_dir and chrs_to_scan are NOT in scope here (run() locals).
+    # Use core_dir.parent (= py_dir) to locate r_data/ sibling directory.
     _thr_by_chr: 'dict[str, float | None]' = {}
     _gw_thr_scalar: float | None = None
     _thr_path = core_dir / 'threshold.csv'
-    _thr_fallback = data_dir / 'r_data' / 'thresholds_chr.csv'
+    _r_data_dir = core_dir.parent / 'r_data'        # py_dir/r_data (CT and non-CT)
+    if not _r_data_dir.exists():
+        _r_data_dir = core_dir.parent.parent / 'r_data'   # non-CT: py_data/../r_data
+    _thr_fallback = _r_data_dir / 'thresholds_chr.csv'
     _thr_source = _thr_path if _thr_path.exists() else (
         _thr_fallback if _thr_fallback.exists() else None
     )
@@ -584,8 +589,10 @@ def _make_descriptive_plots(
             if 'genome_wide' in _td0['chr'].values:
                 _gw_thr_scalar = float(
                     _td0.loc[_td0['chr'] == 'genome_wide', 'threshold'].iloc[0])
-                for _tc in chrs_to_scan:
-                    _thr_by_chr[str(_tc)] = _gw_thr_scalar
+                # populate all standard mouse chromosomes — chrs_to_scan not in scope
+                _mm_chrs = [str(i) for i in range(1, 20)] + ['X']
+                for _tc in _mm_chrs:
+                    _thr_by_chr[_tc] = _gw_thr_scalar
             else:
                 for _tc, _tg in _td0.groupby('chr'):
                     _thr_by_chr[str(_tc)] = float(_tg['threshold'].iloc[0])
