@@ -2352,7 +2352,7 @@ def locus_panels_per_chr(
     tss_mb_map: Optional[dict[str, float]] = None,
     near_tss_mb_map: Optional[dict[str, float]] = None,
     genes_df: Optional[pd.DataFrame] = None,
-    zoom_window_mb: float = 2.0,
+    zoom_window_mb: float = 5.0,
     gtf_path: Optional[str] = None,
 ) -> dict[str, plt.Figure]:
     """Per-chromosome locus panels (founder effects + LOD profile + zoom).
@@ -2433,6 +2433,7 @@ def locus_panels_per_chr(
 
         peak_betas: Optional[np.ndarray] = None
         peak_pos: Optional[float] = None
+        peak_locus_id: Optional[str] = None
         if eff_df is not None and founders is not None:
             eff_row_df = eff_df[
                 (eff_df['chr'].astype(str) == c) & (eff_df['gene_name'] == top_gene)
@@ -2442,6 +2443,8 @@ def locus_panels_per_chr(
                 row0 = eff_row_df.iloc[0]
                 peak_betas = np.array([float(row0[b]) for b in beta_cols])
                 peak_pos = float(row0.get('peak_mb', lod_top['pos_mb'].iloc[0]))
+                if 'peak_locus' in eff_row_df.columns:
+                    peak_locus_id = str(row0['peak_locus'])
 
         thr_val: Optional[float] = thr.get(c)
         tss       = (tss_mb_map or {}).get(top_gene)
@@ -2460,6 +2463,7 @@ def locus_panels_per_chr(
             chrom=c,
             highlight_gene=top_gene,
             gtf_path=gtf_path,
+            peak_locus=peak_locus_id,
         )
         out[c] = fig
 
@@ -2915,11 +2919,12 @@ def locus_panel(
     tss_mb: Optional[float] = None,
     near_tss_mb: Optional[float] = None,
     genes_df: Optional[pd.DataFrame] = None,
-    zoom_window_mb: float = 2.0,
+    zoom_window_mb: float = 5.0,
     threshold: Optional[float] = None,
     chrom: str = '',
     highlight_gene: Optional[str] = None,
     gtf_path: Optional[str] = None,
+    peak_locus: Optional[str] = None,
 ) -> plt.Figure:
     """Locus view: founder effect bars + full LOD profile + zoom + gene track.
 
@@ -2955,7 +2960,7 @@ def locus_panel(
         provided together with *tss_mb*, adds an IGV-style gene body track below
         the zoom panel.
     zoom_window_mb : float
-        Half-width of margin around the [TSS, peak] interval. Default 1.0 Mb.
+        Half-width of margin around the [TSS, peak] interval. Default 5.0 Mb.
     threshold : float, optional
         Permutation threshold; drawn as a dashed line on the LOD panels.
     chrom : str
@@ -2967,6 +2972,9 @@ def locus_panel(
         provided together with *genes_df* and *tss_mb*, exon/CDS/UTR intervals
         are loaded for the zoom window and passed to the gene track so real
         exon/intron structure is drawn instead of plain gene-body bars.
+    peak_locus : str, optional
+        Variant/locus ID at the peak position (e.g. ``'UNC20195694'``).
+        Annotated as rotated text beside the peak vertical line in the zoom panel.
 
     Returns
     -------
@@ -3079,6 +3087,14 @@ def locus_panel(
         if peak_pos is not None and zoom_lo <= peak_pos <= zoom_hi:
             ax_zoom.axvline(peak_pos, color=FOUNDER_COLORS['PWKJ'],
                             linewidth=1.2, linestyle='-', zorder=2, label='peak')
+            if peak_locus:
+                _yl = ax_zoom.get_ylim()
+                ax_zoom.text(
+                    peak_pos, _yl[1] * 0.97, peak_locus,
+                    fontsize=6, color=FOUNDER_COLORS['PWKJ'],
+                    ha='left', va='top', rotation=90,
+                    clip_on=True, zorder=5,
+                )
         if near_tss_mb is not None and zoom_lo <= near_tss_mb <= zoom_hi:
             ax_zoom.axvline(near_tss_mb, color=FOUNDER_COLORS['CASTJ'],
                             linewidth=0.9, linestyle='--', zorder=2,

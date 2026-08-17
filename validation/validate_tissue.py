@@ -568,12 +568,18 @@ def _make_descriptive_plots(
             log.warning('  lod.csv read failed: %s', exc)
 
     # ── threshold lookup (genome-wide scalar from threshold.csv) ──────────
+    # Primary: core/threshold.csv (written by this script after permutation).
+    # Fallback: r_data/thresholds_chr.csv (R reference, available earlier).
     _thr_by_chr: 'dict[str, float | None]' = {}
     _gw_thr_scalar: float | None = None
     _thr_path = core_dir / 'threshold.csv'
-    if _thr_path.exists():
+    _thr_fallback = data_dir / 'r_data' / 'thresholds_chr.csv'
+    _thr_source = _thr_path if _thr_path.exists() else (
+        _thr_fallback if _thr_fallback.exists() else None
+    )
+    if _thr_source is not None:
         try:
-            _td0 = pd.read_csv(_thr_path)
+            _td0 = pd.read_csv(_thr_source)
             _td0['chr'] = _td0['chr'].astype(str)
             if 'genome_wide' in _td0['chr'].values:
                 _gw_thr_scalar = float(
@@ -583,6 +589,8 @@ def _make_descriptive_plots(
             else:
                 for _tc, _tg in _td0.groupby('chr'):
                     _thr_by_chr[str(_tc)] = float(_tg['threshold'].iloc[0])
+            log.info('  threshold loaded from %s (%d chrs)',
+                     _thr_source.name, len(_thr_by_chr))
         except Exception:
             pass
 
