@@ -1377,15 +1377,17 @@ def perm_distribution(
         )
         return ax
 
+    from matplotlib.patches import Patch as _Patch
+
+    _hist_clr = FOUNDER_COLORS["NZOJ"]
     sns.histplot(
         vals,
         bins=bins,
         stat="density",
-        color=FOUNDER_COLORS["NZOJ"],
+        color=_hist_clr,
         alpha=0.55,
         ax=ax,
         linewidth=0,
-        label="permutations",
     )
 
     c, loc, scale = genextreme.fit(vals, f0=None)
@@ -1453,7 +1455,17 @@ def perm_distribution(
     ax.set_ylabel("Density", fontsize=13, fontweight="bold")
     ax.tick_params(labelsize=11)
     ax.set_ylim(bottom=0)
-    ax.legend(fontsize=8, frameon=False, loc="upper right")
+    # explicit Patch proxy guarantees histplot color swatch shows in legend
+    # regardless of seaborn version (BarContainer labels not always auto-collected)
+    _hist_proxy = _Patch(facecolor=_hist_clr, alpha=0.55, label="permutations")
+    _h, _l = ax.get_legend_handles_labels()
+    ax.legend(
+        handles=[_hist_proxy] + _h,
+        labels=["permutations"] + _l,
+        fontsize=8,
+        frameon=False,
+        loc="upper right",
+    )
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
