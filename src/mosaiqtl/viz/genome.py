@@ -251,11 +251,6 @@ def manhattan(
     extra = [c for c in scans if c not in ordered]
     chroms = ordered + extra
 
-    # colour range: 95th-percentile LOD drives vmax so bright = significant
-    _all_lod = np.concatenate([v[1] for v in scans.values()])
-    _fin = _all_lod[np.isfinite(_all_lod)]
-    _vmax = float(np.percentile(_fin, 95)) if len(_fin) > 0 else 1.0
-
     fig, ax = plt.subplots(figsize=figsize, dpi=300)
     offset = 0.0
     xticks: list[float] = []
@@ -263,15 +258,6 @@ def manhattan(
     # collect (x, lod, chrom) for top-gene labeling
     all_pts: list[tuple[float, float, str]] = []
     _hi_xspan: 'tuple[float, float] | None' = None
-
-    _sc_kw: dict = dict(
-        cmap=_CMAP_LOD, vmin=0.0, vmax=_vmax,
-        s=5, alpha=0.4, linewidths=0, rasterized=True, zorder=2,
-    )
-    _lo_kw: dict = dict(
-        color=COLOR_NEUTRAL_LIGHT, s=4, alpha=0.3,
-        linewidths=0, rasterized=True, zorder=1,
-    )
 
     for ci, chrom in enumerate(chroms):
         pos, lod = scans[chrom]
@@ -281,23 +267,41 @@ def manhattan(
         x = pos + offset
         if chrom == highlight_chrom:
             _hi_xspan = (float(x[0]), float(x[-1]))
-        # low-expr genes: light grey behind LOD-coloured scatter
+        chr_color = _CHR_COLORS[ci % 2]
+        # low-expr genes: light grey, plotted before chromosome-coloured dots
         if low_expr_mask and chrom in low_expr_mask:
             _lo = low_expr_mask[chrom][order]
             if _lo.any():
-                ax.scatter(x[_lo], lod[_lo], **_lo_kw)
-            ax.scatter(x[~_lo], lod[~_lo], c=lod[~_lo], **_sc_kw)
+                sns.scatterplot(
+                    x=x[_lo], y=lod[_lo],
+                    color=COLOR_NEUTRAL_LIGHT,
+                    s=4, alpha=0.3, linewidths=0, rasterized=True,
+                    ax=ax,
+                )
+            if (~_lo).any():
+                sns.scatterplot(
+                    x=x[~_lo], y=lod[~_lo],
+                    color=chr_color,
+                    s=5, alpha=0.4, linewidths=0, rasterized=True,
+                    ax=ax,
+                )
         else:
-            ax.scatter(x, lod, c=lod, **_sc_kw)
-        # eGene overlay: red, larger — marks FDR-significant genes
+            sns.scatterplot(
+                x=x, y=lod,
+                color=chr_color,
+                s=5, alpha=0.4, linewidths=0, rasterized=True,
+                ax=ax,
+            )
+        # eGene overlay: PWKJ red, larger — marks FDR-significant genes
         if egene_scans and chrom in egene_scans:
             epos, elod = egene_scans[chrom]
             eorder = np.argsort(epos)
             ex = epos[eorder] + offset
-            ax.scatter(
-                ex, elod[eorder],
+            sns.scatterplot(
+                x=ex, y=elod[eorder],
                 color=FOUNDER_COLORS["PWKJ"],
-                s=18, linewidths=0, rasterized=True, zorder=4,
+                s=18, linewidths=0, rasterized=True,
+                ax=ax,
             )
         mid = float(offset + (float(pos[-1]) - float(pos[0])) / 2)
         xticks.append(mid)
@@ -546,9 +550,6 @@ def snp_manhattan(
     extra = sorted(set(snp_chroms) - set(ordered))
     chroms = ordered + extra
 
-    _fin_p = snp_neg_log10p[np.isfinite(snp_neg_log10p)]
-    _vmax_p = float(np.percentile(_fin_p, 95)) if len(_fin_p) > 0 else 1.0
-
     fig, ax = plt.subplots(figsize=figsize, dpi=300)
     offset = 0.0
     xticks: list[float] = []
@@ -562,9 +563,11 @@ def snp_manhattan(
         x = pos + offset
         if chrom == highlight_chrom:
             _hi_xspan_p = (float(x[0]), float(x[-1]))
-        ax.scatter(
-            x, y, c=y, cmap=_CMAP_LOD, vmin=0.0, vmax=_vmax_p,
-            s=point_size, alpha=0.4, linewidths=0, rasterized=True, zorder=2,
+        sns.scatterplot(
+            x=x, y=y,
+            color=_CHR_COLORS[ci % 2],
+            s=point_size, alpha=0.4, linewidths=0, rasterized=True,
+            ax=ax,
         )
         xticks.append(float(offset + (pos.max() - pos.min()) / 2))
         xlabels.append(chrom)
@@ -753,8 +756,6 @@ def gene_manhattan(
     xticks: list[float] = []
     xlabels: list[str] = []
 
-    _fin_g = peak_lod[np.isfinite(peak_lod)]
-    _vmax_g = float(np.percentile(_fin_g, 95)) if len(_fin_g) > 0 else 1.0
     _hi_xspan_g: 'tuple[float, float] | None' = None
 
     for ci, chrom in enumerate(chroms):
@@ -764,9 +765,11 @@ def gene_manhattan(
         x = pos + offset
         if chrom == highlight_chrom:
             _hi_xspan_g = (float(x[0]), float(x[-1]))
-        ax.scatter(
-            x, y, c=y, cmap=_CMAP_LOD, vmin=0.0, vmax=_vmax_g,
-            s=point_size, alpha=0.4, linewidths=0, rasterized=True, zorder=2,
+        sns.scatterplot(
+            x=x, y=y,
+            color=_CHR_COLORS[ci % 2],
+            s=point_size, alpha=0.4, linewidths=0, rasterized=True,
+            ax=ax,
         )
         xticks.append(float(offset + (pos.max() - pos.min()) / 2))
         xlabels.append(chrom)
