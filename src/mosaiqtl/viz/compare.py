@@ -25,6 +25,7 @@ from ..genotype.founders import (
     COLOR_THRESHOLD,
     FOUNDER_COLORS,
 )
+from ._theme import WASH
 
 # Default comparison colors — Python (series A) vs R/miQTL (series B).
 _COLOR_A: str = FOUNDER_COLORS["NODJ"]   # series A: blue (#4F6EAF)
@@ -1417,7 +1418,7 @@ def cis_distance_comparison(
         vp["cmedians"].set_linewidth(2.0)
 
     ax_v.axhline(0, color=COLOR_NEUTRAL_DARK, ls="--", lw=1.1, alpha=0.6, zorder=0)
-    ax_v.axhspan(-zoom_mb, zoom_mb, alpha=0.07, color=FOUNDER_COLORS["NODJ"], zorder=0)
+    ax_v.axhspan(-zoom_mb, zoom_mb, alpha=0.07, color=WASH, zorder=0)
     ax_v.set_xticks(range(len(source_names)))
     ax_v.set_xticklabels(source_names, rotation=30, ha="right", fontsize=9)
     ax_v.set_ylabel("Cis distance  (peak − TSS, ±Mb)", fontsize=11)

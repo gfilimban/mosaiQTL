@@ -20,12 +20,10 @@ from matplotlib.gridspec import GridSpec
 import numpy as np
 import pandas as pd
 
-from ..genotype.founders import (
-    FOUNDER_COLORS,
-    FOUNDER_ORDER,
-    COLOR_NEUTRAL_DARK,
-    COLOR_CC_FALLBACK,
-)
+import seaborn as sns
+
+from ..genotype.founders import FOUNDER_ORDER
+from ._theme import INK, MUTED
 from .compare import (
     lod_scatter as _cmp_scatter,
     lod_density_comparison as _cmp_lod_density,
@@ -38,7 +36,6 @@ logger = logging.getLogger("mosaiqtl")
 
 _BETA_COLS: list[str] = [f"beta_{f}" for f in FOUNDER_ORDER]
 _FOUNDERS_DISPLAY: list[str] = FOUNDER_ORDER
-_MYONUCLEI_COLOR: str = FOUNDER_COLORS["NODJ"]
 
 __all__ = [
     "safe_ct",
@@ -129,11 +126,11 @@ def discover_cell_types(celltypes_dir: Path) -> list[str]:
 
 
 def build_ct_palette(cell_types: list[str]) -> dict[str, str]:
-    """Assign a distinct ``FOUNDER_COLORS`` value to each cell type.
+    """Assign a distinct categorical color to each cell type.
 
-    ``myonuclei`` is always pinned to ``FOUNDER_COLORS['NODJ']``.
-    Remaining cell types are assigned in sorted alphabetical order cycling
-    through the remaining ``FOUNDER_COLORS`` values.
+    Cell types are sorted alphabetically then assigned colors cycling through
+    seaborn's ``tab10`` palette.  Cell types are not founders — founder colors
+    must not be used here.
 
     Parameters
     ----------
@@ -145,15 +142,9 @@ def build_ct_palette(cell_types: list[str]) -> dict[str, str]:
     dict[str, str]
         Mapping from cell-type label to hex color string.
     """
-    all_colors = list(FOUNDER_COLORS.values())
-    remaining_colors = [c for c in all_colors if c != _MYONUCLEI_COLOR]
-    palette: dict[str, str] = {}
-    remaining_cts = sorted(ct for ct in cell_types if ct != "myonuclei")
-    for i, ct in enumerate(remaining_cts):
-        palette[ct] = remaining_colors[i % len(remaining_colors)]
-    if "myonuclei" in cell_types:
-        palette["myonuclei"] = _MYONUCLEI_COLOR
-    return palette
+    sorted_cts = sorted(cell_types)
+    colors = [c for c in sns.color_palette('tab10', n_colors=max(len(sorted_cts), 1)).as_hex()]
+    return {ct: colors[i % len(colors)] for i, ct in enumerate(sorted_cts)}
 
 
 # ── Pair ordering ─────────────────────────────────────────────────────────────
@@ -397,7 +388,7 @@ def ct_vs_whole_lod_scatter(
                 y_label=f"{ct} peak LOD",
                 threshold_x=threshold,
                 threshold_y=threshold,
-                priority_genes={rep_gene: COLOR_NEUTRAL_DARK} if rep_gene else None,
+                priority_genes={rep_gene: INK} if rep_gene else None,
                 save_path=ct_out_dirs[ct] / f"{safe_ct(ct)}_vs_whole_lod.png",
             )
             plt.close("all")
@@ -600,14 +591,14 @@ def ct_lod_profile_overlay(
             pos_b: Optional[np.ndarray] = trace_b[0] if trace_b is not None else None
             lod_b: Optional[np.ndarray] = trace_b[1] if trace_b is not None else None
             color_a = (
-                COLOR_NEUTRAL_DARK
+                INK
                 if label_a == "Whole"
-                else palette.get(label_a, COLOR_CC_FALLBACK)
+                else palette.get(label_a, MUTED)
             )
             color_b = (
-                palette.get(label_b, COLOR_CC_FALLBACK)
+                palette.get(label_b, MUTED)
                 if label_b
-                else COLOR_CC_FALLBACK
+                else MUTED
             )
             _cmp_lod_overlay(
                 pos_a=pos_a,
@@ -707,7 +698,7 @@ def ct_pairwise_lod_scatter(
                 y_label=f"{y_ct} peak LOD",
                 threshold_x=threshold,
                 threshold_y=threshold,
-                priority_genes={rep_gene: COLOR_NEUTRAL_DARK} if rep_gene else None,
+                priority_genes={rep_gene: INK} if rep_gene else None,
                 save_path=compare_dir / f"{safe_ct(x_ct)}_vs_{safe_ct(y_ct)}_lod.png",
             )
             plt.close("all")
@@ -930,8 +921,8 @@ def ct_lod_distributions(
                 lods_b=ct_df[ct_col].values,
                 label_a="Whole",
                 label_b=ct,
-                color_a=COLOR_NEUTRAL_DARK,
-                color_b=palette.get(ct, COLOR_CC_FALLBACK),
+                color_a=INK,
+                color_b=palette.get(ct, MUTED),
                 threshold=threshold,
                 ax=ax,
             )
@@ -973,8 +964,8 @@ def ct_lod_distributions(
                     lods_b=ct_df[ct_col].values,
                     label_a="Whole",
                     label_b=ct,
-                    color_a=COLOR_NEUTRAL_DARK,
-                    color_b=palette.get(ct, COLOR_CC_FALLBACK),
+                    color_a=INK,
+                    color_b=palette.get(ct, MUTED),
                     threshold=threshold,
                     ax=ax,
                 )
@@ -1055,7 +1046,7 @@ def ct_cis_distance_comparison(
         logger.warning("ct_cis_distance_comparison: fewer than 2 sources — skipping")
         return
 
-    pal = {**{"whole": COLOR_CC_FALLBACK}, **palette}
+    pal = {**{"whole": MUTED}, **palette}
     fig = _cmp_cis_distance(sources, palette=pal, zoom_mb=1.0)
     out = compare_dir / "cis_distance_comparison.png"
     fig.savefig(out, dpi=300, transparent=True, bbox_inches="tight")
