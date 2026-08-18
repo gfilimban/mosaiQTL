@@ -4,12 +4,7 @@ Series labels are caller-determined at invocation time via ``label_a``/``label_b
 The default pairing is Python (series A, blue) vs R / miQTL (series B, red), but any
 two named series can be compared without changing function semantics.
 
-Only two inline hex values are permitted in this module:
-
-  ``_COLOR_A``  ``'#4F6EAF'``  — default series-A color (matches ``FOUNDER_COLORS['NODJ']``)
-  ``_COLOR_B``  ``'#D83026'``  — default series-B color (matches ``FOUNDER_COLORS['PWKJ']``)
-
-All other hex values must be imported from ``mosaiqtl.genotype.founders``.
+All colors imported from ``mosaiqtl.genotype.founders`` — no inline hex.
 """
 
 from __future__ import annotations
@@ -31,9 +26,9 @@ from ..genotype.founders import (
     FOUNDER_COLORS,
 )
 
-# Default comparison colors. Only these two literal hex values are allowed here.
-_COLOR_A: str = "#4F6EAF"  # series A default — matches FOUNDER_COLORS['NODJ']
-_COLOR_B: str = "#D83026"  # series B default — matches FOUNDER_COLORS['PWKJ']
+# Default comparison colors — Python (series A) vs R/miQTL (series B).
+_COLOR_A: str = FOUNDER_COLORS["NODJ"]   # series A: blue (#4F6EAF)
+_COLOR_B: str = FOUNDER_COLORS["PWKJ"]   # series B: red  (#D83026)
 
 _CMAP = "crest"
 

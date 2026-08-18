@@ -25,6 +25,8 @@ _CHR_COLORS: tuple[str, str] = (FOUNDER_COLORS["NODJ"], FOUNDER_COLORS["CASTJ"])
 _MI_COLOR: str = FOUNDER_COLORS["WSBJ"]
 _INST_COLOR: str = FOUNDER_COLORS["CASTJ"]
 _SNP_COLOR: str = FOUNDER_COLORS["129S1J"]
+_CMAP_LOD: str = "crest"       # sequential colormap for LOD-magnitude scatter
+_CMAP_EFFECT: str = "coolwarm"  # diverging colormap for signed effect (beta) scatter
 
 
 def _set_font(ax: plt.Axes) -> None:
@@ -273,10 +275,10 @@ def manhattan(
                     x=x[_lo],
                     y=lod[_lo],
                     color=COLOR_NEUTRAL_LIGHT,
-                    s=3,
+                    s=4,
                     linewidths=0,
                     zorder=1,
-                    alpha=0.5,
+                    alpha=0.3,
                     rasterized=True,
                     ax=ax,
                 )
@@ -284,10 +286,10 @@ def manhattan(
                 x=x[~_lo],
                 y=lod[~_lo],
                 color=base_color,
-                s=4,
+                s=5,
                 linewidths=0,
                 zorder=2,
-                alpha=0.75,
+                alpha=0.4,
                 rasterized=True,
                 ax=ax,
             )
@@ -296,10 +298,10 @@ def manhattan(
                 x=x,
                 y=lod,
                 color=base_color,
-                s=4,
+                s=5,
                 linewidths=0,
                 zorder=2,
-                alpha=0.75,
+                alpha=0.4,
                 rasterized=True,
                 ax=ax,
             )
@@ -637,9 +639,10 @@ def pvalue_qq(
     sns.lineplot(
         x=_diag,
         y=_diag,
-        color=FOUNDER_COLORS["PWKJ"],
-        linewidth=0.9,
+        color=COLOR_NEUTRAL_DARK,
+        linewidth=1.2,
         linestyle="--",
+        alpha=0.7,
         errorbar=None,
         ax=ax,
         zorder=1,
@@ -992,7 +995,7 @@ def cis_distance_panel(
     )
 
     _scatter_hi_kw: dict = dict(
-        cmap="crest",
+        cmap=_CMAP_LOD,
         vmin=0.0,
         vmax=_vmax,
         s=5,
@@ -1055,7 +1058,7 @@ def cis_distance_panel(
         _dz,
         _lz,
         c=_lz,
-        cmap="crest",
+        cmap=_CMAP_LOD,
         vmin=0.0,
         vmax=_vmax_z,
         s=8,
@@ -1819,7 +1822,7 @@ def snp_lod_profile(
     bet_s = beta_dosage[ord_s]
 
     sc = ax.scatter(
-        pos_s, lod_s, c=bet_s, cmap="coolwarm", s=8, linewidths=0, alpha=0.7, zorder=3
+        pos_s, lod_s, c=bet_s, cmap=_CMAP_EFFECT, s=8, linewidths=0, alpha=0.7, zorder=3
     )
     cbar = ax.get_figure().colorbar(sc, ax=ax, shrink=0.7, pad=0.02)
     cbar.set_label("β dosage", fontsize=9)

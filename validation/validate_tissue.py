@@ -634,7 +634,8 @@ def _make_descriptive_plots(
                 ].sort_values('pos_mb')
                 if lod_top.empty:
                     continue
-                thr = _thr_by_chr.get(c)
+                # genome-wide threshold for eGene calling (not per-chr GEV)
+                thr = _gw_thr_scalar
                 fig, ax = plt.subplots(figsize=(12, 3.5), dpi=300)
                 _viz_lod_profile(lod_top['pos_mb'].values, lod_top['lod'].values,
                                  ax=ax, chrom=c, threshold=thr, fill=True,
