@@ -133,7 +133,12 @@ def lod_profile(
     ax.tick_params(labelsize=11)
     if threshold is not None:
         ax.axhline(
-            threshold, color=COLOR_THRESHOLD, linewidth=0.8, linestyle="--", zorder=1
+            threshold,
+            color=COLOR_THRESHOLD,
+            linewidth=1.4,
+            linestyle=":",
+            alpha=0.85,
+            zorder=1,
         )
     if tss_mb is not None:
         ax.axvline(
@@ -1391,9 +1396,10 @@ def perm_distribution(
         # value in legend label — not repeated in info box
         ax.axvline(
             threshold,
-            color=FOUNDER_COLORS["WSBJ"],
-            linewidth=1.5,
-            linestyle="--",
+            color=COLOR_THRESHOLD,
+            linewidth=1.4,
+            linestyle=":",
+            alpha=0.85,
             label=f"p95 = {threshold:.2f}",
         )
         tail_x = xr[xr >= threshold]
@@ -1401,7 +1407,7 @@ def perm_distribution(
             tail_x,
             genextreme.pdf(tail_x, c, loc, scale),
             alpha=0.20,
-            color=FOUNDER_COLORS["WSBJ"],
+            color=COLOR_THRESHOLD,
         )
 
     if obs_lods is not None:
@@ -4547,7 +4553,7 @@ def nb_scan_recovery_summary(
         legend=False,
         alpha=0.85,
     )
-    ax.axhline(threshold_pctile, color=COLOR_THRESHOLD, ls="--", lw=1.0, alpha=0.8)
+    ax.axhline(threshold_pctile, color=COLOR_THRESHOLD, ls=":", lw=1.4, alpha=0.85)
     ax.set_xlabel("Simulation index", fontsize=12)
     ax.set_ylabel("Planted locus LOD percentile", fontsize=12)
     ax.set_ylim(0, 105)
