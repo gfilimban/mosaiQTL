@@ -8,7 +8,7 @@ Stage flow
 1. fit-null  — Stage 1 NB-gamma null fit per gene → phi_shrunk.csv
 2. scan       — Stage 2 genome-wide PQL score scan → peak_lod.csv
 3. permute    — permutation threshold → perm_max_lods.csv
-4. effects    — 8-founder haplotype effects at peaks → allele_effects.csv
+4. estimate   — haplotype effects at peak loci → allele_effects.csv
 5. report     — eGene summary table + genome-wide Manhattan → eqtl_summary.csv
 """
 from __future__ import annotations
@@ -381,10 +381,10 @@ def permute(
     logger.info('Permutation results written to %s', output)
 
 
-# ── effects ───────────────────────────────────────────────────────────────
+# ── estimate ──────────────────────────────────────────────────────────────
 
 
-@main.command('effects')
+@main.command('estimate')
 @click.option('--cache', required=True, type=click.Path(exists=True, path_type=Path),
               help='GenomeCache HDF5 file.')
 @click.option('--scan-result', required=True, type=click.Path(exists=True, path_type=Path),
@@ -401,7 +401,7 @@ def permute(
 @click.option('--cell-type', default=None,
               help='Cell type label to subset from AnnData obs.')
 @click.option('--verbose', is_flag=True, default=False)
-def effects(
+def estimate(
     cache: Path,
     scan_result: Path,
     counts: Path,
@@ -411,10 +411,10 @@ def effects(
     cell_type: Optional[str],
     verbose: bool,
 ) -> None:
-    """Estimate 8-founder haplotype effects at each gene's peak locus.
+    """Estimate haplotype effects at each gene's peak locus.
 
     Writes allele_effects.csv with columns defined in pipeline.ALLELE_EFFECTS_BASE_COLS
-    plus beta_{founder} and se_{founder} columns.
+    plus beta_{founder} and se_{founder} columns per founder.
     """
     _setup_logging(verbose)
     import numpy as np

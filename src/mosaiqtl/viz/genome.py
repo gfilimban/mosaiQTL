@@ -10,31 +10,16 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from ..genotype.founders import (
-    COLOR_CC_FALLBACK,
-    COLOR_NEUTRAL_DARK,
-    COLOR_NEUTRAL_LIGHT,
-    COLOR_THRESHOLD,
-    FOUNDER_COLORS,
+from ._theme import (
+    BRAND_PRIMARY, BRAND_SECONDARY, BRAND_ACCENT, INK, MUTED, WASH, SURFACE,
+    CHR_BANDS, CMAP_MAGNITUDE, CMAP_SIGNED,
+    KW_THRESHOLD, KW_REFERENCE, KW_DOT, KW_DOT_MUTED, KW_BOX,
+    FONT_STACK, apply_theme, info_box,
 )
 from .effects import effect_bars as _effect_bars
 
 _CHR_ORDER: list[str] = [str(i) for i in range(1, 20)] + ["X"]
 _CHR_GAP_MB: float = 10.0
-_CHR_COLORS: tuple[str, str] = (FOUNDER_COLORS["NODJ"], FOUNDER_COLORS["CASTJ"])
-_MI_COLOR: str = FOUNDER_COLORS["WSBJ"]
-_INST_COLOR: str = FOUNDER_COLORS["CASTJ"]
-_SNP_COLOR: str = FOUNDER_COLORS["129S1J"]
-_CMAP_LOD: str = "crest"       # sequential colormap for LOD-magnitude scatter
-_CMAP_EFFECT: str = "coolwarm"  # diverging colormap for signed effect (beta) scatter
-
-
-def _set_font(ax: plt.Axes) -> None:
-    """Apply Carlito/Calibri to all text elements of ax."""
-    for item in (
-        [ax.xaxis.label, ax.yaxis.label] + ax.get_xticklabels() + ax.get_yticklabels()
-    ):
-        item.set_fontfamily(["Carlito", "Calibri", "DejaVu Sans"])
 
 
 def lod_profile(
@@ -45,7 +30,7 @@ def lod_profile(
     chrom: str = "",
     threshold: Optional[float] = None,
     peak_pos: Optional[float] = None,
-    color: str = FOUNDER_COLORS["NODJ"],
+    color: str = BRAND_PRIMARY,
     linewidth: float = 1.2,
     fill: bool = False,
     fill_alpha: float = 0.15,
@@ -122,7 +107,7 @@ def lod_profile(
     if fill:
         ax.fill_between(positions, 0, lod, alpha=fill_alpha, color=color, zorder=1)
     if marker_rug:
-        sns.rugplot(x=positions, ax=ax, color=COLOR_CC_FALLBACK, alpha=0.4, height=0.03)
+        sns.rugplot(x=positions, ax=ax, color=MUTED, alpha=0.4, height=0.03)
     if positions[0] != positions[-1]:
         ax.set_xlim(float(positions[0]), float(positions[-1]))
     ax.set_ylim(0, max(float(lod.max()) * 1.18, 1.0))
@@ -134,22 +119,15 @@ def lod_profile(
     ax.set_ylabel("LOD Score", fontsize=13, fontweight="bold")
     ax.tick_params(labelsize=11)
     if threshold is not None:
-        ax.axhline(
-            threshold,
-            color=COLOR_THRESHOLD,
-            linewidth=1.4,
-            linestyle=":",
-            alpha=0.85,
-            zorder=1,
-        )
+        ax.axhline(threshold, **KW_THRESHOLD)
     if tss_mb is not None:
         ax.axvline(
-            tss_mb, color=COLOR_CC_FALLBACK, lw=0.9, ls="--", zorder=1, label="TSS"
+            tss_mb, color=MUTED, lw=0.9, ls="--", zorder=1, label="TSS"
         )
     if peak_pos is not None:
         ax.axvline(
             peak_pos,
-            color=FOUNDER_COLORS["PWKJ"],
+            color=BRAND_ACCENT,
             linewidth=0.8,
             linestyle=":",
             zorder=1,
@@ -168,7 +146,7 @@ def lod_profile(
                 peak_lod,
                 _ann,
                 fontsize=10,
-                color=FOUNDER_COLORS["PWKJ"],
+                color=BRAND_ACCENT,
                 va="bottom",
                 ha=_peak_ha,
             )
@@ -194,12 +172,11 @@ def lod_profile(
             fontsize=9,
             va="bottom",
             ha="right",
-            color=COLOR_NEUTRAL_DARK,
+            color=INK,
         )
     if label:
         ax.legend(frameon=False, fontsize=9, loc="upper right")
-    sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -209,7 +186,7 @@ def manhattan(
     figsize: tuple[float, float] = (14, 3.5),
     threshold: Optional[float] = None,
     highlight_chrom: Optional[str] = None,
-    highlight_color: str = FOUNDER_COLORS["PWKJ"],
+    highlight_color: str = BRAND_ACCENT,
     egene_scans: Optional[dict[str, tuple[np.ndarray, np.ndarray]]] = None,
     low_expr_mask: Optional[dict[str, np.ndarray]] = None,
     top_labels: Optional[dict[str, list[str]]] = None,
@@ -267,15 +244,14 @@ def manhattan(
         x = pos + offset
         if chrom == highlight_chrom:
             _hi_xspan = (float(x[0]), float(x[-1]))
-        chr_color = _CHR_COLORS[ci % 2]
+        chr_color = CHR_BANDS[ci % 2]
         # low-expr genes: light grey, plotted before chromosome-coloured dots
         if low_expr_mask and chrom in low_expr_mask:
             _lo = low_expr_mask[chrom][order]
             if _lo.any():
                 sns.scatterplot(
                     x=x[_lo], y=lod[_lo],
-                    color=COLOR_NEUTRAL_LIGHT,
-                    s=4, alpha=0.3, linewidths=0, rasterized=True,
+                    **KW_DOT_MUTED,
                     ax=ax,
                 )
             if (~_lo).any():
@@ -292,14 +268,14 @@ def manhattan(
                 s=5, alpha=0.4, linewidths=0, rasterized=True,
                 ax=ax,
             )
-        # eGene overlay: PWKJ red, larger — marks FDR-significant genes
+        # eGene overlay: accent orange, larger — marks FDR-significant genes
         if egene_scans and chrom in egene_scans:
             epos, elod = egene_scans[chrom]
             eorder = np.argsort(epos)
             ex = epos[eorder] + offset
             sns.scatterplot(
                 x=ex, y=elod[eorder],
-                color=FOUNDER_COLORS["PWKJ"],
+                color=BRAND_ACCENT,
                 s=18, linewidths=0, rasterized=True,
                 ax=ax,
             )
@@ -324,7 +300,7 @@ def manhattan(
     if threshold is not None:
         ax.axhline(
             threshold,
-            color=COLOR_THRESHOLD,
+            color=BRAND_ACCENT,
             linewidth=1.0,
             linestyle=":",
             zorder=1,
@@ -342,12 +318,11 @@ def manhattan(
                 textcoords="offset points",
                 fontsize=10,
                 ha="center",
-                color=COLOR_NEUTRAL_DARK,
+                color=INK,
             )
     if title:
         ax.set_title(title, fontsize=8)
-    sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return fig
 
 
@@ -358,7 +333,7 @@ def lod_interval(
     ax: Optional[plt.Axes] = None,
     lod_drop: float = 1.5,
     chrom: str = "",
-    color: str = FOUNDER_COLORS["NODJ"],
+    color: str = BRAND_PRIMARY,
 ) -> plt.Axes:
     """LOD support interval: shades region where LOD >= peak − lod_drop.
 
@@ -387,7 +362,7 @@ def lod_interval(
     ax.fill_between(
         positions, 0, lod, where=(lod >= cutoff), alpha=0.20, color=color, linewidth=0
     )
-    ax.axhline(cutoff, color=COLOR_CC_FALLBACK, linewidth=0.6, linestyle=":", zorder=1)
+    ax.axhline(cutoff, color=MUTED, linewidth=0.6, linestyle=":", zorder=1)
     return ax
 
 
@@ -398,7 +373,7 @@ def bayes_interval(
     ax: Optional[plt.Axes] = None,
     prob: float = 0.95,
     chrom: str = "",
-    color: str = FOUNDER_COLORS["NODJ"],
+    color: str = BRAND_PRIMARY,
 ) -> plt.Axes:
     """Bayes credible interval: shades highest-density region containing `prob` mass.
 
@@ -446,8 +421,8 @@ def region_zoom(
     threshold: Optional[float] = None,
     snp_positions: Optional[np.ndarray] = None,
     snp_neg_log10p: Optional[np.ndarray] = None,
-    snp_color: str = COLOR_CC_FALLBACK,
-    color: str = FOUNDER_COLORS["NODJ"],
+    snp_color: str = MUTED,
+    color: str = BRAND_PRIMARY,
 ) -> plt.Axes:
     """Zoomed-in LOD profile for a genomic region, with optional SNP overlay.
 
@@ -518,7 +493,7 @@ def snp_manhattan(
     figsize: tuple[float, float] = (14, 3),
     threshold: Optional[float] = None,
     highlight_chrom: Optional[str] = None,
-    highlight_color: str = FOUNDER_COLORS["PWKJ"],
+    highlight_color: str = BRAND_ACCENT,
     point_size: float = 2.0,
 ) -> plt.Figure:
     """Genome-wide SNP association Manhattan plot (−log10 p-value).
@@ -565,7 +540,7 @@ def snp_manhattan(
             _hi_xspan_p = (float(x[0]), float(x[-1]))
         sns.scatterplot(
             x=x, y=y,
-            color=_CHR_COLORS[ci % 2],
+            color=CHR_BANDS[ci % 2],
             s=point_size, alpha=0.4, linewidths=0, rasterized=True,
             ax=ax,
         )
@@ -583,12 +558,8 @@ def snp_manhattan(
     ax.set_xticklabels(xlabels, fontsize=7)
     ax.tick_params(axis="x", length=2)
     if threshold is not None:
-        ax.axhline(
-            threshold, color=COLOR_THRESHOLD, linewidth=1.0, linestyle=":", zorder=1,
-            alpha=0.85,
-        )
-    sns.despine(ax=ax)
-    _set_font(ax)
+        ax.axhline(threshold, **KW_THRESHOLD)
+    apply_theme(ax)
     return fig
 
 
@@ -623,7 +594,7 @@ def pvalue_qq(
         y=observed,
         s=5,
         alpha=0.4,
-        color=FOUNDER_COLORS["NODJ"],
+        color=BRAND_PRIMARY,
         linewidths=0,
         rasterized=True,
         zorder=2,
@@ -633,7 +604,7 @@ def pvalue_qq(
     sns.lineplot(
         x=_diag,
         y=_diag,
-        color=COLOR_NEUTRAL_DARK,
+        color=INK,
         linewidth=1.2,
         linestyle="--",
         alpha=0.7,
@@ -656,8 +627,7 @@ def pvalue_qq(
     ax.set_ylim(bottom=0)
     ax.set_xlabel("Expected −log₁₀(p)")
     ax.set_ylabel("Observed −log₁₀(p)")
-    sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax, from_zero=False)
     return ax
 
 
@@ -689,12 +659,12 @@ def lod_histogram(
         _, ax = plt.subplots(figsize=(5, 3), dpi=300)
 
     sns.histplot(
-        lod, bins=80, color=FOUNDER_COLORS["NODJ"], alpha=0.7, ax=ax, linewidth=0
+        lod, bins=80, color=BRAND_PRIMARY, alpha=0.7, ax=ax, linewidth=0
     )
     if threshold is not None:
         ax.axvline(
             threshold,
-            color=COLOR_THRESHOLD,
+            color=BRAND_ACCENT,
             linewidth=1.4,
             linestyle=":",
             alpha=0.85,
@@ -706,8 +676,7 @@ def lod_histogram(
     ax.set_ylim(bottom=0)
     ax.set_xlabel("LOD Score")
     ax.set_ylabel("Number of loci")
-    sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -719,7 +688,7 @@ def gene_manhattan(
     figsize: tuple[float, float] = (14, 3),
     threshold: Optional[float] = None,
     highlight_chrom: Optional[str] = None,
-    highlight_color: str = FOUNDER_COLORS["PWKJ"],
+    highlight_color: str = BRAND_ACCENT,
     point_size: float = 6.0,
 ) -> plt.Figure:
     """Gene-level Manhattan: one point per gene at its genome-wide peak LOD.
@@ -767,7 +736,7 @@ def gene_manhattan(
             _hi_xspan_g = (float(x[0]), float(x[-1]))
         sns.scatterplot(
             x=x, y=y,
-            color=_CHR_COLORS[ci % 2],
+            color=CHR_BANDS[ci % 2],
             s=point_size, alpha=0.4, linewidths=0, rasterized=True,
             ax=ax,
         )
@@ -787,12 +756,8 @@ def gene_manhattan(
     ax.set_xticklabels(xlabels, fontsize=7)
     ax.tick_params(axis="x", length=2)
     if threshold is not None:
-        ax.axhline(
-            threshold, color=COLOR_THRESHOLD, linewidth=1.0, linestyle=":", zorder=1,
-            alpha=0.85,
-        )
-    sns.despine(ax=ax)
-    _set_font(ax)
+        ax.axhline(threshold, **KW_THRESHOLD)
+    apply_theme(ax)
     return fig
 
 
@@ -851,7 +816,7 @@ def cis_distance_histogram(
         _ctr,
         _cnt_up,
         width=_w,
-        color=FOUNDER_COLORS["NODJ"],
+        color=BRAND_PRIMARY,
         alpha=0.75,
         linewidth=0,
         label=f"upstream  ({_n_up:,})",
@@ -861,7 +826,7 @@ def cis_distance_histogram(
         _ctr,
         _cnt_dn,
         width=_w,
-        color=FOUNDER_COLORS["CASTJ"],
+        color=BRAND_SECONDARY,
         alpha=0.75,
         linewidth=0,
         label=f"downstream  ({_n_dn:,})",
@@ -872,7 +837,7 @@ def cis_distance_histogram(
     if _n > 4:
         _kde_ax = ax.twinx()
         sns.kdeplot(
-            _dist, ax=_kde_ax, color=COLOR_NEUTRAL_DARK, linewidth=1.6, alpha=0.6
+            _dist, ax=_kde_ax, color=INK, linewidth=1.6, alpha=0.6
         )
         _kde_ax.set_ylabel("")
         _kde_ax.set_yticks([])
@@ -880,14 +845,14 @@ def cis_distance_histogram(
 
     # ±proximal_mb shaded band
     ax.axvspan(
-        -proximal_mb, proximal_mb, alpha=0.07, color=FOUNDER_COLORS["NODJ"], zorder=0
+        -proximal_mb, proximal_mb, alpha=0.07, color=BRAND_PRIMARY, zorder=0
     )
 
     # reference and boundary lines
-    ax.axvline(0, color=COLOR_NEUTRAL_DARK, lw=1.2, zorder=3)
+    ax.axvline(0, color=INK, lw=1.2, zorder=3)
     for _s in (-1, 1):
         ax.axvline(
-            _s * cis_window_mb, color=COLOR_CC_FALLBACK, lw=0.9, ls=":", zorder=1
+            _s * cis_window_mb, color=MUTED, lw=0.9, ls=":", zorder=1
         )
 
     # directional count annotations just above x-axis
@@ -899,7 +864,7 @@ def cis_distance_histogram(
         fontsize=8.5,
         ha="right",
         va="top",
-        color=FOUNDER_COLORS["NODJ"],
+        color=BRAND_PRIMARY,
         fontweight="bold",
     )
     ax.text(
@@ -909,34 +874,23 @@ def cis_distance_histogram(
         fontsize=8.5,
         ha="left",
         va="top",
-        color=FOUNDER_COLORS["CASTJ"],
+        color=BRAND_SECONDARY,
         fontweight="bold",
     )
 
-    # stats box (upper right)
-    ax.text(
-        0.98,
-        0.97,
+    info_box(
+        ax,
         f"n = {_n:,}\nmedian |d| = {_med:.2f} Mb\n"
         f"±{proximal_mb:.0f} Mb: {_prox:.0f}%",
-        transform=ax.transAxes,
+        corner='tr',
         fontsize=8,
-        va="top",
-        ha="right",
-        bbox=dict(
-            boxstyle="round,pad=0.3",
-            facecolor="white",
-            edgecolor=COLOR_NEUTRAL_DARK,
-            alpha=0.9,
-        ),
     )
 
     ax.set_ylim(bottom=0)
     ax.set_xlabel("Cis distance  (peak − TSS, Mb)", fontsize=11)
     ax.set_ylabel("Number of eGenes", fontsize=11)
     ax.legend(fontsize=8.5, frameon=False, loc="lower right", ncol=1)
-    sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -995,7 +949,7 @@ def cis_distance_panel(
     )
 
     _scatter_hi_kw: dict = dict(
-        cmap=_CMAP_LOD,
+        cmap=CMAP_MAGNITUDE,
         vmin=0.0,
         vmax=_vmax,
         s=5,
@@ -1004,15 +958,10 @@ def cis_distance_panel(
         rasterized=True,
     )
     _scatter_lo_kw: dict = dict(
-        color=COLOR_NEUTRAL_LIGHT,
-        s=4,
-        alpha=0.3,
-        linewidths=0,
-        rasterized=True,
-        zorder=1,
+        **KW_DOT_MUTED,
     )
-    _ref_kw: dict = dict(color=COLOR_NEUTRAL_DARK, ls="--", lw=1.2, alpha=0.7, zorder=3)
-    _thr_kw: dict = dict(color=COLOR_THRESHOLD, ls=":", lw=1.4, alpha=0.85, zorder=4)
+    _ref_kw: dict = KW_REFERENCE.copy()
+    _thr_kw: dict = KW_THRESHOLD.copy()
 
     # ── panel 1: full range scatter ──────────────────────────────────────────
     if _is_lo.any():
