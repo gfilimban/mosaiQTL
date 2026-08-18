@@ -583,7 +583,8 @@ def snp_manhattan(
     ax.tick_params(axis="x", length=2)
     if threshold is not None:
         ax.axhline(
-            threshold, color=COLOR_NEUTRAL_DARK, linewidth=0.8, linestyle="--", zorder=1
+            threshold, color=COLOR_THRESHOLD, linewidth=1.0, linestyle=":", zorder=1,
+            alpha=0.85,
         )
     sns.despine(ax=ax)
     _set_font(ax)
@@ -691,12 +692,13 @@ def lod_histogram(
     if threshold is not None:
         ax.axvline(
             threshold,
-            color=FOUNDER_COLORS["PWKJ"],
-            linewidth=1.0,
-            linestyle="--",
+            color=COLOR_THRESHOLD,
+            linewidth=1.4,
+            linestyle=":",
+            alpha=0.85,
             label=f"threshold = {threshold:.1f}",
         )
-        ax.legend(fontsize=8, frameon=False, loc="upper right")
+        ax.legend(fontsize=9, frameon=False, loc="upper right")
 
     ax.set_xlim(left=0)
     ax.set_ylim(bottom=0)
@@ -778,7 +780,8 @@ def gene_manhattan(
     ax.tick_params(axis="x", length=2)
     if threshold is not None:
         ax.axhline(
-            threshold, color=COLOR_NEUTRAL_DARK, linewidth=0.8, linestyle="--", zorder=1
+            threshold, color=COLOR_THRESHOLD, linewidth=1.0, linestyle=":", zorder=1,
+            alpha=0.85,
         )
     sns.despine(ax=ax)
     _set_font(ax)
@@ -1227,7 +1230,7 @@ def library_size_qc(
         linestyle="--",
         label="median",
     )
-    ax.legend(fontsize=8, frameon=False, loc="upper right")
+    ax.legend(fontsize=9, frameon=False, loc="upper right")
 
     if sample_ids is not None and n <= 60:
         ax.set_xticks(x)
@@ -1514,9 +1517,10 @@ def egene_lod_distribution(
         # value in legend label — not repeated in info box
         ax.axvline(
             threshold,
-            color=FOUNDER_COLORS["PWKJ"],
-            linewidth=1.5,
-            linestyle="--",
+            color=COLOR_THRESHOLD,
+            linewidth=1.4,
+            linestyle=":",
+            alpha=0.85,
             label=f"GEV 95%  ({threshold:.2f})",
         )
 
@@ -1531,22 +1535,22 @@ def egene_lod_distribution(
         f"total   = {n_total:,}",
     ]
     ax.text(
-        0.02,
+        0.03,
         0.97,
         "\n".join(info_lines),
         transform=ax.transAxes,
-        fontsize=9,
+        fontsize=8.5,
         va="top",
         ha="left",
         fontfamily="monospace",
         bbox=dict(
-            boxstyle="round,pad=0.35",
+            boxstyle="round,pad=0.3",
             facecolor="white",
             edgecolor=COLOR_NEUTRAL_DARK,
-            alpha=0.88,
+            alpha=0.9,
         ),
     )
-    ax.legend(fontsize=8, frameon=False, loc="upper right")
+    ax.legend(fontsize=9, frameon=False, loc="upper right")
     ax.set_title("eGene LOD Score Distribution", fontsize=11)
     sns.despine(ax=ax)
     _set_font(ax)
@@ -1901,7 +1905,14 @@ def instability_lod_overlay(
     )
 
     if threshold is not None:
-        ax.axhline(threshold, color=COLOR_NEUTRAL_DARK, lw=0.8, ls="--", zorder=0)
+        ax.axhline(
+            threshold,
+            color=COLOR_THRESHOLD,
+            lw=1.0,
+            ls=":",
+            alpha=0.85,
+            zorder=0,
+        )
 
     ax2 = ax.twinx()
     ax2.fill_between(pos, inst, alpha=0.10, color=_INST_COLOR, zorder=1)
@@ -1947,12 +1958,12 @@ def instability_lod_overlay(
         ha="right",
         va="top",
         fontfamily="monospace",
-        fontsize=10,
+        fontsize=8.5,
         bbox=dict(
-            boxstyle="round,pad=0.35",
+            boxstyle="round,pad=0.3",
             facecolor="white",
             edgecolor=COLOR_NEUTRAL_DARK,
-            alpha=0.88,
+            alpha=0.9,
         ),
     )
 
@@ -1970,7 +1981,7 @@ def instability_lod_overlay(
     lines2, labels2 = ax2.get_legend_handles_labels()
     # lower-left: gene text occupies upper-left; info box occupies upper-right
     ax.legend(
-        lines1 + lines2, labels1 + labels2, fontsize=8, frameon=False, loc="lower left"
+        lines1 + lines2, labels1 + labels2, fontsize=9, frameon=False, loc="lower left"
     )
     sns.despine(ax=ax)
     _set_font(ax)
@@ -2036,7 +2047,14 @@ def mi_scan_overlay(
     )
 
     if threshold is not None:
-        ax.axhline(threshold, color=COLOR_NEUTRAL_DARK, lw=0.8, ls="--", zorder=0)
+        ax.axhline(
+            threshold,
+            color=COLOR_THRESHOLD,
+            lw=1.0,
+            ls=":",
+            alpha=0.85,
+            zorder=0,
+        )
 
     if peak_pos is not None:
         ax.axvline(peak_pos, color=FOUNDER_COLORS["PWKJ"], lw=0.8, ls=":", zorder=3)
@@ -2063,12 +2081,12 @@ def mi_scan_overlay(
         ha="right",
         va="top",
         fontfamily="monospace",
-        fontsize=10,
+        fontsize=8.5,
         bbox=dict(
-            boxstyle="round,pad=0.35",
+            boxstyle="round,pad=0.3",
             facecolor="white",
             edgecolor=COLOR_NEUTRAL_DARK,
-            alpha=0.88,
+            alpha=0.9,
         ),
     )
 
@@ -2082,7 +2100,7 @@ def mi_scan_overlay(
     ax.set_xlim(float(pos[0]), float(pos[-1]))
     ax.set_ylim(0, max(float(np.concatenate([scan, mi]).max()) * 1.2, 1.0))
     # lower-left: gene text occupies upper-left; info box occupies upper-right
-    ax.legend(fontsize=8, frameon=False, loc="lower left")
+    ax.legend(fontsize=9, frameon=False, loc="lower left")
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
@@ -2384,15 +2402,15 @@ def mediation_summary_bar(
             0.97,
             _info,
             transform=ax.transAxes,
-            fontsize=10,
+            fontsize=8.5,
             va="top",
             ha="right",
             fontfamily="monospace",
             bbox=dict(
-                boxstyle="round,pad=0.35",
+                boxstyle="round,pad=0.3",
                 facecolor="white",
                 edgecolor=COLOR_NEUTRAL_DARK,
-                alpha=0.88,
+                alpha=0.9,
             ),
         )
     sns.despine(ax=ax)
@@ -2735,7 +2753,7 @@ def lod_profiles_per_chr(
                     label=f"{p1}  LOD={p1_max:.1f}",
                     zorder=3,
                 )
-                ax.legend(fontsize=10, loc="upper right", framealpha=0.85)
+                ax.legend(fontsize=9, loc="upper right", frameon=False)
                 title += f"  /  {p1}"
         ax.set_title(title, fontsize=13)
         sns.despine(ax=ax)
