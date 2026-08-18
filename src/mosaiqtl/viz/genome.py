@@ -133,18 +133,7 @@ def lod_profile(
     ax.tick_params(labelsize=11)
     if threshold is not None:
         ax.axhline(
-            threshold, color=COLOR_NEUTRAL_DARK, linewidth=0.8, linestyle="--", zorder=1
-        )
-        # left-side label via yaxis transform (x=axes, y=data) — avoids right-side clashes
-        ax.text(
-            0.01,
-            threshold,
-            f"thr={threshold:.2f}",
-            fontsize=9,
-            ha="left",
-            va="bottom",
-            color=COLOR_NEUTRAL_DARK,
-            transform=ax.get_yaxis_transform(),
+            threshold, color=COLOR_THRESHOLD, linewidth=0.8, linestyle="--", zorder=1
         )
     if tss_mb is not None:
         ax.axvline(
@@ -4432,22 +4421,28 @@ def genome_diagnostic(
     )
     axes = axes if n_panels > 1 else [axes]
 
+    # genome_wide bar first (different color), then per-chr bars in chr order
+    gw_thr = thr_by_chr.get("genome_wide")
     chrs_ordered = [c for c in _CHR_ORDER if c in thr_by_chr]
-    chrs_ordered += sorted(set(thr_by_chr) - set(_CHR_ORDER))
-    thrs = [thr_by_chr[c] if thr_by_chr[c] is not None else 0.0 for c in chrs_ordered]
+    chrs_ordered += sorted(set(thr_by_chr) - set(_CHR_ORDER) - {"genome_wide"})
+
+    labels = (["genome\nwide"] if gw_thr is not None else []) + chrs_ordered
+    values = (
+        ([gw_thr if gw_thr is not None else 0.0] if gw_thr is not None else [])
+        + [thr_by_chr[c] if thr_by_chr[c] is not None else 0.0 for c in chrs_ordered]
+    )
+    colors = (
+        ([COLOR_THRESHOLD] if gw_thr is not None else [])
+        + [FOUNDER_COLORS["NZOJ"]] * len(chrs_ordered)
+    )
 
     ax0 = axes[0]
-    ax0.bar(
-        range(len(chrs_ordered)),
-        thrs,
-        color=FOUNDER_COLORS["NZOJ"],
-        width=0.7,
-    )
-    ax0.set_xticks(range(len(chrs_ordered)))
-    ax0.set_xticklabels(chrs_ordered, fontsize=10, rotation=45, ha="right")
+    ax0.bar(range(len(labels)), values, color=colors, width=0.7)
+    ax0.set_xticks(range(len(labels)))
+    ax0.set_xticklabels(labels, fontsize=9, rotation=45, ha="right")
     ax0.set_ylabel("GEV Threshold (LOD)", fontsize=12)
     ax0.set_title("Permutation threshold per chromosome", fontsize=12)
-    ax0.set_xlim(-0.5, len(chrs_ordered) - 0.5)
+    ax0.set_xlim(-0.5, len(labels) - 0.5)
     ax0.set_ylim(bottom=0)
     ax0.tick_params(axis="y", labelsize=10)
     sns.despine(ax=ax0)
