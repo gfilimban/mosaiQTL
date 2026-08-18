@@ -251,12 +251,27 @@ def manhattan(
     extra = [c for c in scans if c not in ordered]
     chroms = ordered + extra
 
+    # colour range: 95th-percentile LOD drives vmax so bright = significant
+    _all_lod = np.concatenate([v[1] for v in scans.values()])
+    _fin = _all_lod[np.isfinite(_all_lod)]
+    _vmax = float(np.percentile(_fin, 95)) if len(_fin) > 0 else 1.0
+
     fig, ax = plt.subplots(figsize=figsize, dpi=300)
     offset = 0.0
     xticks: list[float] = []
     xlabels: list[str] = []
     # collect (x, lod, chrom) for top-gene labeling
     all_pts: list[tuple[float, float, str]] = []
+    _hi_xspan: 'tuple[float, float] | None' = None
+
+    _sc_kw: dict = dict(
+        cmap=_CMAP_LOD, vmin=0.0, vmax=_vmax,
+        s=5, alpha=0.4, linewidths=0, rasterized=True, zorder=2,
+    )
+    _lo_kw: dict = dict(
+        color=COLOR_NEUTRAL_LIGHT, s=4, alpha=0.3,
+        linewidths=0, rasterized=True, zorder=1,
+    )
 
     for ci, chrom in enumerate(chroms):
         pos, lod = scans[chrom]
@@ -264,61 +279,25 @@ def manhattan(
         pos = pos[order]
         lod = lod[order]
         x = pos + offset
-        base_color = (
-            highlight_color if chrom == highlight_chrom else _CHR_COLORS[ci % 2]
-        )
-        # low-expr genes: light grey, behind chromosome-colored scatter
+        if chrom == highlight_chrom:
+            _hi_xspan = (float(x[0]), float(x[-1]))
+        # low-expr genes: light grey behind LOD-coloured scatter
         if low_expr_mask and chrom in low_expr_mask:
             _lo = low_expr_mask[chrom][order]
             if _lo.any():
-                sns.scatterplot(
-                    x=x[_lo],
-                    y=lod[_lo],
-                    color=COLOR_NEUTRAL_LIGHT,
-                    s=4,
-                    linewidths=0,
-                    zorder=1,
-                    alpha=0.3,
-                    rasterized=True,
-                    ax=ax,
-                )
-            sns.scatterplot(
-                x=x[~_lo],
-                y=lod[~_lo],
-                color=base_color,
-                s=5,
-                linewidths=0,
-                zorder=2,
-                alpha=0.4,
-                rasterized=True,
-                ax=ax,
-            )
+                ax.scatter(x[_lo], lod[_lo], **_lo_kw)
+            ax.scatter(x[~_lo], lod[~_lo], c=lod[~_lo], **_sc_kw)
         else:
-            sns.scatterplot(
-                x=x,
-                y=lod,
-                color=base_color,
-                s=5,
-                linewidths=0,
-                zorder=2,
-                alpha=0.4,
-                rasterized=True,
-                ax=ax,
-            )
-        # eGene overlay: larger, opaque, highlight color
+            ax.scatter(x, lod, c=lod, **_sc_kw)
+        # eGene overlay: red, larger — marks FDR-significant genes
         if egene_scans and chrom in egene_scans:
             epos, elod = egene_scans[chrom]
             eorder = np.argsort(epos)
             ex = epos[eorder] + offset
-            sns.scatterplot(
-                x=ex,
-                y=elod[eorder],
+            ax.scatter(
+                ex, elod[eorder],
                 color=FOUNDER_COLORS["PWKJ"],
-                s=18,
-                linewidths=0,
-                zorder=4,
-                rasterized=True,
-                ax=ax,
+                s=18, linewidths=0, rasterized=True, zorder=4,
             )
         mid = float(offset + (float(pos[-1]) - float(pos[0])) / 2)
         xticks.append(mid)
@@ -326,6 +305,9 @@ def manhattan(
         for xi, li in zip(x, lod):
             all_pts.append((float(xi), float(li), chrom))
         offset += float(pos[-1]) + _CHR_GAP_MB
+
+    if _hi_xspan is not None:
+        ax.axvspan(_hi_xspan[0], _hi_xspan[1], alpha=0.06, color=highlight_color, zorder=0)
 
     ax.set_xlim(0, offset)
     ax.set_ylim(0, None)
@@ -564,24 +546,32 @@ def snp_manhattan(
     extra = sorted(set(snp_chroms) - set(ordered))
     chroms = ordered + extra
 
+    _fin_p = snp_neg_log10p[np.isfinite(snp_neg_log10p)]
+    _vmax_p = float(np.percentile(_fin_p, 95)) if len(_fin_p) > 0 else 1.0
+
     fig, ax = plt.subplots(figsize=figsize, dpi=300)
     offset = 0.0
     xticks: list[float] = []
     xlabels: list[str] = []
+    _hi_xspan_p: 'tuple[float, float] | None' = None
 
     for ci, chrom in enumerate(chroms):
         mask = snp_chroms == chrom
         pos = snp_positions[mask]
         y = snp_neg_log10p[mask]
         x = pos + offset
-        color = highlight_color if chrom == highlight_chrom else _CHR_COLORS[ci % 2]
-        sns.scatterplot(
-            x=x, y=y, color=color, s=point_size,
-            alpha=0.4, linewidths=0, rasterized=True, zorder=2, ax=ax,
+        if chrom == highlight_chrom:
+            _hi_xspan_p = (float(x[0]), float(x[-1]))
+        ax.scatter(
+            x, y, c=y, cmap=_CMAP_LOD, vmin=0.0, vmax=_vmax_p,
+            s=point_size, alpha=0.4, linewidths=0, rasterized=True, zorder=2,
         )
         xticks.append(float(offset + (pos.max() - pos.min()) / 2))
         xlabels.append(chrom)
         offset += float(pos.max()) + _CHR_GAP_MB
+
+    if _hi_xspan_p is not None:
+        ax.axvspan(_hi_xspan_p[0], _hi_xspan_p[1], alpha=0.06, color=highlight_color, zorder=0)
 
     ax.set_xlim(0, offset)
     ax.set_ylim(0, None)
@@ -763,25 +753,29 @@ def gene_manhattan(
     xticks: list[float] = []
     xlabels: list[str] = []
 
+    _fin_g = peak_lod[np.isfinite(peak_lod)]
+    _vmax_g = float(np.percentile(_fin_g, 95)) if len(_fin_g) > 0 else 1.0
+    _hi_xspan_g: 'tuple[float, float] | None' = None
+
     for ci, chrom in enumerate(chroms):
         mask = gene_chroms == chrom
         pos = gene_positions[mask]
         y = peak_lod[mask]
-        color = highlight_color if chrom == highlight_chrom else _CHR_COLORS[ci % 2]
-        sns.scatterplot(
-            x=pos + offset,
-            y=y,
-            color=color,
-            s=point_size,
-            alpha=0.4,
-            linewidths=0,
-            rasterized=True,
-            zorder=2,
-            ax=ax,
+        x = pos + offset
+        if chrom == highlight_chrom:
+            _hi_xspan_g = (float(x[0]), float(x[-1]))
+        ax.scatter(
+            x, y, c=y, cmap=_CMAP_LOD, vmin=0.0, vmax=_vmax_g,
+            s=point_size, alpha=0.4, linewidths=0, rasterized=True, zorder=2,
         )
         xticks.append(float(offset + (pos.max() - pos.min()) / 2))
         xlabels.append(chrom)
         offset += float(pos.max()) + _CHR_GAP_MB
+
+    if _hi_xspan_g is not None:
+        ax.axvspan(
+            _hi_xspan_g[0], _hi_xspan_g[1], alpha=0.06, color=highlight_color, zorder=0,
+        )
 
     ax.set_xlim(0, offset)
     ax.set_ylim(0, None)
@@ -4273,6 +4267,9 @@ def genome_summary(
     )
 
     egene_color = FOUNDER_COLORS["PWKJ"]
+    # colour range: 95th-percentile LOD drives vmax so bright = significant
+    _fin_gs = lod_arr[np.isfinite(lod_arr)]
+    _vmax_gs = float(np.percentile(_fin_gs, 95)) if len(_fin_gs) > 0 else 1.0
     offset = 0.0
     xticks: list[float] = []
     egene_counts: list[int] = []
@@ -4294,23 +4291,33 @@ def genome_summary(
             continue
 
         x = pos_c + offset
-        ax_mh.scatter(
-            x[~eg_c],
-            lod_c[~eg_c],
-            color=COLOR_CC_FALLBACK,
-            s=3,
-            linewidths=0,
-            zorder=2,
-            alpha=0.45,
-        )
-        ax_mh.scatter(
-            x[eg_c],
-            lod_c[eg_c],
-            color=egene_color,
-            s=8,
-            linewidths=0,
-            zorder=3,
-        )
+        # non-eGenes: LOD-magnitude colormap (consistent with manhattan())
+        if (~eg_c).any():
+            ax_mh.scatter(
+                x[~eg_c],
+                lod_c[~eg_c],
+                c=lod_c[~eg_c],
+                cmap=_CMAP_LOD,
+                vmin=0.0,
+                vmax=_vmax_gs,
+                s=3,
+                linewidths=0,
+                zorder=2,
+                alpha=0.45,
+                rasterized=True,
+            )
+        # eGenes: PWKJ red overlay — marks FDR-significant genes
+        if eg_c.any():
+            sns.scatterplot(
+                x=x[eg_c],
+                y=lod_c[eg_c],
+                color=egene_color,
+                s=8,
+                linewidths=0,
+                zorder=3,
+                rasterized=True,
+                ax=ax_mh,
+            )
 
         # track genome-wide peak for labeling
         if len(lod_c) > 0 and float(lod_c.max()) > top_y:
@@ -4324,9 +4331,10 @@ def genome_summary(
                 thr_val,
                 offset,
                 offset + float(pos_c.max()),
-                colors=COLOR_NEUTRAL_DARK,
-                linewidth=0.7,
-                linestyle="--",
+                colors=COLOR_THRESHOLD,
+                linewidth=1.4,
+                linestyle=":",
+                alpha=0.85,
                 zorder=1,
             )
 
