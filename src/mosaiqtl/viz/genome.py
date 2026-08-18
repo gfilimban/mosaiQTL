@@ -576,7 +576,8 @@ def snp_manhattan(
         x = pos + offset
         color = highlight_color if chrom == highlight_chrom else _CHR_COLORS[ci % 2]
         sns.scatterplot(
-            x=x, y=y, color=color, s=point_size, linewidths=0, zorder=2, ax=ax
+            x=x, y=y, color=color, s=point_size,
+            alpha=0.4, linewidths=0, rasterized=True, zorder=2, ax=ax,
         )
         xticks.append(float(offset + (pos.max() - pos.min()) / 2))
         xlabels.append(chrom)
@@ -627,8 +628,8 @@ def pvalue_qq(
     sns.scatterplot(
         x=expected,
         y=observed,
-        s=6,
-        alpha=0.5,
+        s=5,
+        alpha=0.4,
         color=FOUNDER_COLORS["NODJ"],
         linewidths=0,
         rasterized=True,
@@ -772,7 +773,9 @@ def gene_manhattan(
             y=y,
             color=color,
             s=point_size,
+            alpha=0.4,
             linewidths=0,
+            rasterized=True,
             zorder=2,
             ax=ax,
         )
@@ -2855,9 +2858,10 @@ def snp_profiles_per_chr(
             x=snp_g["pos_mb"].values,
             y=snp_g["lod"].values,
             color=_SNP_COLOR,
-            s=10,
-            alpha=0.80,
+            s=5,
+            alpha=0.4,
             linewidths=0,
+            rasterized=True,
             zorder=2,
             ax=ax,
         )
