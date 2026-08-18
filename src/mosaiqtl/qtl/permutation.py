@@ -42,6 +42,7 @@ __all__ = [
     "generate_null_outcomes",
     "run_threshold_scans",
     "get_gev_thresholds",
+    "load_per_chr_thresholds",
     "run_positional_scans",
 ]
 
@@ -549,6 +550,48 @@ def get_gev_thresholds(
         threshold,
     )
     return threshold, params
+
+
+def load_per_chr_thresholds(
+    perm_dir: 'Path',
+    percentile: float = 0.95,
+) -> 'dict[str, float | None]':
+    """Load per-chromosome null distributions and return GEV thresholds.
+
+    Reads ``perm_max_lods_chr{chrom}.csv`` files written by
+    :func:`run_threshold_scans`, fits a GEV to each chromosome's max-LOD
+    null, and returns per-chromosome FWER thresholds at *percentile*.
+
+    Useful when ``threshold.csv`` was written with only a ``genome_wide``
+    sentinel row (checkpointed scans) and per-chromosome bars are needed for
+    diagnostic plots.
+
+    Parameters
+    ----------
+    perm_dir :
+        Directory containing ``perm_max_lods_chr*.csv`` files (typically
+        the ``core/`` subdirectory of a scan output).
+    percentile :
+        Significance percentile; default ``0.95`` (5 % FWER).
+
+    Returns
+    -------
+    dict[str, float | None]
+        ``{chrom: threshold}``; value is ``None`` when the GEV fit fails.
+    """
+    from pathlib import Path as _Path
+
+    perm_dir = _Path(perm_dir)
+    result: 'dict[str, float | None]' = {}
+    for pf in sorted(perm_dir.glob('perm_max_lods_chr*.csv')):
+        chrom = pf.stem.replace('perm_max_lods_chr', '')
+        try:
+            nulls = pd.read_csv(pf)['max_lod'].values
+            thr, _ = get_gev_thresholds(nulls, percentile=percentile)
+            result[chrom] = thr
+        except Exception:
+            result[chrom] = None
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────

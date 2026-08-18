@@ -330,16 +330,14 @@ def manhattan(
     ax.tick_params(axis="y", labelsize=11)
     if threshold is not None:
         ax.axhline(
-            threshold, color=COLOR_NEUTRAL_DARK, linewidth=1.0, linestyle="--", zorder=1
-        )
-        ax.text(
-            offset * 0.005,
             threshold,
-            f"p95={threshold:.2f}",
-            fontsize=10,
-            color=COLOR_NEUTRAL_DARK,
-            va="bottom",
+            color=COLOR_THRESHOLD,
+            linewidth=1.0,
+            linestyle=":",
+            zorder=1,
+            label=f"p95 = {threshold:.2f}",
         )
+        ax.legend(fontsize=9, frameon=False, loc="upper right")
     # label top-N LOD points across the whole genome
     if top_n_labels > 0 and all_pts:
         top_pts = sorted(all_pts, key=lambda t: t[1], reverse=True)[:top_n_labels]
@@ -925,13 +923,7 @@ def cis_distance_histogram(
     ax.set_ylim(bottom=0)
     ax.set_xlabel("Cis distance  (peak − TSS, Mb)", fontsize=11)
     ax.set_ylabel("Number of eGenes", fontsize=11)
-    ax.legend(
-        fontsize=8.5,
-        frameon=False,
-        loc="upper center",
-        ncol=2,
-        bbox_to_anchor=(0.5, 1.0),
-    )
+    ax.legend(fontsize=8.5, frameon=False, loc="lower right", ncol=1)
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
@@ -1424,16 +1416,16 @@ def perm_distribution(
     elif chrom:
         _parts.append(f"ref_chr  = {chrom}")
     ax.text(
+        0.03,
         0.04,
-        0.97,
         "\n".join(_parts),
         transform=ax.transAxes,
         ha="left",
-        va="top",
+        va="bottom",
         fontfamily="monospace",
-        fontsize=10,
+        fontsize=9,
         bbox=dict(
-            boxstyle="round,pad=0.35",
+            boxstyle="round,pad=0.3",
             facecolor="white",
             edgecolor=COLOR_NEUTRAL_DARK,
             alpha=0.88,

@@ -170,6 +170,7 @@ from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chrom
 from mosaiqtl.qtl.permutation import (
     generate_null_outcomes,
     get_gev_thresholds,
+    load_per_chr_thresholds,
     run_positional_scans,
     run_threshold_scans,
     ci_scan_multi_gene,
@@ -609,6 +610,13 @@ def _make_descriptive_plots(
         except Exception:
             pass
 
+    # override genome-wide-expanded values with true per-chr GEV thresholds
+    # computed from perm_max_lods_chr*.csv (works with checkpointed data)
+    _per_chr_thr = load_per_chr_thresholds(core_dir, percentile=0.95)
+    if _per_chr_thr:
+        _thr_by_chr.update(_per_chr_thr)
+        log.info('  per-chr GEV thresholds loaded (%d chrs)', len(_per_chr_thr))
+
     # ── LOD profile — top gene per chromosome ────────────────────────────
     _lod_dir = plt_dir / 'core' / 'lod_profile'
     _lod_dir.mkdir(parents=True, exist_ok=True)
@@ -909,18 +917,16 @@ def _make_descriptive_plots(
     # ── per-chromosome permutation distributions ──────────────────────────
     _perm_dir = plt_dir / 'core' / 'perm'
     _perm_dir.mkdir(parents=True, exist_ok=True)
-    if thr_path.exists():
+    # _per_chr_thr computed above from perm_max_lods_chr*.csv via package function
+    if _per_chr_thr:
         try:
-            _thr_perm = pd.read_csv(thr_path)
-            _thr_perm['chr'] = _thr_perm['chr'].astype(str)
-            _perm_thr_dict = dict(
-                zip(_thr_perm['chr'], _thr_perm['threshold'].where(_thr_perm['threshold'].notna(), None))
-            )
             _perm_null: dict[str, np.ndarray] = {}
-            for _c_perm in _perm_thr_dict:
-                _pf_path = core_dir / f'perm_max_lods_chr{_c_perm}.csv'
+            for _c_perm, _pf_path in [
+                (c, core_dir / f'perm_max_lods_chr{c}.csv') for c in _per_chr_thr
+            ]:
                 if _pf_path.exists():
                     _perm_null[_c_perm] = pd.read_csv(_pf_path)['max_lod'].values
+            _perm_thr_dict = _per_chr_thr
             if _perm_null:
                 _perm_figs = _viz_perm_distributions_per_chr(_perm_null, _perm_thr_dict)
                 for _pc, _pf in _perm_figs.items():
