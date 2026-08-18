@@ -1,0 +1,20 @@
+# mosaiQTL — ctxhipp multi-cell-type scan parameters
+# Run: nextflow run workflow/main.nf -profile slurm -params-file config/ctxhipp_params.yaml -resume
+#
+# Each subdirectory of celltypes_dir must contain pseudobulk.h5.
+# gene_info is used as the global fallback; per-CT gene_info.csv is preferred if present.
+
+genomecache:   '/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl/validation/py_ref/cache.h5'
+kinship_loco:  null   # null → built once by KINSHIP_LOCO on first run;
+                      # after first run, set to the published kinship_loco.h5 path for -resume speed
+
+celltypes_dir: '/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl/validation/ctxhipp_data/celltypes'
+celltypes:     'all'  # or e.g. 'glutamatergic_neuron,oligodendrocyte'
+gene_info:     '/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl/validation/ctxhipp_data/exp_gene_info_ctxhipp.csv'
+
+output_dir:    '/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl/validation/ctxhipp_data/nf_results'
+scan_type:     'lmm'
+scan_window:   'cis'
+chroms:        'all'
+n_perms:       1000
+window_mb:     1.0

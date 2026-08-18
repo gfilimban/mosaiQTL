@@ -43,9 +43,8 @@ Project: IGVF (Impact of Genomic Variation on Function), Seyedam Lab, UCI.
 | RNA-seq/DNA-seq | Epistasis / conditional QTL      |            | Transcriptomics    | epistasis.py            | 🟡 implemented    |
 | RNA-seq/DNA-seq | Within-transcriptomics mediation |            | Transcriptomics    | mediation.py            | 🟡 implemented    |
 | multi-omics     | Cross-omics mediation (e.g. ATAC → expression) | | Multi-omics | mediation.py       | 🔴 planned        |
-| RNA-seq/DNA-seq | Allele-specific expression (ASE) |            | Transcriptomics    | ase.py                  | 🟡 scaffold       |
 | LR-RNA-seq      | Splicing                         | sQTL       | Transcriptomics    | sqtl.py                 | 🔴 planned        |
-| RNA-seq/DNA-seq | SNP fine-mapping                 |            | Genomics           | snp_scan.py             | 🟡 marginal model |
+| RNA-seq/DNA-seq | Imputed SNP scan (Sanger-resolution)   |            | Genomics           | genotype/interpolation.py + qtl/imputation.py | 🔴 planned — haplotype prob interpolation to ~70M Sanger SNP positions; ABF + SuSiE-RSS posteriors. Supersedes GigaMUGA dosage scan (`snp_scan.py` deleted). Source: Sanger MGP VCF (mm39, CrossMap liftover from REL-2112). |
 | ATAC-seq        | Chromatin accessibility          | caQTL      | Genomics           | atac.py                 | 🔴 planned        |
 | dRNA-seq        | RNA modification                 | rmodQTL    | Epigenomics        | mod.py                  | 🔴 planned        |
 | Fiber-seq       | DNA modification                 | dmodQTL    | Epigenomics        | mod.py                  | 🔴 planned        |
@@ -75,24 +74,39 @@ New modalities require only a new Stage 1 input handler — the scan is unchange
 ```
 src/mosaiqtl/
 ├── __init__.py
-├── genotype/               # haplotype data, HMM, kinship, founders
+├── genotype/               # haplotype data, HMM, kinship, founders, allele databases
 │   ├── CLAUDE.md
 │   ├── genomecache.py      # read/write HAPPY genome cache; from_rds, from_gigamuga
 │   ├── hmm.py              # forward-backward HMM (n_gen=1 for CC)
 │   ├── kinship.py          # LOCO, eigendecomp cache, Woodbury identity
-│   └── founders.py         # FOUNDER_ORDER, FOUNDER_COLORS, F1_COLORS
+│   ├── founders.py         # FOUNDER_ORDER, FOUNDER_COLORS, F1_COLORS
+│   ├── gm_db.py            # GigaMUGA allele database (GM_ccfo_mm39.csv → HDF5);
+│   │                       # build_founder_allele_db + load_founder_alleles.
+│   │                       # Source: GigaMUGA chip allele calls. Used by haplotype scan
+│   │                       # for GRCm39 ref/alt annotation and SPDI construction.
+│   ├── snp_db.py           # Sanger SNP database (Sanger MGP VCF → HDF5, ~70M positions,
+│   │                       # mm39 via CrossMap liftover from REL-2112);
+│   │                       # build_snp_db + load_founder_alleles (same API as gm_db).
+│   │                       # Used by imputed SNP scan for Sanger-position allele lookup.
+│   └── interpolation.py    # haplotype probability interpolation to non-cache positions;
+│                           # used exclusively by qtl/imputation.py (not the main scan).
+│                           # interpolate_haplotype_probs(cache, snp_positions, chrom, map)
+│                           # → H_p (n_strains × 8) at each Sanger SNP position.
 ├── qtl/                    # QTL scan engine — all modalities
 │   ├── CLAUDE.md
 │   ├── nb.py               # NB-GLMM Stage 1 and 2 (primary model, transcriptomics)
 │   ├── lmm.py              # Gaussian LMM engine (qtl2/miqtl-port); scan_chromosome_batch with return_peak_positions; scan_chromosome_mi vectorised over imputations; precompute_chromosome + scan_chromosome_fast for per-gene multi-gene loops
 │   ├── scan.py             # Z-matrix n=418, MI (vectorised), fixef, instability; scan_multi_gene_mi + instability_scan_multi_gene (streaming multi-gene wrappers)
 │   ├── permutation.py      # fix_h2=True, GEV thresholds; run_positional_scans vectorised via scan_chromosome_batch; ci_scan_multi_gene (streaming CI wrapper)
-│   ├── effects.py          # founder haplotype effect estimation
+│   ├── effects.py          # founder haplotype effect estimation; get_allele_effects accepts
+│   │                       # locus index (main scan) or precomputed H matrix (imputed SNP scan)
 │   ├── mediation.py        # QR-based mediation; mediation_scan_qr_batch vectorises all mediators per outcome; mediation_scan_multi_outcome (streaming multi-outcome wrapper)
 │   ├── epistasis.py        # pairwise GxG, conditional scanning
 │   ├── vqtl.py             # dispersion QTL, VQTLResult
-│   ├── snp_scan.py         # marginal SNP fine-mapping; snp_scan_multi_gene (streaming multi-gene wrapper)
-│   └── ase.py              # allele-specific expression (scaffold)
+│   ├── imputation.py       # imputed SNP scan orchestration (mosaiQTL equivalent of miQTL's
+│   │                       # imputed.snp.scan.h2lmm at Sanger resolution); per-eGene:
+│   │                       # interpolation.py → scan_h2lmm → run_abf / run_susie_rss.
+│   │                       # Produces _eqtl_finemapping.csv + _eqtl_finemapping_peak.csv.
 ├── models/                 # shared dataclasses and Pydantic schemas
 │   ├── records.py          # ScanResult, VQTLResult, QTLResult, FounderEffect
 │   └── config.py           # Population (frozen, MPP boundary), ScanConfig, PipelineConfig
@@ -126,11 +140,20 @@ src/mosaiqtl/
 
 **Planned modality modules** (not yet created):
 ```
-qtl/atac.py       # ATAC-seq Stage 1 — chromatin accessibility QTL
-qtl/sqtl.py       # splicing ratios Stage 1 — sQTL
-qtl/rnamod.py     # m6A / RNA modification counts Stage 1
-qtl/gxe.py        # sex × genotype interaction
-qtl/trans_scan.py # trans-eQTL with distance filter
+genotype/interpolation.py  # haplotype prob interpolation to Sanger SNP positions
+genotype/snp_db.py         # Sanger MGP VCF → HDF5 allele database (~70M positions, mm39)
+qtl/imputation.py          # imputed SNP scan: interpolation → scan_h2lmm → ABF/SuSiE-RSS
+qtl/atac.py                # ATAC-seq Stage 1 — chromatin accessibility QTL
+qtl/sqtl.py                # splicing ratios Stage 1 — sQTL
+qtl/rnamod.py              # m6A / RNA modification counts Stage 1
+qtl/gxe.py                 # sex × genotype interaction
+qtl/trans_scan.py          # trans-eQTL with distance filter
+```
+
+**Deleted modules:**
+```
+qtl/snp_scan.py   # removed — GigaMUGA dosage scan superseded by qtl/imputation.py
+                  # (imputed_snp_scan_h2lmm + snp_scan_multi_gene deleted with it)
 ```
 
 
@@ -142,7 +165,7 @@ qtl/trans_scan.py # trans-eQTL with distance filter
 The canonical R haplotype QTL implementation for CC/DO mice is correct but Gaussian-only — raw UMI counts require log-normalisation before analysis, inflating false positives for lowly-expressed genes. mosaiQTL ports the validated scan engine to Python and extends it with:
 1. A **two-stage NB-GLMM model** that operates on raw counts without ad-hoc normalization
 2. **Cell-type resolution** via per-cell-type pseudobulk inputs (aggregated upstream)
-3. **Novel extensions**: vQTL, epistasis, mediation, ASE
+3. **Novel extensions**: vQTL, epistasis, mediation
 4. **HPC scalability** via Nextflow SLURM pipeline
 5. **Multiomics generalization** — same backbone for ATAC, splicing, RNA/DNA modifications
 
@@ -370,7 +393,7 @@ mosaiQTL accepts:
 **Expression loading is the caller's responsibility — no HDF5 inside engine functions.**
 
 All scan functions (`scan_h2lmm`, `scan_h2lmm_mi`, `mediation_scan_qr_batch`,
-`instability_lm_scan`, `imputed_snp_scan_h2lmm`, etc.) accept pre-loaded `np.ndarray`
+`instability_lm_scan`, etc.) accept pre-loaded `np.ndarray`
 inputs. They perform no file I/O. The caller must load gene expression vectors before
 invoking any engine function.
 
@@ -453,17 +476,23 @@ subsets of eGenes. See `validate_gastroc.py` S7–S11 for the reference implemen
   → Streaming multi-gene wrappers (all scan types)
       Each wrapper owns the gene loop, writes results incrementally via output_path: Path | None,
       and del + gc.collect() after each gene. Callers get constant-memory behaviour automatically.
-      scan.py:       scan_multi_gene_mi        — MI scan across a gene set
-      scan.py:       instability_scan_multi_gene — instability scan across a gene set
-      permutation.py: ci_scan_multi_gene       — bootstrap CI across a gene set (accepts peak_mb_map)
-      snp_scan.py:   snp_scan_multi_gene       — SNP fine-mapping across a gene set
-      mediation.py:  mediation_scan_multi_outcome — mediation across all (outcome, mediator) pairs
+      scan.py:        scan_multi_gene_mi          — MI scan across a gene set
+      scan.py:        instability_scan_multi_gene — instability scan across a gene set
+      permutation.py: ci_scan_multi_gene          — bootstrap CI across a gene set (accepts peak_mb_map)
+      imputation.py:  scan_imputed                — imputed SNP scan across eGene set (interpolation → scan_h2lmm → ABF/SuSiE-RSS)
+      mediation.py:   mediation_scan_multi_outcome — mediation across all (outcome, mediator) pairs
 
-Final outputs:
-  - eGene tables per cell type (gene_id, chr, pos_mb, LOD, FDR, founder effects)
-  - LOD profile CSVs
-  - QC plots (PNG, dpi=300, font Carlito)
-  - HTML Nextflow run report
+Final outputs (per cell type):
+  Haplotype scan:
+    {tissue}_{ct}_eqtl_scan.csv          — all cis loci × eGenes; EQTL_SCAN_COLS
+    {tissue}_{ct}_eqtl_peak.csv          — peak locus per eGene + per-founder effects; EQTL_PEAK_COLS
+    {tissue}_{ct}_eqtl_stats.csv         — run provenance + FDR thresholds; EQTL_STATS_COLS
+  Imputed SNP scan (eGenes only):
+    {tissue}_{ct}_eqtl_finemapping.csv        — all Sanger positions in window; EQTL_FINEMAPPING_COLS
+    {tissue}_{ct}_eqtl_finemapping_peak.csv   — lead Sanger SNP per eGene + back-links to haplotype peak; EQTL_FINEMAPPING_PEAK_COLS — IGVF submission file
+  QC:
+    plots/ (PNG, dpi=300, font Carlito)
+    HTML Nextflow run report
 ```
 
 ---
@@ -1164,7 +1193,7 @@ it is inferred from the input data.
 |---|---|---|
 | S2 needs `haplotype_vals_r.csv` rerun | port_validation.R | MED |
 | S11 chr-type bug fixed but not rerun | validate_port.py | MED |
-| S8 marginal vs diplotype model difference documented, not resolved | snp_scan.py | LOW |
+| S8 marginal vs diplotype model difference documented, not resolved | qtl/imputation.py (supersedes snp_scan.py) | LOW |
 | pipeline.py BH-FDR placeholder needs replacing with Storey q-value (SWE-09) | pipeline.py | MED |
 | gastroc S4 full genome and S5–S11 pending HPC run; rsync r_data/ then `validate_gastroc.py --compare` | gastroc_data/ | MED |
 
@@ -1211,7 +1240,11 @@ When a symbol appears in code it follows this definition exactly.
 | FDR | False Discovery Rate | Expected proportion of false positives among discoveries; controlled by BH or Storey q-value |
 | BH | Benjamini-Hochberg | Step-up FDR procedure assuming π₀=1 (all genes null); conservative when real signal is present |
 | q-value | Storey q-value | FDR analogue of p-value calibrated to the estimated π₀; implemented in `qtl/fdr.py::storey_qvalue` |
-| RINT | Rank-based Inverse Normal Transform | Maps phenotype ranks to standard normal quantiles; applied before LMM scan to satisfy Gaussian residual assumption. Controlled by `use_rint` parameter in primary entry-point functions (`scan_h2lmm`, `scan_h2lmm_mi`, `imputed_snp_scan_h2lmm`); downstream functions (`mediation_scan_qr`, `scan_epistasis`) receive pre-transformed input and do not apply RINT internally. |
+| RINT | Rank-based Inverse Normal Transform | Maps phenotype ranks to standard normal quantiles; applied before LMM scan to satisfy Gaussian residual assumption. Controlled by `use_rint` parameter in primary entry-point functions (`scan_h2lmm`, `scan_h2lmm_mi`); downstream functions (`mediation_scan_qr`, `scan_epistasis`) receive pre-transformed input and do not apply RINT internally. |
+| SPDI | Sequence Position Deletion Insertion | NCBI variant notation: `{RefSeq_accession}:{pos_0based}:{ref_allele}:{alt_allele}`. Used as the `variant` column in all IGVF output files. GRCm39 accessions held in `config/grcm39_refseq_accessions.yaml`. |
+| hap_peak_pos | haplotype peak position | Integer bp position (GRCm39) of the peak GigaMUGA marker from the haplotype scan, written into `_eqtl_finemapping_peak.csv` as a back-link to `_eqtl_peak.csv`. |
+| hap_peak_variant | haplotype peak SPDI | SPDI of the GigaMUGA peak marker — back-link from the finemapping file to the haplotype scan peak. |
+| cis_dist_mb | cis distance (Mb) | Signed distance from gene TSS to peak locus in Mb (positive = peak downstream of TSS). Reported in Mb as a diagnostic quantity; all other positional columns use integer bp. |
 | CI | Confidence Interval | Genomic interval around the peak locus (LOD-drop or Bayes) — not to be confused with CI = continuous integration |
 | CI (infra) | Continuous Integration | Automated test + lint pipeline run on every PR (`.github/workflows/ci.yml`) |
 | lod_drop_ci | LOD-drop confidence interval | Genomic interval where LOD ≥ peak_LOD − 1.5; implemented in `qtl/scan.py::lod_drop_ci`; standard qtl2-compatible CI method |
@@ -1256,7 +1289,6 @@ When a symbol appears in code it follows this definition exactly.
 | vQTL | Variance QTL | QTL for phenotypic dispersion (φ in NB; variance in LMM) rather than mean |
 | caQTL | Chromatin Accessibility QTL | QTL for ATAC-seq peak height |
 | sQTL | Splicing QTL | QTL for alternative splicing ratios |
-| ASE | Allele-Specific Expression | Within-individual difference in expression from two alleles; requires phased reads |
 | GxE | Genotype × Environment interaction | Statistical interaction between haplotype and an environmental/biological covariate (e.g. sex, treatment) |
 | GxG / epistasis | Genotype × Genotype interaction | Pairwise interaction between two genomic loci |
 | eGene | eQTL gene | Gene with a significant QTL after multiple-testing correction |
@@ -1328,7 +1360,8 @@ When a symbol appears in code it follows this definition exactly.
 | r_data/ | Subdirectory holding R reference outputs; Python validation reads these for comparison |
 | py_data/ | Root: summaries (eqtl_summary.csv, scan_stats.csv, run_summary.csv, cache.h5, *.done) |
 | py_data/core/ | S1–S6 scan outputs (lod.csv, peak_lod.csv, allele_effects.csv, perm_max_lods*.csv, threshold.csv) |
-| py_data/extended/ | S7–S11 downstream outputs (mi_lod.csv, snp_lod.csv, mediation.csv, ci.csv, instability.csv) |
+| py_data/extended/ | S7–S11 downstream outputs (mi_lod.csv, mediation.csv, ci.csv, instability.csv); imputed SNP scan writes to igvf/ |
+| igvf/ | IGVF submission outputs: eqtl_scan.csv, eqtl_peak.csv, eqtl_stats.csv, eqtl_finemapping.csv, eqtl_finemapping_peak.csv |
 | compare/ | Subdirectory holding merged R-vs-Python comparison tables and plots |
 | fix_h2=True | Hardcoded behavior in `run_threshold_scans`: h² is always fixed from the real phenotype and never re-estimated per permutation. The `fix_h2` parameter was removed — this is now the only mode. Required for the vectorised `scan_chromosome_batch` path (h² fixed → single eigendecomposition shared across all permutations). |
 | ref_chrom / peak_chrom | The chromosome whose LOCO kinship is used to draw null phenotypes for permutation; should be the chromosome with the highest observed LOD |
@@ -1465,22 +1498,17 @@ Common parameters shared across scan entry-point functions.
 | `peak_mb` | float | Bootstrap mean peak position (Mb) |
 | `n_boot` | int | Number of bootstrap replicates |
 
-**`snp_lod.csv`** — SNP fine-mapping output from `imputed_snp_scan_h2lmm`
+**`_eqtl_finemapping.csv`** — imputed SNP scan output from `qtl/imputation.py::scan_imputed`
 
-| Column | Type | Meaning |
-|---|---|---|
-| `gene_name` | str | Gene symbol (from `phenotype_id`) |
-| `snp` | str | SNP identifier |
-| `chr` | str | Chromosome |
-| `pos_mb` | float | SNP position (Mb) |
-| `lod` | float | LOD score under the marginal SNP model |
-| `p_value` | float | chi-squared p-value derived from LOD |
-| `f_stat` | float | F-statistic from `fit_lmm_at_locus` |
-| `h2` | float | LOCO null h² |
-| `n` | int | Effective sample size |
-| `rss0` | float | Null RSS (no SNP effect) |
-| `rss1` | float | Alternative RSS (SNP effect included) |
-| `beta_dosage` | float | Estimated effect per unit allele dosage (0/1/2) |
+All Sanger MGP SNP positions within ±cis_window_mb of each eGene peak. Schema: `EQTL_FINEMAPPING_COLS` (see `pipeline.py`).
+
+Key columns: `variant` (SPDI), `chr`, `pos` (integer bp, GRCm39), `ref`, `effect_allele`, `other_allele`, `ref_founders`, `alt_founders`, `af`, `maf`, `gene`, `gene_symbol`, `lod`, `pval_nominal`, `cis_dist_mb`, `effect_size`, `se_effect_size`, `PIP`, `PIP_method`, `CS`, `hap_peak_pos`, `hap_peak_variant`, `hap_peak_lod`.
+
+**`_eqtl_finemapping_peak.csv`** — lead Sanger SNP per eGene; IGVF submission file
+
+One row per eGene (lead SNP = highest LOD in cis window). Comprehensive: all finemapping columns plus per-founder effects at the Sanger lead SNP and gene-level significance. Schema: `EQTL_FINEMAPPING_PEAK_COLS` (see `pipeline.py`).
+
+Additional columns vs `_eqtl_finemapping.csv`: `gene_as`, `n_sample`, `n_cell`, `effect_AJ`, `effect_B6J`, `effect_129S1J`, `effect_NODJ`, `effect_NZOJ`, `effect_CASTJ`, `effect_PWKJ`, `effect_WSBJ`, `pval_perm`, `fdr`, `fdr_method`, `significance`, `interaction`, `interaction_context`, `conditional`, `conditional_method`.
 
 **`mediation_lod.csv`** — mediation scan output from `mediation_scan_qr`
 

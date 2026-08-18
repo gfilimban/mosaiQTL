@@ -20,36 +20,24 @@ build/
 **/.DS_Store
 Thumbs.db
 
-# local claude config — private, never committed
+# local claude + agent context — private, never committed
 .claude/
 .claudeignore
+.superpowers/
+**/CLAUDE.md
+memory/
+docs/superpowers/
+.aider*
 
-# validation outputs — regenerated at runtime; .gitkeep preserves dirs
-validation/phase2/r_data/*
-validation/phase2/py_data/*
-validation/phase2/compare/*
-validation/phase2/plots/*
-validation/phase2/r_plots/*
-validation/phase2/allele_dir/
-validation/phase3/r_data/*
-validation/phase3/py_data/*
-validation/phase3/plots/*
-!validation/phase2/r_data/.gitkeep
-!validation/phase2/py_data/.gitkeep
-!validation/phase2/plots/.gitkeep
-!validation/phase3/r_data/.gitkeep
-!validation/phase3/py_data/.gitkeep
-!validation/phase3/plots/.gitkeep
-validation/phase2/logs/*
-validation/phase3/logs/*
-!validation/phase2/logs/.gitkeep
-!validation/phase3/logs/.gitkeep
+# nextflow runtime — generated at runtime, can be very large
+.nextflow/
+.nextflow.log
+work/
 
-# HPC-only SLURM scripts — generated on HPC, never committed
-validation/run_validation_slurm.sh
-validation/rerun_failed_chrs.sh
-validation/run_gastroc_slurm.sh
-validation/rerun_failed_chrs_gastroc.sh
+# pytest / coverage
+.coverage
+.benchmarks/
+htmlcov/
 
 # data files
 *.h5
@@ -61,11 +49,32 @@ validation/rerun_failed_chrs_gastroc.sh
 *.bim
 *.fam
 
-# internal-only directories and files — never committed
-goals/
-validation/phase1/
-validation/phase4/
+# bundle (transferred separately, not committed)
+mosaiqtl.bundle
+
+# slurm logs
+slurm-*.out
+
+# ── validation — shared reference cache (large binaries, regenerated) ─────────
+validation/py_ref/
+
+# ── validation — tissue data dirs (large data + regenerated outputs) ──────────
+validation/gastroc_data/
+validation/ctxhipp_data/
+
+# ── validation — sim outputs (regenerated from R scripts) ─────────────────────
+validation/sparcc_cache/
+validation/sparcc_data/
+validation/phase*/
+
+# ── validation — internal-only scripts ────────────────────────────────────────
+validation/validate_phase4.py
+
+# ── generated docs ────────────────────────────────────────────────────────────
+docs/phase2_status.md
+docs/phase3_status.md
 docs/slides/
+docs/slides/*.pptx
 docs/AGENTS.md
 docs/DOMAIN.md
 docs/HPC.md
@@ -74,46 +83,12 @@ docs/NEXT_STEPS.md
 docs/POC_REPORT.md
 docs/PORT_VALIDATION_REPORT.md
 docs/WIKI.md
-validation/sim_sc.py
-validation/validate_phase4.py
-validation/scan_weight_qtl.py
-validation/plot_phase2.py
-validation/report.py
 
-# slurm logs
-slurm-*.out
-
-# checkpoint files (safe-point markers)
-validation/phase2/py_data/*.done
-validation/phase3/py_data/*.done
-
-# bundle (transferred separately, not committed)
-mosaiqtl.bundle
-
-# sparc validation data — large binary files, regenerated from R script
-validation/sparcc_cache/
-validation/sparcc_data/
+# ── tests ─────────────────────────────────────────────────────────────────────
 tests/fixtures/data/
 
-# gastroc benchmark — large data files and regenerated outputs
-validation/gastroc_data/counts_lognorm.h5
-validation/gastroc_data/gastroc_pheno.rds
-validation/gastroc_data/metadata.csv
-validation/gastroc_data/*.csv
-validation/gastroc_data/plots/
-validation/gastroc_data/r_data/
-validation/gastroc_data/py_data/
-validation/gastroc_data/compare/
-validation/gastroc_data/chr*/
-validation/gastroc_data/genomecache_collapsed/
+# ── goals (internal progress tracking) ────────────────────────────────────────
+goals/
 
-# slide deck build artifacts
-docs/slides/*.pptx
-
-# agent related
-claude/*.md
-graphify-out
-CLAUDE.md
-.aider*
-memory/
-docs/superpowers/
+# ── misc local artifacts ──────────────────────────────────────────────────────
+graphify-out/

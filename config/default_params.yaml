@@ -1,15 +1,33 @@
 # mosaiQTL default pipeline parameters
-# Override any key on the CLI: nextflow run main.nf --chroms 8
+# Override any key on the CLI: nextflow run workflow/main.nf --chroms 8
+#
+# Two cell-type input modes (mutually exclusive; celltypes_dir takes precedence):
+#
+#   Multi-CT mode:
+#     celltypes_dir: /path/to/{tissue}_data/celltypes
+#     celltypes:     'all'                    # or 'glutamatergic_neuron,oligodendrocyte'
+#     gene_info:     /path/to/exp_gene_info_{tissue}.csv   # global fallback
+#
+#   Single-CT mode:
+#     phenotypes:    /path/to/pseudobulk.h5
+#     celltype:      'my_ct'                  # label used in output paths
+#     gene_info:     /path/to/gene_info.csv
 
-genomecache:   null   # path to genome cache HDF5 (required)
-kinship_loco:  null   # path to LOCO kinship HDF5 (optional — built from genomecache if null)
-phenotypes:    null   # path to phenotype HDF5 (required)
-metadata:      null   # path to sample metadata CSV (required)
-gene_info:     null   # path to gene_info CSV (gene_id, chr, start, end)
+genomecache:    null   # path to genome cache HDF5 (required)
+kinship_loco:   null   # path to LOCO kinship HDF5 (optional — built from genomecache if null)
+
+# cell-type inputs — set one mode
+celltypes_dir:  null   # directory; each subdir is a cell type containing pseudobulk.h5
+celltypes:      'all'  # 'all' or comma-separated: 'glutamatergic_neuron,oligodendrocyte'
+gene_info:      null   # gene info CSV (gene_id, chr, start, end) — global or per-CT fallback
+
+# single-CT legacy (used when celltypes_dir is null)
+phenotypes:     null   # path to single phenotype HDF5
+celltype:       null   # cell type label for output paths (default: 'default')
 
 output_dir:    'results'
 scan_type:     'lmm'      # lmm | nb-glmm
 scan_window:   'cis'      # cis | genome | local
 chroms:        'all'      # 'all' or comma-separated: '1,2,8'
 n_perms:       1000
-window_mb:     1.0        # half-window for local scan
+window_mb:     1.0        # half-window for local scan (Mb)

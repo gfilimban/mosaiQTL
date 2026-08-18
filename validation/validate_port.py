@@ -26,7 +26,8 @@ import pandas as pd
 import os, sys, argparse, logging, datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # validation/ for plot_phase2
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools'))  # plot_phase2
 import plot_phase2
 from plot_phase2 import (save_csv, save_plot, scatter_qc, ccc,
                           bland_altman, ecdf_plot)

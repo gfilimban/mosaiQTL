@@ -322,7 +322,7 @@ def lod_density_comparison(
     ax.set_ylabel('Density', fontsize=13, fontweight='bold')
     ax.tick_params(labelsize=11)
     ax.set_ylim(bottom=0)
-    ax.legend(fontsize=9, frameon=False)
+    ax.legend(fontsize=9, frameon=False, loc='upper right')
     sns.despine(ax=ax)
     return ax
 
@@ -398,7 +398,7 @@ def allele_effects_comparison(
     ax.set_xlabel(f'{label_b} allele effect (RINT)', fontsize=13, fontweight='bold')
     ax.set_ylabel(f'{label_a} allele effect (RINT)', fontsize=13, fontweight='bold')
     ax.tick_params(labelsize=11)
-    ax.legend(fontsize=8, frameon=False)
+    ax.legend(fontsize=8, frameon=False, loc='upper right')
     sns.despine(ax=ax)
     return ax
 
@@ -539,7 +539,7 @@ def lod_profile_overlay(
     ax.set_xlabel(xlabel, fontsize=13, fontweight='bold')
     ax.set_ylabel('LOD Score', fontsize=13, fontweight='bold')
     ax.tick_params(labelsize=11)
-    ax.legend(fontsize=9, frameon=False)
+    ax.legend(fontsize=9, frameon=False, loc='upper right')
     sns.despine(ax=ax)
     return ax
 
@@ -656,7 +656,7 @@ def founder_effects_comparison(
     ax.set_xticklabels(founders, rotation=45, ha='right', fontsize=10)
     ax.tick_params(labelsize=11)
     ax.set_ylabel('Allele effect (RINT)', fontsize=13, fontweight='bold')
-    ax.legend(fontsize=9, frameon=False)
+    ax.legend(fontsize=9, frameon=False, loc='upper right')
     sns.despine(ax=ax)
     return ax
 
@@ -722,7 +722,7 @@ def perm_lod_comparison(
     ax.set_ylabel('Density', fontsize=13, fontweight='bold')
     ax.tick_params(labelsize=11)
     ax.set_ylim(bottom=0)
-    ax.legend(fontsize=9, frameon=False)
+    ax.legend(fontsize=9, frameon=False, loc='upper right')
     sns.despine(ax=ax)
     return ax
 
@@ -784,7 +784,7 @@ def mi_rop_comparison(
     ax.set_xlabel(xlabel, fontsize=13, fontweight='bold')
     ax.set_ylabel('LOD Score', fontsize=13, fontweight='bold')
     ax.tick_params(labelsize=11)
-    ax.legend(fontsize=9, frameon=False)
+    ax.legend(fontsize=9, frameon=False, loc='upper right')
     sns.despine(ax=ax)
     return ax
 
@@ -845,7 +845,7 @@ def mediation_lod_comparison(
     ax.set_xlabel(xlabel, fontsize=13, fontweight='bold')
     ax.set_ylabel('LOD Score', fontsize=13, fontweight='bold')
     ax.tick_params(labelsize=11)
-    ax.legend(fontsize=9, frameon=False)
+    ax.legend(fontsize=9, frameon=False, loc='upper right')
     sns.despine(ax=ax)
     return ax
 
@@ -907,7 +907,7 @@ def instability_lod_comparison(
     ax.set_xlabel(xlabel, fontsize=13, fontweight='bold')
     ax.set_ylabel('LOD Score', fontsize=13, fontweight='bold')
     ax.tick_params(labelsize=11)
-    ax.legend(fontsize=9, frameon=False)
+    ax.legend(fontsize=9, frameon=False, loc='upper right')
     sns.despine(ax=ax)
     return ax
 
@@ -953,7 +953,7 @@ def phi_distribution(
         raw_clean = phi_raw[np.isfinite(phi_raw)]
         sns.histplot(raw_clean, bins=bins, color=color_raw, alpha=0.4,
                      label='raw φ', ax=ax)
-        ax.legend(fontsize=9, frameon=False)
+        ax.legend(fontsize=9, frameon=False, loc='upper right')
 
     if gene:
         ax.text(0.02, 0.97, gene, transform=ax.transAxes,
@@ -1027,7 +1027,7 @@ def nb_vs_lmm_comparison(
     ax.set_xlabel('LMM LOD', fontsize=13, fontweight='bold')
     ax.set_ylabel('NB score LOD', fontsize=13, fontweight='bold')
     ax.tick_params(labelsize=11)
-    ax.legend(fontsize=8, frameon=False)
+    ax.legend(fontsize=8, frameon=False, loc='upper right')
     sns.despine(ax=ax)
     return ax
 

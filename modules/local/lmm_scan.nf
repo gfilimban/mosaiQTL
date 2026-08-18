@@ -1,31 +1,27 @@
 /*
- * LMM_SCAN — per-chromosome LMM QTL scan (array job)
+ * LMM_SCAN — per-(celltype, chromosome) LMM QTL scan
  *
- * One process per chromosome; each writes lod_chr{chrom}.csv to output_dir.
- * Downstream: MERGE_RESULTS collects all per-chr CSVs.
+ * Input  : [celltype, phenotypes_path, gene_info_path, chrom]  (from ct_chr channel)
+ * Output : [celltype, lod_chr{chrom}.csv]
+ *
+ * Runs one job per (celltype × chromosome) pair.  20 chrs × N cell types = N×20
+ * parallel SLURM array jobs; kinship is a shared value channel (built once).
  */
 
 process LMM_SCAN {
 
     label 'process_medium'
-    tag   "chr${chrom}"
+    tag   "${celltype}/chr${chrom}"
 
-    publishDir "${params.output_dir}/lod", mode: 'copy'
+    publishDir { "${params.output_dir}/${celltype}/lod" }, mode: 'copy'
 
     input:
     path  genomecache
     path  kinship_loco
-    path  phenotypes
-    path  gene_info
-    val   chrom
+    tuple val(celltype), path(phenotypes), path(gene_info), val(chrom)
 
     output:
-    path "lod_chr${chrom}.csv"
-
-    stub:
-    """
-    touch lod_chr${chrom}.csv
-    """
+    tuple val(celltype), path("lod_chr${chrom}.csv")
 
     script:
     """
@@ -38,5 +34,10 @@ process LMM_SCAN {
         --scan-window ${params.scan_window} \\
         --window-mb   ${params.window_mb} \\
         --output-dir  .
+    """
+
+    stub:
+    """
+    touch lod_chr${chrom}.csv
     """
 }
