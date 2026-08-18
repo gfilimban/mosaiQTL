@@ -114,12 +114,12 @@ def cc_strain_palette(
     palette: dict[str, str] = {}
     for strain in sorted(cc_strains):
         if haplotype_probs is None or strain not in haplotype_probs:
-            palette[strain] = "#888888"
+            palette[strain] = COLOR_CC_FALLBACK
             continue
 
         probs = list(haplotype_probs[strain])
         if len(probs) != len(FOUNDER_ORDER):
-            palette[strain] = "#888888"
+            palette[strain] = COLOR_CC_FALLBACK
             continue
 
         # find two dominant founders
@@ -128,7 +128,7 @@ def cc_strain_palette(
         i2, p2 = indexed[1]
         total = p1 + p2
         if total < 1e-9:
-            palette[strain] = "#888888"
+            palette[strain] = COLOR_CC_FALLBACK
             continue
 
         t = p2 / total  # blend weight toward second-dominant founder

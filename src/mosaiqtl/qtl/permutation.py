@@ -440,7 +440,7 @@ def run_threshold_scans(
                 logger.warning("  chr%s  [skip for ref draw] %s", c, exc)
         if null_mat_gw is None:
             logger.warning("  all chromosomes singular — returning zeros")
-            return max_lods
+            return max_lods, {c: np.zeros(len(max_lods)) for c in chrs}
     else:
         null_mat_gw = plain_mat
 

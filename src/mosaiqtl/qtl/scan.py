@@ -263,12 +263,30 @@ def scan_h2lmm(
         if z_sub is not None:
             # expand LOCO kinship to sample level: K_n = Z K_m Z^T.
             # eigendecomp is O(n³) but n≤416 — negligible; shared across all loci.
-            _K_m = _evc @ np.diag(_ev) @ _evc.T
+            _K_m = (_evc * _ev) @ _evc.T  # broadcast avoids np.diag temp
             _K_n = z_sub @ _K_m @ z_sub.T
             evals, evecs = np.linalg.eigh(_K_n)
             del _K_m, _K_n
+        elif _evc.shape[0] > len(y):
+            # Defensive guard: in the z_sub=None path, valid_sid is all-True
+            # (caller contract: all phenotype sample IDs are present in the
+            # genomecache). This branch is therefore only reachable if the caller
+            # passes a phenotype with NaN values, which violates the contract.
+            # If triggered: the original code did `_evc[valid]` (row-subsetting
+            # eigenvectors), which is mathematically invalid — a row-subset of
+            # an eigenvector matrix is not the eigendecomp of the submatrix.
+            # Correct path: reconstruct K_sub and re-decompose.
+            logger.warning(
+                'scan_h2lmm: %s — phenotype has %d NaN values; '
+                'caller should pass a clean phenotype vector',
+                phenotype_id, int((~valid).sum()),
+            )
+            _K_full = (_evc * _ev) @ _evc.T
+            _K_sub = _K_full[np.ix_(valid, valid)]
+            evals, evecs = np.linalg.eigh(_K_sub)
+            del _K_full, _K_sub
         else:
-            evals, evecs = _ev, (_evc[valid] if _evc.shape[0] > len(y) else _evc)
+            evals, evecs = _ev, _evc
 
         y_rot = evecs.T @ y
         x_rot = evecs.T @ x
@@ -306,6 +324,23 @@ def scan_h2lmm(
         all_pval.append(chr_res["p_value"])
         all_betas.append(chr_res["betas"])
 
+    if not all_lod:
+        logger.warning(
+            'scan_h2lmm: %s — no loci matched scan window; returning empty', phenotype_id
+        )
+        return ScanResult(
+            locus_ids=np.array([], dtype=str),
+            chromosomes=np.array([], dtype=str),
+            positions=np.array([], dtype=float),
+            lod=np.array([], dtype=float),
+            p_value=np.array([], dtype=float),
+            betas=np.zeros((0, x.shape[1] if x.ndim > 1 else 1), dtype=float),
+            peak_lod=0.0,
+            peak_locus_id='',
+            peak_position_mb=np.nan,
+            peak_chr='',
+            model='lmm',
+        )
     _lod_cat = np.concatenate(all_lod)
     _peak_idx = int(np.argmax(_lod_cat))
     _peak_lids = np.concatenate(all_lids)
@@ -1057,7 +1092,7 @@ def scan_h2lmm_mi(
     # only impute chromosomes that will actually be scanned
     _chrom_list = [c for c in genomecache.chromosomes if c in kinship_decomp]
     if scan_window in ("cis", "local"):
-        _chrom_list = [c for c in _chrom_list if c == gene_chr]
+        _chrom_list = [c for c in _chrom_list if c == str(gene_chr)]
 
     # pre-estimate h² once from the REAL cache — held fixed across all imputations.
     # replicate-aware: same strain-mean path as scan_h2lmm.

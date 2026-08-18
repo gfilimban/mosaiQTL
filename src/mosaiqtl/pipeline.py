@@ -129,20 +129,31 @@ __all__ = [
 
 def finalize_egene_summary(
     egenes_df: pd.DataFrame,
-    n_founders: int = 8,
+    n_founders: int | None = None,
 ) -> pd.DataFrame:
     """Add chi2/p_haplotype stats and apply canonical EGENE_SUMMARY_COLS order.
 
     Parameters
     ----------
     egenes_df : DataFrame produced by call_egenes — must contain peak_lod column.
-    n_founders : number of founders (df = n_founders - 1 for chi2 test).
+    n_founders : number of founders (df = n_founders - 1 for chi2 test). When
+        None (default), derived from the number of beta_{founder} columns present
+        in egenes_df, making this function population-agnostic.
 
     Returns
     -------
     DataFrame with columns reindexed to EGENE_SUMMARY_COLS (present columns only).
     """
     out = egenes_df.copy()
+    if n_founders is None:
+        beta_cols = [c for c in out.columns if c.startswith('beta_')]
+        n_founders = len(beta_cols) if beta_cols else 8
+        if not beta_cols:
+            logger.warning(
+                'finalize_egene_summary: no beta_ columns found; '
+                'defaulting n_founders=8 for chi2 df — pass n_founders explicitly '
+                'for non-CC populations'
+            )
     if "peak_lod" in out.columns:
         out["chi2_haplotype"] = 2.0 * np.log(10) * out["peak_lod"]
         out["p_haplotype"] = _sp_stats.chi2.sf(

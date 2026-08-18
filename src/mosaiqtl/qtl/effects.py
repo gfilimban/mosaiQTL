@@ -226,6 +226,7 @@ def get_allele_effects(
         s = max(float(se[fi]), 1e-15)
         z = b / s
         pv = float(2.0 * stats.t.sf(abs(z), df=df))
+        tcrit = float(stats.t.ppf(0.975, df=df))
         effects.append(
             FounderEffect(
                 founder=fname,
@@ -233,8 +234,8 @@ def get_allele_effects(
                 se=s,
                 z_score=z,
                 p_value=pv,
-                ci_lo=b - 1.96 * s,
-                ci_hi=b + 1.96 * s,
+                ci_lo=b - tcrit * s,
+                ci_hi=b + tcrit * s,
             )
         )
     return effects
