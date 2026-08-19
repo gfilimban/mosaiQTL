@@ -196,7 +196,8 @@ class TestChromosomeLodProfile:
 
     def test_with_threshold(self):
         ax = chromosome_lod_profile(_pos_array(), _lod_array(), threshold=3.5)
-        lines = [ln for ln in ax.get_lines() if ln.get_linestyle() == "--"]
+        # KW_THRESHOLD uses ':' (dotted); check that at least one threshold line is present
+        lines = [ln for ln in ax.get_lines() if ln.get_linestyle() in ("--", ":")]
         assert len(lines) == 1
 
     def test_n_loci_annotation(self):

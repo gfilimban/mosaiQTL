@@ -80,9 +80,9 @@ class TestNoInlineHexElsewhere:
     def test_no_inline_hex_outside_founders(self):
         src = Path(__file__).parents[2] / "src" / "mosaiqtl"
         hex_re = re.compile(r"'#[0-9A-Fa-f]{6}'|\"#[0-9A-Fa-f]{6}\"")
-        # compare.py approved exception: #4F6EAF (Python series) and #D83026 (R series)
-        # are the only two hardcoded hex values permitted outside founders.py.
-        _approved = {"compare.py"}
+        # compare.py: R/Python series colors (#D83026, #4F6EAF).
+        # _theme.py: package identity palette — canonical Layer-1 constants (BRAND_*, CHR_BANDS, etc.)
+        _approved = {"compare.py", "_theme.py"}
         violations = []
         for py_file in src.rglob("*.py"):
             if py_file.name == "founders.py":

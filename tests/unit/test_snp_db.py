@@ -339,8 +339,9 @@ class TestLoadFounderAlleles:
     def test_allele_values_are_strings(self, tmp_path):
         out = self._build(tmp_path)
         df = load_founder_alleles(out)
+        import pandas as pd
         for f in _FOUNDERS_4:
-            assert df[f].dtype == object
+            assert pd.api.types.is_string_dtype(df[f])
 
     def test_pos_mb_float(self, tmp_path):
         out = self._build(tmp_path)
