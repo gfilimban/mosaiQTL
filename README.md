@@ -1,4 +1,4 @@
-# mosaiQTL
+# mosaiQTL v0.6.0
 
 **Haplotype-based QTL mapping for multiparent populations.**  
 Maps molecular phenotypes to $J$ founder haplotypes — NB-GLMM primary model for raw pseudobulk
