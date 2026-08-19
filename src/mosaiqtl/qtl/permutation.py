@@ -33,16 +33,17 @@ from scipy.stats import genextreme
 
 from ..utils import _build_gm_idx, _enrich_scan_df
 
-logger = logging.getLogger('mosaiqtl')
+logger = logging.getLogger("mosaiqtl")
 
-CI_COLS: list[str] = ['gene_name', 'chr', 'peak_mb', 'ci_lo', 'ci_hi', 'ci_width_mb']
+CI_COLS: list[str] = ["gene_name", "chr", "peak_mb", "ci_lo", "ci_hi", "ci_width_mb"]
 
 __all__ = [
-    'KinshipSingularError',
-    'generate_null_outcomes',
-    'run_threshold_scans',
-    'get_gev_thresholds',
-    'run_positional_scans',
+    "KinshipSingularError",
+    "generate_null_outcomes",
+    "run_threshold_scans",
+    "get_gev_thresholds",
+    "load_per_chr_thresholds",
+    "run_positional_scans",
 ]
 
 
@@ -59,7 +60,8 @@ class KinshipSingularError(ValueError):
 # null outcome generation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def generate_null_outcomes(y, n_perms=1000, method='permutation', seed=1):
+
+def generate_null_outcomes(y, n_perms=1000, method="permutation", seed=1):
     """generate null phenotype columns for threshold estimation.
 
     for permutation: shuffles phenotype labels (breaks geno-pheno link).
@@ -77,23 +79,24 @@ def generate_null_outcomes(y, n_perms=1000, method='permutation', seed=1):
     -------
     np.ndarray (n, n_perms)  null phenotype matrix
     """
-    rng = np.random.default_rng(seed)   # reproducible rng
+    rng = np.random.default_rng(seed)  # reproducible rng
 
-    if method == 'permutation':
+    if method == "permutation":
         # shuffle rows independently for each column
         return np.column_stack([rng.permutation(y) for _ in range(n_perms)])
-    elif method == 'bootstrap':
-        y_c = y - y.mean()              # centre before resampling
-        return np.column_stack([
-            rng.choice(y_c, size=len(y), replace=True)
-            for _ in range(n_perms)])
+    elif method == "bootstrap":
+        y_c = y - y.mean()  # centre before resampling
+        return np.column_stack(
+            [rng.choice(y_c, size=len(y), replace=True) for _ in range(n_perms)]
+        )
     else:
-        raise ValueError(f'method must be permutation or bootstrap, got {method!r}')
+        raise ValueError(f"method must be permutation or bootstrap, got {method!r}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # parametric null helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _null_fit_params(
     y_rot: np.ndarray,
@@ -120,10 +123,10 @@ def _null_fit_params(
         x_rot = x_rot[:, None]
     n = len(y_rot)
     w_inv = 1.0 / (h2 * eigvals + (1.0 - h2))
-    xw    = x_rot * w_inv[:, None]
-    beta  = np.linalg.solve(xw.T @ x_rot, xw.T @ y_rot)
+    xw = x_rot * w_inv[:, None]
+    beta = np.linalg.solve(xw.T @ x_rot, xw.T @ y_rot)
     resid = y_rot - x_rot @ beta
-    wrss  = float(resid @ (resid * w_inv))
+    wrss = float(resid @ (resid * w_inv))
     sigma2_total = wrss / n
     return beta, h2 * sigma2_total, (1.0 - h2) * sigma2_total
 
@@ -139,13 +142,13 @@ def _draw_kinship_re(
     max_eig × n² × machine_epsilon — n² accounts for Cholesky O(n²) floating-point
     accumulation, not just eigenvalue computation error (n×eps too tight).
     """
-    eigs    = np.linalg.eigvalsh(K)
+    eigs = np.linalg.eigvalsh(K)
     min_eig = float(eigs.min())
     psd_tol = float(eigs.max()) * len(K) ** 2 * float(np.finfo(float).eps)
     if min_eig < -psd_tol:
         raise KinshipSingularError(
-            f'LOCO kinship not PSD (min_eig={min_eig:.2e}); '
-            'skipping chromosome — mirrors R behaviour on singular K'
+            f"LOCO kinship not PSD (min_eig={min_eig:.2e}); "
+            "skipping chromosome — mirrors R behaviour on singular K"
         )
     return rng.multivariate_normal(np.zeros(len(K)), K * sigma2_g)
 
@@ -176,42 +179,45 @@ def _draw_parametric_batch(
     x_rot = evc.T @ x
     beta, sigma2_g, sigma2_e = _null_fit_params(y_rot, x_rot, ev, h2)
 
-    eigs    = np.linalg.eigvalsh(K)
+    eigs = np.linalg.eigvalsh(K)
     min_eig = float(eigs.min())
     psd_tol = float(eigs.max()) * len(K) ** 2 * float(np.finfo(float).eps)
     if min_eig < -psd_tol:
         raise KinshipSingularError(
-            f'LOCO kinship not PSD (min_eig={min_eig:.2e}); '
-            'skipping chromosome — mirrors R behaviour on singular K'
+            f"LOCO kinship not PSD (min_eig={min_eig:.2e}); "
+            "skipping chromosome — mirrors R behaviour on singular K"
         )
 
     # draw all u ~ N(0, K·sigma2_g) at once: (n_perms, n) → (n, n_perms)
-    U_mat  = rng.multivariate_normal(
-        np.zeros(len(y)), K * sigma2_g, size=n_perms).T
-    E_mat  = rng.normal(0.0, np.sqrt(max(sigma2_e, 0.0)),
-                        size=(len(y), n_perms))
-    Y_null = (x @ beta)[:, None] + U_mat + E_mat           # (n, n_perms)
+    U_mat = rng.multivariate_normal(np.zeros(len(y)), K * sigma2_g, size=n_perms).T
+    E_mat = rng.normal(0.0, np.sqrt(max(sigma2_e, 0.0)), size=(len(y), n_perms))
+    Y_null = (x @ beta)[:, None] + U_mat + E_mat  # (n, n_perms)
 
     # rank-permute y by each column's argsort — vectorised
-    return y[np.argsort(Y_null, axis=0)]                    # (n, n_perms)
+    return y[np.argsort(Y_null, axis=0)]  # (n, n_perms)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # threshold scans
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_threshold_scans(null_outcomes, genomecache,
-                        phenotype=None,
-                        covariates=None, kinship_decomp=None,
-                        kinship_loco=None,
-                        chrom=None,
-                        ref_chrom=None,
-                        permutation_method='parametric',
-                        use_rint=True,
-                        sample_ids=None,
-                        z_mat=None,
-                        seed=1,
-                        batch_size=500):
+
+def run_threshold_scans(
+    null_outcomes,
+    genomecache,
+    phenotype=None,
+    covariates=None,
+    kinship_decomp=None,
+    kinship_loco=None,
+    chrom=None,
+    ref_chrom=None,
+    permutation_method="parametric",
+    use_rint=True,
+    sample_ids=None,
+    z_mat=None,
+    seed=1,
+    batch_size=500,
+):
     """scan null phenotype columns to build the peak-LOD null distribution.
 
     h² is always fixed from the real phenotype (ML estimate) and reused across
@@ -296,87 +302,93 @@ def run_threshold_scans(null_outcomes, genomecache,
     from . import lmm as lmm_module
     from ..utils import rint as _rint
 
-    if permutation_method not in ('plain', 'parametric'):
+    if permutation_method not in ("plain", "parametric"):
         raise ValueError(
-            f"permutation_method must be 'plain' or 'parametric', got {permutation_method!r}")
+            f"permutation_method must be 'plain' or 'parametric', got {permutation_method!r}"
+        )
 
     n_perms_req = null_outcomes.shape[1]
-    _chrs_req = ([chrom] if chrom is not None
-                 else [c for c in genomecache.chromosomes])
+    _chrs_req = [chrom] if chrom is not None else [c for c in genomecache.chromosomes]
     logger.info(
-        'run_threshold_scans: n_perms=%d  n_chr=%d  ref_chrom=%s  method=%s  fix_h2=True',
-        n_perms_req, len(_chrs_req),
-        ref_chrom if ref_chrom is not None else 'auto',
+        "run_threshold_scans: n_perms=%d  n_chr=%d  ref_chrom=%s  method=%s  fix_h2=True",
+        n_perms_req,
+        len(_chrs_req),
+        ref_chrom if ref_chrom is not None else "auto",
         permutation_method,
     )
 
     # build kinship decomp if not supplied
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genomecache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method="loco")
         kinship_decomp = kin_module.decomp_kinship(kd)
 
     # reconstruct raw kinship matrices from eigendecomposition when not supplied
-    if permutation_method == 'parametric' and kinship_loco is None:
+    if permutation_method == "parametric" and kinship_loco is None:
         kinship_loco = {
-            c: (kinship_decomp[c]['vectors']
-                * kinship_decomp[c]['values'][None, :]
-                @ kinship_decomp[c]['vectors'].T)
+            c: (
+                kinship_decomp[c]["vectors"]
+                * kinship_decomp[c]["values"][None, :]
+                @ kinship_decomp[c]["vectors"].T
+            )
             for c in kinship_decomp
         }
 
     # chromosomes to scan
-    chrs = ([chrom] if chrom is not None
-            else [c for c in genomecache.chromosomes if c in kinship_decomp])
+    chrs = (
+        [chrom]
+        if chrom is not None
+        else [c for c in genomecache.chromosomes if c in kinship_decomp]
+    )
 
     # covariates default to intercept
     n = null_outcomes.shape[0]
-    x = (covariates if covariates is not None
-         else np.ones((n, 1), dtype=float))
+    x = covariates if covariates is not None else np.ones((n, 1), dtype=float)
     if x.ndim == 1:
         x = x.reshape(-1, 1)
-    if not np.allclose(x[:, 0], 1.0):            # ensure intercept present
+    if not np.allclose(x[:, 0], 1.0):  # ensure intercept present
         x = np.hstack([np.ones((n, 1)), x])
 
     # sample_ids path: reduce phenotype/covariates to strain means; scan at m-level.
     # use when no z_mat is supplied (no replicated design or single-level data).
-    _z_red: 'np.ndarray | None' = None
-    _r_counts: 'np.ndarray | None' = None
+    _z_red: "np.ndarray | None" = None
+    _r_counts: "np.ndarray | None" = None
     x_scan = x
     if sample_ids is not None and z_mat is None:
         from ..utils import build_z_matrix
+
         _z_red, _ = build_z_matrix(list(sample_ids), list(genomecache.sample_ids))
-        _r_counts = _z_red.sum(axis=0)                   # (m,) replicates per strain
-        x_scan = (_z_red.T @ x) / _r_counts[:, None]     # (m, p) strain-mean covariates
+        _r_counts = _z_red.sum(axis=0)  # (m,) replicates per strain
+        x_scan = (_z_red.T @ x) / _r_counts[:, None]  # (m, p) strain-mean covariates
 
     # z_mat path: expand from m cache strains to n samples at n-level.
     # build K_n = z_mat @ K_m @ z_mat.T per chromosome; use n-level eigendecomps
     # so null LOD scale matches sample-level scan: LOD = (n/2)·log10(rss0/rss1).
-    _n_kd: 'dict | None' = None
+    _n_kd: "dict | None" = None
     if z_mat is not None:
         _n_kd = {}
         for c in chrs:
-            ev_m = kinship_decomp[c]['values']
-            evc_m = kinship_decomp[c]['vectors']
+            ev_m = kinship_decomp[c]["values"]
+            evc_m = kinship_decomp[c]["vectors"]
             K_m = (evc_m * ev_m) @ evc_m.T
             K_n = z_mat @ K_m @ z_mat.T
             ev_n, evc_n = np.linalg.eigh(K_n)
-            _n_kd[c] = {'values': ev_n, 'vectors': evc_n, 'K_n': K_n}
+            _n_kd[c] = {"values": ev_n, "vectors": evc_n, "K_n": K_n}
 
-    def _ev_evc(c: str) -> 'tuple[np.ndarray, np.ndarray]':
+    def _ev_evc(c: str) -> "tuple[np.ndarray, np.ndarray]":
         """return eigendecomp: n-level when z_mat provided, else m-level."""
         if _n_kd is not None:
-            return _n_kd[c]['values'], _n_kd[c]['vectors']
-        return kinship_decomp[c]['values'], kinship_decomp[c]['vectors']
+            return _n_kd[c]["values"], _n_kd[c]["vectors"]
+        return kinship_decomp[c]["values"], kinship_decomp[c]["vectors"]
 
     def _K_raw(c: str) -> np.ndarray:
         """return raw kinship for parametric draws: K_n when z_mat, else K_m."""
         if _n_kd is not None:
-            return _n_kd[c]['K_n']
+            return _n_kd[c]["K_n"]
         return kinship_loco[c]
 
     # pre-compute per-chrom h² from original phenotype
     if phenotype is None:
-        raise ValueError('phenotype required for h² estimation')
+        raise ValueError("phenotype required for h² estimation")
     y0 = _rint(phenotype) if use_rint else phenotype.copy()
     if _r_counts is not None:
         y0 = (_z_red.T @ y0) / _r_counts
@@ -384,24 +396,28 @@ def run_threshold_scans(null_outcomes, genomecache,
     for c in chrs:
         ev, evc = _ev_evc(c)
         h2_fixed[c], _ = lmm_module.estimate_h2_null(
-            evc.T @ y0, evc.T @ x_scan, ev, method='ml')
+            evc.T @ y0, evc.T @ x_scan, ev, method="ml"
+        )
 
-    _ref_chr_used = next(iter(h2_fixed)) if h2_fixed else 'none'
-    _ref_h2 = h2_fixed.get(_ref_chr_used, float('nan'))
+    _ref_chr_used = next(iter(h2_fixed)) if h2_fixed else "none"
+    _ref_h2 = h2_fixed.get(_ref_chr_used, float("nan"))
     logger.info(
-        'run_threshold_scans: h² estimated on %d chromosomes — ref_chr=%s  h2=%.4f',
-        len(h2_fixed), _ref_chr_used, _ref_h2,
+        "run_threshold_scans: h² estimated on %d chromosomes — ref_chr=%s  h2=%.4f",
+        len(h2_fixed),
+        _ref_chr_used,
+        _ref_h2,
     )
 
-    n_perms  = null_outcomes.shape[1]
+    n_perms = null_outcomes.shape[1]
     max_lods = np.zeros(n_perms)
-    rng      = np.random.default_rng(seed) if permutation_method == 'parametric' else None
+    rng = np.random.default_rng(seed) if permutation_method == "parametric" else None
 
     plain_mat = None
-    if permutation_method == 'plain':
+    if permutation_method == "plain":
         if use_rint:
-            plain_mat = np.column_stack([_rint(null_outcomes[:, i])
-                                         for i in range(n_perms)])
+            plain_mat = np.column_stack(
+                [_rint(null_outcomes[:, i]) for i in range(n_perms)]
+            )
         else:
             plain_mat = null_outcomes.astype(float)
         if _r_counts is not None:
@@ -411,20 +427,20 @@ def run_threshold_scans(null_outcomes, genomecache,
     # kinship then reuse across all chromosomes — per-chromosome independent
     # draws inflate the genome-wide max-LOD by taking the max over 20 independent
     # nulls rather than 20 scans of one null.
-    if permutation_method == 'parametric':
+    if permutation_method == "parametric":
         null_mat_gw = None
         for c in chrs:
             try:
                 ev_r, evc_r = _ev_evc(c)
                 null_mat_gw = _draw_parametric_batch(
-                    y0, x_scan, _K_raw(c), evc_r, ev_r,
-                    h2_fixed[c], n_perms, rng)
+                    y0, x_scan, _K_raw(c), evc_r, ev_r, h2_fixed[c], n_perms, rng
+                )
                 break
             except KinshipSingularError as exc:
-                logger.warning('  chr%s  [skip for ref draw] %s', c, exc)
+                logger.warning("  chr%s  [skip for ref draw] %s", c, exc)
         if null_mat_gw is None:
-            logger.warning('  all chromosomes singular — returning zeros')
-            return max_lods
+            logger.warning("  all chromosomes singular — returning zeros")
+            return max_lods, {c: np.zeros(len(max_lods)) for c in chrs}
     else:
         null_mat_gw = plain_mat
 
@@ -434,20 +450,33 @@ def run_threshold_scans(null_outcomes, genomecache,
         h2 = h2_fixed[c]
         try:
             chr_max = lmm_module.scan_chromosome_batch(
-                null_mat_gw, genomecache, c, x_scan, ev, evc, h2,
-                z_mat=z_mat, batch_size=batch_size)
+                null_mat_gw,
+                genomecache,
+                c,
+                x_scan,
+                ev,
+                evc,
+                h2,
+                z_mat=z_mat,
+                batch_size=batch_size,
+            )
         except KinshipSingularError as exc:
-            logger.warning('run_threshold_scans: chr%s skipped — %s', c, exc)
+            logger.warning("run_threshold_scans: chr%s skipped — %s", c, exc)
             chr_null_lods[c] = np.zeros(n_perms_req)
             continue
         chr_null_lods[c] = chr_max
         max_lods = np.maximum(max_lods, chr_max)
-        logger.info('  [batch] chr%s  max_lod=%.3f', c, float(chr_max.max()))
+        logger.info("  [batch] chr%s  max_lod=%.3f", c, float(chr_max.max()))
 
-    _gw_threshold_95 = float(np.quantile(max_lods[max_lods > 0], 0.95)) if (max_lods > 0).any() else float('nan')
+    _gw_threshold_95 = (
+        float(np.quantile(max_lods[max_lods > 0], 0.95))
+        if (max_lods > 0).any()
+        else float("nan")
+    )
     logger.info(
-        'run_threshold_scans: done  n_perms=%d  genome-wide 95th pct LOD=%.3f',
-        n_perms_req, _gw_threshold_95,
+        "run_threshold_scans: done  n_perms=%d  genome-wide 95th pct LOD=%.3f",
+        n_perms_req,
+        _gw_threshold_95,
     )
     return max_lods, chr_null_lods
 
@@ -456,10 +485,11 @@ def run_threshold_scans(null_outcomes, genomecache,
 # gev threshold
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def get_gev_thresholds(
-    max_lods: 'np.ndarray',
+    max_lods: "np.ndarray",
     percentile: float = 0.95,
-) -> 'tuple[float, dict] | tuple[None, None]':
+) -> "tuple[float, dict] | tuple[None, None]":
     """Fit a GEV distribution to the permutation peak-LOD distribution.
 
     Fitting GEV is more stable than empirical quantiles when n_perms
@@ -484,7 +514,7 @@ def get_gev_thresholds(
     finite = max_lods[np.isfinite(max_lods)]
     if len(finite) < 10:
         logger.warning(
-            'get_gev_thresholds: only %d finite values — need ≥10; returning None',
+            "get_gev_thresholds: only %d finite values — need ≥10; returning None",
             len(finite),
         )
         return None, None
@@ -494,36 +524,92 @@ def get_gev_thresholds(
     except Exception as exc:
         _emp = float(np.quantile(finite, percentile))
         logger.warning(
-            'get_gev_thresholds: GEV fit failed (%s) — returning None '
-            '(empirical %.0f%% quantile was %.3f)',
-            exc, percentile * 100, _emp,
+            "get_gev_thresholds: GEV fit failed (%s) — returning None "
+            "(empirical %.0f%% quantile was %.3f)",
+            exc,
+            percentile * 100,
+            _emp,
         )
         return None, None
 
     params = {
-        'c': float(c), 'loc': float(loc), 'scale': float(scale),
-        'threshold': threshold, 'percentile': percentile,
-        'n_perms': len(finite),
-        'empirical_quantile': float(np.quantile(finite, percentile)),
+        "c": float(c),
+        "loc": float(loc),
+        "scale": float(scale),
+        "threshold": threshold,
+        "percentile": percentile,
+        "n_perms": len(finite),
+        "empirical_quantile": float(np.quantile(finite, percentile)),
     }
     logger.debug(
-        'get_gev_thresholds: n=%d  shape=%.4f  loc=%.4f  scale=%.4f  threshold=%.3f',
-        len(finite), float(c), float(loc), float(scale), threshold,
+        "get_gev_thresholds: n=%d  shape=%.4f  loc=%.4f  scale=%.4f  threshold=%.3f",
+        len(finite),
+        float(c),
+        float(loc),
+        float(scale),
+        threshold,
     )
     return threshold, params
+
+
+def load_per_chr_thresholds(
+    perm_dir: 'Path',
+    percentile: float = 0.95,
+) -> 'dict[str, float | None]':
+    """Load per-chromosome null distributions and return GEV thresholds.
+
+    Reads ``perm_max_lods_chr{chrom}.csv`` files written by
+    :func:`run_threshold_scans`, fits a GEV to each chromosome's max-LOD
+    null, and returns per-chromosome FWER thresholds at *percentile*.
+
+    Useful when ``threshold.csv`` was written with only a ``genome_wide``
+    sentinel row (checkpointed scans) and per-chromosome bars are needed for
+    diagnostic plots.
+
+    Parameters
+    ----------
+    perm_dir :
+        Directory containing ``perm_max_lods_chr*.csv`` files (typically
+        the ``core/`` subdirectory of a scan output).
+    percentile :
+        Significance percentile; default ``0.95`` (5 % FWER).
+
+    Returns
+    -------
+    dict[str, float | None]
+        ``{chrom: threshold}``; value is ``None`` when the GEV fit fails.
+    """
+    from pathlib import Path as _Path
+
+    perm_dir = _Path(perm_dir)
+    result: 'dict[str, float | None]' = {}
+    for pf in sorted(perm_dir.glob('perm_max_lods_chr*.csv')):
+        chrom = pf.stem.replace('perm_max_lods_chr', '')
+        try:
+            nulls = pd.read_csv(pf)['max_lod'].values
+            thr, _ = get_gev_thresholds(nulls, percentile=percentile)
+            result[chrom] = thr
+        except Exception:
+            result[chrom] = None
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # positional CI via parametric bootstrap
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_positional_scans(bootstrap_outcomes, genomecache,
-                         phenotype,
-                         covariates=None, kinship_decomp=None,
-                         peak_chrom=None,
-                         use_rint=True,
-                         ci_alpha=0.05,
-                         sample_ids=None):
+
+def run_positional_scans(
+    bootstrap_outcomes,
+    genomecache,
+    phenotype,
+    covariates=None,
+    kinship_decomp=None,
+    peak_chrom=None,
+    use_rint=True,
+    ci_alpha=0.05,
+    sample_ids=None,
+):
     """run single-chromosome scans on parametric bootstrap samples to compute
     a positional confidence interval for a QTL.
 
@@ -554,36 +640,40 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
     from ..utils import rint as _rint
 
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genomecache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method="loco")
         kinship_decomp = kin_module.decomp_kinship(kd)
 
-    chrs = ([peak_chrom] if peak_chrom is not None
-            else [c for c in genomecache.chromosomes if c in kinship_decomp])
+    chrs = (
+        [peak_chrom]
+        if peak_chrom is not None
+        else [c for c in genomecache.chromosomes if c in kinship_decomp]
+    )
 
     _n_boot = bootstrap_outcomes.shape[1]
     logger.info(
-        'run_positional_scans: n_boot=%d  n_chr=%d  chr=%s',
-        _n_boot, len(chrs),
-        peak_chrom if peak_chrom is not None else 'all',
+        "run_positional_scans: n_boot=%d  n_chr=%d  chr=%s",
+        _n_boot,
+        len(chrs),
+        peak_chrom if peak_chrom is not None else "all",
     )
 
     n = bootstrap_outcomes.shape[0]
-    x = (covariates if covariates is not None
-         else np.ones((n, 1), dtype=float))
+    x = covariates if covariates is not None else np.ones((n, 1), dtype=float)
     if x.ndim == 1:
         x = x.reshape(-1, 1)
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((n, 1)), x])
 
     # replicate path: reduce to strain means if sample_ids provided
-    z_mat    = None
+    z_mat = None
     r_counts = None
-    x_scan   = x
+    x_scan = x
     if sample_ids is not None:
         from ..utils import build_z_matrix
-        z_mat, _  = build_z_matrix(list(sample_ids), list(genomecache.sample_ids))
-        r_counts  = z_mat.sum(axis=0)
-        x_scan    = (z_mat.T @ x) / r_counts[:, None]
+
+        z_mat, _ = build_z_matrix(list(sample_ids), list(genomecache.sample_ids))
+        r_counts = z_mat.sum(axis=0)
+        x_scan = (z_mat.T @ x) / r_counts[:, None]
 
     # pre-compute h² from original phenotype
     y0 = _rint(phenotype) if use_rint else phenotype.copy()
@@ -591,10 +681,11 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
         y0 = (z_mat.T @ y0) / r_counts
     h2_fixed = {}
     for c in chrs:
-        ev  = kinship_decomp[c]['values']
-        evc = kinship_decomp[c]['vectors']
+        ev = kinship_decomp[c]["values"]
+        evc = kinship_decomp[c]["vectors"]
         h2_fixed[c], _ = lmm_module.estimate_h2_null(
-            evc.T @ y0, evc.T @ x_scan, ev, method='ml')
+            evc.T @ y0, evc.T @ x_scan, ev, method="ml"
+        )
 
     n_boot = bootstrap_outcomes.shape[1]
 
@@ -607,48 +698,60 @@ def run_positional_scans(bootstrap_outcomes, genomecache,
 
     # accumulate per-boot best (lod, pos) across chromosomes
     best_lods = np.full(n_boot, -np.inf)
-    peak_pos  = np.full(n_boot, np.nan)
+    peak_pos = np.full(n_boot, np.nan)
 
     for c in chrs:
-        ev  = kinship_decomp[c]['values']
-        evc = kinship_decomp[c]['vectors']
-        h2  = h2_fixed[c]
+        ev = kinship_decomp[c]["values"]
+        evc = kinship_decomp[c]["vectors"]
+        h2 = h2_fixed[c]
         chr_max, chr_pos = lmm_module.scan_chromosome_batch(
-            Y_boot, genomecache, c, x_scan, ev, evc, h2,
+            Y_boot,
+            genomecache,
+            c,
+            x_scan,
+            ev,
+            evc,
+            h2,
             return_peak_positions=True,
         )
-        better    = chr_max > best_lods
+        better = chr_max > best_lods
         best_lods = np.where(better, chr_max, best_lods)
-        peak_pos  = np.where(better, chr_pos, peak_pos)
+        peak_pos = np.where(better, chr_pos, peak_pos)
 
-    valid   = peak_pos[np.isfinite(peak_pos)]
-    lo      = float(np.quantile(valid, ci_alpha / 2))
-    hi      = float(np.quantile(valid, 1 - ci_alpha / 2))
+    valid = peak_pos[np.isfinite(peak_pos)]
+    lo = float(np.quantile(valid, ci_alpha / 2))
+    hi = float(np.quantile(valid, 1 - ci_alpha / 2))
     ci_info = {
-        'ci_lo': lo, 'ci_hi': hi, 'ci': (lo, hi),
-        'n_boot': n_boot, 'n_valid': len(valid),
-        'alpha': ci_alpha,
+        "ci_lo": lo,
+        "ci_hi": hi,
+        "ci": (lo, hi),
+        "n_boot": n_boot,
+        "n_valid": len(valid),
+        "alpha": ci_alpha,
     }
     logger.info(
-        'run_positional_scans: done  n_boot=%d  CI=[%.3f, %.3f] Mb  width=%.3f Mb',
-        _n_boot, lo, hi, hi - lo,
+        "run_positional_scans: done  n_boot=%d  CI=[%.3f, %.3f] Mb  width=%.3f Mb",
+        _n_boot,
+        lo,
+        hi,
+        hi - lo,
     )
     return peak_pos, ci_info
 
 
 def ci_scan_multi_gene(
-    expr_cache: 'dict[str, np.ndarray]',
-    gene_chr_map: 'dict[str, str]',
-    peak_mb_map: 'dict[str, float]',
+    expr_cache: "dict[str, np.ndarray]",
+    gene_chr_map: "dict[str, str]",
+    peak_mb_map: "dict[str, float]",
     genomecache,
-    covariates: 'np.ndarray | None' = None,
-    kinship_decomp: 'dict | None' = None,
-    sample_ids: 'list[str] | None' = None,
+    covariates: "np.ndarray | None" = None,
+    kinship_decomp: "dict | None" = None,
+    sample_ids: "list[str] | None" = None,
     n_boot: int = 200,
     seed: int = 1,
     use_rint: bool = True,
-    output_path: 'Path | None' = None,
-    gene_meta: 'pd.DataFrame | None' = None,
+    output_path: "Path | None" = None,
+    gene_meta: "pd.DataFrame | None" = None,
 ) -> pd.DataFrame:
     """bootstrap positional CI for a set of genes, streaming to disk.
 
@@ -674,31 +777,36 @@ def ci_scan_multi_gene(
     -------
     pd.DataFrame  columns: gene_name, chr [+ gene_meta cols], peak_mb, ci_lo, ci_hi, ci_width_mb
     """
-    _gm_idx    = _build_gm_idx(gene_meta)
-    _id_cols   = ['gene_name', 'chr']
-    _data_cols = ['peak_mb', 'ci_lo', 'ci_hi', 'ci_width_mb']
+    _gm_idx = _build_gm_idx(gene_meta)
+    _id_cols = ["gene_name", "chr"]
+    _data_cols = ["peak_mb", "ci_lo", "ci_hi", "ci_width_mb"]
     _first = True
-    _buf: 'list[pd.DataFrame]' = []
+    _buf: "list[pd.DataFrame]" = []
     _n_genes_ci = len(expr_cache)
     logger.info(
-        'ci_scan_multi_gene: n_genes=%d  n_boot=%d',
-        _n_genes_ci, n_boot,
+        "ci_scan_multi_gene: n_genes=%d  n_boot=%d",
+        _n_genes_ci,
+        n_boot,
     )
     for _g, (gene_id, y) in enumerate(expr_cache.items()):
-        gene_chr = gene_chr_map.get(gene_id, '')
+        gene_chr = gene_chr_map.get(gene_id, "")
         peak_mb = peak_mb_map.get(gene_id)
         if not gene_chr or peak_mb is None:
             logger.warning(
-                'ci_scan_multi_gene: missing chr/peak_mb for %s — skipped', gene_id)
+                "ci_scan_multi_gene: missing chr/peak_mb for %s — skipped", gene_id
+            )
             continue
-        logger.debug('ci_scan_multi_gene: [%d/%d] %s', _g + 1, _n_genes_ci, gene_id)
-        _kd_g = ({gene_chr: kinship_decomp[gene_chr]}
-                 if kinship_decomp is not None else None)
+        logger.debug("ci_scan_multi_gene: [%d/%d] %s", _g + 1, _n_genes_ci, gene_id)
+        _kd_g = (
+            {gene_chr: kinship_decomp[gene_chr]} if kinship_decomp is not None else None
+        )
         try:
             boot_out = generate_null_outcomes(
-                y, n_perms=n_boot, seed=seed + _g, method='bootstrap')
+                y, n_perms=n_boot, seed=seed + _g, method="bootstrap"
+            )
             ci_mbs, ci_info = run_positional_scans(
-                boot_out, genomecache,
+                boot_out,
+                genomecache,
                 phenotype=y,
                 covariates=covariates,
                 kinship_decomp=_kd_g,
@@ -707,25 +815,32 @@ def ci_scan_multi_gene(
                 sample_ids=sample_ids,
             )
             del boot_out, ci_mbs
-            _df = pd.DataFrame([{
-                'gene_name':   gene_id,
-                'chr':         gene_chr,
-                'peak_mb':     float(peak_mb),
-                'ci_lo':       ci_info['ci_lo'],
-                'ci_hi':       ci_info['ci_hi'],
-                'ci_width_mb': ci_info['ci_hi'] - ci_info['ci_lo'],
-            }])
+            _df = pd.DataFrame(
+                [
+                    {
+                        "gene_name": gene_id,
+                        "chr": gene_chr,
+                        "peak_mb": float(peak_mb),
+                        "ci_lo": ci_info["ci_lo"],
+                        "ci_hi": ci_info["ci_hi"],
+                        "ci_width_mb": ci_info["ci_hi"] - ci_info["ci_lo"],
+                    }
+                ]
+            )
             _df = _enrich_scan_df(_df, gene_id, _gm_idx, _id_cols, _data_cols)
             if output_path is not None:
-                _df.to_csv(output_path, mode='a', header=_first, index=False)
+                _df.to_csv(output_path, mode="a", header=_first, index=False)
                 _first = False
             else:
                 _buf.append(_df)
             del _df
         except Exception as exc:
-            logger.warning('ci_scan_multi_gene: %s failed — %s', gene_id, exc)
+            logger.warning("ci_scan_multi_gene: %s failed — %s", gene_id, exc)
     gc.collect()
     if output_path is not None:
-        return (pd.read_csv(output_path)
-                if output_path.exists() and not _first else pd.DataFrame())
+        return (
+            pd.read_csv(output_path)
+            if output_path.exists() and not _first
+            else pd.DataFrame()
+        )
     return pd.concat(_buf, ignore_index=True) if _buf else pd.DataFrame()

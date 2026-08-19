@@ -9,16 +9,20 @@ import numpy as np
 import seaborn as sns
 
 from ..genotype.founders import (
-    COLOR_NEUTRAL_DARK, COLOR_NEUTRAL_LIGHT, COLOR_CC_FALLBACK,
-    FOUNDER_COLORS, FOUNDER_ORDER,
+    COLOR_NEUTRAL_DARK,
+    COLOR_NEUTRAL_LIGHT,
+    COLOR_CC_FALLBACK,
+    FOUNDER_COLORS,
+    FOUNDER_ORDER,
 )
 
 
 def _set_font(ax: plt.Axes) -> None:
     """Apply Carlito/Calibri to all text elements of ax."""
-    for item in ([ax.xaxis.label, ax.yaxis.label]
-                 + ax.get_xticklabels() + ax.get_yticklabels()):
-        item.set_fontfamily(['Carlito', 'Calibri', 'DejaVu Sans'])
+    for item in (
+        [ax.xaxis.label, ax.yaxis.label] + ax.get_xticklabels() + ax.get_yticklabels()
+    ):
+        item.set_fontfamily(["Carlito", "Calibri", "DejaVu Sans"])
 
 
 def prob_heatmap(
@@ -27,12 +31,12 @@ def prob_heatmap(
     *,
     ax: Optional[plt.Axes] = None,
     phenotype: Optional[np.ndarray] = None,
-    phenotype_id: str = 'phenotype',
-    gene: str = '',
+    phenotype_id: str = "phenotype",
+    gene: str = "",
     sample_labels: Optional[list[str]] = None,
-    chrom: str = '',
+    chrom: str = "",
     position_mb: Optional[float] = None,
-    cmap: str = 'YlOrRd',
+    cmap: str = "YlOrRd",
 ) -> plt.Axes:
     """Haplotype dosage heatmap at a single locus, optionally sorted by phenotype.
 
@@ -72,7 +76,7 @@ def prob_heatmap(
         width = max(5.0, n_strains_in * 0.18)
         _, ax = plt.subplots(figsize=(width, 3.5), dpi=300)
 
-    mat = np.asarray(hap_probs, dtype=float)   # (n_strains, J)
+    mat = np.asarray(hap_probs, dtype=float)  # (n_strains, J)
     pheno_sorted: Optional[np.ndarray] = None
     if phenotype is not None:
         order = np.argsort(phenotype)
@@ -80,13 +84,14 @@ def prob_heatmap(
         pheno_sorted = phenotype[order]
 
     # founders on y-axis (rows), strains on x-axis (columns) — matches miQTL layout
-    mat = mat.T                                 # (J, n_strains)
-    J         = mat.shape[0]
+    mat = mat.T  # (J, n_strains)
+    J = mat.shape[0]
     n_strains = mat.shape[1]
 
-    im = ax.imshow(mat, aspect='auto', cmap=cmap, vmin=0.0, vmax=1.0,
-                   interpolation='nearest')
-    plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label='Haplotype Dose')
+    im = ax.imshow(
+        mat, aspect="auto", cmap=cmap, vmin=0.0, vmax=1.0, interpolation="nearest"
+    )
+    plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label="Haplotype Dose")
 
     # y-axis: founder names
     ax.set_yticks(np.arange(J))
@@ -94,7 +99,7 @@ def prob_heatmap(
 
     # x-axis bottom: samples label; no individual ticks
     ax.set_xticks([])
-    ax.set_xlabel('Strains (sorted by haplotype probability)', fontsize=8)
+    ax.set_xlabel("Strains (sorted by haplotype probability)", fontsize=8)
 
     # x-axis top: trait values at 5 quantile-spaced sample positions
     # — makes clear the numbers are trait values, not genomic coordinates
@@ -104,20 +109,21 @@ def prob_heatmap(
         ax_top.set_xlim(-0.5, n_strains - 0.5)
         ax_top.set_xticks(tick_cols)
         ax_top.set_xticklabels(
-            [f'{pheno_sorted[i]:.2f}' for i in tick_cols], fontsize=7)
+            [f"{pheno_sorted[i]:.2f}" for i in tick_cols], fontsize=7
+        )
         ax_top.tick_params(top=True, length=3)
-        ax_top.set_xlabel(f'{phenotype_id} (trait value)', fontsize=7, labelpad=4)
+        ax_top.set_xlabel(f"{phenotype_id} (trait value)", fontsize=7, labelpad=4)
         _set_font(ax_top)
 
     # title: gene name prominent; locus position secondary
     loc_parts = []
     if chrom:
-        loc_parts.append(f'Chr {chrom}')
+        loc_parts.append(f"Chr {chrom}")
     if position_mb is not None:
-        loc_parts.append(f'{position_mb:.2f} Mb')
-    loc_str = ' · '.join(loc_parts)
+        loc_parts.append(f"{position_mb:.2f} Mb")
+    loc_str = " · ".join(loc_parts)
     if gene:
-        title = f'{gene}  —  {loc_str}' if loc_str else gene
+        title = f"{gene}  —  {loc_str}" if loc_str else gene
     else:
         title = loc_str
     if title:
@@ -134,8 +140,8 @@ def pxg(
     founders: list[str] = FOUNDER_ORDER,
     *,
     ax: Optional[plt.Axes] = None,
-    phenotype_label: str = 'Phenotype',
-    chrom: str = '',
+    phenotype_label: str = "Phenotype",
+    chrom: str = "",
     position_mb: Optional[float] = None,
     jitter: float = 0.15,
     point_size: float = 18.0,
@@ -186,22 +192,31 @@ def pxg(
             continue
         color = FOUNDER_COLORS.get(fname, COLOR_CC_FALLBACK)
         x_vals = fi + rng.uniform(-jitter, jitter, size=mask.sum())
-        sns.scatterplot(x=x_vals, y=phenotype[mask], color=color, s=point_size,
-                        alpha=alpha, zorder=3, edgecolors='white', linewidths=0.4,
-                        label=fname, ax=ax)
+        sns.scatterplot(
+            x=x_vals,
+            y=phenotype[mask],
+            color=color,
+            s=point_size,
+            alpha=alpha,
+            zorder=3,
+            edgecolors="white",
+            linewidths=0.4,
+            label=fname,
+            ax=ax,
+        )
 
     ax.set_xticks(np.arange(len(founders)))
-    ax.set_xticklabels(founders, rotation=45, ha='right', fontsize=8)
+    ax.set_xticklabels(founders, rotation=45, ha="right", fontsize=8)
     ax.set_ylabel(phenotype_label)
     ax.set_xlim(-0.6, len(founders) - 0.4)
 
     title_parts = []
     if chrom:
-        title_parts.append(f'Chr {chrom}')
+        title_parts.append(f"Chr {chrom}")
     if position_mb is not None:
-        title_parts.append(f'{position_mb:.2f} Mb')
+        title_parts.append(f"{position_mb:.2f} Mb")
     if title_parts:
-        ax.set_title(' · '.join(title_parts), fontsize=8, pad=4)
+        ax.set_title(" · ".join(title_parts), fontsize=8, pad=4)
 
     sns.despine(ax=ax)
     _set_font(ax)
@@ -214,8 +229,8 @@ def pxg_sex_facet(
     sex: np.ndarray,
     founders: list[str] = FOUNDER_ORDER,
     *,
-    phenotype_label: str = 'Phenotype',
-    chrom: str = '',
+    phenotype_label: str = "Phenotype",
+    chrom: str = "",
     position_mb: Optional[float] = None,
     jitter: float = 0.15,
     point_size: float = 18.0,
@@ -254,33 +269,40 @@ def pxg_sex_facet(
     plt.Figure
         Figure with two Axes (male left, female right).
     """
-    fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), dpi=300,
-                             sharey=True, constrained_layout=True)
+    fig, axes = plt.subplots(
+        1, 2, figsize=(10, 3.5), dpi=300, sharey=True, constrained_layout=True
+    )
 
-    sex_arr   = np.asarray(sex, dtype=float)
+    sex_arr = np.asarray(sex, dtype=float)
     sex_masks = {0: sex_arr < 0.5, 1: sex_arr >= 0.5}
-    sex_titles = {0: 'Male', 1: 'Female'}
+    sex_titles = {0: "Male", 1: "Female"}
 
     loc_parts = []
     if chrom:
-        loc_parts.append(f'Chr {chrom}')
+        loc_parts.append(f"Chr {chrom}")
     if position_mb is not None:
-        loc_parts.append(f'{position_mb:.2f} Mb')
-    loc_str = ' · '.join(loc_parts)
+        loc_parts.append(f"{position_mb:.2f} Mb")
+    loc_str = " · ".join(loc_parts)
 
     for sex_val, ax in zip((0, 1), axes):
-        mask   = sex_masks[sex_val]
+        mask = sex_masks[sex_val]
         ph_sub = phenotype[mask]
         hp_sub = np.asarray(hap_probs, dtype=float)[mask]
 
-        pxg(ph_sub, hp_sub, founders,
+        pxg(
+            ph_sub,
+            hp_sub,
+            founders,
             ax=ax,
-            phenotype_label=phenotype_label if sex_val == 0 else '',
-            jitter=jitter, point_size=point_size, alpha=alpha)
+            phenotype_label=phenotype_label if sex_val == 0 else "",
+            jitter=jitter,
+            point_size=point_size,
+            alpha=alpha,
+        )
 
         panel_title = sex_titles[sex_val]
         if loc_str:
-            panel_title = f'{sex_titles[sex_val]}  —  {loc_str}'
+            panel_title = f"{sex_titles[sex_val]}  —  {loc_str}"
         ax.set_title(panel_title, fontsize=8, pad=4)
 
     return fig
@@ -293,8 +315,8 @@ def kinship_heatmap(
     sample_labels: Optional[list[str]] = None,
     block_boundaries: Optional[list[int]] = None,
     block_labels: Optional[list[str]] = None,
-    chrom: str = '',
-    cmap: str = 'RdBu_r',
+    chrom: str = "",
+    cmap: str = "RdBu_r",
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
 ) -> plt.Axes:
@@ -339,25 +361,31 @@ def kinship_heatmap(
     v_lo = vmin if vmin is not None else -v_abs
     v_hi = vmax if vmax is not None else v_abs
 
-    im = ax.imshow(K, aspect='equal', cmap=cmap, vmin=v_lo, vmax=v_hi,
-                   interpolation='nearest')
-    plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label='Kinship')
+    im = ax.imshow(
+        K, aspect="equal", cmap=cmap, vmin=v_lo, vmax=v_hi, interpolation="nearest"
+    )
+    plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label="Kinship")
 
     if block_boundaries is not None:
         for b in block_boundaries:
-            ax.axhline(b - 0.5, color=COLOR_NEUTRAL_DARK, linewidth=0.6,
-                       zorder=4)
-            ax.axvline(b - 0.5, color=COLOR_NEUTRAL_DARK, linewidth=0.6,
-                       zorder=4)
+            ax.axhline(b - 0.5, color=COLOR_NEUTRAL_DARK, linewidth=0.6, zorder=4)
+            ax.axvline(b - 0.5, color=COLOR_NEUTRAL_DARK, linewidth=0.6, zorder=4)
 
     if block_boundaries is not None and block_labels is not None:
         bounds = list(block_boundaries) + [n]
         starts = [0] + list(block_boundaries)
         for label, start, end in zip(block_labels, starts, bounds):
             mid = (start + end) / 2.0 - 0.5
-            ax.text(-0.5, mid, label, ha='right', va='center',
-                    fontsize=6, color=COLOR_NEUTRAL_DARK,
-                    fontfamily=['Carlito', 'Calibri', 'DejaVu Sans'])
+            ax.text(
+                -0.5,
+                mid,
+                label,
+                ha="right",
+                va="center",
+                fontsize=6,
+                color=COLOR_NEUTRAL_DARK,
+                fontfamily=["Carlito", "Calibri", "DejaVu Sans"],
+            )
 
     if sample_labels is not None and n <= 40:
         ax.set_xticks(np.arange(n))
@@ -369,7 +397,7 @@ def kinship_heatmap(
         ax.set_yticks([])
 
     if chrom:
-        ax.set_title(f'Kinship — LOCO chr {chrom}', fontsize=8, pad=4)
+        ax.set_title(f"Kinship — LOCO chr {chrom}", fontsize=8, pad=4)
 
     sns.despine(ax=ax, left=True, bottom=True)
     _set_font(ax)
@@ -382,7 +410,7 @@ def epistasis_heatmap(
     *,
     ax: Optional[plt.Axes] = None,
     vmax: Optional[float] = None,
-    cmap: str = 'Reds',
+    cmap: str = "Reds",
 ) -> plt.Axes:
     """Founder × founder epistasis interaction LOD heatmap (J × J grid).
 
@@ -417,16 +445,17 @@ def epistasis_heatmap(
     cmap_obj = plt.get_cmap(cmap).copy()
     cmap_obj.set_bad(color=COLOR_NEUTRAL_LIGHT)
 
-    im = ax.imshow(mat, aspect='equal', cmap=cmap_obj, vmin=0.0, vmax=v_hi,
-                   interpolation='nearest')
-    plt.colorbar(im, ax=ax, fraction=0.04, pad=0.02, label='Interaction LOD')
+    im = ax.imshow(
+        mat, aspect="equal", cmap=cmap_obj, vmin=0.0, vmax=v_hi, interpolation="nearest"
+    )
+    plt.colorbar(im, ax=ax, fraction=0.04, pad=0.02, label="Interaction LOD")
 
     ax.set_xticks(np.arange(J))
-    ax.set_xticklabels(founders, rotation=45, ha='right', fontsize=7)
+    ax.set_xticklabels(founders, rotation=45, ha="right", fontsize=7)
     ax.set_yticks(np.arange(J))
     ax.set_yticklabels(founders, fontsize=7)
-    ax.set_xlabel('Founder (locus 2)')
-    ax.set_ylabel('Founder (locus 1)')
+    ax.set_xlabel("Founder (locus 2)")
+    ax.set_ylabel("Founder (locus 1)")
 
     sns.despine(ax=ax, left=True, bottom=True)
     _set_font(ax)
@@ -437,7 +466,7 @@ def kinship_distribution(
     K: np.ndarray,
     *,
     ax: Optional[plt.Axes] = None,
-    chrom: str = '',
+    chrom: str = "",
 ) -> plt.Axes:
     """KDE of diagonal vs off-diagonal kinship values.
 
@@ -457,20 +486,20 @@ def kinship_distribution(
     if ax is None:
         _, ax = plt.subplots(figsize=(6, 4), dpi=300)
 
-    n    = K.shape[0]
+    n = K.shape[0]
     diag = np.diag(K)
     tril = K[np.tril_indices(n, -1)]
 
-    sns.kdeplot(diag, ax=ax, label='diagonal',     color=FOUNDER_COLORS['NODJ'])
-    sns.kdeplot(tril, ax=ax, label='off-diagonal', color=FOUNDER_COLORS['129S1J'])
+    sns.kdeplot(diag, ax=ax, label="diagonal", color=FOUNDER_COLORS["NODJ"])
+    sns.kdeplot(tril, ax=ax, label="off-diagonal", color=FOUNDER_COLORS["129S1J"])
 
-    ax.set_xlabel('Kinship value')
-    ax.set_ylabel('Density')
+    ax.set_xlabel("Kinship value")
+    ax.set_ylabel("Density")
     ax.set_ylim(bottom=0)
     ax.legend(fontsize=8, frameon=False)
-    title = 'Kinship distribution'
+    title = "Kinship distribution"
     if chrom:
-        title += f'  chr{chrom}'
+        title += f"  chr{chrom}"
     ax.set_title(title, fontsize=9)
     sns.despine(ax=ax)
     _set_font(ax)

@@ -16,12 +16,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-ScanModel:      type = Literal['nb-glmm', 'lmm']
-HaplotypeModel: type = Literal['additive', 'full', 'mi']
-TestStatistic:  type = Literal['score', 'lrt', 'f_test']
+ScanModel: type = Literal["nb-glmm", "lmm"]
+HaplotypeModel: type = Literal["additive", "full", "mi"]
+TestStatistic: type = Literal["score", "lrt", "f_test"]
 
-_MM39_AUTOSOMES: list[str] = [f'chr{i}' for i in range(1, 20)]
-_MM39_CHROMS:    list[str] = _MM39_AUTOSOMES + ['chrX']
+_MM39_AUTOSOMES: list[str] = [f"chr{i}" for i in range(1, 20)]
+_MM39_CHROMS: list[str] = _MM39_AUTOSOMES + ["chrX"]
 
 
 class Population(BaseModel, frozen=True):
@@ -67,33 +67,31 @@ class Population(BaseModel, frozen=True):
         PCs are also needed alongside LOCO kinship
     """
 
-    name:                  str
-    founders:              list[str]
-    colors:                dict[str, str]
-    f1_colors:             dict[str, str]  = Field(default_factory=dict)
-    chromosome_names:      list[str]        = Field(
-        default_factory=lambda: list(_MM39_CHROMS)
-    )
-    has_sex_chromosomes:   bool             = True
-    sex_chromosome:        str              = 'chrX'
-    x_donors:              list[str]        = Field(default_factory=list)
-    genotyping_error_prob: float            = 0.002
-    n_gen:                 int              = 1
-    inbred:                bool             = True
-    loco_sufficient:       bool             = True
+    name: str
+    founders: list[str]
+    colors: dict[str, str]
+    f1_colors: dict[str, str] = Field(default_factory=dict)
+    chromosome_names: list[str] = Field(default_factory=lambda: list(_MM39_CHROMS))
+    has_sex_chromosomes: bool = True
+    sex_chromosome: str = "chrX"
+    x_donors: list[str] = Field(default_factory=list)
+    genotyping_error_prob: float = 0.002
+    n_gen: int = 1
+    inbred: bool = True
+    loco_sufficient: bool = True
 
     @property
     def n_founders(self) -> int:
         """Number of founder strains."""
         return len(self.founders)
 
-    @model_validator(mode='after')
-    def _colors_cover_founders(self) -> 'Population':
+    @model_validator(mode="after")
+    def _colors_cover_founders(self) -> "Population":
         """Validate that colors dict contains an entry for every founder."""
         missing = [f for f in self.founders if f not in self.colors]
         if missing:
             raise ValueError(
-                f'Population.colors missing entries for founders: {missing}'
+                f"Population.colors missing entries for founders: {missing}"
             )
         return self
 
@@ -128,16 +126,16 @@ class ScanConfig(BaseModel):
         (Phase 2+ — kinship-informed rank-permutation matching miQTL)
     """
 
-    population:         str   = 'cc'
-    model:              str   = 'nb-glmm'
-    test_statistic:     str   = 'score'
-    haplotype:          str   = 'additive'
-    scan_window:        str   = 'chr'
-    offset:             str   = 'from_libsize'
-    n_perms:            int   = Field(default=1000, ge=100)
-    seed:               int   = 42
-    cis_window_mb:      float = Field(default=10.0, gt=0.0)
-    permutation_method: str   = 'plain'
+    population: str = "cc"
+    model: str = "nb-glmm"
+    test_statistic: str = "score"
+    haplotype: str = "additive"
+    scan_window: str = "chr"
+    offset: str = "from_libsize"
+    n_perms: int = Field(default=1000, ge=100)
+    seed: int = 42
+    cis_window_mb: float = Field(default=10.0, gt=0.0)
+    permutation_method: str = "plain"
 
 
 class PipelineConfig(BaseModel):
@@ -159,9 +157,9 @@ class PipelineConfig(BaseModel):
         number of parallel scan workers (per-chromosome parallelism); >= 1
     """
 
-    scan_config:     ScanConfig
-    input_h5:        str
+    scan_config: ScanConfig
+    input_h5: str
     genome_cache_h5: str
-    output_dir:      str
-    cell_types:      list[str] = Field(default_factory=list)
-    n_jobs:          int       = Field(default=1, ge=1)
+    output_dir: str
+    cell_types: list[str] = Field(default_factory=list)
+    n_jobs: int = Field(default=1, ge=1)

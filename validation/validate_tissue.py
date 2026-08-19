@@ -170,6 +170,7 @@ from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chrom
 from mosaiqtl.qtl.permutation import (
     generate_null_outcomes,
     get_gev_thresholds,
+    load_per_chr_thresholds,
     run_positional_scans,
     run_threshold_scans,
     ci_scan_multi_gene,
@@ -568,23 +569,53 @@ def _make_descriptive_plots(
             log.warning('  lod.csv read failed: %s', exc)
 
     # ── threshold lookup (genome-wide scalar from threshold.csv) ──────────
+    # Primary: core/threshold.csv (written by this script after permutation).
+    # Fallback: r_data/thresholds_chr.csv (R reference, available earlier).
+    # NOTE: data_dir and chrs_to_scan are NOT in scope here (run() locals).
+    # Use core_dir.parent (= py_dir) to locate r_data/ sibling directory.
     _thr_by_chr: 'dict[str, float | None]' = {}
     _gw_thr_scalar: float | None = None
     _thr_path = core_dir / 'threshold.csv'
-    if _thr_path.exists():
+    _r_data_dir = core_dir.parent / 'r_data'        # py_dir/r_data (CT and non-CT)
+    if not _r_data_dir.exists():
+        _r_data_dir = core_dir.parent.parent / 'r_data'   # non-CT: py_data/../r_data
+    _thr_fallback = _r_data_dir / 'thresholds_chr.csv'
+    _thr_source = _thr_path if _thr_path.exists() else (
+        _thr_fallback if _thr_fallback.exists() else None
+    )
+    if _thr_source is not None:
         try:
-            _td0 = pd.read_csv(_thr_path)
+            _td0 = pd.read_csv(_thr_source)
             _td0['chr'] = _td0['chr'].astype(str)
             if 'genome_wide' in _td0['chr'].values:
                 _gw_thr_scalar = float(
                     _td0.loc[_td0['chr'] == 'genome_wide', 'threshold'].iloc[0])
-                for _tc in chrs_to_scan:
-                    _thr_by_chr[str(_tc)] = _gw_thr_scalar
+                _thr_by_chr['genome_wide'] = _gw_thr_scalar
+                _per_chr_rows = _td0[_td0['chr'] != 'genome_wide']
+                if len(_per_chr_rows) > 0:
+                    # per-chr GEV rows present — use them directly
+                    for _, _r in _per_chr_rows.iterrows():
+                        _thr_by_chr[str(_r['chr'])] = (
+                            float(_r['threshold']) if pd.notna(_r['threshold'])
+                            else _gw_thr_scalar)
+                else:
+                    # no per-chr rows yet — expand genome_wide to all standard chrs
+                    for _tc in [str(i) for i in range(1, 20)] + ['X']:
+                        _thr_by_chr[_tc] = _gw_thr_scalar
             else:
                 for _tc, _tg in _td0.groupby('chr'):
                     _thr_by_chr[str(_tc)] = float(_tg['threshold'].iloc[0])
+            log.info('  threshold loaded from %s (%d chrs)',
+                     _thr_source.name, len(_thr_by_chr))
         except Exception:
             pass
+
+    # override genome-wide-expanded values with true per-chr GEV thresholds
+    # computed from perm_max_lods_chr*.csv (works with checkpointed data)
+    _per_chr_thr = load_per_chr_thresholds(core_dir, percentile=0.95)
+    if _per_chr_thr:
+        _thr_by_chr.update(_per_chr_thr)
+        log.info('  per-chr GEV thresholds loaded (%d chrs)', len(_per_chr_thr))
 
     # ── LOD profile — top gene per chromosome ────────────────────────────
     _lod_dir = plt_dir / 'core' / 'lod_profile'
@@ -603,7 +634,8 @@ def _make_descriptive_plots(
                 ].sort_values('pos_mb')
                 if lod_top.empty:
                     continue
-                thr = _thr_by_chr.get(c)
+                # genome-wide threshold for eGene calling (not per-chr GEV)
+                thr = _gw_thr_scalar
                 fig, ax = plt.subplots(figsize=(12, 3.5), dpi=300)
                 _viz_lod_profile(lod_top['pos_mb'].values, lod_top['lod'].values,
                                  ax=ax, chrom=c, threshold=thr, fill=True,
@@ -886,18 +918,16 @@ def _make_descriptive_plots(
     # ── per-chromosome permutation distributions ──────────────────────────
     _perm_dir = plt_dir / 'core' / 'perm'
     _perm_dir.mkdir(parents=True, exist_ok=True)
-    if thr_path.exists():
+    # _per_chr_thr computed above from perm_max_lods_chr*.csv via package function
+    if _per_chr_thr:
         try:
-            _thr_perm = pd.read_csv(thr_path)
-            _thr_perm['chr'] = _thr_perm['chr'].astype(str)
-            _perm_thr_dict = dict(
-                zip(_thr_perm['chr'], _thr_perm['threshold'].where(_thr_perm['threshold'].notna(), None))
-            )
             _perm_null: dict[str, np.ndarray] = {}
-            for _c_perm in _perm_thr_dict:
-                _pf_path = core_dir / f'perm_max_lods_chr{_c_perm}.csv'
+            for _c_perm, _pf_path in [
+                (c, core_dir / f'perm_max_lods_chr{c}.csv') for c in _per_chr_thr
+            ]:
                 if _pf_path.exists():
                     _perm_null[_c_perm] = pd.read_csv(_pf_path)['max_lod'].values
+            _perm_thr_dict = _per_chr_thr
             if _perm_null:
                 _perm_figs = _viz_perm_distributions_per_chr(_perm_null, _perm_thr_dict)
                 for _pc, _pf in _perm_figs.items():
@@ -965,13 +995,16 @@ def _make_descriptive_plots(
                 'top_gene': (str(_pk_gs.loc[_pk_gs['peak_lod'].idxmax(), 'gene_name'])
                              if len(_pk_gs) > 0 else ''),
             }
-            fig_gs = _viz_genome_summary(_pk_gs, _is_eg, _thr_gs or None,
+            # _thr_gs has genome_wide + per-chr keys from threshold.csv (post-S5)
+            # _thr_by_chr is the same data but already loaded earlier; prefer it
+            _thr_plot = _thr_by_chr if _thr_by_chr else _thr_gs
+            fig_gs = _viz_genome_summary(_pk_gs, _is_eg, _thr_plot or None,
                                          scan_stats=_scan_stats_gs)
             fig_gs.savefig(plt_dir / 'core' / 'genome_summary.png', dpi=300,
                            bbox_inches='tight', transparent=True)
             plt.close(fig_gs)
             log.info('  core/genome_summary.png')
-            fig_gd = _viz_genome_diagnostic(_pk_gs, _thr_gs, scan_stats=_scan_stats_gs)
+            fig_gd = _viz_genome_diagnostic(_pk_gs, _thr_plot, scan_stats=_scan_stats_gs)
             fig_gd.savefig(plt_dir / 'core' / 'genome_diagnostic.png', dpi=300,
                            bbox_inches='tight', transparent=True)
             plt.close(fig_gd)
@@ -2787,10 +2820,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         pd.DataFrame({'max_lod': _c5_null}).to_csv(
                             core_dir / f'perm_max_lods_chr{_c5}.csv', index=False)
 
-                    # single-row threshold file with genome_wide sentinel
-                    # scan_elapsed_s / perms_per_hr mirror R's thresholds_genome.csv
-                    # for direct speed comparison
-                    pd.DataFrame([{
+                    # threshold.csv: genome_wide row (used for eGene calling)
+                    # + per-chr rows (GEV on each chr's null, for comparison only)
+                    _thr_rows_out: list[dict] = [{
                         'chr':            'genome_wide',
                         'threshold':      _gw_thr,
                         'perm_gene':      _perm_gene,
@@ -2798,7 +2830,20 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         'n_perms':        perm_n,
                         'scan_elapsed_s': round(_perm_scan_elapsed, 1),
                         'perms_per_hr':   _perms_per_hr,
-                    }]).to_csv(core_dir / 'threshold.csv', index=False)
+                    }]
+                    for _c5, _c5_null in _chr_nulls.items():
+                        _c5_thr, _ = get_gev_thresholds(_c5_null, percentile=0.95)
+                        _thr_rows_out.append({
+                            'chr':            str(_c5),
+                            'threshold':      _c5_thr,
+                            'perm_gene':      _perm_gene,
+                            'h2_median':      None,
+                            'n_perms':        int(np.isfinite(_c5_null).sum()),
+                            'scan_elapsed_s': None,
+                            'perms_per_hr':   None,
+                        })
+                    pd.DataFrame(_thr_rows_out).to_csv(
+                        core_dir / 'threshold.csv', index=False)
 
                     # compare to R peak-chr permutation (approximate — different scope)
                     if r_perm_lod_path.exists():

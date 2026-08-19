@@ -1,4 +1,5 @@
 """results_io — serialisation helpers for QTL scan outputs."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
@@ -42,29 +43,33 @@ def pos_merge(
     -------
     DataFrame with columns ``_chr``, ``_pos``, and the two value columns.
     """
-    left  = left.copy()
+    left = left.copy()
     right = right.copy()
-    left['_chr']  = left['chr'].astype(str)
-    right['_chr'] = right['chr'].astype(str)
-    left['_pos']  = left['pos_mb'].round(round_dp)
-    right['_pos'] = right['pos_mb'].round(round_dp)
+    left["_chr"] = left["chr"].astype(str)
+    right["_chr"] = right["chr"].astype(str)
+    left["_pos"] = left["pos_mb"].round(round_dp)
+    right["_pos"] = right["pos_mb"].round(round_dp)
 
     same_name = (left_val == right_val) and left_label is None and right_label is None
-    left_out  = left_label  or (left_val  + ('_left'  if same_name else ''))
-    right_out = right_label or (right_val + ('_right' if same_name else ''))
+    left_out = left_label or (left_val + ("_left" if same_name else ""))
+    right_out = right_label or (right_val + ("_right" if same_name else ""))
 
-    left_d = (left[['_chr', '_pos', left_val]]
-              .rename(columns={left_val: left_out})
-              .sort_values(left_out, ascending=False)
-              .drop_duplicates(['_chr', '_pos']))
-    right_d = (right[['_chr', '_pos', right_val]]
-               .rename(columns={right_val: right_out})
-               .sort_values(right_out, ascending=False)
-               .drop_duplicates(['_chr', '_pos']))
-    return pd.merge(left_d, right_d, on=['_chr', '_pos']).dropna()
+    left_d = (
+        left[["_chr", "_pos", left_val]]
+        .rename(columns={left_val: left_out})
+        .sort_values(left_out, ascending=False)
+        .drop_duplicates(["_chr", "_pos"])
+    )
+    right_d = (
+        right[["_chr", "_pos", right_val]]
+        .rename(columns={right_val: right_out})
+        .sort_values(right_out, ascending=False)
+        .drop_duplicates(["_chr", "_pos"])
+    )
+    return pd.merge(left_d, right_d, on=["_chr", "_pos"]).dropna()
 
 
-def scan_result_to_df(scan: 'ScanResult', gene_name: str) -> pd.DataFrame:
+def scan_result_to_df(scan: "ScanResult", gene_name: str) -> pd.DataFrame:
     """Convert a ScanResult to a per-locus DataFrame.
 
     Parameters
@@ -78,10 +83,12 @@ def scan_result_to_df(scan: 'ScanResult', gene_name: str) -> pd.DataFrame:
     -------
     DataFrame with columns: gene_name, chr, locus, pos_mb, lod.
     """
-    return pd.DataFrame({
-        'gene_name': gene_name,
-        'chr':    np.asarray(scan.chromosomes),
-        'locus':  np.asarray(scan.locus_ids),
-        'pos_mb': np.asarray(scan.positions),
-        'lod':    np.asarray(scan.lod),
-    })
+    return pd.DataFrame(
+        {
+            "gene_name": gene_name,
+            "chr": np.asarray(scan.chromosomes),
+            "locus": np.asarray(scan.locus_ids),
+            "pos_mb": np.asarray(scan.positions),
+            "lod": np.asarray(scan.lod),
+        }
+    )

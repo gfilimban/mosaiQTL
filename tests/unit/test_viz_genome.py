@@ -4,12 +4,13 @@ import sys
 from pathlib import Path
 
 import matplotlib
-matplotlib.use('Agg')
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
+sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
 from mosaiqtl.viz.genome import (
     lod_profile,
@@ -29,11 +30,11 @@ from mosaiqtl.viz.genome import (
 @pytest.fixture(autouse=True)
 def close_figures():
     yield
-    plt.close('all')
+    plt.close("all")
 
 
 N_LOCI = 30
-CHROMS = ['1', '2']
+CHROMS = ["1", "2"]
 
 
 def _lod_array(seed=0):
@@ -47,9 +48,10 @@ def _pos_array():
 
 # ── lod_profile ───────────────────────────────────────────────────────────────
 
+
 class TestLodProfile:
     def test_returns_axes(self):
-        ax = lod_profile(_pos_array(), _lod_array(), chrom='1')
+        ax = lod_profile(_pos_array(), _lod_array(), chrom="1")
         assert isinstance(ax, plt.Axes)
 
     def test_accepts_existing_ax(self):
@@ -72,26 +74,30 @@ class TestLodProfile:
 
 # ── manhattan ─────────────────────────────────────────────────────────────────
 
+
 class TestManhattan:
     def _make_scans(self):
         rng = np.random.default_rng(1)
         return {
-            '1': (np.linspace(1, 100, N_LOCI), np.abs(rng.standard_normal(N_LOCI))),
-            '2': (np.linspace(1, 100, N_LOCI), np.abs(rng.standard_normal(N_LOCI))),
+            "1": (np.linspace(1, 100, N_LOCI), np.abs(rng.standard_normal(N_LOCI))),
+            "2": (np.linspace(1, 100, N_LOCI), np.abs(rng.standard_normal(N_LOCI))),
         }
 
     def test_returns_figure(self):
         import matplotlib.figure
+
         fig = manhattan(self._make_scans())
         assert isinstance(fig, matplotlib.figure.Figure)
 
     def test_with_threshold(self):
         import matplotlib.figure
+
         fig = manhattan(self._make_scans(), threshold=4.0)
         assert isinstance(fig, matplotlib.figure.Figure)
 
 
 # ── lod_interval ──────────────────────────────────────────────────────────────
+
 
 class TestLodInterval:
     def test_returns_axes(self):
@@ -103,6 +109,7 @@ class TestLodInterval:
 
 # ── pvalue_qq ─────────────────────────────────────────────────────────────────
 
+
 class TestPvalueQq:
     def test_returns_axes(self):
         rng = np.random.default_rng(2)
@@ -112,6 +119,7 @@ class TestPvalueQq:
 
 
 # ── lod_histogram ─────────────────────────────────────────────────────────────
+
 
 class TestLodHistogram:
     def test_returns_axes(self):
@@ -127,24 +135,27 @@ class TestLodHistogram:
 
 # ── gene_manhattan ────────────────────────────────────────────────────────────
 
+
 class TestGeneManhattan:
     def test_returns_figure(self):
         import matplotlib.figure
+
         rng = np.random.default_rng(5)
         n = 50
-        gene_pos  = rng.uniform(1, 100, n)
-        gene_chrs = np.array(['1'] * 25 + ['2'] * 25)
-        peak_lod  = np.abs(rng.standard_normal(n))
+        gene_pos = rng.uniform(1, 100, n)
+        gene_chrs = np.array(["1"] * 25 + ["2"] * 25)
+        peak_lod = np.abs(rng.standard_normal(n))
         fig = gene_manhattan(gene_pos, gene_chrs, peak_lod)
         assert isinstance(fig, matplotlib.figure.Figure)
 
 
 # ── cis_distance_histogram ────────────────────────────────────────────────────
 
+
 class TestCisDistanceHistogram:
     def test_returns_axes(self):
         rng = np.random.default_rng(6)
-        tss_pos  = rng.uniform(1, 100, 100)
+        tss_pos = rng.uniform(1, 100, 100)
         peak_pos = tss_pos + rng.uniform(-10, 10, 100)
         ax = cis_distance_histogram(tss_pos, peak_pos)
         assert isinstance(ax, plt.Axes)
@@ -152,16 +163,18 @@ class TestCisDistanceHistogram:
 
 # ── nb_vs_lmm_lod ─────────────────────────────────────────────────────────────
 
+
 class TestNbVsLmmLod:
     def test_returns_axes(self):
         rng = np.random.default_rng(7)
-        nb_lod  = np.abs(rng.standard_normal(50))
+        nb_lod = np.abs(rng.standard_normal(50))
         lmm_lod = nb_lod * 0.9 + rng.standard_normal(50) * 0.1
         ax = nb_vs_lmm_lod(nb_lod, lmm_lod)
         assert isinstance(ax, plt.Axes)
 
 
 # ── library_size_qc ───────────────────────────────────────────────────────────
+
 
 class TestLibrarySizeQc:
     def test_returns_axes(self, library_sizes_cells):
@@ -171,9 +184,10 @@ class TestLibrarySizeQc:
 
 # ── chromosome_lod_profile ────────────────────────────────────────────────────
 
+
 class TestChromosomeLodProfile:
     def test_returns_axes(self):
-        ax = chromosome_lod_profile(_pos_array(), _lod_array(), chrom='8')
+        ax = chromosome_lod_profile(_pos_array(), _lod_array(), chrom="8")
         assert isinstance(ax, plt.Axes)
 
     def test_ylim_from_zero(self):
@@ -181,10 +195,9 @@ class TestChromosomeLodProfile:
         assert ax.get_ylim()[0] == 0.0
 
     def test_with_threshold(self):
-        ax = chromosome_lod_profile(
-            _pos_array(), _lod_array(), threshold=3.5
-        )
-        lines = [ln for ln in ax.get_lines() if ln.get_linestyle() == '--']
+        ax = chromosome_lod_profile(_pos_array(), _lod_array(), threshold=3.5)
+        # KW_THRESHOLD uses ':' (dotted); check that at least one threshold line is present
+        lines = [ln for ln in ax.get_lines() if ln.get_linestyle() in ("--", ":")]
         assert len(lines) == 1
 
     def test_n_loci_annotation(self):
@@ -194,20 +207,19 @@ class TestChromosomeLodProfile:
         assert any(str(len(pos)) in t for t in texts)
 
     def test_no_annotation_when_disabled(self):
-        ax = chromosome_lod_profile(
-            _pos_array(), _lod_array(), annotate_n_loci=False
-        )
+        ax = chromosome_lod_profile(_pos_array(), _lod_array(), annotate_n_loci=False)
         assert len(ax.texts) == 0
 
 
 # ── peak_locus_zoom ───────────────────────────────────────────────────────────
+
 
 class TestPeakLocusZoom:
     def test_returns_axes(self):
         pos = _pos_array()
         lod = _lod_array()
         peak = float(pos[np.argmax(lod)])
-        ax = peak_locus_zoom(pos, lod, peak, chrom='8')
+        ax = peak_locus_zoom(pos, lod, peak, chrom="8")
         assert isinstance(ax, plt.Axes)
 
     def test_xlim_within_window(self):
@@ -234,6 +246,7 @@ class TestPeakLocusZoom:
         ax = peak_locus_zoom(
             pos, lod, peak, window_mb=20.0, ci_lo_mb=65.0, ci_hi_mb=85.0
         )
-        shaded = [p for p in ax.patches
-                  if p.get_alpha() is not None and p.get_alpha() < 0.5]
+        shaded = [
+            p for p in ax.patches if p.get_alpha() is not None and p.get_alpha() < 0.5
+        ]
         assert len(shaded) >= 1

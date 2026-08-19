@@ -12,9 +12,9 @@ import logging
 import numpy as np
 from scipy.interpolate import UnivariateSpline
 
-logger = logging.getLogger('mosaiqtl')
+logger = logging.getLogger("mosaiqtl")
 
-__all__ = ['storey_qvalue']
+__all__ = ["storey_qvalue"]
 
 # default λ grid: 0.05 to 0.95 in 0.05 steps (Storey 2002 recommendation)
 _LAMBDA_DEFAULT = np.arange(0.05, 1.00, 0.05)
@@ -50,7 +50,7 @@ def storey_qvalue(
     Under strong signal, π₀ < 1 and q < BH q.
     """
     lam = _LAMBDA_DEFAULT if lambda_range is None else np.asarray(lambda_range)
-    pv  = np.asarray(pvalues, dtype=float)
+    pv = np.asarray(pvalues, dtype=float)
 
     finite_mask = np.isfinite(pv)
     m = int(finite_mask.sum())
@@ -60,10 +60,7 @@ def storey_qvalue(
     pv_fin = pv[finite_mask]
 
     # ── π₀ estimation via natural cubic spline (Storey 2002 §2.4) ────────────
-    pi0_hat = np.array([
-        (pv_fin > lv).sum() / (m * (1.0 - lv))
-        for lv in lam
-    ])
+    pi0_hat = np.array([(pv_fin > lv).sum() / (m * (1.0 - lv)) for lv in lam])
 
     # keep only λ values where the estimate is finite and positive
     ok = np.isfinite(pi0_hat) & (pi0_hat > 0)
@@ -87,13 +84,13 @@ def storey_qvalue(
 
     # cap π₀ at 1; a value > 1 means the null model over-estimates signal
     pi0 = min(pi0, 1.0)
-    pi0 = max(pi0, 1e-6)   # numerical guard: q must be finite
-    logger.debug('storey_qvalue: m=%d  pi0=%.4f', m, pi0)
+    pi0 = max(pi0, 1e-6)  # numerical guard: q must be finite
+    logger.debug("storey_qvalue: m=%d  pi0=%.4f", m, pi0)
 
     # ── q-value computation ───────────────────────────────────────────────────
     # sort p-values ascending, compute BH-style correction scaled by π₀
-    order   = np.argsort(pv_fin)
-    ranks   = np.arange(1, m + 1)              # 1-based ranks of sorted p
+    order = np.argsort(pv_fin)
+    ranks = np.arange(1, m + 1)  # 1-based ranks of sorted p
     sorted_p = pv_fin[order]
 
     q_sorted = np.minimum(pi0 * m * sorted_p / ranks, 1.0)

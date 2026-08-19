@@ -51,17 +51,17 @@ from .scan import ScanResult
 from ..utils import build_z_matrix
 from ..genotype.genomecache import GenomeCache
 
-logger = logging.getLogger('mosaiqtl')
+logger = logging.getLogger("mosaiqtl")
 
 __all__ = [
-    'fit_null_sc_native',
-    'fit_null_sc',
-    'pseudobulk_sum',
-    'precompute_sufficient_stats',
-    'fit_null_nb_glmm_loco',
-    'scan_nb_gene',
-    'scan_nb_multi_gene',
-    'scan_nb',
+    "fit_null_sc_native",
+    "fit_null_sc",
+    "pseudobulk_sum",
+    "precompute_sufficient_stats",
+    "fit_null_nb_glmm_loco",
+    "scan_nb_gene",
+    "scan_nb_multi_gene",
+    "scan_nb",
 ]
 
 
@@ -91,7 +91,7 @@ def _tmm_norm_factors(counts_mat, ref_col=None, trim_m=0.3, trim_a=0.05):
     """
     counts_mat = np.asarray(counts_mat, dtype=np.float64)
     n_genes, n_samples = counts_mat.shape
-    lib_sizes = counts_mat.sum(axis=0).clip(1.0)               # (n_samples,)
+    lib_sizes = counts_mat.sum(axis=0).clip(1.0)  # (n_samples,)
 
     # choose reference sample: closest 75th-pctile count to dataset median
     if ref_col is None:
@@ -99,13 +99,13 @@ def _tmm_norm_factors(counts_mat, ref_col=None, trim_m=0.3, trim_a=0.05):
         ref_col = int(np.argmin(np.abs(q75 - np.median(q75))))
 
     ref_counts = counts_mat[:, ref_col]
-    ref_lib    = lib_sizes[ref_col]
+    ref_lib = lib_sizes[ref_col]
 
     log_factors = np.zeros(n_samples)
     for k in range(n_samples):
         if k == ref_col:
             continue
-        obs   = counts_mat[:, k]
+        obs = counts_mat[:, k]
         obs_lib = lib_sizes[k]
 
         # keep genes with counts > 0 in both samples
@@ -113,10 +113,8 @@ def _tmm_norm_factors(counts_mat, ref_col=None, trim_m=0.3, trim_a=0.05):
         if keep.sum() < 10:
             continue
 
-        obs_k   = obs[keep]
-        ref_k   = ref_counts[keep]
-        n_k     = obs_k.sum()
-        n_ref   = ref_k.sum()
+        obs_k = obs[keep]
+        ref_k = ref_counts[keep]
 
         # M: log-ratio of relative expression
         M = np.log2(obs_k / obs_lib) - np.log2(ref_k / ref_lib)
@@ -124,7 +122,9 @@ def _tmm_norm_factors(counts_mat, ref_col=None, trim_m=0.3, trim_a=0.05):
         A = 0.5 * (np.log2(obs_k / obs_lib) + np.log2(ref_k / ref_lib))
 
         # asymptotic variance for weighting
-        w = (obs_lib - obs_k) / (obs_lib * obs_k) + (ref_lib - ref_k) / (ref_lib * ref_k)
+        w = (obs_lib - obs_k) / (obs_lib * obs_k) + (ref_lib - ref_k) / (
+            ref_lib * ref_k
+        )
         w = np.maximum(w, 1e-12)
 
         # trim by M and A simultaneously
@@ -136,7 +136,7 @@ def _tmm_norm_factors(counts_mat, ref_col=None, trim_m=0.3, trim_a=0.05):
 
         log_factors[k] = float(np.sum(M[use] / w[use]) / np.sum(1.0 / w[use]))
 
-    return log_factors   # log2 scale; add to log(lib_size) to get full offset
+    return log_factors  # log2 scale; add to log(lib_size) to get full offset
 
 
 def _tmm_offsets(counts_mat, lib_sizes=None):
@@ -156,21 +156,23 @@ def _irls_nb_pseudobulk(S, x, phi_size, offsets, max_iter=25, tol=1e-7):
     phi_size  : NB size parameter r (= 1/sigma2 for subject-level NB)
     returns mu (n,), beta (p,)
     """
-    eta = offsets.copy()                       # init: mu = exp(offset)
-    mu  = np.exp(eta)
+    eta = offsets.copy()  # init: mu = exp(offset)
+    mu = np.exp(eta)
     for _ in range(max_iter):
-        W  = mu / (1.0 + mu / phi_size)        # NB working weight
-        z  = eta + (S - mu) / mu               # working response
+        W = mu / (1.0 + mu / phi_size)  # NB working weight
+        z = eta + (S - mu) / mu  # working response
         Wx = x * W[:, None]
         try:
             beta = np.linalg.solve(Wx.T @ x, Wx.T @ (z - offsets))
         except np.linalg.LinAlgError:
             break
         eta_new = x @ beta + offsets
-        mu_new  = np.exp(eta_new)
+        mu_new = np.exp(eta_new)
         if np.max(np.abs(mu_new - mu) / (np.abs(mu) + 1e-8)) < tol:
-            mu = mu_new; break
-        mu = mu_new; eta = eta_new
+            mu = mu_new
+            break
+        mu = mu_new
+        eta = eta_new
     return mu, beta
 
 
@@ -180,17 +182,23 @@ def _nr_k(S, M, k_init=1.0, max_iter=25, tol=1e-6):
     Marginal: S_i ~ NB(M_i, 1/k).  Gradient + Hessian use digamma/polygamma.
     """
     k = max(float(k_init), 1e-4)
-    S = np.asarray(S, float); M = np.asarray(M, float)
+    S = np.asarray(S, float)
+    M = np.asarray(M, float)
     for _ in range(max_iter):
-        g = float(np.sum(_dg(k+S) - _dg(k) + np.log(k/(k+M)) + (M-S)/(k+M)))
-        h = float(np.sum(_pg(1,k+S) - _pg(1,k) + 1/k - 1/(k+M) - (M-S)/(k+M)**2))
+        g = float(np.sum(_dg(k + S) - _dg(k) + np.log(k / (k + M)) + (M - S) / (k + M)))
+        h = float(
+            np.sum(
+                _pg(1, k + S) - _pg(1, k) + 1 / k - 1 / (k + M) - (M - S) / (k + M) ** 2
+            )
+        )
         if abs(h) < 1e-12:
             break
         k_new = k - g / h
         if k_new <= 0:
             k_new = k * 0.5
         if abs(k_new - k) / (abs(k) + 1e-8) < tol:
-            k = k_new; break
+            k = k_new
+            break
         k = k_new
     return max(k, 1e-6)
 
@@ -202,8 +210,8 @@ def _phi_mom(counts_g, mu_cell):
     mu_cell  : (n_cells,)  expected counts per cell
     returns phi (cell-level dispersion = 1/r_cell)
     """
-    r  = (counts_g - mu_cell) ** 2
-    phi = np.mean((r - mu_cell) / (mu_cell ** 2 + 1e-8))
+    r = (counts_g - mu_cell) ** 2
+    phi = np.mean((r - mu_cell) / (mu_cell**2 + 1e-8))
     return max(float(phi), 1e-6)
 
 
@@ -224,17 +232,19 @@ def _wleb_shrink(phi_hat, mean_expr, df_prior=10.0):
     log_m = np.log(mean_expr[ok] + 1e-8)
     # simple: smooth via binned mean (robust to outliers)
     n_bins = min(10, ok.sum() // 5)
-    bins   = np.percentile(log_m, np.linspace(0, 100, n_bins+1))
-    prior  = np.full(len(phi_hat), np.nanmedian(phi_hat[ok]))
+    bins = np.percentile(log_m, np.linspace(0, 100, n_bins + 1))
+    prior = np.full(len(phi_hat), np.nanmedian(phi_hat[ok]))
     for b in range(n_bins):
-        mask_b = ok & (log_m >= bins[b]) & (log_m <= bins[b+1])
+        mask_b = ok & (log_m >= bins[b]) & (log_m <= bins[b + 1])
         if mask_b.sum() >= 3:
             bin_idx = np.where(ok)[0]
-            subset  = bin_idx[(log_m[bin_idx] >= bins[b]) & (log_m[bin_idx] <= bins[b+1])]
+            subset = bin_idx[
+                (log_m[bin_idx] >= bins[b]) & (log_m[bin_idx] <= bins[b + 1])
+            ]
             prior_b = float(np.median(phi_hat[subset]))
             # assign prior to all genes in this expression range
-            log_expr  = np.log(mean_expr + 1e-8)
-            full_mask = (log_expr >= bins[b]) & (log_expr <= bins[b+1])
+            log_expr = np.log(mean_expr + 1e-8)
+            full_mask = (log_expr >= bins[b]) & (log_expr <= bins[b + 1])
             prior[full_mask] = prior_b
     # posterior: (df_prior * prior + df_gene * phi) / (df_prior + df_gene)
     # df_gene = 1 (single per-gene estimate), df_prior as specified
@@ -245,8 +255,8 @@ def _wleb_shrink(phi_hat, mean_expr, df_prior=10.0):
 
 def fit_null_sc_native(
     counts_cells: np.ndarray,
-    sample_ids: 'np.ndarray | list[str]',
-    covariates_cells: 'np.ndarray | None' = None,
+    sample_ids: "np.ndarray | list[str]",
+    covariates_cells: "np.ndarray | None" = None,
     verbose: bool = False,
 ) -> dict:
     """Native NEBULA-LN Stage 1 null fit — no edgepython required.
@@ -273,23 +283,23 @@ def fit_null_sc_native(
     """
     counts_cells = np.asarray(counts_cells, dtype=np.float64)
     n_genes, n_cells = counts_cells.shape
-    sample_ids   = np.asarray(sample_ids)
+    sample_ids = np.asarray(sample_ids)
     samples, inv = np.unique(sample_ids, return_inverse=True)
-    n_samp       = len(samples)
+    n_samp = len(samples)
 
     # subject-level pseudobulk and library sizes
-    lib_cell = counts_cells.sum(axis=0) + 1.0                # (n_cells,) per-cell total + 1
+    lib_cell = counts_cells.sum(axis=0) + 1.0  # (n_cells,) per-cell total + 1
     lib_samp = np.zeros(n_samp)
-    ncell_s  = np.zeros(n_samp)
+    ncell_s = np.zeros(n_samp)
     np.add.at(lib_samp, inv, lib_cell)
-    np.add.at(ncell_s,  inv, 1.0)
+    np.add.at(ncell_s, inv, 1.0)
 
     # pseudobulk count matrix for TMM: sum gene counts per subject
     pb_for_tmm = np.zeros((counts_cells.shape[0], n_samp), dtype=np.float64)
     np.add.at(pb_for_tmm.T, inv, counts_cells.T)
 
     # TMM factors (log2 scale) → convert to natural log and add to log(lib_samp)
-    tmm_log2 = _tmm_norm_factors(pb_for_tmm)                  # (n_samp,) log2
+    tmm_log2 = _tmm_norm_factors(pb_for_tmm)  # (n_samp,) log2
     offsets_samp = np.log(lib_samp.clip(1)) + tmm_log2 * np.log(2)  # (n_samp,)
     del pb_for_tmm
 
@@ -308,16 +318,16 @@ def fit_null_sc_native(
 
     # gene-level filter: cpc > 0.005 and expressed in >= 5 cells
     mean_cpc = counts_cells.mean(axis=1)
-    n_expr   = (counts_cells > 0).sum(axis=1)
+    n_expr = (counts_cells > 0).sum(axis=1)
     gene_mask = (mean_cpc > 0.005) & (n_expr >= 5)
-    idx       = np.where(gene_mask)[0]
-    n_pass    = len(idx)
+    idx = np.where(gene_mask)[0]
+    n_pass = len(idx)
     if verbose:
-        logger.info('fit_null_sc_native: %d/%d genes pass filter', n_pass, n_genes)
+        logger.info("fit_null_sc_native: %d/%d genes pass filter", n_pass, n_genes)
 
-    phi_hat   = np.full(n_pass, 0.1)
-    sigma2    = np.full(n_pass, 0.1)
-    mean_pb   = np.zeros(n_pass)
+    phi_hat = np.full(n_pass, 0.1)
+    sigma2 = np.full(n_pass, 0.1)
+    mean_pb = np.zeros(n_pass)
 
     for gi, g in enumerate(idx):
         counts_g = counts_cells[g]
@@ -326,8 +336,8 @@ def fit_null_sc_native(
         np.add.at(S, inv, counts_g)
 
         # initial phi: MOM on pseudobulk residuals
-        pb_mean    = S.mean()
-        pb_var     = S.var()
+        pb_mean = S.mean()
+        pb_var = S.var()
         phi_pb_init = max((pb_var - pb_mean) / (pb_mean**2 + 1e-8), 1e-3)
 
         # NEBULA-LN: alternate beta (IRLS) and k (NR)
@@ -335,30 +345,35 @@ def fit_null_sc_native(
         mu_s = np.ones(n_samp)
         for _ in range(8):
             mu_s, _ = _irls_nb_pseudobulk(S, x_samp, k, offsets_samp)
-            k       = _nr_k(S, mu_s, k_init=k)
+            k = _nr_k(S, mu_s, k_init=k)
 
-        sigma2[gi]  = 1.0 / max(k, 1e-6)
+        sigma2[gi] = 1.0 / max(k, 1e-6)
         mean_pb[gi] = float(mu_s.mean())
 
         # cell-level phi: MOM after removing subject scale factor
-        v_hat   = (S / mu_s.clip(1e-8))[inv]                 # (n_cells,)
+        v_hat = (S / mu_s.clip(1e-8))[inv]  # (n_cells,)
         mu_cell = v_hat * (mu_s / ncell_s.clip(1))[inv]
         phi_hat[gi] = _phi_mom(counts_g, mu_cell)
 
-        if verbose and gi % max(1, n_pass//10) == 0:
-            logger.info('  %d/%d  phi=%.3f  sigma2=%.3f',
-                        gi+1, n_pass, phi_hat[gi], sigma2[gi])
+        if verbose and gi % max(1, n_pass // 10) == 0:
+            logger.info(
+                "  %d/%d  phi=%.3f  sigma2=%.3f",
+                gi + 1,
+                n_pass,
+                phi_hat[gi],
+                sigma2[gi],
+            )
 
     # EB shrinkage
     phi_shrunk = _wleb_shrink(phi_hat, mean_pb)
 
     return {
-        'dispersion':        phi_hat,
-        'dispersion_shrunk': phi_shrunk,
-        'dispersion_use':    phi_shrunk,
-        'sigma_sample':      sigma2,
-        'gene_mask':         gene_mask,
-        'fitted_values':     None,
+        "dispersion": phi_hat,
+        "dispersion_shrunk": phi_shrunk,
+        "dispersion_use": phi_shrunk,
+        "sigma_sample": sigma2,
+        "gene_mask": gene_mask,
+        "fitted_values": None,
     }
 
 
@@ -369,9 +384,9 @@ def fit_null_sc_native(
 
 def fit_null_sc(
     counts_cells: np.ndarray,
-    strain_ids: 'np.ndarray | list[str]',
-    covariates_cells: 'np.ndarray | None' = None,
-    norm_method: str = 'TMM',
+    strain_ids: "np.ndarray | list[str]",
+    covariates_cells: "np.ndarray | None" = None,
+    norm_method: str = "TMM",
     shrink: bool = True,
     verbose: bool = False,
     use_native: bool = True,
@@ -402,7 +417,8 @@ def fit_null_sc(
     """
     if use_native:
         return fit_null_sc_native(
-            counts_cells, strain_ids, covariates_cells, verbose=verbose)
+            counts_cells, strain_ids, covariates_cells, verbose=verbose
+        )
 
     # ── legacy edgepython path ────────────────────────────────────────────
     import edgepython as ep
@@ -415,7 +431,7 @@ def fit_null_sc(
         x = np.asarray(covariates_cells, dtype=np.float64)
         if not np.allclose(x[:, 0], 1.0):
             x = np.hstack([np.ones((len(x), 1)), x])
-        design = pd.DataFrame(x, columns=[f'V{i+1}' for i in range(x.shape[1])])
+        design = pd.DataFrame(x, columns=[f"V{i+1}" for i in range(x.shape[1])])
     else:
         design = None
 
@@ -429,28 +445,30 @@ def fit_null_sc(
 
     if shrink:
         fit = ep.shrink_sc_disp(fit, counts=counts_cells)
-        fit['dispersion_use'] = np.where(
-            np.isfinite(fit['dispersion_shrunk']) & (fit['dispersion_shrunk'] > 0),
-            fit['dispersion_shrunk'],
-            fit['dispersion'],
+        fit["dispersion_use"] = np.where(
+            np.isfinite(fit["dispersion_shrunk"]) & (fit["dispersion_shrunk"] > 0),
+            fit["dispersion_shrunk"],
+            fit["dispersion"],
         )
     else:
-        fit['dispersion_use'] = fit['dispersion']
+        fit["dispersion_use"] = fit["dispersion"]
 
-    n_pass = int(fit['gene_mask'].sum())
-    logger.info('fit_null_sc: %d/%d genes pass filter  '
-                'med_disp=%.3f  med_sigma=%.3f',
-                n_pass, len(fit['gene_mask']),
-                float(np.nanmedian(fit['dispersion_use'])),
-                float(np.nanmedian(fit['sigma_sample'])))
+    n_pass = int(fit["gene_mask"].sum())
+    logger.info(
+        "fit_null_sc: %d/%d genes pass filter  " "med_disp=%.3f  med_sigma=%.3f",
+        n_pass,
+        len(fit["gene_mask"]),
+        float(np.nanmedian(fit["dispersion_use"])),
+        float(np.nanmedian(fit["sigma_sample"])),
+    )
     return fit
 
 
 def pseudobulk_sum(
     counts_cells: np.ndarray,
-    strain_ids: 'np.ndarray | list[str]',
-    gene_mask: 'np.ndarray | None' = None,
-) -> 'tuple[np.ndarray, np.ndarray, np.ndarray]':
+    strain_ids: "np.ndarray | list[str]",
+    gene_mask: "np.ndarray | None" = None,
+) -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
     """Aggregate cell-level counts to per-strain pseudobulk sums.
 
     Args:
@@ -480,8 +498,8 @@ def pseudobulk_sum(
 
 def precompute_sufficient_stats(
     counts: np.ndarray,
-    subject_ids: 'np.ndarray | list[str]',
-    library_sizes: 'np.ndarray | None' = None,
+    subject_ids: "np.ndarray | list[str]",
+    library_sizes: "np.ndarray | None" = None,
 ) -> dict:
     """Compute per-subject count statistics from cell-level data (1 gene).
 
@@ -503,23 +521,23 @@ def precompute_sufficient_stats(
     subjects, inv = np.unique(subject_ids, return_inverse=True)
     n_subj = len(subjects)
 
-    n_cells    = np.bincount(inv, minlength=n_subj).astype(np.float64)
+    n_cells = np.bincount(inv, minlength=n_subj).astype(np.float64)
     sum_counts = np.bincount(inv, weights=counts, minlength=n_subj)
     mean_count = np.where(n_cells > 0, sum_counts / np.maximum(n_cells, 1), 0.0)
 
     # variance via E[X^2] - (E[X])^2
-    sum_sq     = np.bincount(inv, weights=counts ** 2, minlength=n_subj)
-    var_count  = np.where(
+    sum_sq = np.bincount(inv, weights=counts**2, minlength=n_subj)
+    var_count = np.where(
         n_cells > 1,
-        sum_sq / np.maximum(n_cells, 1) - mean_count ** 2,
+        sum_sq / np.maximum(n_cells, 1) - mean_count**2,
         0.0,
     )
 
     return {
-        'subjects':   subjects,
-        'n_cells':    n_cells,
-        'mean_count': mean_count,
-        'var_count':  var_count,
+        "subjects": subjects,
+        "n_cells": n_cells,
+        "mean_count": mean_count,
+        "var_count": var_count,
     }
 
 
@@ -530,11 +548,17 @@ def precompute_sufficient_stats(
 
 def _nb_loglik(y, mu, phi):
     """NB log-likelihood summed over samples."""
-    r  = 1.0 / max(phi, 1e-12)
+    r = 1.0 / max(phi, 1e-12)
     mu = np.maximum(mu, 1e-300)
-    return float((_gammaln(y + r) - _gammaln(r) - _gammaln(y + 1)
-                  + r * np.log(r / (r + mu))
-                  + y * np.log(mu / (r + mu))).sum())
+    return float(
+        (
+            _gammaln(y + r)
+            - _gammaln(r)
+            - _gammaln(y + 1)
+            + r * np.log(r / (r + mu))
+            + y * np.log(mu / (r + mu))
+        ).sum()
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -548,14 +572,14 @@ def _wb(v, W, Z, M_inv):
 
     V^{-1}v = W*v - W*(Z M^{-1} Z^T W v)   (M = K^{-1}/tau + Z^T diag(W) Z)
     """
-    Dv = W * v                                    # D^{-1}v = W*v
-    return Dv - W * (Z @ (M_inv @ (Z.T @ Dv)))   # (n,)
+    Dv = W * v  # D^{-1}v = W*v
+    return Dv - W * (Z @ (M_inv @ (Z.T @ Dv)))  # (n,)
 
 
 def _wb_mat(A, W, Z, M_inv):
     """V^{-1} A via Woodbury.  A: (n, k)."""
     DA = W[:, None] * A
-    return DA - W[:, None] * (Z @ (M_inv @ (Z.T @ DA)))   # (n, k)
+    return DA - W[:, None] * (Z @ (M_inv @ (Z.T @ DA)))  # (n, k)
 
 
 def _wb_batch(H_all, W, Z, M_inv):
@@ -563,10 +587,10 @@ def _wb_batch(H_all, W, Z, M_inv):
 
     returns (L, n, J-1).
     """
-    DH   = W[None, :, None] * H_all                                    # (L, n, J-1)
-    ZtDH = np.einsum('mn,lnj->lmj', Z.T, DH, optimize=True)            # (L, m, J-1)
-    MiZtDH = np.einsum('mk,lkj->lmj', M_inv, ZtDH, optimize=True)     # (L, m, J-1)
-    return DH - W[None, :, None] * np.einsum('nm,lmj->lnj', Z, MiZtDH, optimize=True)
+    DH = W[None, :, None] * H_all  # (L, n, J-1)
+    ZtDH = np.einsum("mn,lnj->lmj", Z.T, DH, optimize=True)  # (L, m, J-1)
+    MiZtDH = np.einsum("mk,lkj->lmj", M_inv, ZtDH, optimize=True)  # (L, m, J-1)
+    return DH - W[None, :, None] * np.einsum("nm,lmj->lnj", Z, MiZtDH, optimize=True)
 
 
 def _build_M(K_m, tau, W, Z):
@@ -581,35 +605,35 @@ def _pql_tau_reml_wb(z, x, K_m, Z, W, tau_init=0.1):
     log|V| via matrix det lemma: log|M| + m*log(tau) + log|K_m| + log|D|
     all linear algebra stays at m×m cost (never form n×n matrices).
     """
-    m         = K_m.shape[0]
-    K_inv     = np.linalg.inv(K_m)
+    m = K_m.shape[0]
+    K_inv = np.linalg.inv(K_m)
     log_det_K = np.linalg.slogdet(K_m)[1]
-    log_det_D = -np.sum(np.log(W))                   # log|D| = -sum log W
-    ZtWZ      = Z.T @ (W[:, None] * Z)               # (m, m), precomputed
+    log_det_D = -np.sum(np.log(W))  # log|D| = -sum log W
+    ZtWZ = Z.T @ (W[:, None] * Z)  # (m, m), precomputed
 
     def _neg_reml(log_tau):
         """Negative REML log-likelihood (Woodbury form) as a function of log(tau)."""
         tau = np.exp(log_tau)
-        M   = K_inv / tau + ZtWZ                     # (m, m)
+        M = K_inv / tau + ZtWZ  # (m, m)
         try:
             L_cho, low = _cho_fac(M)
         except np.linalg.LinAlgError:
             return 1e10
-        M_inv     = _cho_sv((L_cho, low), np.eye(m))
+        M_inv = _cho_sv((L_cho, low), np.eye(m))
         log_det_M = 2.0 * np.sum(np.log(np.diag(L_cho)))
-        log_det_V = log_det_M + m*np.log(tau) + log_det_K + log_det_D
+        log_det_V = log_det_M + m * np.log(tau) + log_det_K + log_det_D
 
-        Vinvz  = _wb(z, W, Z, M_inv)
-        VinvX  = _wb_mat(x, W, Z, M_inv)
-        A      = x.T @ VinvX                         # (p, p)
+        Vinvz = _wb(z, W, Z, M_inv)
+        VinvX = _wb_mat(x, W, Z, M_inv)
+        A = x.T @ VinvX  # (p, p)
         sign, log_det_A = np.linalg.slogdet(A)
         if sign <= 0:
             return 1e10
-        Pz  = Vinvz - VinvX @ np.linalg.solve(A, x.T @ Vinvz)
+        Pz = Vinvz - VinvX @ np.linalg.solve(A, x.T @ Vinvz)
         return 0.5 * (log_det_V + log_det_A + float(z @ Pz))
 
     log_t0 = float(np.log(max(tau_init, 1e-6)))
-    res    = _minimize_scalar(_neg_reml, bounds=(log_t0-6, log_t0+6), method='bounded')
+    res = _minimize_scalar(_neg_reml, bounds=(log_t0 - 6, log_t0 + 6), method="bounded")
     return float(max(np.exp(res.x), 1e-8))
 
 
@@ -646,52 +670,58 @@ def fit_null_nb_glmm_loco(
         P is never stored — applied implicitly via _wb / _wb_batch.
     """
     phi = max(float(phi), 1e-6)
-    mu  = np.maximum(S.astype(np.float64), 0.5)
+    mu = np.maximum(S.astype(np.float64), 0.5)
     tau = 0.1
 
     for it in range(max_iter):
-        W   = mu / (1.0 + phi * mu)
-        z   = (np.log(mu) - offsets) + (S - mu) / mu
+        W = mu / (1.0 + phi * mu)
+        z = (np.log(mu) - offsets) + (S - mu) / mu
 
         # REML for tau via Woodbury (m×m cost)
         tau = _pql_tau_reml_wb(z, x, K_m, Z, W, tau_init=tau)
 
         # Woodbury working quantities
-        M     = _build_M(K_m, tau, W, Z)             # (m, m)
+        M = _build_M(K_m, tau, W, Z)  # (m, m)
         M_inv = np.linalg.inv(M)
 
         # GLS for beta
         Vinvz = _wb(z, W, Z, M_inv)
-        VinvX = _wb_mat(x, W, Z, M_inv)              # (n, p)
-        A     = x.T @ VinvX                           # (p, p)
-        beta  = np.linalg.solve(A, VinvX.T @ z)
+        VinvX = _wb_mat(x, W, Z, M_inv)  # (n, p)
+        A = x.T @ VinvX  # (p, p)
+        beta = np.linalg.solve(A, VinvX.T @ z)
 
         # BLUP for u
         resid = z - x @ beta
         Vinvr = _wb(resid, W, Z, M_inv)
-        u_hat = tau * (Z @ (K_m @ (Z.T @ Vinvr)))    # u = tau K_n V^{-1} residual
+        u_hat = tau * (Z @ (K_m @ (Z.T @ Vinvr)))  # u = tau K_n V^{-1} residual
 
         mu_new = np.exp(x @ beta + u_hat + offsets)
-        delta  = float(np.max(np.abs(mu_new - mu) / (np.abs(mu) + 1e-8)))
-        mu     = mu_new
+        delta = float(np.max(np.abs(mu_new - mu) / (np.abs(mu) + 1e-8)))
+        mu = mu_new
         if delta < tol and it > 0:
             break
 
     # final working quantities for score test
-    W     = mu / (1.0 + phi * mu)
+    W = mu / (1.0 + phi * mu)
     z_fin = (np.log(mu) - offsets) + (S - mu) / mu
-    M     = _build_M(K_m, tau, W, Z)
+    M = _build_M(K_m, tau, W, Z)
     M_inv = np.linalg.inv(M)
     VinvX = _wb_mat(x, W, Z, M_inv)
-    A     = x.T @ VinvX                               # (p, p)
+    A = x.T @ VinvX  # (p, p)
     A_inv = np.linalg.inv(A)
     Vinvz = _wb(z_fin, W, Z, M_inv)
     r_adj = Vinvz - VinvX @ (A_inv @ (x.T @ Vinvz))  # P z  (n,)
 
-    return {'mu': mu, 'tau': float(tau), 'W': W,
-            'M_inv': M_inv, 'Z': Z,
-            'VinvX': VinvX, 'XtVinvX_inv': A_inv,
-            'r_adj': r_adj}
+    return {
+        "mu": mu,
+        "tau": float(tau),
+        "W": W,
+        "M_inv": M_inv,
+        "Z": Z,
+        "VinvX": VinvX,
+        "XtVinvX_inv": A_inv,
+        "r_adj": r_adj,
+    }
 
 
 def _score_stats_loco(H_all, r_adj, W, Z, M_inv, VinvX, XtVinvX_inv):
@@ -712,22 +742,22 @@ def _score_stats_loco(H_all, r_adj, W, Z, M_inv, VinvX, XtVinvX_inv):
     L, n, nf1 = H_all.shape
 
     # U_l = H_l^T r_adj  (L, J-1)
-    U = np.einsum('lnj,n->lj', H_all, r_adj, optimize=True)
+    U = np.einsum("lnj,n->lj", H_all, r_adj, optimize=True)
 
     # V^{-1} H_all via Woodbury  (L, n, J-1)
     VinvH = _wb_batch(H_all, W, Z, M_inv)
 
     # H_l^T V^{-1} H_l  (L, J-1, J-1)
-    HtVinvH = np.einsum('lnj,lnk->ljk', H_all, VinvH, optimize=True)
+    HtVinvH = np.einsum("lnj,lnk->ljk", H_all, VinvH, optimize=True)
 
     # correction: (H_l^T V^{-1}X)(X^T V^{-1}X)^{-1}(X^T V^{-1}H_l)
-    HtVinvX = np.einsum('lnj,np->ljp', H_all, VinvX, optimize=True)   # (L, J-1, p)
-    corr    = np.einsum('ljp,pk,lqk->ljq', HtVinvX, XtVinvX_inv, HtVinvX, optimize=True)
+    HtVinvX = np.einsum("lnj,np->ljp", H_all, VinvX, optimize=True)  # (L, J-1, p)
+    corr = np.einsum("ljp,pk,lqk->ljq", HtVinvX, XtVinvX_inv, HtVinvX, optimize=True)
 
-    info_mat = HtVinvH - corr + np.eye(nf1)[None] * 1e-10   # (L, J-1, J-1)
+    info_mat = HtVinvH - corr + np.eye(nf1)[None] * 1e-10  # (L, J-1, J-1)
     try:
-        sol = np.linalg.solve(info_mat, U[..., None]).squeeze(-1)   # (L, J-1)
-        sc = np.maximum(np.einsum('lj,lj->l', U, sol, optimize=True), 0.0)
+        sol = np.linalg.solve(info_mat, U[..., None]).squeeze(-1)  # (L, J-1)
+        sc = np.maximum(np.einsum("lj,lj->l", U, sol, optimize=True), 0.0)
     except np.linalg.LinAlgError:
         sc = np.zeros(L)
         for li in range(L):
@@ -747,13 +777,13 @@ def _score_stats_chromosome(H_all, r_vec, w_vec):
 
     returns (L,) score statistics Q_ℓ ~ χ²(J-1) under H₀
     """
-    u    = np.einsum('lnj,n->lj',   H_all, r_vec,    optimize=True)  # (L,J-1)
-    hw   = H_all * w_vec[None, :, None]
-    info = np.einsum('lnj,lnk->ljk', hw, H_all,      optimize=True)  # (L,J-1,J-1)
+    u = np.einsum("lnj,n->lj", H_all, r_vec, optimize=True)  # (L,J-1)
+    hw = H_all * w_vec[None, :, None]
+    info = np.einsum("lnj,lnk->ljk", hw, H_all, optimize=True)  # (L,J-1,J-1)
     info += np.eye(H_all.shape[2])[None] * 1e-10
     try:
-        sol = np.linalg.solve(info, u[..., None]).squeeze(-1)   # (L, J-1)
-        sc = np.maximum(np.einsum('lj,lj->l', u, sol, optimize=True), 0.0)
+        sol = np.linalg.solve(info, u[..., None]).squeeze(-1)  # (L, J-1)
+        sc = np.maximum(np.einsum("lj,lj->l", u, sol, optimize=True), 0.0)
     except np.linalg.LinAlgError:
         sc = np.zeros(H_all.shape[0])
         for li in range(len(sc)):
@@ -766,15 +796,15 @@ def _score_stats_chromosome(H_all, r_vec, w_vec):
 
 def scan_nb_gene(
     counts_pb: np.ndarray,
-    genomecache: 'GenomeCache',
-    sample_ids: 'list[str]',
+    genomecache: "GenomeCache",
+    sample_ids: "list[str]",
     phi: float,
     sigma_sample: float = 0.0,
-    covariates: 'np.ndarray | None' = None,
-    lib_sizes: 'np.ndarray | None' = None,
-    kinship_loco: 'dict | None' = None,
-    loci_subset: 'set | None' = None,
-    phenotype_id: str = 'unknown',
+    covariates: "np.ndarray | None" = None,
+    lib_sizes: "np.ndarray | None" = None,
+    kinship_loco: "dict | None" = None,
+    loci_subset: "set | None" = None,
+    phenotype_id: str = "unknown",
 ) -> ScanResult:
     """NB score-test scan for one gene on pseudobulk counts.
 
@@ -810,8 +840,8 @@ def scan_nb_gene(
         effects; use effects.py at the peak locus for effect estimates),
         chromosomes, positions, locus_ids, and h2_null.
     """
-    phi  = max(float(phi), 1e-6)
-    y    = np.asarray(counts_pb, dtype=np.float64)
+    phi = max(float(phi), 1e-6)
+    y = np.asarray(counts_pb, dtype=np.float64)
     sids = list(sample_ids)
 
     # align to cache order via Z-matrix
@@ -825,13 +855,16 @@ def scan_nb_gene(
     y = y[valid]
     n = len(y)
 
-    x = (covariates[valid].copy() if covariates is not None
-         else np.ones((n, 1), dtype=float))
+    x = (
+        covariates[valid].copy()
+        if covariates is not None
+        else np.ones((n, 1), dtype=float)
+    )
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((n, 1)), x])
 
     s = lib_sizes[valid] if lib_sizes is not None else np.ones(n)
-    offsets = np.log(np.maximum(s, 1e-8))                 # log library size offset
+    offsets = np.log(np.maximum(s, 1e-8))  # log library size offset
 
     # ── null model ────────────────────────────────────────────────────────
     # with kinship: PQL NB-GLMM per chromosome (fit_null_nb_glmm_loco)
@@ -846,13 +879,13 @@ def scan_nb_gene(
     if not use_kinship:
         phi_size = 1.0 / max(phi, 1e-12)
         mu_null, _ = _irls_nb_pseudobulk(y, x, phi_size, offsets)
-        denom  = 1.0 + phi * mu_null
-        w_inf  = max(1.0 + sigma_sample, 1.0)
+        denom = 1.0 + phi * mu_null
+        w_inf = max(1.0 + sigma_sample, 1.0)
         r_vec_global = (y - mu_null) / (denom * w_inf)
         w_vec_global = mu_null / (denom * w_inf)
 
-    nf  = genomecache.n_founders       # J — full founder count
-    nf1 = nf - 1                       # J-1 — score test columns (rank constraint)
+    nf = genomecache.n_founders  # J — full founder count
+    nf1 = nf - 1  # J-1 — score test columns (rank constraint)
 
     all_lids, all_chrs, all_pos = [], [], []
     all_lod, all_pval, all_betas = [], [], []
@@ -867,73 +900,92 @@ def scan_nb_gene(
             continue
 
         # Z-expand haplotypes (n_loci, n, J-1)
-        H = (np.einsum('nm,lmj->lnj', z_sub, probs[:, :, :nf1], optimize=True)
-             if z_sub is not None else probs[:, valid, :nf1])
+        H = (
+            np.einsum("nm,lmj->lnj", z_sub, probs[:, :, :nf1], optimize=True)
+            if z_sub is not None
+            else probs[:, valid, :nf1]
+        )
 
         # per-chromosome null (LOCO kinship path)
         glmm_fit = None
         if use_kinship and str(chrom) in chr_keys:
             _kkey = chrom if chrom in kinship_loco else str(chrom)
-            K_c   = np.asarray(kinship_loco[_kkey], dtype=np.float64)  # (m, m)
+            K_c = np.asarray(kinship_loco[_kkey], dtype=np.float64)  # (m, m)
             # Z_pql: sample→strain mapping for valid samples
             Z_pql = z_sub if z_sub is not None else np.eye(K_c.shape[0])
             glmm_fit = fit_null_nb_glmm_loco(y, x, offsets, K_c, Z_pql, phi)
         elif use_kinship:
             # kinship requested but this chr absent — skip
-            logger.debug('scan_nb_gene: chr %s not in kinship_loco — skipping', chrom)
+            logger.debug("scan_nb_gene: chr %s not in kinship_loco — skipping", chrom)
             continue
 
         # score test (only supported path)
         if use_kinship and glmm_fit is not None:
-            sc = _score_stats_loco(H, glmm_fit['r_adj'],
-                                   glmm_fit['W'], glmm_fit['Z'],
-                                   glmm_fit['M_inv'], glmm_fit['VinvX'],
-                                   glmm_fit['XtVinvX_inv'])
+            sc = _score_stats_loco(
+                H,
+                glmm_fit["r_adj"],
+                glmm_fit["W"],
+                glmm_fit["Z"],
+                glmm_fit["M_inv"],
+                glmm_fit["VinvX"],
+                glmm_fit["XtVinvX_inv"],
+            )
         else:
             sc = _score_stats_chromosome(H, r_vec_global, w_vec_global)
 
-        lods  = sc / (2.0 * np.log(10))
-        pv    = 1.0 - _stats.chi2.cdf(sc, df=nf1)
-        betas = np.zeros((len(lids), nf))   # (n_loci, J) — score test gives no per-locus estimates
+        lods = sc / (2.0 * np.log(10))
+        pv = 1.0 - _stats.chi2.cdf(sc, df=nf1)
+        betas = np.zeros(
+            (len(lids), nf)
+        )  # (n_loci, J) — score test gives no per-locus estimates
 
-        all_lids.append(lids); all_chrs.append(np.full(len(lids), chrom))
-        all_pos.append(pos); all_lod.append(lods)
-        all_pval.append(pv); all_betas.append(betas)
+        all_lids.append(lids)
+        all_chrs.append(np.full(len(lids), chrom))
+        all_pos.append(pos)
+        all_lod.append(lods)
+        all_pval.append(pv)
+        all_betas.append(betas)
 
         del H, sc, lods, pv, betas
         gc.collect()
 
     if not all_lids:
         return ScanResult(
-            locus_ids=np.array([]), chromosomes=np.array([]),
-            positions=np.array([]), lod=np.array([]), p_value=np.array([]),
-            betas=np.empty((0, nf)), h2_null={}, phenotype_id=phenotype_id)
+            locus_ids=np.array([]),
+            chromosomes=np.array([]),
+            positions=np.array([]),
+            lod=np.array([]),
+            p_value=np.array([]),
+            betas=np.empty((0, nf)),
+            h2_null={},
+            phenotype_id=phenotype_id,
+        )
 
     return ScanResult(
-        locus_ids    = np.concatenate(all_lids),
-        chromosomes  = np.concatenate(all_chrs),
-        positions    = np.concatenate(all_pos),
-        lod          = np.concatenate(all_lod),
-        p_value      = np.concatenate(all_pval),
-        betas        = np.vstack(all_betas),
-        h2_null      = {},
-        phenotype_id = phenotype_id,
+        locus_ids=np.concatenate(all_lids),
+        chromosomes=np.concatenate(all_chrs),
+        positions=np.concatenate(all_pos),
+        lod=np.concatenate(all_lod),
+        p_value=np.concatenate(all_pval),
+        betas=np.vstack(all_betas),
+        h2_null={},
+        phenotype_id=phenotype_id,
     )
 
 
 def scan_nb_multi_gene(
     pb_matrix: np.ndarray,
-    gene_ids: 'list[str]',
+    gene_ids: "list[str]",
     phi_vec: np.ndarray,
     sigma_vec: np.ndarray,
-    genomecache: 'GenomeCache',
-    sample_ids: 'list[str]',
-    covariates: 'np.ndarray | None' = None,
-    lib_sizes: 'np.ndarray | None' = None,
-    kinship_loco: 'dict | None' = None,
-    cis_loci_dict: 'dict | None' = None,
-    output_path: 'Path | None' = None,
-) -> 'dict[str, ScanResult]':
+    genomecache: "GenomeCache",
+    sample_ids: "list[str]",
+    covariates: "np.ndarray | None" = None,
+    lib_sizes: "np.ndarray | None" = None,
+    kinship_loco: "dict | None" = None,
+    cis_loci_dict: "dict | None" = None,
+    output_path: "Path | None" = None,
+) -> "dict[str, ScanResult]":
     """Stream NB score-test scan across multiple genes, one gene at a time.
 
     Iterates over genes in pb_matrix, calling scan_nb_gene for each. After
@@ -963,7 +1015,9 @@ def scan_nb_multi_gene(
     for gi, gid in enumerate(gene_ids):
         cis = cis_loci_dict.get(str(gid)) if cis_loci_dict else None
         res = scan_nb_gene(
-            pb_matrix[gi], genomecache, sample_ids,
+            pb_matrix[gi],
+            genomecache,
+            sample_ids,
             phi=float(phi_vec[gi]),
             sigma_sample=float(sigma_vec[gi]),
             covariates=covariates,
@@ -974,7 +1028,7 @@ def scan_nb_multi_gene(
         )
         results[str(gid)] = res
         if (gi + 1) % max(1, n // 10) == 0:
-            logger.info('scan_nb_multi_gene: %d/%d genes', gi + 1, n)
+            logger.info("scan_nb_multi_gene: %d/%d genes", gi + 1, n)
         del res
         gc.collect()
     return results
@@ -983,16 +1037,16 @@ def scan_nb_multi_gene(
 def _scan_nb_chromosome(
     chrom: str,
     pb_matrix: np.ndarray,
-    gene_ids: 'list[str]',
+    gene_ids: "list[str]",
     phi_vec: np.ndarray,
     sigma_vec: np.ndarray,
     cache_path: str,
-    sample_ids: 'list[str]',
-    covariates: 'np.ndarray | None',
-    lib_sizes: 'np.ndarray | None',
-    kinship_loco: 'dict | None',
-    cis_loci_dict: 'dict | None',
-) -> 'dict[str, tuple]':
+    sample_ids: "list[str]",
+    covariates: "np.ndarray | None",
+    lib_sizes: "np.ndarray | None",
+    kinship_loco: "dict | None",
+    cis_loci_dict: "dict | None",
+) -> "dict[str, tuple]":
     """Scan all genes on one chromosome. Opens its own cache handle — thread-safe.
 
     Each thread worker calls GenomeCache.from_hdf5(cache_path) independently so
@@ -1021,20 +1075,22 @@ def _scan_nb_chromosome(
     try:
         lids_full, pos_full, probs_full = cache.get_chromosome(chrom)
     except (KeyError, OSError, RuntimeError):
-        logger.debug('_scan_nb_chromosome: chr %s not in cache', chrom)
+        logger.debug("_scan_nb_chromosome: chr %s not in cache", chrom)
         return {}
 
     chr_keys = {str(k) for k in kinship_loco} if kinship_loco else set()
     use_kinship = kinship_loco is not None and str(chrom) in chr_keys
     if kinship_loco is not None and not use_kinship:
-        logger.debug('_scan_nb_chromosome: chr %s absent from kinship_loco — skipping', chrom)
+        logger.debug(
+            "_scan_nb_chromosome: chr %s absent from kinship_loco — skipping", chrom
+        )
         return {}
 
     # Z-matrix alignment (computed once per chromosome)
     cache_ids = list(cache.sample_ids)
     sids = list(sample_ids)
     if sids == cache_ids:
-        z_sub: 'np.ndarray | None' = None
+        z_sub: "np.ndarray | None" = None
         valid = np.ones(len(sids), dtype=bool)
     else:
         z_full, valid = build_z_matrix(sids, cache_ids)
@@ -1045,11 +1101,11 @@ def _scan_nb_chromosome(
     nf1 = nf - 1
 
     # LOCO null (shared across genes; only for kinship path)
-    K_c: 'np.ndarray | None' = None
-    Z_pql: 'np.ndarray | None' = None
+    K_c: "np.ndarray | None" = None
+    Z_pql: "np.ndarray | None" = None
     if use_kinship:
-        _kkey = chrom if chrom in kinship_loco else str(chrom)   # type: ignore[index]
-        K_c   = np.asarray(kinship_loco[_kkey], dtype=np.float64)  # type: ignore[index]
+        _kkey = chrom if chrom in kinship_loco else str(chrom)  # type: ignore[index]
+        K_c = np.asarray(kinship_loco[_kkey], dtype=np.float64)  # type: ignore[index]
         Z_pql = z_sub if z_sub is not None else np.eye(K_c.shape[0])
 
     out: dict[str, tuple] = {}
@@ -1068,32 +1124,43 @@ def _scan_nb_chromosome(
         phi = max(float(phi_vec[gi]), 1e-6)
         sigma_sample = float(sigma_vec[gi])
         y = pb_matrix[gi][valid].astype(np.float64)
-        x = (covariates[valid].copy() if covariates is not None
-             else np.ones((n, 1), dtype=float))
+        x = (
+            covariates[valid].copy()
+            if covariates is not None
+            else np.ones((n, 1), dtype=float)
+        )
         if not np.allclose(x[:, 0], 1.0):
             x = np.hstack([np.ones((n, 1)), x])
         s = lib_sizes[valid] if lib_sizes is not None else np.ones(n)
         offsets = np.log(np.maximum(s, 1e-8))
 
-        H = (np.einsum('nm,lmj->lnj', z_sub, probs[:, :, :nf1], optimize=True)
-             if z_sub is not None else probs[:, valid, :nf1])
+        H = (
+            np.einsum("nm,lmj->lnj", z_sub, probs[:, :, :nf1], optimize=True)
+            if z_sub is not None
+            else probs[:, valid, :nf1]
+        )
 
         if use_kinship and K_c is not None and Z_pql is not None:
             glmm_fit = fit_null_nb_glmm_loco(y, x, offsets, K_c, Z_pql, phi)
-            sc = _score_stats_loco(H, glmm_fit['r_adj'],
-                                   glmm_fit['W'], glmm_fit['Z'],
-                                   glmm_fit['M_inv'], glmm_fit['VinvX'],
-                                   glmm_fit['XtVinvX_inv'])
+            sc = _score_stats_loco(
+                H,
+                glmm_fit["r_adj"],
+                glmm_fit["W"],
+                glmm_fit["Z"],
+                glmm_fit["M_inv"],
+                glmm_fit["VinvX"],
+                glmm_fit["XtVinvX_inv"],
+            )
         else:
             phi_size = 1.0 / max(phi, 1e-12)
             mu_null, _ = _irls_nb_pseudobulk(y, x, phi_size, offsets)
-            denom  = 1.0 + phi * mu_null
-            w_inf  = max(1.0 + sigma_sample, 1.0)
-            r_vec  = (y - mu_null) / (denom * w_inf)
-            w_vec  = mu_null / (denom * w_inf)
+            denom = 1.0 + phi * mu_null
+            w_inf = max(1.0 + sigma_sample, 1.0)
+            r_vec = (y - mu_null) / (denom * w_inf)
+            w_vec = mu_null / (denom * w_inf)
             sc = _score_stats_chromosome(H, r_vec, w_vec)
 
-        lod  = sc / (2.0 * np.log(10))
+        lod = sc / (2.0 * np.log(10))
         pval = 1.0 - _stats.chi2.cdf(sc, df=nf1)
         out[str(gid)] = (lids.copy(), pos.copy(), lod, pval)
 
@@ -1105,20 +1172,20 @@ def _scan_nb_chromosome(
 
 def scan_nb(
     counts_cells: np.ndarray,
-    genomecache: 'GenomeCache',
-    strain_ids_cells: 'np.ndarray | list[str]',
-    gene_ids: 'list[str] | None' = None,
-    covariates_cells: 'np.ndarray | None' = None,
-    covariates_strains: 'np.ndarray | None' = None,
-    lib_sizes: 'np.ndarray | None' = None,
-    kinship_loco: 'dict | None' = None,
-    norm_method: str = 'TMM',
+    genomecache: "GenomeCache",
+    strain_ids_cells: "np.ndarray | list[str]",
+    gene_ids: "list[str] | None" = None,
+    covariates_cells: "np.ndarray | None" = None,
+    covariates_strains: "np.ndarray | None" = None,
+    lib_sizes: "np.ndarray | None" = None,
+    kinship_loco: "dict | None" = None,
+    norm_method: str = "TMM",
     shrink_disp: bool = True,
-    cis_loci_dict: 'dict | None' = None,
-    output_path: 'Path | None' = None,
+    cis_loci_dict: "dict | None" = None,
+    output_path: "Path | None" = None,
     n_cores: int = 1,
     verbose: bool = False,
-) -> 'dict[str, ScanResult]':
+) -> "dict[str, ScanResult]":
     """Genome-wide NB GLM scan — full two-stage pipeline for one cell type.
 
     Stage 1: fit_null_sc (cell level, once per cell type).
@@ -1158,32 +1225,41 @@ def scan_nb(
     """
     # stage 1: null model
     fit_null = fit_null_sc(
-        counts_cells, strain_ids_cells, covariates_cells,
-        norm_method=norm_method, shrink=shrink_disp, verbose=verbose)
+        counts_cells,
+        strain_ids_cells,
+        covariates_cells,
+        norm_method=norm_method,
+        shrink=shrink_disp,
+        verbose=verbose,
+    )
 
-    gene_mask = fit_null['gene_mask']
+    gene_mask = fit_null["gene_mask"]
     n_genes_pass = int(gene_mask.sum())
     if n_genes_pass == 0:
-        logger.warning('scan_nb: no genes passed glm_sc_fit filter')
+        logger.warning("scan_nb: no genes passed glm_sc_fit filter")
         return {}
 
-    gene_ids_all  = (np.asarray(gene_ids) if gene_ids is not None
-                     else np.arange(counts_cells.shape[0]).astype(str))
+    gene_ids_all = (
+        np.asarray(gene_ids)
+        if gene_ids is not None
+        else np.arange(counts_cells.shape[0]).astype(str)
+    )
     gene_ids_pass = gene_ids_all[gene_mask]
-    disp_pass     = fit_null['dispersion_use']              # (n_genes_pass,)
-    sigma_pass    = fit_null['sigma_sample']                # (n_genes_pass,)
+    disp_pass = fit_null["dispersion_use"]  # (n_genes_pass,)
+    sigma_pass = fit_null["sigma_sample"]  # (n_genes_pass,)
 
     # pseudobulk aggregation
     pb_counts, pb_ncells, strains = pseudobulk_sum(
-        counts_cells, strain_ids_cells, gene_mask)           # (n_genes_pass, n_strains)
+        counts_cells, strain_ids_cells, gene_mask
+    )  # (n_genes_pass, n_strains)
 
     # strain-level covariates
     if covariates_strains is None and covariates_cells is not None:
         sid_arr = np.asarray(strain_ids_cells)
-        _, inv  = np.unique(sid_arr, return_inverse=True)
-        n_s     = len(strains)
+        _, inv = np.unique(sid_arr, return_inverse=True)
+        n_s = len(strains)
         cov_sum = np.zeros((n_s, covariates_cells.shape[1]))
-        cnt_s   = np.zeros(n_s)
+        cnt_s = np.zeros(n_s)
         np.add.at(cov_sum, inv, covariates_cells)
         np.add.at(cnt_s, inv, 1)
         covariates_strains = cov_sum / cnt_s[:, None]
@@ -1191,8 +1267,12 @@ def scan_nb(
     # stage 2: sequential (constant-memory streaming) or chromosome-parallel
     if n_cores <= 1:
         return scan_nb_multi_gene(
-            pb_counts, list(gene_ids_pass), disp_pass, sigma_pass,
-            genomecache, list(strains),
+            pb_counts,
+            list(gene_ids_pass),
+            disp_pass,
+            sigma_pass,
+            genomecache,
+            list(strains),
             covariates=covariates_strains,
             lib_sizes=lib_sizes,
             kinship_loco=kinship_loco,
@@ -1203,11 +1283,17 @@ def scan_nb(
     # chromosome-parallel path — each thread opens its own HDF5 handle
     if genomecache._h5_path is None:
         logger.warning(
-            'scan_nb: n_cores=%d requested but genomecache._h5_path is None '
-            '(cache was not loaded via from_hdf5); falling back to n_cores=1', n_cores)
+            "scan_nb: n_cores=%d requested but genomecache._h5_path is None "
+            "(cache was not loaded via from_hdf5); falling back to n_cores=1",
+            n_cores,
+        )
         return scan_nb_multi_gene(
-            pb_counts, list(gene_ids_pass), disp_pass, sigma_pass,
-            genomecache, list(strains),
+            pb_counts,
+            list(gene_ids_pass),
+            disp_pass,
+            sigma_pass,
+            genomecache,
+            list(strains),
             covariates=covariates_strains,
             lib_sizes=lib_sizes,
             kinship_loco=kinship_loco,
@@ -1226,18 +1312,24 @@ def scan_nb(
         futures = {
             chrom: ex.submit(
                 _scan_nb_chromosome,
-                chrom, pb_counts, gene_ids_str,
-                disp_pass, sigma_pass,
-                cache_path, list(strains),
-                covariates_strains, lib_sizes,
-                kinship_loco, cis_loci_dict,
+                chrom,
+                pb_counts,
+                gene_ids_str,
+                disp_pass,
+                sigma_pass,
+                cache_path,
+                list(strains),
+                covariates_strains,
+                lib_sizes,
+                kinship_loco,
+                cis_loci_dict,
             )
             for chrom in chromosomes
         }
         for chrom, fut in futures.items():
             chr_results[chrom] = fut.result()
             if verbose:
-                logger.info('scan_nb: chr %s done', chrom)
+                logger.info("scan_nb: chr %s done", chrom)
 
     # merge per-chromosome results into per-gene ScanResult
     gene_parts: dict[str, list] = {g: [] for g in gene_ids_str}
@@ -1250,20 +1342,20 @@ def scan_nb(
         parts = gene_parts[gid]
         if not parts:
             continue
-        all_lids  = np.concatenate([p[1] for p in parts])
-        all_chrs  = np.concatenate([np.full(len(p[1]), p[0]) for p in parts])
-        all_pos   = np.concatenate([p[2] for p in parts])
-        all_lod   = np.concatenate([p[3] for p in parts])
-        all_pval  = np.concatenate([p[4] for p in parts])
+        all_lids = np.concatenate([p[1] for p in parts])
+        all_chrs = np.concatenate([np.full(len(p[1]), p[0]) for p in parts])
+        all_pos = np.concatenate([p[2] for p in parts])
+        all_lod = np.concatenate([p[3] for p in parts])
+        all_pval = np.concatenate([p[4] for p in parts])
         results[gid] = ScanResult(
-            locus_ids   = all_lids,
-            chromosomes = all_chrs,
-            positions   = all_pos,
-            lod         = all_lod,
-            p_value     = all_pval,
-            betas       = np.zeros((len(all_lids), nf)),
-            h2_null     = {},
-            phenotype_id = gid,
+            locus_ids=all_lids,
+            chromosomes=all_chrs,
+            positions=all_pos,
+            lod=all_lod,
+            p_value=all_pval,
+            betas=np.zeros((len(all_lids), nf)),
+            h2_null={},
+            phenotype_id=gid,
         )
 
     del chr_results, gene_parts

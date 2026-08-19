@@ -1,80 +1,30 @@
-# mosaiQTL
+# mosaiQTL v0.6.0
 
-Haplotype-based QTL mapping for multiparent populations (MPP) — parametric on $J$ founders,
-currently designed for cell-type-resolved pseudobulk data from Collaborative Cross / DO / MAGIC
-mice, with planned extension to single-cell resolution.
-
-Maps molecular phenotypes to $J$ founder haplotypes across MPP-derived lines. Primary model:
-NB-GLMM with LOCO kinship (raw pseudobulk counts). Validated Gaussian LMM port included for
-normalized phenotypes.
+**Haplotype-based QTL mapping for multiparent populations.**  
+Maps molecular phenotypes to $J$ founder haplotypes — NB-GLMM primary model for raw pseudobulk
+counts, validated Gaussian LMM port for normalized phenotypes. CC mice (mm39); extensible to
+DO, MAGIC, and other MPPs.
 
 ---
 
-## Models
+## Why mosaiQTL?
 
-| Model | Entry point | Use case |
-|---|---|---|
-| **NB-GLMM + LOCO** (primary) | `qtl/nb.py` | Raw pseudobulk counts — PQL null + LOCO kinship, score test |
-| **Gaussian LMM** (validated port) | `scan_h2lmm()` | Normalized expression — LOCO kinship, FWL vectorised over loci |
-| **LMM + multiple imputation** | `scan_h2lmm_mi()` | Integrates haplotype-assignment uncertainty via MI averaging |
-| **Dispersion QTL** | `qtl/vqtl.py` | Transcriptional noise — NB dispersion as phenotype (Stage 2 under development) |
-| **Mediation** | `mediation_scan_qr()` | QR-based mediation; Woodbury rank-1 update across mediators |
-| **Epistasis** | `scan_epistasis()` | Pairwise GxG, conditional scan |
+| | mosaiQTL | miQTL (R) | tensorQTL |
+|---|---|---|---|
+| **Primary model** | NB-GLMM (counts) | Gaussian LMM | Gaussian linear |
+| **Haplotype scan** | ✓ ($J$ founders) | ✓ ($J$ founders) | ✗ |
+| **LOCO kinship** | ✓ mandatory | ✓ | ✗ |
+| **Raw count input** | ✓ | ✗ | ✗ |
+| **Speed vs miQTL** | **20× LMM · 678× permutation** | 1× | — |
+| **Peak RAM (43k genes)** | 897 MB | — | — |
 
-The LMM precomputes chromosome-constant quantities (kinship-rotated haplotype tensor) once per
-chromosome and reuses them across all genes — amortizing the dominant O(n²L) cost to O(1) per
-gene. The NB-GLMM fits a PQL null once per gene per chromosome then applies a score test across
-all loci. Both engines are parametric on $J$ founders via `Population` config.
+**NB-GLMM matters for counts.** Log-normalising pseudobulk counts and treating them as
+Gaussian inflates false positives for lowly-expressed genes. mosaiQTL models overdispersion
+explicitly — raw counts in, calibrated LOD scores out.
 
----
-
-## Package structure
-
-```
-src/mosaiqtl/
-  genotype/
-    genomecache.py    GenomeCache — from_rds(), from_gigamuga(), HDF5 save/load, collapse_genomecache()
-    hmm.py            forward-backward HMM, emission model
-    kinship.py        calc_kinship() LOCO, decomp_kinship() eigendecomposition
-    founders.py       FOUNDER_ORDER, FOUNDER_COLORS, F1_COLORS, CCPopulation
-  qtl/
-    lmm.py            estimate_h2_null() ML+Brent, scan_chromosome() FWL batch WLS
-    scan.py           scan_h2lmm(), scan_h2lmm_mi(), instability_lm_scan(), grab_locus_from_scan()
-    nb.py             NB-GLMM Stages 1+2 — PQL null + Woodbury score scan (primary)
-    permutation.py    generate_null_outcomes(), run_threshold_scans(), get_gev_thresholds()
-                      run_positional_scans() — parametric null, fix_h2=True (miQTL-matched)
-    effects.py        get_allele_effects() — fixef (FWL+pinv) and ranef (BLUP) methods
-    mediation.py      mediation_scan_qr(), fixef_mediation_scan()
-    epistasis.py      scan_epistasis(), scan_conditional_with_y()
-    vqtl.py           scan_vqtl(), VQTLResult
-    snp_scan.py       imputed_snp_scan_h2lmm(), imputed_snp_scan_from_db()
-    fdr.py            storey_qvalue()
-  models/
-    records.py        ScanResult, VQTLResult, QTLResult, FounderEffect
-    config.py         Population (frozen Pydantic), ScanConfig, PipelineConfig
-  io/
-    covariates.py     build_covariate_matrix()
-    anndata_io.py     AnnData read helpers (backed=True)
-    results_io.py     serialisation with provenance header
-  viz/
-    genome.py         LOD profiles, Manhattan plots
-    effects.py        founder effect bar plots, coef_profile()
-    haplotypes.py     haplotype heatmaps, epistasis grids
-  pipeline.py         discover(), characterize(), resolve()
-  utils.py            rint(), build_z_matrix(), align_samples()
-```
-
----
-
-## Z-matrix design (n ≥ m)
-
-mosaiQTL operates natively on $n$ samples mapping to $m \leq n$ genotyped strains.
-The Z-matrix $Z \in \{0,1\}^{n \times m}$ ($Z_{ik} = 1$ if sample $i$ belongs to
-strain $k$) expands haplotypes and kinship at scan time:
-
-$$H_n = Z H_m \qquad K_n = Z K_m Z^\top$$
-
-When $n = m$ and IDs match, $Z = I_m$ and results are identical to the strain-mean case.
+**LOCO kinship is mandatory.** Including the test chromosome in the kinship inflates the
+random-effect estimate (proximal contamination). mosaiQTL recomputes $K$ excluding each
+chromosome under test.
 
 ---
 
@@ -86,108 +36,196 @@ conda activate mosaiqtl
 pip install -e '.[dev]'
 ```
 
-**Required:** `numpy scipy pandas h5py anndata seaborn matplotlib pydantic click`  
-**Optional:** `rpy2` (HAPPY `.RData` readers), `scanpy`
+Core deps: `numpy scipy pandas h5py anndata seaborn matplotlib pydantic click`  
+Optional: `rpy2` (HAPPY `.RData` genome cache readers)
 
 ---
 
-## Validation
+## Quick start — CLI
 
-Phases 1, 2, and 3 use simulated CC data from
-[sparcc](https://github.com/gkeele/sparcc) /
-[sparcc_cache](https://github.com/gkeele/sparcc_cache) — no real data required for CI.
-Phase 1 is ground truth; all other phases gate on it passing first.
-
-### Prerequisites
-
-**Python environment** (see Installation above).
-
-**R dependencies:**
-
-```r
-install.packages(c('remotes', 'BiocManager'))
-BiocManager::install('edgeR')
-remotes::install_github('gkeele/miqtl')
-remotes::install_github('rqtl/qtl2')
-install.packages('qtl2convert')
-```
-
-**sparcc + genome cache** (Phase 1 and 2 only):
-
-```r
-remotes::install_github('gkeele/sparcc')
-```
+Five composable subcommands; each reads/writes CSV or HDF5, no hidden state between stages.
 
 ```bash
-git clone https://github.com/gkeele/sparcc_cache validation/sparcc_cache
+# 1. NB null fit per gene (Stage 1; LMM skips this step)
+mosaiqtl fit-null \
+    --cache cache.h5 --counts data.h5ad --metadata meta.csv \
+    --output null_fit.csv [--cell-type 'type2x']
+
+# 2. Genome-wide QTL scan → per-gene peak LOD
+mosaiqtl scan \
+    --cache cache.h5 --counts data.h5ad --metadata meta.csv \
+    --null-fit null_fit.csv --output peak_lod.csv
+    # LMM: add --model lmm (no fit-null needed)
+
+# 3. Permutation thresholds → GEV fit on max-LOD distribution
+mosaiqtl permute \
+    --cache cache.h5 --counts data.h5ad --metadata meta.csv \
+    --null-fit null_fit.csv --output perm/ --n-perms 1000
+
+# 4. Haplotype effect estimates at each gene's peak locus
+mosaiqtl estimate \
+    --cache cache.h5 --counts data.h5ad --metadata meta.csv \
+    --scan-result peak_lod.csv --output allele_effects.csv
+
+# 5. Summary table + genome-wide Manhattan
+mosaiqtl report \
+    --scan-result peak_lod.csv --perm-dir perm/ --output-dir results/
 ```
+
+Outputs: `null_fit.csv` · `peak_lod.csv` · `perm/perm_max_lods.csv` ·
+`allele_effects.csv` · `results/eqtl_summary.csv` · `results/genome_summary.png`
+
+### NB-GLMM vs LMM — which model?
+
+| | NB-GLMM (`--model nb`, default) | LMM (`--model lmm`) |
+|---|---|---|
+| **Input** | Raw integer pseudobulk counts | Log-normalised / continuous phenotype |
+| **Overdispersion** | Modelled explicitly (NB φ per gene) | Not modelled — inflated FP for low-expr genes |
+| **Stage 1 (`fit-null`)** | Required — estimates φ and σ² per gene | Not needed — h² estimated inside `scan` |
+| **Speed** | Slower (PQL null per gene × chr) | Faster (h² once per chr, FWL vectorised) |
+| **Use when** | snRNA-seq / ATAC-seq / any count data | Normalized bulk RNA-seq or fast exploration |
+
+```bash
+# NB-GLMM (default) — two stages
+mosaiqtl fit-null --cache cache.h5 --counts data.h5ad --metadata meta.csv --output null_fit.csv
+mosaiqtl scan     --cache cache.h5 --counts data.h5ad --metadata meta.csv --null-fit null_fit.csv --output peak_lod.csv
+
+# LMM — skip fit-null entirely
+mosaiqtl scan     --cache cache.h5 --counts data.h5ad --metadata meta.csv --null-fit null_fit.csv --output peak_lod.csv --model lmm
+```
+
+---
+
+## Quick start — Python API
+
+```python
+from mosaiqtl.genotype.genomecache import GenomeCache
+from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
+from mosaiqtl.qtl.scan import scan_h2lmm
+
+gc     = GenomeCache.from_hdf5('cache.h5')
+kd_raw = calc_kinship(gc, method='loco')          # one K per chromosome
+kd     = decomp_kinship(kd_raw)
+
+result = scan_h2lmm(
+    phenotype=y,          # (n,) strain-mean expression
+    genomecache=gc,
+    kinship_decomp=kd,
+    covariates=X,         # (n, p) including intercept; sex + batch minimum
+)
+# result.lod     — (n_loci,) LOD scores
+# result.betas   — (n_loci, J) per-founder effects
+# result.pos_mb  — (n_loci,) genomic positions
+peak_idx = result.lod.argmax()
+print(f'Peak: chr{result.chr} {result.pos_mb[peak_idx]:.2f} Mb  LOD={result.lod[peak_idx]:.2f}')
+```
+
+---
+
+## Models
+
+| Model | Entry point | When to use |
+|---|---|---|
+| **NB-GLMM + LOCO** | `qtl/nb.py` | Raw pseudobulk counts — primary for snRNA-seq eQTL |
+| **Gaussian LMM** | `scan_h2lmm()` | Normalized expression; exact miQTL/qtl2 port |
+| **LMM + MI** | `scan_h2lmm_mi()` | Averages over haplotype-assignment uncertainty |
+| **Dispersion QTL** | `scan_vqtl()` | NB dispersion as phenotype (transcriptional noise) |
+| **Mediation** | `mediation_scan_qr()` | Candidate mediator LOD via QR Woodbury update |
+| **Epistasis** | `scan_epistasis()` | Pairwise GxG; conditional scan |
+
+---
+
+## Package structure
+
+```
+src/mosaiqtl/
+  cli.py              CLI entry point — fit-null / scan / permute / estimate / report
+  pipeline.py         discover(), characterize(), call_egenes(), finalize_egene_summary()
+  utils.py            rint(), build_z_matrix(), align_samples()
+  genotype/
+    genomecache.py    HDF5 B-tree cache; lazy per-chromosome load
+    kinship.py        LOCO kinship build + eigendecomposition
+    founders.py       Founder/F1/CC color constants — canonical source
+  qtl/
+    nb.py             NB-GLMM Stages 1 + 2 (primary)
+    lmm.py            Gaussian LMM engine
+    scan.py           scan_h2lmm(), scan_h2lmm_mi(), instability, MI
+    permutation.py    Null outcomes, GEV threshold, run_threshold_scans()
+    effects.py        get_allele_effects() — fixef and ranef (ridge BLUP)
+    mediation.py      mediation_scan_qr()
+    epistasis.py      scan_epistasis(), scan_conditional_with_y()
+    vqtl.py           scan_vqtl()
+  models/
+    records.py        ScanResult, VQTLResult, FounderEffect dataclasses
+    config.py         Population, ScanConfig, PipelineConfig (Pydantic)
+  io/
+    covariates.py     build_covariate_matrix() from sample metadata CSV
+    anndata_io.py     AnnData readers (backed=True; counts from .raw.X)
+    results_io.py     CSV serialisation with provenance header
+  viz/
+    _theme.py         Package identity palette and style helpers
+    genome.py         LOD profiles, Manhattan, genome summary
+    effects.py        Founder effect bars, coef_profile()
+    haplotypes.py     Haplotype heatmaps, epistasis grids
+    compare.py        R-vs-Python and cross-source comparison figures
+    celltypes.py      Cross-cell-type LOD and effect comparison
+```
+
+---
+
+## Validation status
+
+Phases 1–2 use simulated CC data (`sparcc_cache`) — no real data needed for CI.
+
+| Phase | Description | Status |
+|---|---|---|
+| **Phase 1** | Minimal miQTL workflow mirror: ROP r²=0.9975, MI r=0.9756, GEV Δ=0.154 | 🟢 passing |
+| **Phase 2** | Full miQTL port — 9/9 runnable sections (S1–S11) | 🟢 passing |
+| **Phase 3** | Speed + memory vs miQTL and R/qtl2 | 🟢 benchmarked |
+| **Phase 4** | NB-GLMM biological consistency (Piezo1 etc.) | 🔴 not yet run |
+| **Gastroc** | Real CC pseudobulk — Python scan complete; R comparison pending HPC | 🟡 in progress |
 
 ### Running validation
 
 ```bash
-# Phase 1 — minimal miQTL workflow mirror (ROP scan + MI + GEV threshold)
+# Phase 1
 Rscript validation/r_reference/sim_validation.R
-python validation/validate_sim.py
+conda run -n bioinfo python validation/validate_sim.py
 
-# Phase 2 sim — all 11 miQTL functions (S1–S11), real LOCO kinship
+# Phase 2
 Rscript validation/r_reference/phase2_validation.R
-python validation/validate_phase2.py
-python validation/validate_phase2.py --sections 3,4,6   # selective
-python validation/validate_phase2.py --force             # force rerun all sections
+conda run -n bioinfo python validation/validate_phase2.py
 
-# Phase 3 — speed and memory benchmarking
+# Phase 3
 Rscript validation/r_reference/phase3_validation.R
-python validation/validate_phase3.py
+conda run -n bioinfo python validation/validate_phase3.py
 
-# Phase 4 — NB-GLMM vs LMM biological consistency
-python validation/validate_phase4.py
-
-# Gastroc benchmark — miQTL S1–S11 on real CC pseudobulk data (requires HPC)
-python validation/convert_gastroc_h5ad.py
-Rscript validation/r_reference/gastroc_miqtl_scan.R all 8 C   # local single-chr test
-bash validation/run_gastroc_slurm.sh                           # full HPC run
-Rscript validation/r_reference/merge_chr_outputs.R             # after SLURM array
+# Gastroc (real data; HPC for full run)
+conda run -n bioinfo python validation/tools/convert_h5ad.py
+conda run -n bioinfo Rscript validation/r_reference/gastroc_miqtl_scan.R all 8 C
+bash validation/hpc/run_gastroc_slurm.sh
 ```
-
-### Current status
-
-| Phase | Gate | Threshold | Status |
-|---|---|---|---|
-| P1-S1 | ROP LOD r² | ≥ 0.990 | 🟢 0.9975 |
-| P1-S2 | MI LOD r | ≥ 0.75 | 🟢 0.9718 |
-| P1-S3 | GEV threshold delta | < 0.5 | 🟢 0.1543 |
-| P2-S1..S11 | Phase 2 sim (all 11 sections) | various | 🟢 9/9 runnable |
-| Phase 4 | NB-GLMM biological gates | various | 🔴 not yet run |
-
-### Speed (M3 Mac)
-
-| Benchmark | mosaiQTL | miQTL | Speedup | Data |
-|---|---|---|---|---|
-| Genome-wide scan (43k genes, 20 chr) | 2.79h | — | — | gastroc |
-| LMM scan (50 genes genome-wide) | 19.8s | 400.8s | **20.2×** | simulated |
-| Permutation (1000 perms, genome-wide) | 2.3s | 1555s | **678×** | simulated |
-| Peak RSS (43k genes, 20 chr) | 897 MB | — | — | gastroc |
 
 ---
 
 ## Tests
 
 ```bash
-pytest tests/unit/ -x -q                    # fast gate
-pytest tests/ --cov=src/mosaiqtl -q         # full + coverage
-make lint                                    # black + flake8 + mypy + interrogate
+pytest tests/unit/ -x -q                  # fast unit gate
+pytest tests/ --cov=src/mosaiqtl -q       # full suite + coverage
+make lint                                  # flake8 + mypy + interrogate
 ```
 
 ---
 
 ## References
 
-- Kang, H.M. *et al.* (2008). *Genetics* 178:1709 — eigendecomposition LMM
-- Broman, K.W. *et al.* (2019). *Genetics* 211:495 — R/qtl2
-- Keele, G.R. *et al.* (2019). *G3* — miQTL
-- Listgarten, J. *et al.* (2012). *Nat Methods* 9:525 — LOCO kinship
-- He, Z. *et al.* (2021). *Commun Biol* 4:629 — NEBULA
-- Churchill, G.A. *et al.* (2004). *Nat Genet* 36:1133 — Collaborative Cross
+- Kang *et al.* (2008) *Genetics* 178:1709 — eigendecomposition LMM
+- Listgarten *et al.* (2012) *Nat Methods* 9:525 — LOCO kinship
+- Broman *et al.* (2019) *Genetics* 211:495 — R/qtl2
+- Keele *et al.* (2019) *G3* — miQTL
+- He *et al.* (2021) *Commun Biol* 4:629 — NEBULA-LN
+- Churchill *et al.* (2004) *Nat Genet* 36:1133 — Collaborative Cross
 
 ## License
 

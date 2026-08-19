@@ -17,19 +17,34 @@ from pathlib import Path
 
 from ..utils import chr_sort_key, _build_gm_idx, _enrich_scan_df
 
-logger = logging.getLogger('mosaiqtl')
+logger = logging.getLogger("mosaiqtl")
 
 SNP_SCAN_COLS: list[str] = [
-    'gene_name', 'snp', 'chr', 'pos_mb', 'lod', 'p_value',
-    'f_stat', 'h2', 'n', 'rss0', 'rss1', 'beta_dosage',
+    "gene_name",
+    "snp",
+    "chr",
+    "pos_mb",
+    "lod",
+    "p_value",
+    "f_stat",
+    "h2",
+    "n",
+    "rss0",
+    "rss1",
+    "beta_dosage",
 ]
 
 
-def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
-                            covariates=None, kinship_decomp=None,
-                            use_rint=True,
-                            phenotype_id='unknown',
-                            just_these_snps=None):
+def imputed_snp_scan_h2lmm(
+    phenotype,
+    genomecache,
+    snp_genos,
+    covariates=None,
+    kinship_decomp=None,
+    use_rint=True,
+    phenotype_id="unknown",
+    just_these_snps=None,
+):
     """snp association scan using haplotype-imputed dosages.
 
     each snp dosage is estimated as the expected number of alt alleles:
@@ -64,103 +79,113 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
     from . import lmm as lmm_module
     from ..utils import rint as _rint
 
-    _n_snps_requested = (len(just_these_snps) if just_these_snps is not None
-                         else len(snp_genos))
+    _n_snps_requested = (
+        len(just_these_snps) if just_these_snps is not None else len(snp_genos)
+    )
     logger.info(
-        'imputed_snp_scan_h2lmm: gene=%s  n_snps=%d',
-        phenotype_id, _n_snps_requested,
+        "imputed_snp_scan_h2lmm: gene=%s  n_snps=%d",
+        phenotype_id,
+        _n_snps_requested,
     )
 
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genomecache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method="loco")
         kinship_decomp = kin_module.decomp_kinship(kd)
 
-    valid  = ~np.isnan(phenotype)
-    y      = phenotype[valid].copy()
+    valid = ~np.isnan(phenotype)
+    y = phenotype[valid].copy()
     if use_rint:
         y = _rint(y)
-    n      = len(y)
+    n = len(y)
 
-    x = (covariates[valid].copy() if covariates is not None
-         else np.ones((n, 1), dtype=float))
+    x = (
+        covariates[valid].copy()
+        if covariates is not None
+        else np.ones((n, 1), dtype=float)
+    )
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((n, 1)), x])
 
     # align founder order between snp_genos columns and cache founders
     founders_cache = list(genomecache.founders)
-    snp_founders   = [c for c in founders_cache if c in snp_genos.columns]
+    snp_founders = [c for c in founders_cache if c in snp_genos.columns]
     if len(snp_founders) < 2:
-        raise ValueError('snp_genos must have columns matching genomecache.founders')
+        raise ValueError("snp_genos must have columns matching genomecache.founders")
 
-    snps_to_scan = (just_these_snps if just_these_snps is not None
-                    else snp_genos.index.tolist())
+    snps_to_scan = (
+        just_these_snps if just_these_snps is not None else snp_genos.index.tolist()
+    )
 
     results = []
 
     # normalize snp_genos chr col once: strip leading 'chr' to match cache format
-    _snp_chr_norm = snp_genos['chr'].astype(str).str.replace(r'^chr', '', regex=True)
+    _snp_chr_norm = snp_genos["chr"].astype(str).str.replace(r"^chr", "", regex=True)
 
     # only iterate chromosomes with kinship available
     _chrom_list = [c for c in genomecache.chromosomes if c in kinship_decomp]
     for chrom in _chrom_list:
-        _c = str(chrom).replace('chr', '')               # bare chr id e.g. '8'
+        _c = str(chrom).replace("chr", "")  # bare chr id e.g. '8'
         chr_snps = snp_genos[_snp_chr_norm == _c]
         chr_snps = chr_snps.loc[chr_snps.index.isin(snps_to_scan)]
         if chr_snps.empty:
             continue
 
-        lids, pos, probs = genomecache.get_chromosome(chrom)   # probs: (L,n,J)
-        eigvals = kinship_decomp[chrom]['values']
-        eigvecs = kinship_decomp[chrom]['vectors']
-        ev_v    = eigvecs[valid]
-        y_rot   = ev_v.T @ y
-        x_rot   = ev_v.T @ x
-        h2, _   = lmm_module.estimate_h2_null(y_rot, x_rot, eigvals)
+        lids, pos, probs = genomecache.get_chromosome(chrom)  # probs: (L,n,J)
+        eigvals = kinship_decomp[chrom]["values"]
+        eigvecs = kinship_decomp[chrom]["vectors"]
+        ev_v = eigvecs[valid]
+        y_rot = ev_v.T @ y
+        x_rot = ev_v.T @ x
+        h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, eigvals)
 
         for snp_id, row in chr_snps.iterrows():
-            snp_pos = float(row.get('pos_mb', np.nan))
+            snp_pos = float(row.get("pos_mb", np.nan))
             if np.isnan(snp_pos):
                 continue
 
             # find nearest locus for haplotype probs
             nearest_i = int(np.argmin(np.abs(pos - snp_pos)))
-            h_locus   = probs[nearest_i][valid]   # (n_valid, J)
+            h_locus = probs[nearest_i][valid]  # (n_valid, J)
 
             # impute snp dosage: d = sum_f h_f * g_f  (g_f = alt allele count)
             def _to_float(v):
                 """Coerce allele value to float; missing codes (N, -, etc.) become nan."""  # noqa: E501
-                try: return float(v)
-                except (TypeError, ValueError): return np.nan
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return np.nan
+
             geno_f = np.array([_to_float(row.get(f, np.nan)) for f in founders_cache])
             if np.any(np.isnan(geno_f)):
                 geno_f = np.where(np.isnan(geno_f), 0.0, geno_f)
-            dosage = h_locus @ geno_f   # (n_valid,)
+            dosage = h_locus @ geno_f  # (n_valid,)
 
             # skip monomorphic snps
             if dosage.std() < 1e-8:
                 continue
 
             # standardise dosage and fit lmm with dosage as scalar predictor
-            d_std   = (dosage - dosage.mean()) / dosage.std()
-            h_rot   = (ev_v.T @ d_std).reshape(-1, 1)
+            d_std = (dosage - dosage.mean()) / dosage.std()
+            h_rot = (ev_v.T @ d_std).reshape(-1, 1)
 
-            res = lmm_module.fit_lmm_at_locus(
-                y_rot, h_rot, x_rot, eigvals, h2)
+            res = lmm_module.fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2)
 
-            results.append({
-                'gene_name':   phenotype_id,
-                'snp':         snp_id,
-                'chr':         chrom,
-                'pos_mb':      snp_pos,
-                'lod':         res.lod,
-                'p_value':     res.p_value,
-                'f_stat':      res.f_stat,
-                'h2':          res.h2,
-                'n':           n,
-                'rss0':        res.rss_null,
-                'rss1':        res.rss_alt,
-                'beta_dosage': float(res.betas[0]),
-            })
+            results.append(
+                {
+                    "gene_name": phenotype_id,
+                    "snp": snp_id,
+                    "chr": chrom,
+                    "pos_mb": snp_pos,
+                    "lod": res.lod,
+                    "p_value": res.p_value,
+                    "f_stat": res.f_stat,
+                    "h2": res.h2,
+                    "n": n,
+                    "rss0": res.rss_null,
+                    "rss1": res.rss_alt,
+                    "beta_dosage": float(res.betas[0]),
+                }
+            )
 
     return pd.DataFrame(results)
 
@@ -168,15 +193,15 @@ def imputed_snp_scan_h2lmm(phenotype, genomecache, snp_genos,
 def imputed_snp_scan_from_db(
     phenotype: np.ndarray,
     genomecache,
-    alleles_h5: 'str | os.PathLike',
-    covariates: 'np.ndarray | None' = None,
-    kinship_decomp: 'dict | None' = None,
-    chrom: 'str | None' = None,
-    founder_col_map: 'dict[str, str] | None' = None,
+    alleles_h5: "str | os.PathLike",
+    covariates: "np.ndarray | None" = None,
+    kinship_decomp: "dict | None" = None,
+    chrom: "str | None" = None,
+    founder_col_map: "dict[str, str] | None" = None,
     use_rint: bool = True,
-    phenotype_id: str = 'unknown',
-    just_these_snps: 'list | None' = None,
-    sample_ids: 'list | None' = None,
+    phenotype_id: str = "unknown",
+    just_these_snps: "list | None" = None,
+    sample_ids: "list | None" = None,
 ) -> pd.DataFrame:
     """SNP scan loading founder allele calls from an HDF5 database.
 
@@ -217,10 +242,23 @@ def imputed_snp_scan_from_db(
     alleles_df = load_founder_alleles(alleles_h5, chrom=chrom)
     if alleles_df.empty:
         return pd.DataFrame(
-            columns=['gene_name', 'snp', 'chr', 'pos_mb', 'lod', 'p_value',
-                     'f_stat', 'h2', 'n', 'rss0', 'rss1', 'beta_dosage'])
+            columns=[
+                "gene_name",
+                "snp",
+                "chr",
+                "pos_mb",
+                "lod",
+                "p_value",
+                "f_stat",
+                "h2",
+                "n",
+                "rss0",
+                "rss1",
+                "beta_dosage",
+            ]
+        )
 
-    meta_cols = {'marker', 'chr', 'pos_mb', 'pos_bp', 'locus_id'}
+    meta_cols = {"marker", "chr", "pos_mb", "pos_bp", "locus_id"}
     hdf5_fcols = [c for c in alleles_df.columns if c not in meta_cols]
 
     if founder_col_map is not None:
@@ -231,28 +269,41 @@ def imputed_snp_scan_from_db(
     overlap = [f for f in cache_founders if f in hdf5_fcols]
     if len(overlap) < 2:
         raise ValueError(
-            f'founder columns in alleles_h5 {hdf5_fcols} do not overlap with '
-            f'genomecache.founders {cache_founders}. Use founder_col_map to rename.')
+            f"founder columns in alleles_h5 {hdf5_fcols} do not overlap with "
+            f"genomecache.founders {cache_founders}. Use founder_col_map to rename."
+        )
 
     # convert nucleotide calls → 0/1 dosage (alt = alphabetically later allele)
     snp_ids, rows = [], []
     for _, row in alleles_df.iterrows():
         calls = {f: str(row[f]) for f in overlap}
-        distinct = sorted(
-            {v for v in calls.values() if v not in ('N', 'H', '', 'nan')})
+        distinct = sorted({v for v in calls.values() if v not in ("N", "H", "", "nan")})
         if len(distinct) < 2:
             continue  # monomorphic in the overlap founder set
         alt = distinct[-1]
-        geno_row = {'chr': row['chr'], 'pos_mb': float(row['pos_mb'])}
+        geno_row = {"chr": row["chr"], "pos_mb": float(row["pos_mb"])}
         for f in overlap:
             geno_row[f] = 1.0 if calls[f] == alt else 0.0
-        snp_ids.append(row['marker'])
+        snp_ids.append(row["marker"])
         rows.append(geno_row)
 
     if not rows:
         return pd.DataFrame(
-            columns=['gene_name', 'snp', 'chr', 'pos_mb', 'lod', 'p_value',
-                     'f_stat', 'h2', 'n', 'rss0', 'rss1', 'beta_dosage'])
+            columns=[
+                "gene_name",
+                "snp",
+                "chr",
+                "pos_mb",
+                "lod",
+                "p_value",
+                "f_stat",
+                "h2",
+                "n",
+                "rss0",
+                "rss1",
+                "beta_dosage",
+            ]
+        )
 
     snp_genos = pd.DataFrame(rows, index=snp_ids)
     snp_genos.index.name = None
@@ -260,6 +311,7 @@ def imputed_snp_scan_from_db(
     # reduce sample-level inputs to strain means when sample_ids are provided
     if sample_ids is not None:
         from ..utils import build_z_matrix
+
         z_mat, valid_mask = build_z_matrix(sample_ids, list(genomecache.sample_ids))
         valid_idx = np.where(valid_mask)[0]
         z_sub = z_mat[valid_idx]
@@ -280,7 +332,9 @@ def imputed_snp_scan_from_db(
             covariates = cov_str
 
     return imputed_snp_scan_h2lmm(
-        phenotype, genomecache, snp_genos,
+        phenotype,
+        genomecache,
+        snp_genos,
         covariates=covariates,
         kinship_decomp=kinship_decomp,
         use_rint=use_rint,
@@ -312,37 +366,38 @@ def read_allele_dir(allele_dir, founders, chrom=None):
     """
     import glob
     import os
+
     try:
         import rpy2.robjects as ro
     except ImportError:
-        raise ImportError('rpy2 required for reading allele_dir .RData files')
+        raise ImportError("rpy2 required for reading allele_dir .RData files")
 
     rows = []
     chr_dirs = sorted(
-        glob.glob(os.path.join(allele_dir, 'chr*')),
-        key=lambda p: chr_sort_key(os.path.basename(p).replace('chr', '')),
+        glob.glob(os.path.join(allele_dir, "chr*")),
+        key=lambda p: chr_sort_key(os.path.basename(p).replace("chr", "")),
     )
     for chr_dir in chr_dirs:
-        c = os.path.basename(chr_dir).replace('chr', '')
+        c = os.path.basename(chr_dir).replace("chr", "")
         if chrom is not None and c != str(chrom):
             continue
-        rdata_files = sorted(glob.glob(os.path.join(chr_dir, '*.RData')))
+        rdata_files = sorted(glob.glob(os.path.join(chr_dir, "*.RData")))
         for rf in rdata_files:
             snp_id = os.path.splitext(os.path.basename(rf))[0]
-            env    = ro.r['new.env']()
-            ro.r['load'](rf, envir=env)
-            obj    = ro.r['get'](ro.r['ls'](envir=env)[0], envir=env)
-            arr    = np.array(obj, dtype=float).ravel()
+            env = ro.r["new.env"]()
+            ro.r["load"](rf, envir=env)
+            obj = ro.r["get"](ro.r["ls"](envir=env)[0], envir=env)
+            arr = np.array(obj, dtype=float).ravel()
             # arr length = n_founders; map to founder names
-            row = {'snp_id': snp_id, 'chr': c, 'pos_mb': np.nan}
+            row = {"snp_id": snp_id, "chr": c, "pos_mb": np.nan}
             for fi, f in enumerate(founders):
                 row[f] = float(arr[fi]) if fi < len(arr) else np.nan
             rows.append(row)
 
     if not rows:
-        return pd.DataFrame(columns=['chr', 'pos_mb'] + list(founders))
-    df = pd.DataFrame(rows).set_index('snp_id')
-    logger.info(f'read_allele_dir: {len(df)} SNPs from {allele_dir}')
+        return pd.DataFrame(columns=["chr", "pos_mb"] + list(founders))
+    df = pd.DataFrame(rows).set_index("snp_id")
+    logger.info(f"read_allele_dir: {len(df)} SNPs from {allele_dir}")
     return df
 
 
@@ -364,33 +419,35 @@ def build_allele_dir(snp_genos, allele_dir, pmap=None):
     str  path to allele_dir
     """
     import os
+
     try:
         import rpy2.robjects as ro
         from rpy2.robjects import numpy2ri
+
         numpy2ri.activate()
     except ImportError:
-        raise ImportError('rpy2 required for building allele_dir .RData files')
+        raise ImportError("rpy2 required for building allele_dir .RData files")
 
     os.makedirs(allele_dir, exist_ok=True)
-    founder_cols = [c for c in snp_genos.columns if c not in ('chr', 'pos_mb')]
-    n_written    = 0
+    founder_cols = [c for c in snp_genos.columns if c not in ("chr", "pos_mb")]
+    n_written = 0
 
     for snp_id, row in snp_genos.iterrows():
-        c = str(row.get('chr', 'unknown'))
-        chr_dir = os.path.join(allele_dir, f'chr{c}')
+        c = str(row.get("chr", "unknown"))
+        chr_dir = os.path.join(allele_dir, f"chr{c}")
         os.makedirs(chr_dir, exist_ok=True)
-        rdata_path = os.path.join(chr_dir, f'{snp_id}.RData')
+        rdata_path = os.path.join(chr_dir, f"{snp_id}.RData")
         if os.path.exists(rdata_path):
             continue
         geno_vec = np.array([float(row.get(f, 0)) for f in founder_cols])
-        rv       = ro.FloatVector(geno_vec)
+        rv = ro.FloatVector(geno_vec)
         rv.names = ro.StrVector(founder_cols)
-        env      = ro.r['new.env']()
+        env = ro.r["new.env"]()
         env[snp_id] = rv
-        ro.r['save'](ro.StrVector([snp_id]), file=rdata_path, envir=env)
+        ro.r["save"](ro.StrVector([snp_id]), file=rdata_path, envir=env)
         n_written += 1
 
-    logger.info(f'build_allele_dir: wrote {n_written} SNP files to {allele_dir}')
+    logger.info(f"build_allele_dir: wrote {n_written} SNP files to {allele_dir}")
     return allele_dir
 
 
@@ -422,57 +479,62 @@ def read_alleles_flat(allele_dir, founders, chrom=None, pmap_dir=None):
 
     rows, snp_ids = [], []
     for fpath in sorted(
-        _glob.glob(os.path.join(allele_dir, 'chr*.alleles')),
+        _glob.glob(os.path.join(allele_dir, "chr*.alleles")),
         key=lambda p: chr_sort_key(
-            os.path.basename(p).replace('chr', '').replace('.alleles', '')
+            os.path.basename(p).replace("chr", "").replace(".alleles", "")
         ),
     ):
-        c = os.path.basename(fpath).replace('chr', '').replace('.alleles', '')
+        c = os.path.basename(fpath).replace("chr", "").replace(".alleles", "")
         if chrom is not None and c != str(chrom):
             continue
         with open(fpath) as fh:
-            lines = [ln.rstrip('\n') for ln in fh]
-        for i in range(0, len(lines) - 2, 4):    # 4 lines per SNP block
-            snp_id    = lines[i].strip()
-            alt_parts = lines[i + 2].split('\t')  # line 3: alt allele row
-            alt_vals  = alt_parts[1:]              # drop allele label col
-            row = {'chr': c}
+            lines = [ln.rstrip("\n") for ln in fh]
+        for i in range(0, len(lines) - 2, 4):  # 4 lines per SNP block
+            snp_id = lines[i].strip()
+            alt_parts = lines[i + 2].split("\t")  # line 3: alt allele row
+            alt_vals = alt_parts[1:]  # drop allele label col
+            row = {"chr": c}
             for fi, f in enumerate(founders):
-                try:    row[f] = float(alt_vals[fi]) if fi < len(alt_vals) else 0.0
-                except (ValueError, TypeError): row[f] = 0.0
+                try:
+                    row[f] = float(alt_vals[fi]) if fi < len(alt_vals) else 0.0
+                except (ValueError, TypeError):
+                    row[f] = 0.0
             snp_ids.append(snp_id)
             rows.append(row)
 
     if not rows:
-        return pd.DataFrame(columns=['chr', 'pos_mb'] + list(founders))
+        return pd.DataFrame(columns=["chr", "pos_mb"] + list(founders))
 
     df = pd.DataFrame(rows, index=snp_ids)
-    df.index.name = 'snp_id'
-    df['pos_mb']  = np.nan
+    df.index.name = "snp_id"
+    df["pos_mb"] = np.nan
 
     # attach positions from GM_pmap*.csv if pmap_dir provided
     if pmap_dir is not None:
-        pmap_files = sorted(_glob.glob(os.path.join(pmap_dir, 'GM_pmap*.csv')))
+        pmap_files = sorted(_glob.glob(os.path.join(pmap_dir, "GM_pmap*.csv")))
         frames = []
         for pf in pmap_files:
             try:
-                pm = pd.read_csv(pf, comment='#')
-                if 'marker' in pm.columns:
-                    pm = pm.rename(columns={'marker': 'locus', 'pos': 'pos_mb'})
-                frames.append(pm[['locus', 'pos_mb']])
+                pm = pd.read_csv(pf, comment="#")
+                if "marker" in pm.columns:
+                    pm = pm.rename(columns={"marker": "locus", "pos": "pos_mb"})
+                frames.append(pm[["locus", "pos_mb"]])
             except Exception:
                 pass
         if frames:
-            pmap_all = pd.concat(frames).set_index('locus')
-            shared   = df.index.intersection(pmap_all.index)
-            df.loc[shared, 'pos_mb'] = pmap_all.loc[shared, 'pos_mb'].values
+            pmap_all = pd.concat(frames).set_index("locus")
+            shared = df.index.intersection(pmap_all.index)
+            df.loc[shared, "pos_mb"] = pmap_all.loc[shared, "pos_mb"].values
 
-    logger.info(f'read_alleles_flat: {len(df)} SNPs  pos_filled={df["pos_mb"].notna().sum()}')
+    logger.info(
+        f'read_alleles_flat: {len(df)} SNPs  pos_filled={df["pos_mb"].notna().sum()}'
+    )
     return df
 
 
-def build_snp_catalogue(scan_results, genomecache, mgp_vcf,
-                          window_mb=10.0, founders=None):
+def build_snp_catalogue(
+    scan_results, genomecache, mgp_vcf, window_mb=10.0, founders=None
+):
     """Layer 3a — SNP catalogue from MGP VCF overlay (placeholder).
 
     for each gene with a QTL peak, queries the MGP VCF within window_mb
@@ -499,7 +561,7 @@ def build_snp_catalogue(scan_results, genomecache, mgp_vcf,
     try:
         import pysam
     except ImportError:
-        raise ImportError('build_snp_catalogue requires pysam: pip install pysam')
+        raise ImportError("build_snp_catalogue requires pysam: pip install pysam")
 
     founders_use = founders or list(genomecache.founders)
     vcf = pysam.VariantFile(mgp_vcf)
@@ -509,11 +571,11 @@ def build_snp_catalogue(scan_results, genomecache, mgp_vcf,
         if not len(sr.lod):
             continue
         peak = sr.peak_locus()
-        chrom, pos_mb = peak['chromosome'], peak['position']
+        chrom, pos_mb = peak["chromosome"], peak["position"]
 
         lo = max(0.0, pos_mb - window_mb) * 1e6
         hi = (pos_mb + window_mb) * 1e6
-        chr_str = f'chr{chrom}' if not str(chrom).startswith('chr') else str(chrom)
+        chr_str = f"chr{chrom}" if not str(chrom).startswith("chr") else str(chrom)
 
         rows = []
         try:
@@ -523,21 +585,24 @@ def build_snp_catalogue(scan_results, genomecache, mgp_vcf,
                 gts = {}
                 for f in founders_use:
                     s = rec.samples.get(f)
-                    gts[f] = (int(s['GT'][0]) if s and s['GT'][0] is not None
-                               else None)
+                    gts[f] = int(s["GT"][0]) if s and s["GT"][0] is not None else None
                 # count divergent founders (not all same genotype)
                 called = [v for v in gts.values() if v is not None]
-                n_div  = len(set(called)) - 1 if called else 0
+                n_div = len(set(called)) - 1 if called else 0
                 if n_div == 0:
                     continue
-                row = {'snp_id': rec.id or f'{chrom}:{rec.pos}',
-                        'chr': chrom, 'pos_mb': rec.pos / 1e6,
-                        'ref': rec.ref, 'alt': rec.alts[0],
-                        'n_divergent_founders': n_div}
+                row = {
+                    "snp_id": rec.id or f"{chrom}:{rec.pos}",
+                    "chr": chrom,
+                    "pos_mb": rec.pos / 1e6,
+                    "ref": rec.ref,
+                    "alt": rec.alts[0],
+                    "n_divergent_founders": n_div,
+                }
                 row.update({f: gts[f] for f in founders_use})
                 rows.append(row)
         except (ValueError, KeyError):
-            logger.warning(f'build_snp_catalogue: region fetch failed for {gid}')
+            logger.warning(f"build_snp_catalogue: region fetch failed for {gid}")
             continue
 
         results[gid] = pd.DataFrame(rows) if rows else pd.DataFrame()
@@ -547,17 +612,17 @@ def build_snp_catalogue(scan_results, genomecache, mgp_vcf,
 
 
 def snp_scan_multi_gene(
-    expr_cache: 'dict[str, np.ndarray]',
-    gene_chr_map: 'dict[str, str]',
+    expr_cache: "dict[str, np.ndarray]",
+    gene_chr_map: "dict[str, str]",
     genomecache,
     alleles_h5: str,
-    covariates: 'np.ndarray | None' = None,
-    kinship_decomp: 'dict | None' = None,
-    sample_ids: 'list[str] | None' = None,
-    founder_col_map: 'dict[str, str] | None' = None,
+    covariates: "np.ndarray | None" = None,
+    kinship_decomp: "dict | None" = None,
+    sample_ids: "list[str] | None" = None,
+    founder_col_map: "dict[str, str] | None" = None,
     peak_only: bool = True,
-    output_path: 'Path | None' = None,
-    gene_meta: 'pd.DataFrame | None' = None,
+    output_path: "Path | None" = None,
+    gene_meta: "pd.DataFrame | None" = None,
 ) -> pd.DataFrame:
     """imputed SNP scan over a set of genes, streaming to disk.
 
@@ -587,31 +652,45 @@ def snp_scan_multi_gene(
     """
     _gm_idx = _build_gm_idx(gene_meta)
     if peak_only:
-        _id_cols   = ['gene_name', 'chr', 'snp']
-        _data_cols = ['peak_mb', 'peak_lod', 'beta_dosage']
+        _id_cols = ["gene_name", "chr", "snp"]
+        _data_cols = ["peak_mb", "peak_lod", "beta_dosage"]
     else:
-        _id_cols   = ['gene_name', 'chr']
-        _data_cols = ['snp', 'pos_mb', 'lod', 'p_value', 'f_stat', 'h2', 'n',
-                      'rss0', 'rss1', 'beta_dosage']
+        _id_cols = ["gene_name", "chr"]
+        _data_cols = [
+            "snp",
+            "pos_mb",
+            "lod",
+            "p_value",
+            "f_stat",
+            "h2",
+            "n",
+            "rss0",
+            "rss1",
+            "beta_dosage",
+        ]
     _first = True
-    _buf: 'list[pd.DataFrame]' = []
+    _buf: "list[pd.DataFrame]" = []
     _n_genes_snp = len(expr_cache)
     logger.info(
-        'snp_scan_multi_gene: n_genes=%d  alleles_h5=%s',
-        _n_genes_snp, Path(alleles_h5).name,
+        "snp_scan_multi_gene: n_genes=%d  alleles_h5=%s",
+        _n_genes_snp,
+        Path(alleles_h5).name,
     )
     for _g_snp, (gene_id, y) in enumerate(expr_cache.items()):
-        gene_chr = gene_chr_map.get(gene_id, '')
+        gene_chr = gene_chr_map.get(gene_id, "")
         if not gene_chr:
-            logger.warning('snp_scan_multi_gene: no chr for %s — skipped', gene_id)
+            logger.warning("snp_scan_multi_gene: no chr for %s — skipped", gene_id)
             continue
         logger.debug(
-            'snp_scan_multi_gene: [%d/%d] %s', _g_snp + 1, _n_genes_snp, gene_id)
-        _kd_g = ({gene_chr: kinship_decomp[gene_chr]}
-                 if kinship_decomp is not None else None)
+            "snp_scan_multi_gene: [%d/%d] %s", _g_snp + 1, _n_genes_snp, gene_id
+        )
+        _kd_g = (
+            {gene_chr: kinship_decomp[gene_chr]} if kinship_decomp is not None else None
+        )
         try:
             _df = imputed_snp_scan_from_db(
-                y, genomecache,
+                y,
+                genomecache,
                 alleles_h5=alleles_h5,
                 chrom=gene_chr,
                 covariates=covariates,
@@ -622,19 +701,23 @@ def snp_scan_multi_gene(
             )
             if not _df.empty:
                 if peak_only:
-                    _df = (_df.loc[[_df['lod'].idxmax()]]
-                             .rename(columns={'pos_mb': 'peak_mb', 'lod': 'peak_lod'}))
+                    _df = _df.loc[[_df["lod"].idxmax()]].rename(
+                        columns={"pos_mb": "peak_mb", "lod": "peak_lod"}
+                    )
                 _df = _enrich_scan_df(_df, gene_id, _gm_idx, _id_cols, _data_cols)
                 if output_path is not None:
-                    _df.to_csv(output_path, mode='a', header=_first, index=False)
+                    _df.to_csv(output_path, mode="a", header=_first, index=False)
                     _first = False
                 else:
                     _buf.append(_df)
             del _df
         except Exception as exc:
-            logger.warning('snp_scan_multi_gene: %s failed — %s', gene_id, exc)
+            logger.warning("snp_scan_multi_gene: %s failed — %s", gene_id, exc)
     gc.collect()
     if output_path is not None:
-        return (pd.read_csv(output_path)
-                if output_path.exists() and not _first else pd.DataFrame())
+        return (
+            pd.read_csv(output_path)
+            if output_path.exists() and not _first
+            else pd.DataFrame()
+        )
     return pd.concat(_buf, ignore_index=True) if _buf else pd.DataFrame()

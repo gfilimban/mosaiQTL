@@ -62,49 +62,49 @@ def load_exons_from_gtf(
         full intervals are returned so callers can render partial overlaps
         correctly.
     """
-    gtf_chrom = chrom if str(chrom).startswith('chr') else f'chr{chrom}'
+    gtf_chrom = chrom if str(chrom).startswith("chr") else f"chr{chrom}"
     start_bp = int(start_mb * 1e6)
-    end_bp   = int(end_mb   * 1e6)
+    end_bp = int(end_mb * 1e6)
 
     rows: list[dict] = []
     path = Path(gtf_path)
-    opener = gzip.open if path.suffix == '.gz' else open
+    opener = gzip.open if path.suffix == ".gz" else open
 
     # transcript records are collected regardless of canonical_only so we
     # always have the authoritative backbone extent; they are filtered to
     # canonical at the gene level after collection.
     _transcript_rows: list[dict] = []
 
-    with opener(path, 'rt') as fh:
+    with opener(path, "rt") as fh:
         for line in fh:
-            if line.startswith('#'):
+            if line.startswith("#"):
                 continue
-            fields = line.rstrip('\n').split('\t')
+            fields = line.rstrip("\n").split("\t")
             if len(fields) < 9:
                 continue
             if fields[0] != gtf_chrom:
                 continue
             feature = fields[2]
-            if feature not in ('exon', 'CDS', 'UTR', 'transcript'):
+            if feature not in ("exon", "CDS", "UTR", "transcript"):
                 continue
             feat_start = int(fields[3])
-            feat_end   = int(fields[4])
+            feat_end = int(fields[4])
             # skip features completely outside the window
             if feat_end < start_bp or feat_start > end_bp:
                 continue
-            is_canonical = 'Ensembl_canonical' in fields[8]
+            is_canonical = "Ensembl_canonical" in fields[8]
             if canonical_only and not is_canonical:
                 continue
             attrs = _parse_attrs(fields[8])
             row = {
-                'gene_name': attrs.get('gene_name', ''),
-                'gene_id':   attrs.get('gene_id',   ''),
-                'feature':   feature,
-                'start_mb':  feat_start / 1e6,
-                'end_mb':    feat_end   / 1e6,
-                'strand':    fields[6],
+                "gene_name": attrs.get("gene_name", ""),
+                "gene_id": attrs.get("gene_id", ""),
+                "feature": feature,
+                "start_mb": feat_start / 1e6,
+                "end_mb": feat_end / 1e6,
+                "strand": fields[6],
             }
-            if feature == 'transcript':
+            if feature == "transcript":
                 _transcript_rows.append(row)
             else:
                 rows.append(row)
@@ -113,23 +113,29 @@ def load_exons_from_gtf(
     # This gives the renderer an authoritative full-transcript extent even when
     # the outermost exons don't reach the annotated transcript start/end.
     if rows and _transcript_rows:
-        genes_with_data = {r['gene_name'] for r in rows}
+        genes_with_data = {r["gene_name"] for r in rows}
         for tr in _transcript_rows:
-            if tr['gene_name'] in genes_with_data:
+            if tr["gene_name"] in genes_with_data:
                 rows.append(tr)
 
     if not rows:
         log.debug(
-            'load_exons_from_gtf: no records found for %s:%g–%g Mb',
-            gtf_chrom, start_mb, end_mb,
+            "load_exons_from_gtf: no records found for %s:%g–%g Mb",
+            gtf_chrom,
+            start_mb,
+            end_mb,
         )
         return pd.DataFrame(
-            columns=['gene_name', 'gene_id', 'feature', 'start_mb', 'end_mb', 'strand'],
+            columns=["gene_name", "gene_id", "feature", "start_mb", "end_mb", "strand"],
         )
 
     df = pd.DataFrame(rows)
     log.debug(
-        'load_exons_from_gtf: %d records (exon/CDS/UTR/transcript) for %d genes in %s:%g–%g Mb',
-        len(df), df['gene_name'].nunique(), gtf_chrom, start_mb, end_mb,
+        "load_exons_from_gtf: %d records (exon/CDS/UTR/transcript) for %d genes in %s:%g–%g Mb",
+        len(df),
+        df["gene_name"].nunique(),
+        gtf_chrom,
+        start_mb,
+        end_mb,
     )
     return df

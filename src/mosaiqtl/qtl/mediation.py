@@ -20,18 +20,35 @@ from pathlib import Path
 from scipy.stats import chi2 as _chi2
 from ..utils import build_z_matrix, _build_gm_idx, _enrich_scan_df
 
-logger = logging.getLogger('mosaiqtl')
+logger = logging.getLogger("mosaiqtl")
 
 MEDIATION_COLS: list[str] = [
-    'outcome_id', 'mediator_id', 'chr', 'locus', 'pos_mb',
-    'lod_base', 'lod_mediated', 'lod_drop', 'prop_mediated',
-    'p_value', 'h2', 'n',
+    "outcome_id",
+    "mediator_id",
+    "chr",
+    "locus",
+    "pos_mb",
+    "lod_base",
+    "lod_mediated",
+    "lod_drop",
+    "prop_mediated",
+    "p_value",
+    "h2",
+    "n",
 ]
 
 FIXEF_MEDIATION_COLS: list[str] = [
-    'outcome_id', 'mediator_id', 'chr', 'locus', 'pos_mb',
-    'lod_base', 'lod_mediated', 'lod_drop', 'prop_mediated',
-    'p_value', 'n',
+    "outcome_id",
+    "mediator_id",
+    "chr",
+    "locus",
+    "pos_mb",
+    "lod_base",
+    "lod_mediated",
+    "lod_drop",
+    "prop_mediated",
+    "p_value",
+    "n",
 ]
 
 _MED_COLS = MEDIATION_COLS
@@ -42,13 +59,13 @@ def select_cis_mediation_pairs(
     egene_table: pd.DataFrame,
     gene_info: pd.DataFrame,
     window_mb: float = 10.0,
-    gene_col: str = 'gene_name',
-    chr_col: str = 'chr',
-    peak_mb_col: str = 'peak_mb',
-    info_gene_col: str = 'gene_id',
-    info_chr_col: str = 'chr',
-    info_start_col: str = 'start',
-) -> 'list[tuple[str, str, str]]':
+    gene_col: str = "gene_name",
+    chr_col: str = "chr",
+    peak_mb_col: str = "peak_mb",
+    info_gene_col: str = "gene_id",
+    info_chr_col: str = "chr",
+    info_start_col: str = "start",
+) -> "list[tuple[str, str, str]]":
     """Select (outcome, mediator, chr) pairs for cis-mediation analysis.
 
     For each eGene (outcome), candidate mediators are ALL expressed genes on the
@@ -81,12 +98,13 @@ def select_cis_mediation_pairs(
     missing = [c for c in required if c not in egene_table.columns]
     if missing:
         raise ValueError(
-            f'egene_table is missing columns {missing}; '
-            f'call pipeline.call_egenes(effects_df=...) to add them')
+            f"egene_table is missing columns {missing}; "
+            f"call pipeline.call_egenes(effects_df=...) to add them"
+        )
 
     gi = gene_info.copy()
     gi[info_chr_col] = gi[info_chr_col].astype(str)
-    gi['_tss_mb'] = gi[info_start_col] / 1e6
+    gi["_tss_mb"] = gi[info_start_col] / 1e6
 
     pairs: list[tuple[str, str, str]] = []
     for _, row in egene_table.iterrows():
@@ -98,10 +116,10 @@ def select_cis_mediation_pairs(
         lo, hi = peak - window_mb, peak + window_mb
 
         candidates = gi[
-            (gi[info_chr_col] == ch) &
-            (gi['_tss_mb'] >= lo) &
-            (gi['_tss_mb'] <= hi) &
-            (gi[info_gene_col] != outcome)
+            (gi[info_chr_col] == ch)
+            & (gi["_tss_mb"] >= lo)
+            & (gi["_tss_mb"] <= hi)
+            & (gi[info_gene_col] != outcome)
         ]
         for med in candidates[info_gene_col]:
             pairs.append((outcome, str(med), ch))
@@ -110,18 +128,18 @@ def select_cis_mediation_pairs(
 
 def mediation_scan_qr(
     outcome: np.ndarray,
-    mediators: 'np.ndarray | dict[str, np.ndarray]',
+    mediators: "np.ndarray | dict[str, np.ndarray]",
     genomecache,
-    covariates: 'np.ndarray | None' = None,
-    kinship_decomp: 'dict | None' = None,
-    outcome_id: str = 'outcome',
-    mediator_id: str = 'mediator',
-    sample_ids: 'list | None' = None,
-    scan_window: str = 'genome',
-    gene_chr: 'str | None' = None,
-    gene_pos_mb: 'float | None' = None,
+    covariates: "np.ndarray | None" = None,
+    kinship_decomp: "dict | None" = None,
+    outcome_id: str = "outcome",
+    mediator_id: str = "mediator",
+    sample_ids: "list | None" = None,
+    scan_window: str = "genome",
+    gene_chr: "str | None" = None,
+    gene_pos_mb: "float | None" = None,
     window_mb: float = 10.0,
-    base_lod: 'dict[str, np.ndarray] | None' = None,
+    base_lod: "dict[str, np.ndarray] | None" = None,
 ) -> pd.DataFrame:
     """Genome-wide mediation scan — one or multiple mediators per call.
 
@@ -180,68 +198,74 @@ def mediation_scan_qr(
     else:
         med_dict = dict(mediators)
 
-    if scan_window in ('cis', 'local') and gene_chr is None:
+    if scan_window in ("cis", "local") and gene_chr is None:
         raise ValueError(f"scan_window='{scan_window}' requires gene_chr")
 
     _n_med = len(med_dict)
     logger.info(
-        'mediation_scan_qr: outcome=%s  n_mediators=%d  chr=%s  scan_window=%s',
-        outcome_id, _n_med,
-        gene_chr if gene_chr is not None else 'genome',
+        "mediation_scan_qr: outcome=%s  n_mediators=%d  chr=%s  scan_window=%s",
+        outcome_id,
+        _n_med,
+        gene_chr if gene_chr is not None else "genome",
         scan_window,
     )
     if _n_med < 2:
         logger.warning(
-            'mediation_scan_qr: %s has fewer than 2 mediators (%d) — '
-            'Woodbury rank-1 update is still valid but results may be unstable',
-            outcome_id, _n_med,
+            "mediation_scan_qr: %s has fewer than 2 mediators (%d) — "
+            "Woodbury rank-1 update is still valid but results may be unstable",
+            outcome_id,
+            _n_med,
         )
 
     if kinship_decomp is None:
-        kd = kin_module.calc_kinship(genomecache, method='loco')
+        kd = kin_module.calc_kinship(genomecache, method="loco")
         kinship_decomp = kin_module.decomp_kinship(kd)
 
     cache_ids = list(genomecache.sample_ids)
-    sid_list  = list(sample_ids) if sample_ids is not None else cache_ids
+    sid_list = list(sample_ids) if sample_ids is not None else cache_ids
     if sid_list != cache_ids:
         z_mat, valid_sid = build_z_matrix(sid_list, cache_ids)
     else:
         z_mat, valid_sid = None, np.ones(len(sid_list), dtype=bool)
 
-    med_ids  = list(med_dict.keys())
+    med_ids = list(med_dict.keys())
     med_arrs = [med_dict[k] for k in med_ids]
-    n_med    = len(med_ids)
-    M_raw    = np.stack(med_arrs, axis=0)               # (n_med, n_samples)
+    n_med = len(med_ids)
+    M_raw = np.stack(med_arrs, axis=0)  # (n_med, n_samples)
 
     valid = (~np.isnan(outcome)) & valid_sid
     for i in range(n_med):
         valid &= ~np.isnan(M_raw[i])
 
     y = outcome[valid].copy()
-    M = M_raw[:, valid].copy()                           # (n_med, n_valid)
+    M = M_raw[:, valid].copy()  # (n_med, n_valid)
 
-    x_base = (covariates[valid].copy() if covariates is not None
-              else np.ones((valid.sum(), 1), dtype=float))
+    x_base = (
+        covariates[valid].copy()
+        if covariates is not None
+        else np.ones((valid.sum(), 1), dtype=float)
+    )
     if not np.allclose(x_base[:, 0], 1.0):
         x_base = np.hstack([np.ones((len(y), 1)), x_base])
 
     z_sub = z_mat[valid] if z_mat is not None else None
     if z_sub is not None:
         r_counts = z_sub.sum(axis=0)
-        y        = (z_sub.T @ y) / r_counts
-        M        = (z_sub.T @ M.T).T / r_counts[None, :]
-        x_base   = (z_sub.T @ x_base) / r_counts[:, None]
-        ev_valid  = slice(None)
+        y = (z_sub.T @ y) / r_counts
+        M = (z_sub.T @ M.T).T / r_counts[None, :]
+        x_base = (z_sub.T @ x_base) / r_counts[:, None]
+        ev_valid = slice(None)
     else:
-        ev_valid  = valid
+        ev_valid = valid
 
     n = len(y)
 
     M_std = (M - M.mean(axis=1, keepdims=True)) / np.maximum(
-        M.std(axis=1, keepdims=True), 1e-10)             # (n_med, n)
+        M.std(axis=1, keepdims=True), 1e-10
+    )  # (n_med, n)
 
     chroms = [c for c in genomecache.chromosomes if c in kinship_decomp]
-    if scan_window in ('cis', 'local'):
+    if scan_window in ("cis", "local"):
         chroms = [c for c in chroms if c == str(gene_chr)]
 
     rows: list[pd.DataFrame] = []
@@ -249,116 +273,137 @@ def mediation_scan_qr(
 
     for _ci, chrom in enumerate(chroms):
         _t0 = time.perf_counter()
-        ev  = kinship_decomp[chrom]['values']
-        evc = kinship_decomp[chrom]['vectors']
-        ev_v = evc[ev_valid]                             # (n, n_eigs)
+        ev = kinship_decomp[chrom]["values"]
+        evc = kinship_decomp[chrom]["vectors"]
+        ev_v = evc[ev_valid]  # (n, n_eigs)
 
         h2, _ = lmm_module.estimate_h2_null(ev_v.T @ y, ev_v.T @ x_base, ev)
-        w_inv  = 1.0 / (h2 * ev + (1.0 - h2))
+        w_inv = 1.0 / (h2 * ev + (1.0 - h2))
         w_sqrt = np.sqrt(w_inv)
 
-        y_rot  = (ev_v.T @ y)      * w_sqrt             # (n,)
-        x_rot  = (ev_v.T @ x_base) * w_sqrt[:, None]    # (n, p)
+        y_rot = (ev_v.T @ y) * w_sqrt  # (n,)
+        x_rot = (ev_v.T @ x_base) * w_sqrt[:, None]  # (n, p)
 
-        xt_gram  = x_rot.T @ x_rot
-        xt_pinv  = np.linalg.lstsq(xt_gram, x_rot.T, rcond=None)[0]   # (p, n)
+        xt_gram = x_rot.T @ x_rot
+        xt_pinv = np.linalg.lstsq(xt_gram, x_rot.T, rcond=None)[0]  # (p, n)
 
-        y_perp    = y_rot - x_rot @ (xt_pinv @ y_rot)
+        y_perp = y_rot - x_rot @ (xt_pinv @ y_rot)
         rss0_base = float(y_perp @ y_perp)
 
-        lids, pos, probs = genomecache.get_chromosome(chrom)   # (L, n_strains, J)
-        H_rot = np.einsum('nk,lnj->lkj', ev_v, probs,
-                           optimize=True) * w_sqrt[None, :, None]  # (L, n, J)
+        lids, pos, probs = genomecache.get_chromosome(chrom)  # (L, n_strains, J)
+        H_rot = (
+            np.einsum("nk,lnj->lkj", ev_v, probs, optimize=True) * w_sqrt[None, :, None]
+        )  # (L, n, J)
 
-        proj_H   = np.einsum('pn,lnj->lpj', xt_pinv, H_rot, optimize=True)
-        H_perp_X = H_rot - np.einsum('np,lpj->lnj', x_rot, proj_H, optimize=True)
+        proj_H = np.einsum("pn,lnj->lpj", xt_pinv, H_rot, optimize=True)
+        H_perp_X = H_rot - np.einsum("np,lpj->lnj", x_rot, proj_H, optimize=True)
 
-        G_base = np.einsum('lnj,lnk->ljk', H_perp_X, H_perp_X, optimize=True)
-        c_base = np.einsum('lnj,n->lj',    H_perp_X, y_perp,    optimize=True)
-        G_inv  = np.linalg.pinv(G_base, rcond=1e-10)            # (L, J, J)
-        q_base = np.einsum('ljk,lk->lj', G_inv, c_base, optimize=True)
+        G_base = np.einsum("lnj,lnk->ljk", H_perp_X, H_perp_X, optimize=True)
+        c_base = np.einsum("lnj,n->lj", H_perp_X, y_perp, optimize=True)
+        G_inv = np.linalg.pinv(G_base, rcond=1e-10)  # (L, J, J)
+        q_base = np.einsum("ljk,lk->lj", G_inv, c_base, optimize=True)
 
         if base_lod is not None and chrom in base_lod:
             lod_b = base_lod[chrom]
         else:
-            rss_red_base = np.einsum('lj,lj->l', c_base, q_base)
-            rss1_base    = np.maximum(rss0_base - rss_red_base, 1e-30)
-            lod_b = np.where(rss1_base < rss0_base,
-                             (n / 2.0) * np.log10(rss0_base / rss1_base), 0.0)
+            rss_red_base = np.einsum("lj,lj->l", c_base, q_base)
+            rss1_base = np.maximum(rss0_base - rss_red_base, 1e-30)
+            lod_b = np.where(
+                rss1_base < rss0_base, (n / 2.0) * np.log10(rss0_base / rss1_base), 0.0
+            )
 
-        M_rot    = np.einsum('in,nk->ik', M_std, ev_v,
-                              optimize=True) * w_sqrt[None, :]    # (n_med, n)
-        proj_M   = xt_pinv @ M_rot.T                              # (p, n_med)
-        M_perp_X = M_rot - (x_rot @ proj_M).T                    # (n_med, n)
+        M_rot = (
+            np.einsum("in,nk->ik", M_std, ev_v, optimize=True) * w_sqrt[None, :]
+        )  # (n_med, n)
+        proj_M = xt_pinv @ M_rot.T  # (p, n_med)
+        M_perp_X = M_rot - (x_rot @ proj_M).T  # (n_med, n)
 
-        norms    = np.einsum('in,in->i', M_perp_X, M_perp_X)    # (n_med,)
-        safe_n   = np.maximum(norms, 1e-30)
-        y_dot_m  = M_perp_X @ y_perp                             # (n_med,)
-        alpha    = y_dot_m / safe_n
-        rss0_m   = rss0_base - y_dot_m ** 2 / safe_n            # (n_med,)
+        norms = np.einsum("in,in->i", M_perp_X, M_perp_X)  # (n_med,)
+        safe_n = np.maximum(norms, 1e-30)
+        y_dot_m = M_perp_X @ y_perp  # (n_med,)
+        alpha = y_dot_m / safe_n
+        rss0_m = rss0_base - y_dot_m**2 / safe_n  # (n_med,)
 
-        H_dot_M = np.einsum('lnj,in->lji', H_perp_X, M_perp_X, optimize=True)
-        V = np.einsum('ljk,lki->lji', G_inv, H_dot_M, optimize=True)
-        denom = safe_n[None, :] - np.einsum('lji,lji->li', H_dot_M, V)
+        H_dot_M = np.einsum("lnj,in->lji", H_perp_X, M_perp_X, optimize=True)
+        V = np.einsum("ljk,lki->lji", G_inv, H_dot_M, optimize=True)
+        denom = safe_n[None, :] - np.einsum("lji,lji->li", H_dot_M, V)
         denom = np.where(np.abs(denom) < 1e-30, 1e-30, denom)
 
         c_lm = c_base[:, :, None] - alpha[None, None, :] * H_dot_M
         q_lm = q_base[:, :, None] - alpha[None, None, :] * V
 
-        base_quad  = np.einsum('lji,lji->li', c_lm, q_lm)
-        v_dot_q    = np.einsum('lji,lji->li', H_dot_M, q_lm)
-        correction = v_dot_q ** 2 / denom
-        rss_red    = base_quad + correction
+        base_quad = np.einsum("lji,lji->li", c_lm, q_lm)
+        v_dot_q = np.einsum("lji,lji->li", H_dot_M, q_lm)
+        correction = v_dot_q**2 / denom
+        rss_red = base_quad + correction
 
-        rss1_m = np.maximum(rss0_m[None, :] - rss_red, 1e-30)    # (L, n_med)
-        lod_m  = np.where(
+        rss1_m = np.maximum(rss0_m[None, :] - rss_red, 1e-30)  # (L, n_med)
+        lod_m = np.where(
             rss1_m < rss0_m[None, :],
             (n / 2.0) * np.log10(np.maximum(rss0_m[None, :], 1e-30) / rss1_m),
             0.0,
-        )                                                           # (L, n_med)
+        )  # (L, n_med)
 
-        lod_drop  = np.maximum(lod_b[:, None] - lod_m, 0.0)       # (L, n_med)
-        prop_med  = lod_drop / np.maximum(lod_b[:, None], 1e-10)
+        lod_drop = np.maximum(lod_b[:, None] - lod_m, 0.0)  # (L, n_med)
+        prop_med = lod_drop / np.maximum(lod_b[:, None], 1e-10)
         chi2_stat = 2.0 * np.log(10) * lod_drop
-        p_val     = _chi2.sf(chi2_stat, df=1)
+        p_val = _chi2.sf(chi2_stat, df=1)
 
         for i, mid in enumerate(med_ids):
-            rows.append(pd.DataFrame({
-                'outcome_id':    outcome_id,
-                'mediator_id':   mid,
-                'chr':           chrom,
-                'locus':         lids,
-                'pos_mb':        pos.astype(float),
-                'lod_base':      lod_b,
-                'lod_mediated':  lod_m[:, i],
-                'lod_drop':      lod_drop[:, i],
-                'prop_mediated': prop_med[:, i],
-                'p_value':       p_val[:, i],
-                'h2':            h2,
-                'n':             n,
-            }))
+            rows.append(
+                pd.DataFrame(
+                    {
+                        "outcome_id": outcome_id,
+                        "mediator_id": mid,
+                        "chr": chrom,
+                        "locus": lids,
+                        "pos_mb": pos.astype(float),
+                        "lod_base": lod_b,
+                        "lod_mediated": lod_m[:, i],
+                        "lod_drop": lod_drop[:, i],
+                        "prop_mediated": prop_med[:, i],
+                        "p_value": p_val[:, i],
+                        "h2": h2,
+                        "n": n,
+                    }
+                )
+            )
 
-        logger.debug('[%d/%d] mediation chr%s  %d loci × %d mediators  %.1fs',
-                     _ci + 1, n_chroms, chrom, len(lids), n_med,
-                     time.perf_counter() - _t0)
+        logger.debug(
+            "[%d/%d] mediation chr%s  %d loci × %d mediators  %.1fs",
+            _ci + 1,
+            n_chroms,
+            chrom,
+            len(lids),
+            n_med,
+            time.perf_counter() - _t0,
+        )
 
-    _result_df = (pd.concat(rows, ignore_index=True) if rows
-                  else pd.DataFrame(columns=_MED_COLS))
+    _result_df = (
+        pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=_MED_COLS)
+    )
     if not _result_df.empty:
-        _best_row = _result_df.loc[_result_df['lod_drop'].idxmax()]
+        _best_row = _result_df.loc[_result_df["lod_drop"].idxmax()]
         logger.info(
-            'mediation_scan_qr: %s done — best mediator=%s  lod_drop=%.3f',
-            outcome_id, _best_row['mediator_id'], float(_best_row['lod_drop']),
+            "mediation_scan_qr: %s done — best mediator=%s  lod_drop=%.3f",
+            outcome_id,
+            _best_row["mediator_id"],
+            float(_best_row["lod_drop"]),
         )
     else:
-        logger.info('mediation_scan_qr: %s done — no rows returned', outcome_id)
+        logger.info("mediation_scan_qr: %s done — no rows returned", outcome_id)
     return _result_df
 
 
-def fixef_mediation_scan(outcome, mediator, genomecache,
-                          covariates=None,
-                          outcome_id='outcome', mediator_id='mediator',
-                          just_these_loci=None):
+def fixef_mediation_scan(
+    outcome,
+    mediator,
+    genomecache,
+    covariates=None,
+    outcome_id="outcome",
+    mediator_id="mediator",
+    just_these_loci=None,
+):
     """Fixed-effect mediation scan — OLS, no kinship, vectorised.
 
     Fast screening version. Compatible with just_these_loci filter
@@ -384,30 +429,36 @@ def fixef_mediation_scan(outcome, mediator, genomecache,
     """
     from scipy import stats as sp_stats
 
-    valid  = (~np.isnan(outcome)) & (~np.isnan(mediator))
-    y      = outcome[valid].copy()
-    m      = mediator[valid].copy()
-    n  = len(y)
+    valid = (~np.isnan(outcome)) & (~np.isnan(mediator))
+    y = outcome[valid].copy()
+    m = mediator[valid].copy()
+    n = len(y)
 
-    x_base = (covariates[valid].copy() if covariates is not None
-              else np.ones((n, 1), dtype=float))
+    x_base = (
+        covariates[valid].copy()
+        if covariates is not None
+        else np.ones((n, 1), dtype=float)
+    )
     if not np.allclose(x_base[:, 0], 1.0):
         x_base = np.hstack([np.ones((n, 1)), x_base])
-    m_std  = (m - m.mean()) / max(m.std(), 1e-10)
-    x_med  = np.hstack([m_std[:, None], x_base])
+    m_std = (m - m.mean()) / max(m.std(), 1e-10)
+    x_med = np.hstack([m_std[:, None], x_base])
 
     def _rss0(x):
         """Return residual sum of squares from OLS of y on x."""
         b = np.linalg.lstsq(x, y, rcond=None)[0]
-        e = y - x @ b; return float(e @ e)
+        e = y - x @ b
+        return float(e @ e)
 
-    rss0_b = _rss0(x_base); rss0_m = _rss0(x_med)
-    p_b = x_base.shape[1];  p_m = x_med.shape[1]
+    rss0_b = _rss0(x_base)
+    rss0_m = _rss0(x_med)
+    p_b = x_base.shape[1]
+    p_m = x_med.shape[1]
 
     rows = []
     for chrom in genomecache.chromosomes:
         lids, pos, probs = genomecache.get_chromosome(chrom)  # (L, m, J)
-        H = probs[:, valid, :]                                  # (L, n, J)
+        H = probs[:, valid, :]  # (L, n, J)
 
         if just_these_loci is not None:
             mask = np.isin(lids, list(just_these_loci))
@@ -416,68 +467,76 @@ def fixef_mediation_scan(outcome, mediator, genomecache,
             continue
 
         for x_cov, rss0, p_cov, model_tag in [
-            (x_base, rss0_b, p_b, 'base'),
-            (x_med,  rss0_m, p_m, 'med'),
+            (x_base, rss0_b, p_b, "base"),
+            (x_med, rss0_m, p_m, "med"),
         ]:
             xt_pinv = np.linalg.lstsq(x_cov.T @ x_cov, x_cov.T, rcond=None)[0]
-            proj    = np.einsum('pn,lnj->lpj', xt_pinv, H, optimize=True)
-            H_perp  = H - np.einsum('np,lpj->lnj', x_cov, proj, optimize=True)
-            c       = np.einsum('lnj,n->lj', H_perp, y, optimize=True)
-            G       = np.einsum('lnj,lnk->ljk', H_perp, H_perp, optimize=True)
-            betas   = (np.linalg.pinv(G, rcond=1e-10) @ c[..., None]).squeeze(-1)
-            rss_red = np.einsum('lj,lj->l', c, betas)
-            rss1    = np.maximum(rss0 - rss_red, 1e-30)
-            lod     = np.where(rss1 < rss0, (n/2.0)*np.log10(rss0/rss1), 0.0)
+            proj = np.einsum("pn,lnj->lpj", xt_pinv, H, optimize=True)
+            H_perp = H - np.einsum("np,lpj->lnj", x_cov, proj, optimize=True)
+            c = np.einsum("lnj,n->lj", H_perp, y, optimize=True)
+            G = np.einsum("lnj,lnk->ljk", H_perp, H_perp, optimize=True)
+            betas = (np.linalg.pinv(G, rcond=1e-10) @ c[..., None]).squeeze(-1)
+            rss_red = np.einsum("lj,lj->l", c, betas)
+            rss1 = np.maximum(rss0 - rss_red, 1e-30)
+            lod = np.where(rss1 < rss0, (n / 2.0) * np.log10(rss0 / rss1), 0.0)
 
-            if model_tag == 'base':
+            if model_tag == "base":
                 lod_b = lod
             else:
                 lod_m = lod
-                q_eff   = np.linalg.matrix_rank(G)
+                q_eff = np.linalg.matrix_rank(G)
                 df2_arr = np.maximum(n - p_cov - q_eff, 1)
-                with np.errstate(invalid='ignore', divide='ignore'):
+                with np.errstate(invalid="ignore", divide="ignore"):
                     f_stat = np.where(
                         q_eff > 0,
                         np.maximum(
-                            (rss0 - rss1) / np.maximum(q_eff, 1)
-                            / (rss1 / df2_arr), 0.0),
-                        0.0)
-                    pval = np.where(df2_arr > 0,
-                                    1.0 - sp_stats.f.cdf(f_stat, q_eff, df2_arr),
-                                    1.0)
+                            (rss0 - rss1) / np.maximum(q_eff, 1) / (rss1 / df2_arr), 0.0
+                        ),
+                        0.0,
+                    )
+                    pval = np.where(
+                        df2_arr > 0, 1.0 - sp_stats.f.cdf(f_stat, q_eff, df2_arr), 1.0
+                    )
 
         lod_drop = np.maximum(lod_b - lod_m, 0.0)
         prop_med = lod_drop / np.maximum(lod_b, 1e-10)
 
-        rows.append(pd.DataFrame({
-            'outcome_id':    outcome_id,
-            'mediator_id':   mediator_id,
-            'chr':           chrom,
-            'locus':         lids,
-            'pos_mb':        pos.astype(float),
-            'lod_base':      lod_b,
-            'lod_mediated':  lod_m,
-            'lod_drop':      lod_drop,
-            'prop_mediated': prop_med,
-            'p_value':       pval,
-            'n':             n,
-        }))
+        rows.append(
+            pd.DataFrame(
+                {
+                    "outcome_id": outcome_id,
+                    "mediator_id": mediator_id,
+                    "chr": chrom,
+                    "locus": lids,
+                    "pos_mb": pos.astype(float),
+                    "lod_base": lod_b,
+                    "lod_mediated": lod_m,
+                    "lod_drop": lod_drop,
+                    "prop_mediated": prop_med,
+                    "p_value": pval,
+                    "n": n,
+                }
+            )
+        )
 
-    return (pd.concat(rows, ignore_index=True) if rows
-            else pd.DataFrame(columns=_FIXEF_COLS))
+    return (
+        pd.concat(rows, ignore_index=True)
+        if rows
+        else pd.DataFrame(columns=_FIXEF_COLS)
+    )
 
 
 def mediation_scan_multi_outcome(
-    pairs_by_outcome: 'dict[str, list[tuple[str, str]]]',
-    expr_cache: 'dict[str, np.ndarray]',
+    pairs_by_outcome: "dict[str, list[tuple[str, str]]]",
+    expr_cache: "dict[str, np.ndarray]",
     genomecache,
-    covariates: 'np.ndarray | None' = None,
-    kinship_decomp: 'dict | None' = None,
-    sample_ids: 'list[str] | None' = None,
+    covariates: "np.ndarray | None" = None,
+    kinship_decomp: "dict | None" = None,
+    sample_ids: "list[str] | None" = None,
     lod_base_min: float = 1.5,
     lod_drop_min: float = 0.5,
-    output_path: 'Path | None' = None,
-    gene_meta: 'pd.DataFrame | None' = None,
+    output_path: "Path | None" = None,
+    gene_meta: "pd.DataFrame | None" = None,
 ) -> pd.DataFrame:
     """Mediation scan over all outcome genes, streaming to disk.
 
@@ -506,69 +565,90 @@ def mediation_scan_multi_outcome(
         lod_base, lod_mediated, lod_drop, prop_mediated, p_value, h2, n
     """
     _OUT_COLS = [
-        'gene_name', 'chr', 'mediator', 'locus', 'pos_mb',
-        'lod_base', 'lod_mediated', 'lod_drop', 'prop_mediated',
-        'p_value', 'h2', 'n',
+        "gene_name",
+        "chr",
+        "mediator",
+        "locus",
+        "pos_mb",
+        "lod_base",
+        "lod_mediated",
+        "lod_drop",
+        "prop_mediated",
+        "p_value",
+        "h2",
+        "n",
     ]
-    _gm_idx    = _build_gm_idx(gene_meta)
-    _id_cols   = ['gene_name', 'chr']
+    _gm_idx = _build_gm_idx(gene_meta)
+    _id_cols = ["gene_name", "chr"]
     _data_cols = _OUT_COLS[2:]
     _first = True
-    _buf: 'list[pd.DataFrame]' = []
+    _buf: "list[pd.DataFrame]" = []
     _n = len(pairs_by_outcome)
 
     _total_pairs = sum(len(v) for v in pairs_by_outcome.values())
     logger.info(
-        'mediation_scan_multi_outcome: n_outcomes=%d  total_pairs=%d  '
-        'lod_base_min=%.1f  lod_drop_min=%.1f',
-        _n, _total_pairs, lod_base_min, lod_drop_min,
+        "mediation_scan_multi_outcome: n_outcomes=%d  total_pairs=%d  "
+        "lod_base_min=%.1f  lod_drop_min=%.1f",
+        _n,
+        _total_pairs,
+        lod_base_min,
+        lod_drop_min,
     )
 
     for _i, (outcome_id, med_list) in enumerate(pairs_by_outcome.items()):
         if outcome_id not in expr_cache:
             continue
         ch = med_list[0][1]
-        med_vecs = {
-            mid: expr_cache[mid] for mid, _ in med_list if mid in expr_cache
-        }
+        med_vecs = {mid: expr_cache[mid] for mid, _ in med_list if mid in expr_cache}
         if not med_vecs:
             continue
         logger.debug(
-            'mediation_scan_multi_outcome: [%d/%d] %s → %d mediator(s)',
-            _i + 1, _n, outcome_id, len(med_vecs),
+            "mediation_scan_multi_outcome: [%d/%d] %s → %d mediator(s)",
+            _i + 1,
+            _n,
+            outcome_id,
+            len(med_vecs),
         )
         try:
             _df = mediation_scan_qr(
-                expr_cache[outcome_id], med_vecs, genomecache,
+                expr_cache[outcome_id],
+                med_vecs,
+                genomecache,
                 covariates=covariates,
                 kinship_decomp=kinship_decomp,
                 sample_ids=sample_ids,
                 outcome_id=outcome_id,
-                scan_window='cis', gene_chr=ch,
+                scan_window="cis",
+                gene_chr=ch,
             )
             if not _df.empty:
-                _df = _df.rename(columns={
-                    'outcome_id': 'gene_name', 'mediator_id': 'mediator'})
+                _df = _df.rename(
+                    columns={"outcome_id": "gene_name", "mediator_id": "mediator"}
+                )
                 _df = _df[
-                    (_df['lod_base'] >= lod_base_min) &
-                    (_df['lod_drop'] >= lod_drop_min)
+                    (_df["lod_base"] >= lod_base_min)
+                    & (_df["lod_drop"] >= lod_drop_min)
                 ][_OUT_COLS]
                 if not _df.empty:
                     _df = _enrich_scan_df(
-                        _df, outcome_id, _gm_idx, _id_cols, _data_cols)
+                        _df, outcome_id, _gm_idx, _id_cols, _data_cols
+                    )
                     if output_path is not None:
-                        _df.to_csv(
-                            output_path, mode='a', header=_first, index=False)
+                        _df.to_csv(output_path, mode="a", header=_first, index=False)
                         _first = False
                     else:
                         _buf.append(_df.copy())
             del _df
         except Exception as exc:
             logger.warning(
-                'mediation_scan_multi_outcome: %s failed — %s', outcome_id, exc)
+                "mediation_scan_multi_outcome: %s failed — %s", outcome_id, exc
+            )
         del med_vecs
     gc.collect()
     if output_path is not None:
-        return (pd.read_csv(output_path)
-                if output_path.exists() and not _first else pd.DataFrame())
+        return (
+            pd.read_csv(output_path)
+            if output_path.exists() and not _first
+            else pd.DataFrame()
+        )
     return pd.concat(_buf, ignore_index=True) if _buf else pd.DataFrame()

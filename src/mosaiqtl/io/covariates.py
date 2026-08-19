@@ -17,7 +17,7 @@ from scipy.sparse.linalg import svds
 
 from mosaiqtl.models.config import Population
 
-logger = logging.getLogger('mosaiqtl')
+logger = logging.getLogger("mosaiqtl")
 
 
 class MissingCovariateError(ValueError):
@@ -92,39 +92,41 @@ def build_covariate_matrix(
         if n_genotype_pcs > 0 and kinship_matrix or kinship_sample_ids is None.
         if n_genotype_pcs > 0 and population is a LOCO population (e.g. 'cc').
     """
-    if 'sample_id' not in sample_metadata.columns:
+    if "sample_id" not in sample_metadata.columns:
         raise ValueError("'sample_id' column is required in sample_metadata")
 
     if n_expression_pcs > 0 and pseudobulk_counts is None:
         raise ValueError(
-            f'n_expression_pcs={n_expression_pcs} requires pseudobulk_counts; '
-            f'pass pseudobulk_counts or set n_expression_pcs=0'
+            f"n_expression_pcs={n_expression_pcs} requires pseudobulk_counts; "
+            f"pass pseudobulk_counts or set n_expression_pcs=0"
         )
 
     if n_genotype_pcs > 0:
         if kinship_matrix is None or kinship_sample_ids is None:
             raise ValueError(
-                f'n_genotype_pcs={n_genotype_pcs} requires kinship_matrix and '
-                f'kinship_sample_ids; pass both or set n_genotype_pcs=0'
+                f"n_genotype_pcs={n_genotype_pcs} requires kinship_matrix and "
+                f"kinship_sample_ids; pass both or set n_genotype_pcs=0"
             )
         if _loco_sufficient(population):
-            pop_label = population.name if isinstance(population, Population) else population
+            pop_label = (
+                population.name if isinstance(population, Population) else population
+            )
             raise ValueError(
-                f'n_genotype_pcs={n_genotype_pcs} is not informative for '
+                f"n_genotype_pcs={n_genotype_pcs} is not informative for "
                 f"population={pop_label!r}: LOCO kinship already captures all "
-                f'population structure. Set n_genotype_pcs=0.'
+                f"population structure. Set n_genotype_pcs=0."
             )
 
     if covariates is None:
         covariates = []
 
-    meta = sample_metadata.set_index('sample_id').sort_index()
+    meta = sample_metadata.set_index("sample_id").sort_index()
     parts: list[pd.DataFrame] = []
 
     missing_cols = [c for c in covariates if c not in meta.columns]
     if missing_cols:
         raise ValueError(
-            f'requested covariate columns not found in sample_metadata: {missing_cols}'
+            f"requested covariate columns not found in sample_metadata: {missing_cols}"
         )
 
     for col in covariates:
@@ -134,7 +136,11 @@ def build_covariate_matrix(
         parts.append(_expression_pcs(pseudobulk_counts, meta.index, n_expression_pcs))
 
     if n_genotype_pcs > 0:
-        parts.append(_genotype_pcs(kinship_matrix, kinship_sample_ids, meta.index, n_genotype_pcs))
+        parts.append(
+            _genotype_pcs(
+                kinship_matrix, kinship_sample_ids, meta.index, n_genotype_pcs
+            )
+        )
 
     if not parts:
         return pd.DataFrame(index=meta.index, dtype=np.float64)
@@ -143,14 +149,12 @@ def build_covariate_matrix(
 
     for col in result.columns[result.isna().any()]:
         bad = result.index[result[col].isna()].tolist()
-        raise MissingCovariateError(
-            f"NaN in covariate '{col}' for samples: {bad}"
-        )
+        raise MissingCovariateError(f"NaN in covariate '{col}' for samples: {bad}")
 
     return result
 
 
-def encode_sex(series: 'pd.Series') -> 'pd.Series':
+def encode_sex(series: "pd.Series") -> "pd.Series":
     """Encode a sex column to float (Male/M/0 → 0.0, Female/F/1 → 1.0).
 
     Accepts any of: 'Male'/'Female', 'M'/'F', 'm'/'f', 0/1, 0.0/1.0.
@@ -166,27 +170,28 @@ def encode_sex(series: 'pd.Series') -> 'pd.Series':
     pd.Series
         Float64 series with same index, values in {0.0, 1.0}.
     """
+
     def _map(v: object) -> float:
         """Map a sex value (string label or numeric) to 0.0 (male) or 1.0 (female)."""
         if isinstance(v, (int, float, np.integer, np.floating)):
             return float(v)
         s = str(v).strip().lower()
-        if s in ('male', 'm', '0'):
+        if s in ("male", "m", "0"):
             return 0.0
-        if s in ('female', 'f', '1'):
+        if s in ("female", "f", "1"):
             return 1.0
-        logger.warning('encode_sex: unrecognised value %r — defaulting to 0.0', v)
+        logger.warning("encode_sex: unrecognised value %r — defaulting to 0.0", v)
         return 0.0
 
     return series.map(_map).astype(np.float64)
 
 
 def build_sex_dataset_covariates(
-    meta: 'pd.DataFrame',
-    sample_order: 'list[str]',
-    dataset_col: str = 'dataset',
-    dataset_categories: 'list[str] | None' = None,
-) -> 'np.ndarray':
+    meta: "pd.DataFrame",
+    sample_order: "list[str]",
+    dataset_col: str = "dataset",
+    dataset_categories: "list[str] | None" = None,
+) -> "np.ndarray":
     """Build a covariate matrix aligned to ``sample_order`` for sex + dataset design.
 
     Matches R formula ``~ sex + dataset`` with Founder as reference level.
@@ -211,10 +216,11 @@ def build_sex_dataset_covariates(
         Columns: sex (0=F, 1=M), then one-hot dataset dummies (reference dropped).
     """
     import pandas as pd
+
     if dataset_categories is None:
-        dataset_categories = ['Founder', 'CC1', 'CC2', 'CC3', 'F1']
-    rows = meta.set_index('sample_id').loc[sample_order]
-    sex_vec = encode_sex(rows['sex']).values.astype(np.float64)
+        dataset_categories = ["Founder", "CC1", "CC2", "CC3", "F1"]
+    rows = meta.set_index("sample_id").loc[sample_order]
+    sex_vec = encode_sex(rows["sex"]).values.astype(np.float64)
     cat = pd.Categorical(rows[dataset_col].values, categories=dataset_categories)
     dummies = pd.get_dummies(cat, drop_first=True).values.astype(np.float64)
     return np.column_stack([sex_vec, dummies])
@@ -223,6 +229,7 @@ def build_sex_dataset_covariates(
 # ---------------------------------------------------------------------------
 # private helpers
 # ---------------------------------------------------------------------------
+
 
 def _loco_sufficient(population: Optional[Union[str, Population]]) -> bool:
     """Return True when LOCO kinship fully absorbs population structure.
@@ -235,16 +242,14 @@ def _loco_sufficient(population: Optional[Union[str, Population]]) -> bool:
         return False
     if isinstance(population, Population):
         return population.loco_sufficient
-    return population == 'cc'
+    return population == "cc"
 
 
 def _check_nan(df: pd.DataFrame, col: str) -> None:
     """Raise MissingCovariateError if any value in col is NaN."""
     bad = df.index[df[col].isna()].tolist()
     if bad:
-        raise MissingCovariateError(
-            f"NaN in covariate '{col}' for samples: {bad}"
-        )
+        raise MissingCovariateError(f"NaN in covariate '{col}' for samples: {bad}")
 
 
 def _encode_column(meta: pd.DataFrame, col: str) -> pd.DataFrame:
@@ -271,9 +276,9 @@ def _expression_pcs(
 
     n_components = min(n_pcs, min(normed.shape) - 1)
     _, _, vt = svds(normed, k=n_components)
-    scores = normed @ vt[::-1].T   # svds returns ascending order — reverse
+    scores = normed @ vt[::-1].T  # svds returns ascending order — reverse
 
-    cols = [f'expr_pc{i + 1}' for i in range(n_components)]
+    cols = [f"expr_pc{i + 1}" for i in range(n_components)]
     return pd.DataFrame(scores, index=sample_ids, columns=cols)
 
 
@@ -288,7 +293,9 @@ def _genotype_pcs(
     captures population structure for DO, MPP, F2, and structured populations.
     eigh returns ascending eigenvalues — reversed to get top structure first.
     """
-    k_df = pd.DataFrame(kinship_matrix, index=kinship_sample_ids, columns=kinship_sample_ids)
+    k_df = pd.DataFrame(
+        kinship_matrix, index=kinship_sample_ids, columns=kinship_sample_ids
+    )
     k_sub = k_df.loc[sample_ids, sample_ids].values.astype(float)
 
     n_components = min(n_pcs, len(sample_ids) - 1)
@@ -296,5 +303,5 @@ def _genotype_pcs(
     idx = np.argsort(eigenvalues)[::-1]
     top_vecs = eigenvectors[:, idx[:n_components]]
 
-    cols = [f'geno_pc{i + 1}' for i in range(n_components)]
+    cols = [f"geno_pc{i + 1}" for i in range(n_components)]
     return pd.DataFrame(top_vecs, index=sample_ids, columns=cols)
