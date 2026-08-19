@@ -11,15 +11,21 @@ import pandas as pd
 import seaborn as sns
 
 from ._theme import (
-    BRAND_PRIMARY, BRAND_SECONDARY, BRAND_ACCENT, INK, MUTED, WASH, SURFACE,
-    CHR_BANDS, CMAP_MAGNITUDE, CMAP_SIGNED,
-    KW_THRESHOLD, KW_REFERENCE, KW_DOT, KW_DOT_MUTED, KW_BOX,
-    FONT_STACK, apply_theme, info_box,
+    BRAND_PRIMARY, BRAND_SECONDARY, BRAND_ACCENT, INK, MUTED,
+    CHR_BANDS, CMAP_MAGNITUDE, CMAP_SIGNED as _CMAP_EFFECT,
+    KW_THRESHOLD, KW_REFERENCE, KW_DOT_MUTED,
+    apply_theme, info_box,
 )
 from .effects import effect_bars as _effect_bars
 
 _CHR_ORDER: list[str] = [str(i) for i in range(1, 20)] + ["X"]
 _CHR_GAP_MB: float = 10.0
+
+# ── semantic scan-series color aliases ───────────────────────────────────────
+# MI overlay = secondary series; instability = accent; SNP = muted neutral.
+_MI_COLOR: str = BRAND_SECONDARY
+_INST_COLOR: str = BRAND_ACCENT
+_SNP_COLOR: str = MUTED
 
 
 def lod_profile(
@@ -987,12 +993,12 @@ def cis_distance_panel(
         bbox=dict(
             boxstyle="round,pad=0.3",
             facecolor="white",
-            edgecolor=COLOR_NEUTRAL_DARK,
+            edgecolor=INK,
             alpha=0.9,
         ),
     )
     sns.despine(ax=ax_full)
-    _set_font(ax_full)
+    apply_theme(ax_full)
 
     # ── panel 2: ±zoom_mb zoom ────────────────────────────────────────────────
     _mask_z = np.abs(_dist) <= zoom_mb
@@ -1007,7 +1013,7 @@ def cis_distance_panel(
         _dz,
         _lz,
         c=_lz,
-        cmap=_CMAP_LOD,
+        cmap=CMAP_MAGNITUDE,
         vmin=0.0,
         vmax=_vmax_z,
         s=8,
@@ -1038,12 +1044,12 @@ def cis_distance_panel(
         bbox=dict(
             boxstyle="round,pad=0.3",
             facecolor="white",
-            edgecolor=COLOR_NEUTRAL_DARK,
+            edgecolor=INK,
             alpha=0.9,
         ),
     )
     sns.despine(ax=ax_zoom)
-    _set_font(ax_zoom)
+    apply_theme(ax_zoom)
 
     # ── panel 3: KDE — all scanned genes (background) vs eGenes (overlay) ────
     _eg_d = _dist[_is_eg & _hi]
@@ -1052,7 +1058,7 @@ def cis_distance_panel(
         sns.kdeplot(
             _dist,
             ax=ax_kd,
-            color=COLOR_CC_FALLBACK,
+            color=MUTED,
             fill=True,
             alpha=0.25,
             linewidth=1.8,
@@ -1062,7 +1068,7 @@ def cis_distance_panel(
         sns.kdeplot(
             _eg_d,
             ax=ax_kd,
-            color=COLOR_THRESHOLD,
+            color=BRAND_ACCENT,
             fill=True,
             alpha=0.35,
             linewidth=2.2,
@@ -1073,7 +1079,7 @@ def cis_distance_panel(
     ax_kd.set_title("Cis distance distribution", fontsize=12, fontweight="bold")
     ax_kd.legend(fontsize=9, frameon=False, loc="upper right")
     sns.despine(ax=ax_kd)
-    _set_font(ax_kd)
+    apply_theme(ax_kd)
 
     fig.supxlabel("Cis distance  (peak − TSS, ±Mb)", fontsize=11)
     return fig
@@ -1114,7 +1120,7 @@ def nb_vs_lmm_lod(
         y=lod_nb,
         s=point_size,
         alpha=alpha,
-        color=FOUNDER_COLORS["NODJ"],
+        color=BRAND_PRIMARY,
         linewidths=0,
         zorder=2,
         rasterized=True,
@@ -1125,7 +1131,7 @@ def nb_vs_lmm_lod(
     sns.lineplot(
         x=_diag,
         y=_diag,
-        color=COLOR_NEUTRAL_DARK,
+        color=INK,
         linewidth=0.8,
         linestyle="--",
         errorbar=None,
@@ -1139,7 +1145,7 @@ def nb_vs_lmm_lod(
     ax.set_xlabel("LMM LOD Score")
     ax.set_ylabel("NB-GLMM LOD Score")
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -1174,7 +1180,7 @@ def library_size_qc(
     sns.barplot(
         x=x,
         y=library_sizes[order],
-        color=FOUNDER_COLORS["NODJ"],
+        color=BRAND_PRIMARY,
         alpha=0.8,
         width=0.8,
         ax=ax,
@@ -1182,7 +1188,7 @@ def library_size_qc(
     )
     ax.axhline(
         float(np.median(library_sizes)),
-        color=FOUNDER_COLORS["PWKJ"],
+        color=BRAND_SECONDARY,
         linewidth=0.9,
         linestyle="--",
         label="median",
@@ -1198,7 +1204,7 @@ def library_size_qc(
     ax.set_ylim(bottom=0)
     ax.set_ylabel("Total UMI")
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -1229,7 +1235,7 @@ def loci_per_chr(
     n_arr = np.asarray(n_loci, dtype=float)
     # gradient color: lighter for fewer loci, darker for more
     norm_counts = (n_arr - n_arr.min()) / max(n_arr.max() - n_arr.min(), 1.0)
-    base = np.array(plt.matplotlib.colors.to_rgb(FOUNDER_COLORS["NODJ"]))
+    base = np.array(plt.matplotlib.colors.to_rgb(BRAND_PRIMARY))
     colors = [(1 - 0.45 * nc) * base + 0.45 * nc * np.zeros(3) for nc in norm_counts]
     ax.bar(x, n_arr, color=colors, width=0.7)
     # value labels on top of each bar
@@ -1241,7 +1247,7 @@ def loci_per_chr(
     # mean reference line
     mean_loci = float(n_arr.mean())
     ax.axhline(
-        mean_loci, color=COLOR_NEUTRAL_DARK, linewidth=0.8, linestyle="--", alpha=0.7
+        mean_loci, color=INK, linewidth=0.8, linestyle="--", alpha=0.7
     )
     ax.text(
         len(x) - 0.5,
@@ -1249,7 +1255,7 @@ def loci_per_chr(
         f"mean={mean_loci:.0f}",
         fontsize=6,
         ha="right",
-        color=COLOR_NEUTRAL_DARK,
+        color=INK,
         va="bottom",
     )
     ax.set_xticks(x)
@@ -1258,7 +1264,7 @@ def loci_per_chr(
     ax.set_ylabel("Number of loci", fontsize=10)
     ax.set_ylim(bottom=0, top=y_max * 1.12)
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -1314,13 +1320,13 @@ def perm_distribution(
             ha="center",
             va="center",
             fontsize=11,
-            color=COLOR_CC_FALLBACK,
+            color=MUTED,
         )
         return ax
 
     from matplotlib.patches import Patch as _Patch
 
-    _hist_clr = FOUNDER_COLORS["NZOJ"]
+    _hist_clr = MUTED
     sns.histplot(
         vals,
         bins=bins,
@@ -1337,7 +1343,7 @@ def perm_distribution(
     sns.lineplot(
         x=xr,
         y=pdf_vals,
-        color=FOUNDER_COLORS["NODJ"],
+        color=BRAND_PRIMARY,
         linewidth=2.0,
         errorbar=None,
         ax=ax,
@@ -1348,7 +1354,7 @@ def perm_distribution(
         # value in legend label — not repeated in info box
         ax.axvline(
             threshold,
-            color=COLOR_THRESHOLD,
+            color=BRAND_ACCENT,
             linewidth=1.4,
             linestyle=":",
             alpha=0.85,
@@ -1359,13 +1365,13 @@ def perm_distribution(
             tail_x,
             genextreme.pdf(tail_x, c, loc, scale),
             alpha=0.20,
-            color=COLOR_THRESHOLD,
+            color=BRAND_ACCENT,
         )
 
     if obs_lods is not None:
         obs_f = obs_lods[np.isfinite(obs_lods)]
         sns.rugplot(
-            x=obs_f, ax=ax, color=COLOR_CC_FALLBACK, alpha=0.5, height=0.04, zorder=0
+            x=obs_f, ax=ax, color=MUTED, alpha=0.5, height=0.04, zorder=0
         )
 
     # info box — count only; threshold value is in the legend label
@@ -1388,7 +1394,7 @@ def perm_distribution(
         bbox=dict(
             boxstyle="round,pad=0.3",
             facecolor="white",
-            edgecolor=COLOR_NEUTRAL_DARK,
+            edgecolor=INK,
             alpha=0.88,
         ),
     )
@@ -1409,7 +1415,7 @@ def perm_distribution(
         loc="upper right",
     )
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -1455,7 +1461,7 @@ def egene_lod_distribution(
     sns.histplot(
         below,
         bins=shared_bins,
-        color=FOUNDER_COLORS["B6J"],
+        color=MUTED,
         alpha=0.70,
         ax=ax,
         linewidth=0,
@@ -1464,7 +1470,7 @@ def egene_lod_distribution(
     sns.histplot(
         above,
         bins=shared_bins,
-        color=FOUNDER_COLORS["NODJ"],
+        color=BRAND_PRIMARY,
         alpha=0.85,
         ax=ax,
         linewidth=0,
@@ -1475,7 +1481,7 @@ def egene_lod_distribution(
         # value in legend label — not repeated in info box
         ax.axvline(
             threshold,
-            color=COLOR_THRESHOLD,
+            color=BRAND_ACCENT,
             linewidth=1.4,
             linestyle=":",
             alpha=0.85,
@@ -1504,14 +1510,14 @@ def egene_lod_distribution(
         bbox=dict(
             boxstyle="round,pad=0.3",
             facecolor="white",
-            edgecolor=COLOR_NEUTRAL_DARK,
+            edgecolor=INK,
             alpha=0.9,
         ),
     )
     ax.legend(fontsize=9, frameon=False, loc="upper right")
     ax.set_title("eGene LOD Score Distribution", fontsize=11)
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -1556,7 +1562,7 @@ def mediation_profile(
     sns.lineplot(
         x=pos,
         y=base,
-        color=FOUNDER_COLORS["NODJ"],
+        color=BRAND_PRIMARY,
         linewidth=1.5,
         errorbar=None,
         ax=ax,
@@ -1565,7 +1571,7 @@ def mediation_profile(
     sns.lineplot(
         x=pos,
         y=med,
-        color=FOUNDER_COLORS["NZOJ"],
+        color=MUTED,
         linewidth=1.5,
         linestyle="--",
         errorbar=None,
@@ -1579,7 +1585,7 @@ def mediation_profile(
         base,
         where=(base > med),
         alpha=0.22,
-        color=FOUNDER_COLORS["PWKJ"],
+        color=BRAND_SECONDARY,
         label="LOD Score drop",
     )
 
@@ -1596,12 +1602,12 @@ def mediation_profile(
             xytext=(6, 0),
             textcoords="offset points",
             fontsize=8,
-            color=FOUNDER_COLORS["PWKJ"],
+            color=BRAND_SECONDARY,
             va="center",
         )
         ax.axvline(
             peak_pos_drop,
-            color=FOUNDER_COLORS["PWKJ"],
+            color=BRAND_SECONDARY,
             linewidth=0.8,
             linestyle=":",
             alpha=0.6,
@@ -1620,7 +1626,7 @@ def mediation_profile(
         title += f"  chr{chrom}"
     ax.set_title(title, fontsize=11)
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -1670,12 +1676,12 @@ def ci_strip(
         norm_w = (float(hi - lo) - w_min) / w_range
         bar_color = cmap(norm_w)
         ax.plot([lo, hi], [i, i], color=bar_color, linewidth=3, solid_capstyle="round")
-        sns.scatterplot(x=[pk], y=[i], color=COLOR_NEUTRAL_DARK, s=18, zorder=3, ax=ax)
+        sns.scatterplot(x=[pk], y=[i], color=INK, s=18, zorder=3, ax=ax)
 
     # median CI width reference line — vertical line at the median peak + offset
     ax.axvline(
         float(np.nanmean(peak_mb)) + med_width / 2,
-        color=COLOR_NEUTRAL_DARK,
+        color=INK,
         linewidth=0.8,
         linestyle="--",
         alpha=0.5,
@@ -1685,7 +1691,7 @@ def ci_strip(
         n - 0.5,
         f"med width={med_width:.1f} Mb",
         fontsize=7,
-        color=COLOR_NEUTRAL_DARK,
+        color=INK,
         va="top",
     )
 
@@ -1698,7 +1704,7 @@ def ci_strip(
             genes[wi],
             fontsize=6,
             va="center",
-            color=FOUNDER_COLORS["PWKJ"],
+            color=BRAND_SECONDARY,
         )
 
     ax.set_yticks(range(n))
@@ -1718,7 +1724,7 @@ def ci_strip(
     cb.set_label("CI width (Mb)", fontsize=8)
     cb.ax.tick_params(labelsize=7)
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -1760,7 +1766,7 @@ def snp_lod_profile(
             haplo_positions[ord_h],
             haplo_lod[ord_h],
             alpha=0.12,
-            color=COLOR_CC_FALLBACK,
+            color=MUTED,
             zorder=1,
             label="haplotype LOD",
         )
@@ -1785,7 +1791,7 @@ def snp_lod_profile(
             [pk_lod],
             marker="*",
             s=120,
-            color=FOUNDER_COLORS["PWKJ"],
+            color=BRAND_SECONDARY,
             zorder=5,
         )
 
@@ -1798,7 +1804,7 @@ def snp_lod_profile(
             fontsize=8,
             va="top",
             fontweight="bold",
-            color=FOUNDER_COLORS["NODJ"],
+            color=BRAND_PRIMARY,
         )
 
     ax.set_xlabel(
@@ -1811,7 +1817,7 @@ def snp_lod_profile(
     ax.set_xlim(float(pos_s[0]), float(pos_s[-1]))
     ax.set_ylim(0, float(lod_s.max()) * 1.18)
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -1850,11 +1856,11 @@ def instability_lod_overlay(
     rop = rop_lod[ord_i]
     inst = inst_scores[ord_i]
 
-    ax.fill_between(pos, rop, alpha=0.15, color=FOUNDER_COLORS["NODJ"], zorder=1)
+    ax.fill_between(pos, rop, alpha=0.15, color=BRAND_PRIMARY, zorder=1)
     sns.lineplot(
         x=pos,
         y=rop,
-        color=FOUNDER_COLORS["NODJ"],
+        color=BRAND_PRIMARY,
         linewidth=1.2,
         errorbar=None,
         ax=ax,
@@ -1865,7 +1871,7 @@ def instability_lod_overlay(
     if threshold is not None:
         ax.axhline(
             threshold,
-            color=COLOR_THRESHOLD,
+            color=BRAND_ACCENT,
             lw=1.0,
             ls=":",
             alpha=0.85,
@@ -1890,7 +1896,7 @@ def instability_lod_overlay(
     ax2.set_ylim(0, max(float(inst.max()) * 1.3, 0.2))
 
     if peak_pos is not None:
-        ax.axvline(peak_pos, color=FOUNDER_COLORS["PWKJ"], lw=0.8, ls=":", zorder=3)
+        ax.axvline(peak_pos, color=BRAND_SECONDARY, lw=0.8, ls=":", zorder=3)
 
     if gene:
         ax.text(
@@ -1901,7 +1907,7 @@ def instability_lod_overlay(
             fontsize=8,
             va="top",
             fontweight="bold",
-            color=FOUNDER_COLORS["NODJ"],
+            color=BRAND_PRIMARY,
         )
 
     # concordance info box
@@ -1920,7 +1926,7 @@ def instability_lod_overlay(
         bbox=dict(
             boxstyle="round,pad=0.3",
             facecolor="white",
-            edgecolor=COLOR_NEUTRAL_DARK,
+            edgecolor=INK,
             alpha=0.9,
         ),
     )
@@ -1942,7 +1948,7 @@ def instability_lod_overlay(
         lines1 + lines2, labels1 + labels2, fontsize=9, frameon=False, loc="lower left"
     )
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -1980,11 +1986,11 @@ def mi_scan_overlay(
     scan = scan_lod[ord_i]
     mi = mi_lod[ord_i]
 
-    ax.fill_between(pos, scan, alpha=0.12, color=FOUNDER_COLORS["NODJ"], zorder=1)
+    ax.fill_between(pos, scan, alpha=0.12, color=BRAND_PRIMARY, zorder=1)
     sns.lineplot(
         x=pos,
         y=scan,
-        color=FOUNDER_COLORS["NODJ"],
+        color=BRAND_PRIMARY,
         linewidth=1.2,
         errorbar=None,
         ax=ax,
@@ -2007,7 +2013,7 @@ def mi_scan_overlay(
     if threshold is not None:
         ax.axhline(
             threshold,
-            color=COLOR_THRESHOLD,
+            color=BRAND_ACCENT,
             lw=1.0,
             ls=":",
             alpha=0.85,
@@ -2015,7 +2021,7 @@ def mi_scan_overlay(
         )
 
     if peak_pos is not None:
-        ax.axvline(peak_pos, color=FOUNDER_COLORS["PWKJ"], lw=0.8, ls=":", zorder=3)
+        ax.axvline(peak_pos, color=BRAND_SECONDARY, lw=0.8, ls=":", zorder=3)
 
     if gene:
         ax.text(
@@ -2026,7 +2032,7 @@ def mi_scan_overlay(
             fontsize=8,
             va="top",
             fontweight="bold",
-            color=FOUNDER_COLORS["NODJ"],
+            color=BRAND_PRIMARY,
         )
 
     delta = float(np.max(mi) - np.max(scan))
@@ -2043,7 +2049,7 @@ def mi_scan_overlay(
         bbox=dict(
             boxstyle="round,pad=0.3",
             facecolor="white",
-            edgecolor=COLOR_NEUTRAL_DARK,
+            edgecolor=INK,
             alpha=0.9,
         ),
     )
@@ -2060,7 +2066,7 @@ def mi_scan_overlay(
     # lower-left: gene text occupies upper-left; info box occupies upper-right
     ax.legend(fontsize=9, frameon=False, loc="lower left")
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -2110,7 +2116,7 @@ def perm_threshold_comparison(
     if genome_wide_thr is not None:
         ax.axhline(
             genome_wide_thr,
-            color=COLOR_NEUTRAL_DARK,
+            color=INK,
             lw=1.4,
             ls="--",
             label=f"genome-wide={genome_wide_thr:.2f}",
@@ -2124,7 +2130,7 @@ def perm_threshold_comparison(
     ax.set_ylim(bottom=0)
     ax.legend(fontsize=9, frameon=False, loc="upper right")
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -2219,7 +2225,7 @@ def ci_genomic_interval(
     cb.ax.tick_params(labelsize=7)
 
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -2284,7 +2290,7 @@ def scan_throughput(
     ax.set_ylim(bottom=0)
     ax.legend(fontsize=9, frameon=False, loc="upper right")
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -2326,11 +2332,11 @@ def mediation_summary_bar(
     ax.bar(
         x,
         mean_drop,
-        color=FOUNDER_COLORS["NODJ"],
+        color=BRAND_PRIMARY,
         alpha=0.85,
         edgecolor="none",
         yerr=yerr,
-        error_kw={"linewidth": 0.8, "ecolor": COLOR_NEUTRAL_DARK, "capsize": 3},
+        error_kw={"linewidth": 0.8, "ecolor": INK, "capsize": 3},
     )
 
     bar_max = float(np.nanmax(mean_drop)) if len(mean_drop) else 1.0
@@ -2343,7 +2349,7 @@ def mediation_summary_bar(
                 ha="center",
                 va="bottom",
                 fontsize=6,
-                color=COLOR_NEUTRAL_DARK,
+                color=INK,
             )
 
     ax.set_xticks(x)
@@ -2367,12 +2373,12 @@ def mediation_summary_bar(
             bbox=dict(
                 boxstyle="round,pad=0.3",
                 facecolor="white",
-                edgecolor=COLOR_NEUTRAL_DARK,
+                edgecolor=INK,
                 alpha=0.9,
             ),
         )
     sns.despine(ax=ax)
-    _set_font(ax)
+    apply_theme(ax)
     return ax
 
 
@@ -2412,7 +2418,7 @@ def timing_memory_summary(
     ax_t = axes[0] if has_mem else axes
 
     ax_t.barh(
-        labels, elapsed_s, color=FOUNDER_COLORS["NODJ"], alpha=0.85, edgecolor="none"
+        labels, elapsed_s, color=BRAND_PRIMARY, alpha=0.85, edgecolor="none"
     )
     ax_t.invert_yaxis()
     ax_t.set_xlabel("Elapsed (s)", fontsize=13, fontweight="bold")
@@ -2423,7 +2429,7 @@ def timing_memory_summary(
         axes[1].barh(
             labels,
             peak_heap_mb.astype(float),
-            color=FOUNDER_COLORS["NZOJ"],
+            color=MUTED,
             alpha=0.85,
             edgecolor="none",
         )
@@ -2432,7 +2438,7 @@ def timing_memory_summary(
         axes[1].tick_params(labelsize=11)
         sns.despine(ax=axes[1])
 
-    _set_font(ax_t)
+    apply_theme(ax_t)
     return fig
 
 
@@ -2443,7 +2449,7 @@ def chromosome_lod_profile(
     ax: Optional[plt.Axes] = None,
     chrom: str = "",
     threshold: Optional[float] = None,
-    color: str = FOUNDER_COLORS["NODJ"],
+    color: str = BRAND_PRIMARY,
     fill: bool = True,
     annotate_n_loci: bool = True,
 ) -> plt.Axes:
@@ -2495,7 +2501,7 @@ def chromosome_lod_profile(
             transform=ax.transAxes,
             fontsize=7,
             va="top",
-            color=COLOR_NEUTRAL_DARK,
+            color=INK,
         )
     return ax
 
@@ -2511,7 +2517,7 @@ def peak_locus_zoom(
     threshold: Optional[float] = None,
     ci_lo_mb: Optional[float] = None,
     ci_hi_mb: Optional[float] = None,
-    color: str = FOUNDER_COLORS["NODJ"],
+    color: str = BRAND_PRIMARY,
     snp_positions: Optional[np.ndarray] = None,
     snp_neg_log10p: Optional[np.ndarray] = None,
 ) -> plt.Axes:
@@ -2584,7 +2590,7 @@ def peak_locus_zoom(
             ha="center",
             va="bottom",
             fontsize=7,
-            color=FOUNDER_COLORS["PWKJ"],
+            color=BRAND_SECONDARY,
         )
     return ax
 
@@ -2623,7 +2629,7 @@ def lod_profiles_per_chr(
     pk_df: Optional[pd.DataFrame] = None,
     thr_by_chr: Optional[dict[str, Optional[float]]] = None,
     *,
-    color: str = FOUNDER_COLORS["NODJ"],
+    color: str = BRAND_PRIMARY,
     ylabel: str = "LOD Score",
     priority_genes: Optional[dict[str, str]] = None,
 ) -> dict[str, plt.Figure]:
@@ -2703,7 +2709,7 @@ def lod_profiles_per_chr(
                 sns.lineplot(
                     x=p1_data["pos_mb"].values,
                     y=p1_data["lod"].values,
-                    color=FOUNDER_COLORS["PWKJ"],
+                    color=BRAND_SECONDARY,
                     linewidth=1.2,
                     alpha=0.80,
                     errorbar=None,
@@ -2821,10 +2827,10 @@ def snp_profiles_per_chr(
                     xytext=(8, 6),
                     textcoords="offset points",
                     fontsize=10,
-                    color=FOUNDER_COLORS["PWKJ"],
+                    color=BRAND_SECONDARY,
                     arrowprops=dict(
                         arrowstyle="-",
-                        color=FOUNDER_COLORS["PWKJ"],
+                        color=BRAND_SECONDARY,
                         lw=0.8,
                     ),
                 )
@@ -3051,7 +3057,7 @@ def _gene_track(
     if len(vis) == 1 and not vis.empty:
         _g = vis.iloc[0]
         _gn = str(_g[gname_col])
-        _clr = FOUNDER_COLORS["NODJ"] if _gn == highlight_gene else COLOR_CC_FALLBACK
+        _clr = BRAND_PRIMARY if _gn == highlight_gene else MUTED
         _a = 0.95
         _str = str(_g.get("strand", "+")) if has_strand else "+"
         _y = 0.0
@@ -3081,10 +3087,10 @@ def _gene_track(
         _HCDS = 0.62  # coding exon blocks (GTF feature 'CDS'; legend label: 'exon')
 
         # Feature colors: CDS=NODJ blue, UTR=muted slate, intron/arrow=neutral
-        _CLR_CDS = FOUNDER_COLORS["NODJ"]  # #4A90C4 blue — coding exons
-        _CLR_UTR = FOUNDER_COLORS["B6J"]  # neutral grey — untranslated regions
-        _CLR_BB = COLOR_NEUTRAL_DARK  # thin intron backbone
-        _CLR_ARROW = COLOR_CC_FALLBACK  # chevron direction markers
+        _CLR_CDS = BRAND_PRIMARY  # #4A90C4 blue — coding exons
+        _CLR_UTR = MUTED  # neutral grey — untranslated regions
+        _CLR_BB = INK  # thin intron backbone
+        _CLR_ARROW = MUTED  # chevron direction markers
 
         # 1. intron backbone — thin line across full transcript
         ax.plot(
@@ -3275,7 +3281,7 @@ def _gene_track(
         if peak_pos is not None:
             ax.axvline(
                 peak_pos,
-                color=FOUNDER_COLORS["PWKJ"],
+                color=BRAND_SECONDARY,
                 lw=1.5,
                 ls="-",
                 zorder=8,
@@ -3289,14 +3295,14 @@ def _gene_track(
                     fontsize=7,
                     ha="center",
                     va="top",
-                    color=FOUNDER_COLORS["PWKJ"],
+                    color=BRAND_SECONDARY,
                     fontweight="bold",
                     clip_on=True,
                 )
         if near_tss_mb is not None:
             ax.axvline(
                 near_tss_mb,
-                color=FOUNDER_COLORS["CASTJ"],
+                color=BRAND_ACCENT,
                 lw=1.2,
                 ls="--",
                 zorder=8,
@@ -3346,7 +3352,7 @@ def _gene_track(
         gn = str(g[gname_col])
         y = float(ri)
         is_hl = gn == highlight_gene
-        clr = FOUNDER_COLORS["NODJ"] if is_hl else COLOR_CC_FALLBACK
+        clr = BRAND_PRIMARY if is_hl else MUTED
         alpha = 0.95 if is_hl else 0.55
 
         strand = "+"
@@ -3531,21 +3537,21 @@ def _gene_track(
     y_top = n_rows - 0.5
     if peak_pos is not None and lo <= peak_pos <= hi:
         ax.axvline(
-            peak_pos, color=FOUNDER_COLORS["PWKJ"], lw=1.3, ls="-", zorder=8, alpha=0.9
+            peak_pos, color=BRAND_SECONDARY, lw=1.3, ls="-", zorder=8, alpha=0.9
         )
         ax.text(
             peak_pos + span * 0.008,
             y_top,
             "peak",
             fontsize=6,
-            color=FOUNDER_COLORS["PWKJ"],
+            color=BRAND_SECONDARY,
             ha="left",
             va="top",
             fontweight="bold",
             clip_on=True,
         )
     if near_tss_mb is not None and lo <= near_tss_mb <= hi:
-        _nc = FOUNDER_COLORS["CASTJ"]
+        _nc = BRAND_ACCENT
         ax.axvline(near_tss_mb, color=_nc, lw=1.2, ls="--", zorder=8, alpha=0.9)
         ax.scatter(
             [near_tss_mb], [y_top], marker="v", s=20, color=_nc, zorder=9, clip_on=True
@@ -3766,7 +3772,7 @@ def locus_panel(
                     _span_lo,
                     _span_hi,
                     alpha=0.10,
-                    color=FOUNDER_COLORS["NODJ"],
+                    color=BRAND_PRIMARY,
                     zorder=0,
                     label="gene body",
                 )
@@ -3775,7 +3781,7 @@ def locus_panel(
         if tss_mb is not None and zoom_lo <= tss_mb <= zoom_hi:
             ax_zoom.axvline(
                 tss_mb,
-                color=COLOR_NEUTRAL_DARK,
+                color=INK,
                 linewidth=0.9,
                 linestyle="--",
                 zorder=2,
@@ -3784,7 +3790,7 @@ def locus_panel(
         if peak_pos is not None and zoom_lo <= peak_pos <= zoom_hi:
             ax_zoom.axvline(
                 peak_pos,
-                color=FOUNDER_COLORS["PWKJ"],
+                color=BRAND_SECONDARY,
                 linewidth=1.2,
                 linestyle="-",
                 zorder=2,
@@ -3801,7 +3807,7 @@ def locus_panel(
                     _yl[1] * 0.97,
                     peak_locus,
                     fontsize=6,
-                    color=FOUNDER_COLORS["PWKJ"],
+                    color=BRAND_SECONDARY,
                     ha=_pl_ha,
                     va="top",
                     rotation=90,
@@ -3811,7 +3817,7 @@ def locus_panel(
         if near_tss_mb is not None and zoom_lo <= near_tss_mb <= zoom_hi:
             ax_zoom.axvline(
                 near_tss_mb,
-                color=FOUNDER_COLORS["CASTJ"],
+                color=BRAND_ACCENT,
                 linewidth=0.9,
                 linestyle="--",
                 zorder=2,
@@ -3842,7 +3848,7 @@ def locus_panel(
     # shade the zoom window so the viewer can see which region was drilled into
     if zoom_lo is not None and zoom_hi is not None:
         ax_full.axvspan(
-            zoom_lo, zoom_hi, alpha=0.10, color=COLOR_NEUTRAL_DARK, zorder=0
+            zoom_lo, zoom_hi, alpha=0.10, color=INK, zorder=0
         )
 
     if tss_mb is not None:
@@ -3852,7 +3858,7 @@ def locus_panel(
             "",
             xy=(tss_mb + 0.3, _arrow_y),
             xytext=(tss_mb, _arrow_y),
-            arrowprops=dict(arrowstyle="->", color=COLOR_CC_FALLBACK, lw=1.0),
+            arrowprops=dict(arrowstyle="->", color=MUTED, lw=1.0),
         )
         _gene_label = highlight_gene or ""
         if _gene_label:
@@ -3862,7 +3868,7 @@ def locus_panel(
                 _gene_label,
                 fontsize=7,
                 ha="left",
-                color=COLOR_CC_FALLBACK,
+                color=MUTED,
                 va="bottom",
             )
     if not has_betas and not has_zoom and not has_track and title:
@@ -3874,7 +3880,7 @@ def locus_panel(
             fontsize=9,
             va="top",
             fontweight="bold",
-            color=FOUNDER_COLORS["NODJ"],
+            color=BRAND_PRIMARY,
         )
     sns.despine(ax=ax_full)
 
@@ -4218,7 +4224,7 @@ def genome_summary(
         gridspec_kw={"height_ratios": [3, 1]},
     )
 
-    egene_color = FOUNDER_COLORS["PWKJ"]
+    egene_color = BRAND_SECONDARY
     # colour range: 95th-percentile LOD drives vmax so bright = significant
     _fin_gs = lod_arr[np.isfinite(lod_arr)]
     _vmax_gs = float(np.percentile(_fin_gs, 95)) if len(_fin_gs) > 0 else 1.0
@@ -4249,7 +4255,7 @@ def genome_summary(
                 x[~eg_c],
                 lod_c[~eg_c],
                 c=lod_c[~eg_c],
-                cmap=_CMAP_LOD,
+                cmap=CMAP_MAGNITUDE,
                 vmin=0.0,
                 vmax=_vmax_gs,
                 s=3,
@@ -4283,7 +4289,7 @@ def genome_summary(
                 thr_val,
                 offset,
                 offset + float(pos_c.max()),
-                colors=COLOR_THRESHOLD,
+                colors=BRAND_ACCENT,
                 linewidth=1.4,
                 linestyle=":",
                 alpha=0.85,
@@ -4339,11 +4345,11 @@ def genome_summary(
             fontsize=7,
             va="top",
             ha="right",
-            color=COLOR_NEUTRAL_DARK,
+            color=INK,
             bbox=dict(
                 boxstyle="round,pad=0.3",
                 facecolor="white",
-                edgecolor=COLOR_CC_FALLBACK,
+                edgecolor=MUTED,
                 alpha=0.8,
             ),
         )
@@ -4415,8 +4421,8 @@ def genome_diagnostic(
         + [thr_by_chr[c] if thr_by_chr[c] is not None else 0.0 for c in chrs_ordered]
     )
     colors = (
-        ([COLOR_THRESHOLD] if gw_thr is not None else [])
-        + [FOUNDER_COLORS["NZOJ"]] * len(chrs_ordered)
+        ([BRAND_ACCENT] if gw_thr is not None else [])
+        + [MUTED] * len(chrs_ordered)
     )
 
     ax0 = axes[0]
@@ -4433,7 +4439,7 @@ def genome_diagnostic(
     if has_cis:
         ax1 = axes[1]
         finite = cis_dist_mb[np.isfinite(cis_dist_mb)]
-        ax1.hist(finite, bins=40, color=FOUNDER_COLORS["NODJ"])
+        ax1.hist(finite, bins=40, color=BRAND_PRIMARY)
         ax1.set_xlabel("Cis distance (Mb)", fontsize=12)
         ax1.set_ylabel("eGene count", fontsize=12)
         ax1.set_title("eGene cis-distance", fontsize=12)
@@ -4474,7 +4480,7 @@ def genome_diagnostic(
         bbox=dict(
             boxstyle="round,pad=0.5",
             facecolor="white",
-            edgecolor=COLOR_NEUTRAL_DARK,
+            edgecolor=INK,
             alpha=0.9,
         ),
     )
@@ -4515,12 +4521,12 @@ def nb_scan_recovery_summary(
         x="sim_index",
         y="true_pctile",
         hue="recovered",
-        palette={True: FOUNDER_COLORS["CASTJ"], False: COLOR_CC_FALLBACK},
+        palette={True: BRAND_ACCENT, False: MUTED},
         ax=ax,
         legend=False,
         alpha=0.85,
     )
-    ax.axhline(threshold_pctile, color=COLOR_THRESHOLD, ls=":", lw=1.4, alpha=0.85)
+    ax.axhline(threshold_pctile, color=BRAND_ACCENT, ls=":", lw=1.4, alpha=0.85)
     ax.set_xlabel("Simulation index", fontsize=12)
     ax.set_ylabel("Planted locus LOD percentile", fontsize=12)
     ax.set_ylim(0, 105)
@@ -4531,7 +4537,7 @@ def nb_scan_recovery_summary(
         data=plot_df,
         x="peak_lod",
         bins=max(5, len(sim_df) // 2),
-        color=FOUNDER_COLORS["NODJ"],
+        color=BRAND_PRIMARY,
         ax=ax2,
     )
     ax2.set_xlabel("Peak LOD (NB scan)", fontsize=12)
