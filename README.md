@@ -75,6 +75,25 @@ mosaiqtl report \
 Outputs: `null_fit.csv` · `peak_lod.csv` · `perm/perm_max_lods.csv` ·
 `allele_effects.csv` · `results/eqtl_summary.csv` · `results/genome_summary.png`
 
+### NB-GLMM vs LMM — which model?
+
+| | NB-GLMM (`--model nb`, default) | LMM (`--model lmm`) |
+|---|---|---|
+| **Input** | Raw integer pseudobulk counts | Log-normalised / continuous phenotype |
+| **Overdispersion** | Modelled explicitly (NB φ per gene) | Not modelled — inflated FP for low-expr genes |
+| **Stage 1 (`fit-null`)** | Required — estimates φ and σ² per gene | Not needed — h² estimated inside `scan` |
+| **Speed** | Slower (PQL null per gene × chr) | Faster (h² once per chr, FWL vectorised) |
+| **Use when** | snRNA-seq / ATAC-seq / any count data | Normalized bulk RNA-seq or fast exploration |
+
+```bash
+# NB-GLMM (default) — two stages
+mosaiqtl fit-null --cache cache.h5 --counts data.h5ad --metadata meta.csv --output null_fit.csv
+mosaiqtl scan     --cache cache.h5 --counts data.h5ad --metadata meta.csv --null-fit null_fit.csv --output peak_lod.csv
+
+# LMM — skip fit-null entirely
+mosaiqtl scan     --cache cache.h5 --counts data.h5ad --metadata meta.csv --null-fit null_fit.csv --output peak_lod.csv --model lmm
+```
+
 ---
 
 ## Quick start — Python API
