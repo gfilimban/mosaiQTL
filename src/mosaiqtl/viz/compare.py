@@ -86,9 +86,9 @@ def lod_scatter(
         x_label: x-axis label text (should read "... LOD score").
         y_label: y-axis label text (should read "... LOD score").
         cbar_label: Colorbar label (default ``'peak LOD score'``).
-        priority_genes: ``{gene_name: color_hex}`` dict; matching rows are
+        priority_genes: ``{gene_symbol: color_hex}`` dict; matching rows are
             overlaid as bold annotated points at higher z-order.  Requires a
-            ``'gene_name'`` column in *df*.
+            ``'gene_symbol'`` column in *df*.
         sparse_mask: Boolean Series; ``True`` rows are drawn grey (collapsed
             loci), ``False`` rows are colored by peak LOD score.
         threshold: Genome-wide FWER LOD-score threshold applied to both axes
@@ -176,9 +176,9 @@ def lod_scatter(
         color=COLOR_NEUTRAL_DARK, linewidth=0.8, linestyle="--", alpha=0.5,
     )
 
-    if priority_genes and "gene_name" in df.columns:
+    if priority_genes and "gene_symbol" in df.columns:
         for gene, color in priority_genes.items():
-            sub = df[df["gene_name"] == gene]
+            sub = df[df["gene_symbol"] == gene]
             if sub.empty:
                 continue
             for _, row in sub.iterrows():
@@ -566,7 +566,7 @@ def lod_profiles_comparison(
         axes = [axes]
 
     for ax, gene in zip(axes, genes):
-        g_a = df_a[df_a["gene_name"] == gene].sort_values("pos_mb")
+        g_a = df_a[df_a["gene_symbol"] == gene].sort_values("pos_mb")
         ax.fill_between(g_a["pos_mb"], g_a["lod"], alpha=0.15, color=color_a, zorder=1)
         sns.lineplot(
             x=g_a["pos_mb"],
@@ -578,8 +578,8 @@ def lod_profiles_comparison(
             zorder=3,
         )
 
-        if df_b is not None and gene in df_b["gene_name"].values:
-            g_b = df_b[df_b["gene_name"] == gene].sort_values("pos_mb")
+        if df_b is not None and gene in df_b["gene_symbol"].values:
+            g_b = df_b[df_b["gene_symbol"] == gene].sort_values("pos_mb")
             sns.lineplot(
                 x=g_b["pos_mb"],
                 y=g_b["lod"],

@@ -263,7 +263,7 @@ def scan(
             continue
         pi = int(np.argmax(sr.lod))
         rows.append({
-            'gene_name': gid,
+            'gene_symbol': gid,
             'gene_id': gid,
             'chr': str(sr.chr),
             'peak_locus': sr.loci[pi],
@@ -388,7 +388,7 @@ def permute(
 @click.option('--cache', required=True, type=click.Path(exists=True, path_type=Path),
               help='GenomeCache HDF5 file.')
 @click.option('--scan-result', required=True, type=click.Path(exists=True, path_type=Path),
-              help='Peak LOD CSV produced by `scan` (gene_name, chr, peak_locus columns).')
+              help='Peak LOD CSV produced by `scan` (gene_symbol, chr, peak_locus columns).')
 @click.option('--counts', required=True, type=click.Path(exists=True, path_type=Path),
               help='AnnData H5AD file with raw counts in .raw.X.')
 @click.option('--metadata', required=True, type=click.Path(exists=True, path_type=Path),
@@ -464,7 +464,7 @@ def estimate(
     rows = []
     gene_id_to_idx = {g: i for i, g in enumerate(gene_ids)}
     for _, row in peaks.iterrows():
-        gid = str(row.get('gene_name', row.get('gene_id', '')))
+        gid = str(row.get('gene_symbol', row.get('gene_id', '')))
         chrom = str(row['chr'])
         locus_id = str(row['peak_locus'])
         if gid not in gene_id_to_idx:
@@ -484,7 +484,7 @@ def estimate(
                 method=method,
             )
             effect_row: dict = {
-                'gene_name': gid,
+                'gene_symbol': gid,
                 'gene_id': gid,
                 'chr': chrom,
                 'peak_locus': locus_id,

@@ -53,7 +53,7 @@ def load_exons_from_gtf(
     Returns
     -------
     pd.DataFrame
-        Columns: ``gene_name``, ``gene_id``, ``feature``, ``start_mb``,
+        Columns: ``gene_symbol``, ``gene_id``, ``feature``, ``start_mb``,
         ``end_mb``, ``strand``.  ``feature`` is one of ``'transcript'``,
         ``'exon'``, ``'CDS'``, or ``'UTR'``.  ``transcript`` rows give the
         authoritative full-transcript backbone extent; ``exon`` rows span the
@@ -97,7 +97,7 @@ def load_exons_from_gtf(
                 continue
             attrs = _parse_attrs(fields[8])
             row = {
-                "gene_name": attrs.get("gene_name", ""),
+                "gene_symbol": attrs.get("gene_symbol", ""),
                 "gene_id": attrs.get("gene_id", ""),
                 "feature": feature,
                 "start_mb": feat_start / 1e6,
@@ -113,9 +113,9 @@ def load_exons_from_gtf(
     # This gives the renderer an authoritative full-transcript extent even when
     # the outermost exons don't reach the annotated transcript start/end.
     if rows and _transcript_rows:
-        genes_with_data = {r["gene_name"] for r in rows}
+        genes_with_data = {r["gene_symbol"] for r in rows}
         for tr in _transcript_rows:
-            if tr["gene_name"] in genes_with_data:
+            if tr["gene_symbol"] in genes_with_data:
                 rows.append(tr)
 
     if not rows:
@@ -126,14 +126,14 @@ def load_exons_from_gtf(
             end_mb,
         )
         return pd.DataFrame(
-            columns=["gene_name", "gene_id", "feature", "start_mb", "end_mb", "strand"],
+            columns=["gene_symbol", "gene_id", "feature", "start_mb", "end_mb", "strand"],
         )
 
     df = pd.DataFrame(rows)
     log.debug(
         "load_exons_from_gtf: %d records (exon/CDS/UTR/transcript) for %d genes in %s:%g–%g Mb",
         len(df),
-        df["gene_name"].nunique(),
+        df["gene_symbol"].nunique(),
         gtf_chrom,
         start_mb,
         end_mb,

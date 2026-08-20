@@ -422,8 +422,8 @@ class TestScanMultiGene:
         out = tmp_path / f"lod_chr{ch}.csv"
         assert out.exists(), f"expected {out.name}"
         df = pd.read_csv(out)
-        assert set(df.columns) >= {"gene_name", "chr", "locus", "pos_mb", "lod"}
-        assert set(df["gene_name"].unique()) == {"gene_a", "gene_b"}
+        assert set(df.columns) >= {"gene_symbol", "chr", "locus", "pos_mb", "lod"}
+        assert set(df["gene_symbol"].unique()) == {"gene_a", "gene_b"}
         assert (df["lod"] >= 0).all()
 
 

@@ -20,7 +20,7 @@ from ..utils import chr_sort_key, _build_gm_idx, _enrich_scan_df
 logger = logging.getLogger("mosaiqtl")
 
 SNP_SCAN_COLS: list[str] = [
-    "gene_name",
+    "gene_symbol",
     "snp",
     "chr",
     "pos_mb",
@@ -64,12 +64,12 @@ def imputed_snp_scan_h2lmm(
     covariates : np.ndarray (n, p) or None
     kinship_decomp : dict or None
     use_rint : bool  apply RINT to phenotype (default True)
-    phenotype_id : str  stored in 'gene_name' column of output
+    phenotype_id : str  stored in 'gene_symbol' column of output
     just_these_snps : list or None  restrict to these snp ids
 
     returns
     -------
-    pd.DataFrame  columns: gene_name, snp, chr, pos_mb, lod, p_value, f_stat,
+    pd.DataFrame  columns: gene_symbol, snp, chr, pos_mb, lod, p_value, f_stat,
                            h2, n, rss0, rss1, beta_dosage
         NOT a ScanResult — SNP scan output is per-SNP dosage effects, not
         per-founder haplotype effects.  Do not pass to _scan_to_df or any
@@ -172,7 +172,7 @@ def imputed_snp_scan_h2lmm(
 
             results.append(
                 {
-                    "gene_name": phenotype_id,
+                    "gene_symbol": phenotype_id,
                     "snp": snp_id,
                     "chr": chrom,
                     "pos_mb": snp_pos,
@@ -232,7 +232,7 @@ def imputed_snp_scan_from_db(
 
     returns
     -------
-    pd.DataFrame  columns: gene_name, snp, chr, pos_mb, lod, p_value, f_stat,
+    pd.DataFrame  columns: gene_symbol, snp, chr, pos_mb, lod, p_value, f_stat,
                            h2, n, rss0, rss1, beta_dosage
         NOT a ScanResult — use the DataFrame directly; do not pass to
         _scan_to_df or any ScanResult consumer.
@@ -243,7 +243,7 @@ def imputed_snp_scan_from_db(
     if alleles_df.empty:
         return pd.DataFrame(
             columns=[
-                "gene_name",
+                "gene_symbol",
                 "snp",
                 "chr",
                 "pos_mb",
@@ -290,7 +290,7 @@ def imputed_snp_scan_from_db(
     if not rows:
         return pd.DataFrame(
             columns=[
-                "gene_name",
+                "gene_symbol",
                 "snp",
                 "chr",
                 "pos_mb",
@@ -642,20 +642,20 @@ def snp_scan_multi_gene(
     peak_only       : bool  when True (default) output one peak-SNP row per gene;
                      when False output all SNPs on the gene's chromosome
     output_path     : Path or None  stream CSV here; None accumulates in RAM
-    gene_meta       : DataFrame keyed by 'gene_name' — extra columns joined into each row
+    gene_meta       : DataFrame keyed by 'gene_symbol' — extra columns joined into each row
 
     returns
     -------
-    peak_only=True  — gene_name, chr, snp [+ gene_meta cols], peak_mb, peak_lod, beta_dosage
-    peak_only=False — gene_name, chr [+ gene_meta cols], snp, pos_mb, lod, p_value,
+    peak_only=True  — gene_symbol, chr, snp [+ gene_meta cols], peak_mb, peak_lod, beta_dosage
+    peak_only=False — gene_symbol, chr [+ gene_meta cols], snp, pos_mb, lod, p_value,
                       f_stat, h2, n, rss0, rss1, beta_dosage
     """
     _gm_idx = _build_gm_idx(gene_meta)
     if peak_only:
-        _id_cols = ["gene_name", "chr", "snp"]
+        _id_cols = ["gene_symbol", "chr", "snp"]
         _data_cols = ["peak_mb", "peak_lod", "beta_dosage"]
     else:
-        _id_cols = ["gene_name", "chr"]
+        _id_cols = ["gene_symbol", "chr"]
         _data_cols = [
             "snp",
             "pos_mb",

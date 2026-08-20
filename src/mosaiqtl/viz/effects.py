@@ -646,7 +646,7 @@ def effects_per_chr(
     founders : list[str]
         Display-name founders matching the beta column order.
     priority_genes : dict[str, str], optional
-        {chr: gene_name} — used instead of top-peak gene when present.
+        {chr: gene_symbol} — used instead of top-peak gene when present.
 
     Returns
     -------
@@ -667,11 +667,11 @@ def effects_per_chr(
             continue
 
         gene = prio.get(c)
-        if gene and gene in eff_c["gene_name"].values:
-            row = eff_c[eff_c["gene_name"] == gene].iloc[0]
+        if gene and gene in eff_c["gene_symbol"].values:
+            row = eff_c[eff_c["gene_symbol"] == gene].iloc[0]
         else:
             row = eff_c.loc[eff_c["peak_lod"].idxmax()]
-            gene = str(row["gene_name"])
+            gene = str(row["gene_symbol"])
 
         betas = np.array([float(row[b]) for b in beta_cols])
         fig, ax = plt.subplots(figsize=(7, 3), dpi=300)
@@ -733,7 +733,7 @@ def genome_effects_grid(
 
         row = eff_c.loc[eff_c["peak_lod"].idxmax()]
         betas = np.array([float(row[b]) for b in beta_cols])
-        gene = str(row["gene_name"])
+        gene = str(row["gene_symbol"])
 
         effect_bars(betas, founders, ax=ax)
         ax.set_xlabel("")

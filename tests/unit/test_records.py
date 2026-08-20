@@ -55,7 +55,7 @@ def _provenance():
 def _qtl_result(**kwargs):
     defaults = dict(
         gene_id="ENSMUSG001",
-        gene_name="Piezo1",
+        gene_symbol="Piezo1",
         cell_type="type2x",
         data_granularity="pseudobulk",
         population="cc",

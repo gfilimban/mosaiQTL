@@ -1,0 +1,39 @@
+# GRCm39 RefSeq sequence accessions — GCF_000001635.27
+# Used for SPDI variant IDs: {accession}:{pos_bp-1}:{ref}:{alt}
+#
+# SPDI grounding: https://github.com/mikelove/igvf_spdi_demo
+# NCBI assembly:  https://www.ncbi.nlm.nih.gov/datasets/genome/GCF_000001635.27/
+#
+# Fetch and populate with:
+#   python -c "
+#   import urllib.request, json
+#   url = 'https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/GCF_000001635.27/sequence_reports?page_size=50'
+#   data = json.loads(urllib.request.urlopen(url).read())
+#   for r in data['reports']: print(r['chr_name'], r['refseq_accession'])
+#   "
+#
+# Never hardcode accession strings inline; always load from this file.
+# TODO: run fetch above and replace null values before submission.
+
+chr1:  null  # NC_000067.?
+chr2:  null  # NC_000068.?
+chr3:  null  # NC_000069.?
+chr4:  null  # NC_000070.?
+chr5:  null  # NC_000071.?
+chr6:  null  # NC_000072.?
+chr7:  null  # NC_000073.?
+chr8:  null  # NC_000074.?
+chr9:  null  # NC_000075.?
+chr10: null  # NC_000076.?
+chr11: null  # NC_000077.?
+chr12: null  # NC_000078.?
+chr13: null  # NC_000079.?
+chr14: null  # NC_000080.?
+chr15: null  # NC_000081.?
+chr16: null  # NC_000082.?
+chr17: null  # NC_000083.?
+chr18: null  # NC_000084.?
+chr19: null  # NC_000085.?
+chrX:  null  # NC_000086.?
+chrY:  null  # NC_000087.?
+chrM:  null  # NC_005089.?

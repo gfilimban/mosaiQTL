@@ -214,6 +214,52 @@ lowly-expressed genes. The NB-GLM captures count overdispersion explicitly.
 nb.py implements both stages: Stage 1 (NB-GLMM cell-level null) and Stage 2 (PQL NB-GLMM score scan with LOCO kinship integrated via Woodbury identity, all matrix ops at m×m cost). lmm.py is the Gaussian LMM validated port. See: He et al. 2021 (NEBULA, DOI:
 10.1038/s42003-021-02146-6) and Yazar et al. 2022 (DOI: 10.1126/science.abf3041).
 
+### PQL inference properties and EM decision (2026-08-20)
+
+PQL (Penalised Quasi-Likelihood) approximates the NB-GLMM marginal likelihood via a
+first-order Laplace expansion. Key inference properties for mosaiQTL:
+
+- **Bias**: O(1/μ) downward bias in τ̂ (polygenic variance) and φ̂ (overdispersion).
+  Negligible at μ ≳ 20; material at μ ≈ 3–5 (Breslow & Lin 1995, DOI: 10.2307/2291224).
+- **Type I error**: Under-estimated τ → anti-conservative score test for low-count genes.
+  Permutation/GEV recalibrates the per-gene null and absorbs a constant multiplicative
+  bias — it does not absorb within-gene locus-level heterogeneity.
+- **LOD interpretation**: A quasi-LR on the working response, not a true NB LRT.
+  Valid for ranking and permutation tests; absolute value is not an exact evidence ratio
+  for genes with μ < ~10.
+- **Founder effects**: Biased φ̂ inflates effect magnitudes and narrows SEs at the peak
+  locus. Effect *directions* are robust; do not report quantitative magnitudes for μ < 10.
+
+**EM algorithm decision — not implemented at scan layer:**
+
+EM for the full NB-GLMM likelihood requires an intractable E-step (no closed form for
+NB × Gaussian RE); the alternatives (MCEM, AGQ) are 100–1000× slower than PQL.
+For Stage 2 τ/h² estimation, Brent's method on the 1-D log-τ surface (~15 evals)
+strictly dominates EM (~50–500 linearly-convergent iterations). See GOALS.md for
+the SPEED-08 design notes.
+
+**Narrow EM win — Stage 1 φ prior hyperparameters:**
+
+EM for the empirical Bayes φ prior hyperparameters in `_wleb_shrink` (`nb.py`) is
+cheap and appropriate: it runs once per cell type over all genes, not per gene per
+chromosome. Replaces fixed `df_prior=10.0` with an estimated prior. Planned under
+flag `phi_prior='em'`; not yet implemented.
+
+**Better accuracy levers in priority order:**
+
+1. Low-count pre-filter: require mean pseudobulk ≥ 5 and non-zero in ≥ 50% of
+   strains before eGene calling. Below this threshold neither PQL nor EM is reliable.
+2. Phase 4 (`validate_phase4.py`) — measure PQL bias vs glmmTMB/AGQ reference on a
+   low-expression stratum. The bias number does not yet exist (Phase 4 unmeasured).
+3. Two-tier design: approximate PQL for genome-wide screening → Laplace-2 or AGQ
+   refit at the shortlist of significant peak loci only for biologically reported
+   founder effect sizes and CIs.
+4. Storey q-value (SWE-09) — changes eGene counts more than any PQL → EM upgrade.
+   π₀ estimation is the larger lever for FDR control.
+
+Refs: Breslow & Lin 1995 (DOI: 10.2307/2291224); Lin & Breslow 1996
+(DOI: 10.1080/01621459.1996.10476938); Chen et al. 2016 (PQL + Woodbury).
+
 ### Why LOCO kinship?
 The LOCO (leave-one-chromosome-out) kinship matrix is recomputed excluding markers
 on the chromosome being tested. This prevents the QTL signal from inflating the
