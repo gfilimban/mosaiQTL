@@ -129,7 +129,7 @@ _LOCUS_COLS: list[str] = [
     'ref',              # B6J allele = GRCm39 reference allele (VCF convention)
     'effect_allele',    # non-ref allele for this haplotype group contrast
     'other_allele',     # complement of effect_allele
-    'hard_call_dosage', # constant 'F' — scan uses haplotype probabilities, not hard calls
+    'hard_call_dosage',  # constant 'F' — scan uses haplotype probs, not hard calls
     'ref_founders',     # comma-joined founders carrying ref, e.g. 'AJ,B6J,129S1J,NODJ'
     'alt_founders',     # comma-joined founders carrying effect_allele
     'af',               # mean haplotype prob for alt_founders across CC strains
@@ -141,7 +141,7 @@ _LOCUS_COLS: list[str] = [
     'sd_phenotype',     # sqrt(rss0 / (n_valid - 1)) — SD after covariate regression
     'n_sample',         # n_valid from null model fit
     'lod',              # joint LOD across all 8 founders (7 df score test)
-    'h2_null_chr',      # LOCO null heritability (per-chromosome constant; same for all loci on this chromosome)
+    'h2_null_chr',      # LOCO null heritability (per-chromosome constant)
     'pval_nominal',     # chi² p-value (7 df)
     'log10p_nominal',   # -log10(pval_nominal)
     'cis_dist_mb',      # signed distance TSS → locus (Mb); only Mb column in outputs
@@ -160,7 +160,7 @@ _SIG_COLS: list[str] = [
     'pval_perm',    # gene-level permutation p-value
     'fdr',          # BH FDR across all scanned genes (SWE-09: Storey q-value planned)
     'fdr_method',   # constant 'BH'
-    'significance', # 'T' if passed LOD threshold AND fdr < 0.05
+    'significance',  # 'T' if passed LOD threshold AND fdr < 0.05
 ]
 
 # Run-level metadata — constant for the whole file; peak/submission rows only
@@ -199,7 +199,7 @@ EQTL_FINEMAPPING_COLS: list[str] = (
         'ci_lo_bp',         # LOD-drop CI lower bound (bp) — haplotype scan window context
         'ci_hi_bp',         # LOD-drop CI upper bound (bp)
         'hap_peak_pos',     # GigaMUGA peak position (bp) — back-link to _eqtl_peak.csv
-        'hap_peak_variant', # SPDI of GigaMUGA peak
+        'hap_peak_variant',  # SPDI of GigaMUGA peak
         'hap_peak_lod',     # LOD at GigaMUGA peak
     ]
 )
