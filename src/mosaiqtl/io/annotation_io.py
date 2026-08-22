@@ -126,7 +126,14 @@ def load_exons_from_gtf(
             end_mb,
         )
         return pd.DataFrame(
-            columns=["gene_symbol", "gene_id", "feature", "start_mb", "end_mb", "strand"],
+            columns=[
+                "gene_symbol",
+                "gene_id",
+                "feature",
+                "start_mb",
+                "end_mb",
+                "strand",
+            ],
         )
 
     df = pd.DataFrame(rows)

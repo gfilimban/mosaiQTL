@@ -28,11 +28,13 @@ from ..genotype.founders import (
 from ._theme import WASH
 
 # Default comparison colors — Python (series A) vs R/miQTL (series B).
-_COLOR_A: str = FOUNDER_COLORS["NODJ"]   # series A: blue (#4F6EAF)
-_COLOR_B: str = FOUNDER_COLORS["PWKJ"]   # series B: red  (#D83026)
+_COLOR_A: str = FOUNDER_COLORS["NODJ"]  # series A: blue (#4F6EAF)
+_COLOR_B: str = FOUNDER_COLORS["PWKJ"]  # series B: red  (#D83026)
 
-_CMAP = "crest"              # sequential colormap for LOD-magnitude scatter
-_CMAP_DEVIATION = "YlOrRd"  # sequential colormap for unsigned deviation (allele effects)
+_CMAP = "crest"  # sequential colormap for LOD-magnitude scatter
+_CMAP_DEVIATION = (
+    "YlOrRd"  # sequential colormap for unsigned deviation (allele effects)
+)
 
 
 def _set_style() -> None:
@@ -172,8 +174,12 @@ def lod_scatter(
     g.ax_joint.set_xlim(0, _lim)
     g.ax_joint.set_ylim(0, _lim)
     g.ax_joint.plot(
-        [0, _lim], [0, _lim],
-        color=COLOR_NEUTRAL_DARK, linewidth=0.8, linestyle="--", alpha=0.5,
+        [0, _lim],
+        [0, _lim],
+        color=COLOR_NEUTRAL_DARK,
+        linewidth=0.8,
+        linestyle="--",
+        alpha=0.5,
     )
 
     if priority_genes and "gene_symbol" in df.columns:
@@ -466,8 +472,14 @@ def allele_effects_comparison(
 
     dev = np.abs(a_m - 2.0 * b_m)
     sc = ax.scatter(
-        b_m, a_m, c=dev, cmap=_CMAP_DEVIATION,
-        alpha=0.4, s=5, linewidths=0, rasterized=True,
+        b_m,
+        a_m,
+        c=dev,
+        cmap=_CMAP_DEVIATION,
+        alpha=0.4,
+        s=5,
+        linewidths=0,
+        rasterized=True,
     )
     cbar = ax.get_figure().colorbar(sc, ax=ax, shrink=0.7, pad=0.02)
     cbar.set_label(f"|{label_a.split()[0]} − 2×{label_b.split()[0]}|", fontsize=9)
@@ -1303,8 +1315,14 @@ def nb_vs_lmm_comparison(
     mask = np.isfinite(nb_c) & np.isfinite(lm_c)
 
     sns.scatterplot(
-        x=lm_c[mask], y=nb_c[mask], color=color_nb,
-        s=5, alpha=0.4, linewidths=0, rasterized=True, ax=ax,
+        x=lm_c[mask],
+        y=nb_c[mask],
+        color=color_nb,
+        s=5,
+        alpha=0.4,
+        linewidths=0,
+        rasterized=True,
+        ax=ax,
     )
 
     lim = max(lm_c[mask].max(), nb_c[mask].max()) * 1.05

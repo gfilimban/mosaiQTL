@@ -72,7 +72,7 @@ def pos_merge(
 def scan_result_to_df(
     scan: "ScanResult",
     gene_id: str,
-    gene_symbol: str = '',
+    gene_symbol: str = "",
 ) -> pd.DataFrame:
     """Convert a ScanResult to a per-locus DataFrame.
 
@@ -93,11 +93,11 @@ def scan_result_to_df(
     """
     return pd.DataFrame(
         {
-            'gene_id': gene_id,
-            'gene_symbol': gene_symbol,
-            'chr': np.asarray(scan.chromosomes),
-            'locus': np.asarray(scan.locus_ids),
-            'pos_mb': np.asarray(scan.positions),
-            'lod': np.asarray(scan.lod),
+            "gene_id": gene_id,
+            "gene_symbol": gene_symbol,
+            "chr": np.asarray(scan.chromosomes),
+            "locus": np.asarray(scan.locus_ids),
+            "pos_mb": np.asarray(scan.positions),
+            "lod": np.asarray(scan.lod),
         }
     )

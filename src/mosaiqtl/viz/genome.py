@@ -11,10 +11,19 @@ import pandas as pd
 import seaborn as sns
 
 from ._theme import (
-    BRAND_PRIMARY, BRAND_SECONDARY, BRAND_ACCENT, INK, MUTED,
-    CHR_BANDS, CMAP_MAGNITUDE, CMAP_SIGNED as _CMAP_EFFECT,
-    KW_THRESHOLD, KW_REFERENCE, KW_DOT_MUTED,
-    apply_theme, info_box,
+    BRAND_PRIMARY,
+    BRAND_SECONDARY,
+    BRAND_ACCENT,
+    INK,
+    MUTED,
+    CHR_BANDS,
+    CMAP_MAGNITUDE,
+    CMAP_SIGNED as _CMAP_EFFECT,
+    KW_THRESHOLD,
+    KW_REFERENCE,
+    KW_DOT_MUTED,
+    apply_theme,
+    info_box,
 )
 from .effects import effect_bars as _effect_bars
 
@@ -127,9 +136,7 @@ def lod_profile(
     if threshold is not None:
         ax.axhline(threshold, **KW_THRESHOLD)
     if tss_mb is not None:
-        ax.axvline(
-            tss_mb, color=MUTED, lw=0.9, ls="--", zorder=1, label="TSS"
-        )
+        ax.axvline(tss_mb, color=MUTED, lw=0.9, ls="--", zorder=1, label="TSS")
     if peak_pos is not None:
         ax.axvline(
             peak_pos,
@@ -240,7 +247,7 @@ def manhattan(
     xlabels: list[str] = []
     # collect (x, lod, chrom) for top-gene labeling
     all_pts: list[tuple[float, float, str]] = []
-    _hi_xspan: 'tuple[float, float] | None' = None
+    _hi_xspan: "tuple[float, float] | None" = None
 
     for ci, chrom in enumerate(chroms):
         pos, lod = scans[chrom]
@@ -256,22 +263,31 @@ def manhattan(
             _lo = low_expr_mask[chrom][order]
             if _lo.any():
                 sns.scatterplot(
-                    x=x[_lo], y=lod[_lo],
+                    x=x[_lo],
+                    y=lod[_lo],
                     **KW_DOT_MUTED,
                     ax=ax,
                 )
             if (~_lo).any():
                 sns.scatterplot(
-                    x=x[~_lo], y=lod[~_lo],
+                    x=x[~_lo],
+                    y=lod[~_lo],
                     color=chr_color,
-                    s=5, alpha=0.4, linewidths=0, rasterized=True,
+                    s=5,
+                    alpha=0.4,
+                    linewidths=0,
+                    rasterized=True,
                     ax=ax,
                 )
         else:
             sns.scatterplot(
-                x=x, y=lod,
+                x=x,
+                y=lod,
                 color=chr_color,
-                s=5, alpha=0.4, linewidths=0, rasterized=True,
+                s=5,
+                alpha=0.4,
+                linewidths=0,
+                rasterized=True,
                 ax=ax,
             )
         # eGene overlay: accent orange, larger — marks FDR-significant genes
@@ -280,9 +296,12 @@ def manhattan(
             eorder = np.argsort(epos)
             ex = epos[eorder] + offset
             sns.scatterplot(
-                x=ex, y=elod[eorder],
+                x=ex,
+                y=elod[eorder],
                 color=BRAND_ACCENT,
-                s=18, linewidths=0, rasterized=True,
+                s=18,
+                linewidths=0,
+                rasterized=True,
                 ax=ax,
             )
         mid = float(offset + (float(pos[-1]) - float(pos[0])) / 2)
@@ -293,7 +312,9 @@ def manhattan(
         offset += float(pos[-1]) + _CHR_GAP_MB
 
     if _hi_xspan is not None:
-        ax.axvspan(_hi_xspan[0], _hi_xspan[1], alpha=0.06, color=highlight_color, zorder=0)
+        ax.axvspan(
+            _hi_xspan[0], _hi_xspan[1], alpha=0.06, color=highlight_color, zorder=0
+        )
 
     ax.set_xlim(0, offset)
     ax.set_ylim(0, None)
@@ -535,7 +556,7 @@ def snp_manhattan(
     offset = 0.0
     xticks: list[float] = []
     xlabels: list[str] = []
-    _hi_xspan_p: 'tuple[float, float] | None' = None
+    _hi_xspan_p: "tuple[float, float] | None" = None
 
     for ci, chrom in enumerate(chroms):
         mask = snp_chroms == chrom
@@ -545,9 +566,13 @@ def snp_manhattan(
         if chrom == highlight_chrom:
             _hi_xspan_p = (float(x[0]), float(x[-1]))
         sns.scatterplot(
-            x=x, y=y,
+            x=x,
+            y=y,
             color=CHR_BANDS[ci % 2],
-            s=point_size, alpha=0.4, linewidths=0, rasterized=True,
+            s=point_size,
+            alpha=0.4,
+            linewidths=0,
+            rasterized=True,
             ax=ax,
         )
         xticks.append(float(offset + (pos.max() - pos.min()) / 2))
@@ -555,7 +580,9 @@ def snp_manhattan(
         offset += float(pos.max()) + _CHR_GAP_MB
 
     if _hi_xspan_p is not None:
-        ax.axvspan(_hi_xspan_p[0], _hi_xspan_p[1], alpha=0.06, color=highlight_color, zorder=0)
+        ax.axvspan(
+            _hi_xspan_p[0], _hi_xspan_p[1], alpha=0.06, color=highlight_color, zorder=0
+        )
 
     ax.set_xlim(0, offset)
     ax.set_ylim(0, None)
@@ -664,9 +691,7 @@ def lod_histogram(
     if ax is None:
         _, ax = plt.subplots(figsize=(5, 3), dpi=300)
 
-    sns.histplot(
-        lod, bins=80, color=BRAND_PRIMARY, alpha=0.7, ax=ax, linewidth=0
-    )
+    sns.histplot(lod, bins=80, color=BRAND_PRIMARY, alpha=0.7, ax=ax, linewidth=0)
     if threshold is not None:
         ax.axvline(
             threshold,
@@ -731,7 +756,7 @@ def gene_manhattan(
     xticks: list[float] = []
     xlabels: list[str] = []
 
-    _hi_xspan_g: 'tuple[float, float] | None' = None
+    _hi_xspan_g: "tuple[float, float] | None" = None
 
     for ci, chrom in enumerate(chroms):
         mask = gene_chroms == chrom
@@ -741,9 +766,13 @@ def gene_manhattan(
         if chrom == highlight_chrom:
             _hi_xspan_g = (float(x[0]), float(x[-1]))
         sns.scatterplot(
-            x=x, y=y,
+            x=x,
+            y=y,
             color=CHR_BANDS[ci % 2],
-            s=point_size, alpha=0.4, linewidths=0, rasterized=True,
+            s=point_size,
+            alpha=0.4,
+            linewidths=0,
+            rasterized=True,
             ax=ax,
         )
         xticks.append(float(offset + (pos.max() - pos.min()) / 2))
@@ -752,7 +781,11 @@ def gene_manhattan(
 
     if _hi_xspan_g is not None:
         ax.axvspan(
-            _hi_xspan_g[0], _hi_xspan_g[1], alpha=0.06, color=highlight_color, zorder=0,
+            _hi_xspan_g[0],
+            _hi_xspan_g[1],
+            alpha=0.06,
+            color=highlight_color,
+            zorder=0,
         )
 
     ax.set_xlim(0, offset)
@@ -842,24 +875,18 @@ def cis_distance_histogram(
     # KDE overlay (neutral dark line, no fill)
     if _n > 4:
         _kde_ax = ax.twinx()
-        sns.kdeplot(
-            _dist, ax=_kde_ax, color=INK, linewidth=1.6, alpha=0.6
-        )
+        sns.kdeplot(_dist, ax=_kde_ax, color=INK, linewidth=1.6, alpha=0.6)
         _kde_ax.set_ylabel("")
         _kde_ax.set_yticks([])
         sns.despine(ax=_kde_ax, left=True, right=True, top=True, bottom=True)
 
     # ±proximal_mb shaded band
-    ax.axvspan(
-        -proximal_mb, proximal_mb, alpha=0.07, color=BRAND_PRIMARY, zorder=0
-    )
+    ax.axvspan(-proximal_mb, proximal_mb, alpha=0.07, color=BRAND_PRIMARY, zorder=0)
 
     # reference and boundary lines
     ax.axvline(0, color=INK, lw=1.2, zorder=3)
     for _s in (-1, 1):
-        ax.axvline(
-            _s * cis_window_mb, color=MUTED, lw=0.9, ls=":", zorder=1
-        )
+        ax.axvline(_s * cis_window_mb, color=MUTED, lw=0.9, ls=":", zorder=1)
 
     # directional count annotations just above x-axis
     _ymax = max((_cnt_up + _cnt_dn).max(), 1) if _n > 0 else 1
@@ -888,7 +915,7 @@ def cis_distance_histogram(
         ax,
         f"n = {_n:,}\nmedian |d| = {_med:.2f} Mb\n"
         f"±{proximal_mb:.0f} Mb: {_prox:.0f}%",
-        corner='tr',
+        corner="tr",
         fontsize=8,
     )
 
@@ -1246,9 +1273,7 @@ def loci_per_chr(
         )
     # mean reference line
     mean_loci = float(n_arr.mean())
-    ax.axhline(
-        mean_loci, color=INK, linewidth=0.8, linestyle="--", alpha=0.7
-    )
+    ax.axhline(mean_loci, color=INK, linewidth=0.8, linestyle="--", alpha=0.7)
     ax.text(
         len(x) - 0.5,
         mean_loci + y_max * 0.01,
@@ -1370,9 +1395,7 @@ def perm_distribution(
 
     if obs_lods is not None:
         obs_f = obs_lods[np.isfinite(obs_lods)]
-        sns.rugplot(
-            x=obs_f, ax=ax, color=MUTED, alpha=0.5, height=0.04, zorder=0
-        )
+        sns.rugplot(x=obs_f, ax=ax, color=MUTED, alpha=0.5, height=0.04, zorder=0)
 
     # info box — count only; threshold value is in the legend label
     _parts: list[str] = [f"n_perms = {len(vals):,}"]
@@ -2417,9 +2440,7 @@ def timing_memory_summary(
     )
     ax_t = axes[0] if has_mem else axes
 
-    ax_t.barh(
-        labels, elapsed_s, color=BRAND_PRIMARY, alpha=0.85, edgecolor="none"
-    )
+    ax_t.barh(labels, elapsed_s, color=BRAND_PRIMARY, alpha=0.85, edgecolor="none")
     ax_t.invert_yaxis()
     ax_t.set_xlabel("Elapsed (s)", fontsize=13, fontweight="bold")
     ax_t.tick_params(labelsize=11)
@@ -3536,9 +3557,7 @@ def _gene_track(
     # ── vertical annotations ──────────────────────────────────────────────────
     y_top = n_rows - 0.5
     if peak_pos is not None and lo <= peak_pos <= hi:
-        ax.axvline(
-            peak_pos, color=BRAND_SECONDARY, lw=1.3, ls="-", zorder=8, alpha=0.9
-        )
+        ax.axvline(peak_pos, color=BRAND_SECONDARY, lw=1.3, ls="-", zorder=8, alpha=0.9)
         ax.text(
             peak_pos + span * 0.008,
             y_top,
@@ -3847,9 +3866,7 @@ def locus_panel(
 
     # shade the zoom window so the viewer can see which region was drilled into
     if zoom_lo is not None and zoom_hi is not None:
-        ax_full.axvspan(
-            zoom_lo, zoom_hi, alpha=0.10, color=INK, zorder=0
-        )
+        ax_full.axvspan(zoom_lo, zoom_hi, alpha=0.10, color=INK, zorder=0)
 
     if tss_mb is not None:
         _ylim2 = ax_full.get_ylim()
@@ -4416,13 +4433,11 @@ def genome_diagnostic(
     chrs_ordered += sorted(set(thr_by_chr) - set(_CHR_ORDER) - {"genome_wide"})
 
     labels = (["genome\nwide"] if gw_thr is not None else []) + chrs_ordered
-    values = (
-        ([gw_thr if gw_thr is not None else 0.0] if gw_thr is not None else [])
-        + [thr_by_chr[c] if thr_by_chr[c] is not None else 0.0 for c in chrs_ordered]
-    )
-    colors = (
-        ([BRAND_ACCENT] if gw_thr is not None else [])
-        + [MUTED] * len(chrs_ordered)
+    values = ([gw_thr if gw_thr is not None else 0.0] if gw_thr is not None else []) + [
+        thr_by_chr[c] if thr_by_chr[c] is not None else 0.0 for c in chrs_ordered
+    ]
+    colors = ([BRAND_ACCENT] if gw_thr is not None else []) + [MUTED] * len(
+        chrs_ordered
     )
 
     ax0 = axes[0]

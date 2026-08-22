@@ -143,7 +143,9 @@ def build_ct_palette(cell_types: list[str]) -> dict[str, str]:
         Mapping from cell-type label to hex color string.
     """
     sorted_cts = sorted(cell_types)
-    colors = [c for c in sns.color_palette('tab10', n_colors=max(len(sorted_cts), 1)).as_hex()]
+    colors = [
+        c for c in sns.color_palette("tab10", n_colors=max(len(sorted_cts), 1)).as_hex()
+    ]
     return {ct: colors[i % len(colors)] for i, ct in enumerate(sorted_cts)}
 
 
@@ -590,16 +592,8 @@ def ct_lod_profile_overlay(
             lod_a: np.ndarray = trace_a[1] if trace_a is not None else np.array([])
             pos_b: Optional[np.ndarray] = trace_b[0] if trace_b is not None else None
             lod_b: Optional[np.ndarray] = trace_b[1] if trace_b is not None else None
-            color_a = (
-                INK
-                if label_a == "Whole"
-                else palette.get(label_a, MUTED)
-            )
-            color_b = (
-                palette.get(label_b, MUTED)
-                if label_b
-                else MUTED
-            )
+            color_a = INK if label_a == "Whole" else palette.get(label_a, MUTED)
+            color_b = palette.get(label_b, MUTED) if label_b else MUTED
             _cmp_lod_overlay(
                 pos_a=pos_a,
                 lod_a=lod_a,

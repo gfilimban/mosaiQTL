@@ -340,6 +340,7 @@ class TestLoadFounderAlleles:
         out = self._build(tmp_path)
         df = load_founder_alleles(out)
         import pandas as pd
+
         for f in _FOUNDERS_4:
             assert pd.api.types.is_string_dtype(df[f])
 

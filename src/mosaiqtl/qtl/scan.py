@@ -277,9 +277,10 @@ def scan_h2lmm(
             # an eigenvector matrix is not the eigendecomp of the submatrix.
             # Correct path: reconstruct K_sub and re-decompose.
             logger.warning(
-                'scan_h2lmm: %s — phenotype has %d NaN values; '
-                'caller should pass a clean phenotype vector',
-                phenotype_id, int((~valid).sum()),
+                "scan_h2lmm: %s — phenotype has %d NaN values; "
+                "caller should pass a clean phenotype vector",
+                phenotype_id,
+                int((~valid).sum()),
             )
             _K_full = (_evc * _ev) @ _evc.T
             _K_sub = _K_full[np.ix_(valid, valid)]
@@ -326,7 +327,8 @@ def scan_h2lmm(
 
     if not all_lod:
         logger.warning(
-            'scan_h2lmm: %s — no loci matched scan window; returning empty', phenotype_id
+            "scan_h2lmm: %s — no loci matched scan window; returning empty",
+            phenotype_id,
         )
         return ScanResult(
             locus_ids=np.array([], dtype=str),
@@ -336,10 +338,10 @@ def scan_h2lmm(
             p_value=np.array([], dtype=float),
             betas=np.zeros((0, x.shape[1] if x.ndim > 1 else 1), dtype=float),
             peak_lod=0.0,
-            peak_locus_id='',
+            peak_locus_id="",
             peak_position_mb=np.nan,
-            peak_chr='',
-            model='lmm',
+            peak_chr="",
+            model="lmm",
         )
     _lod_cat = np.concatenate(all_lod)
     _peak_idx = int(np.argmax(_lod_cat))

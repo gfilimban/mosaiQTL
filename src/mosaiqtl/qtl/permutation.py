@@ -553,9 +553,9 @@ def get_gev_thresholds(
 
 
 def load_per_chr_thresholds(
-    perm_dir: 'Path',
+    perm_dir: "Path",
     percentile: float = 0.95,
-) -> 'dict[str, float | None]':
+) -> "dict[str, float | None]":
     """Load per-chromosome null distributions and return GEV thresholds.
 
     Reads ``perm_max_lods_chr{chrom}.csv`` files written by
@@ -582,11 +582,11 @@ def load_per_chr_thresholds(
     from pathlib import Path as _Path
 
     perm_dir = _Path(perm_dir)
-    result: 'dict[str, float | None]' = {}
-    for pf in sorted(perm_dir.glob('perm_max_lods_chr*.csv')):
-        chrom = pf.stem.replace('perm_max_lods_chr', '')
+    result: "dict[str, float | None]" = {}
+    for pf in sorted(perm_dir.glob("perm_max_lods_chr*.csv")):
+        chrom = pf.stem.replace("perm_max_lods_chr", "")
         try:
-            nulls = pd.read_csv(pf)['max_lod'].values
+            nulls = pd.read_csv(pf)["max_lod"].values
             thr, _ = get_gev_thresholds(nulls, percentile=percentile)
             result[chrom] = thr
         except Exception:
