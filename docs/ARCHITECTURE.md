@@ -214,6 +214,52 @@ lowly-expressed genes. The NB-GLM captures count overdispersion explicitly.
 nb.py implements both stages: Stage 1 (NB-GLMM cell-level null) and Stage 2 (PQL NB-GLMM score scan with LOCO kinship integrated via Woodbury identity, all matrix ops at m×m cost). lmm.py is the Gaussian LMM validated port. See: He et al. 2021 (NEBULA, DOI:
 10.1038/s42003-021-02146-6) and Yazar et al. 2022 (DOI: 10.1126/science.abf3041).
 
+### PQL inference properties and EM decision (2026-08-20)
+
+PQL (Penalised Quasi-Likelihood) approximates the NB-GLMM marginal likelihood via a
+first-order Laplace expansion. Key inference properties for mosaiQTL:
+
+- **Bias**: O(1/μ) downward bias in τ̂ (polygenic variance) and φ̂ (overdispersion).
+  Negligible at μ ≳ 20; material at μ ≈ 3–5 (Breslow & Lin 1995, DOI: 10.2307/2291224).
+- **Type I error**: Under-estimated τ → anti-conservative score test for low-count genes.
+  Permutation/GEV recalibrates the per-gene null and absorbs a constant multiplicative
+  bias — it does not absorb within-gene locus-level heterogeneity.
+- **LOD interpretation**: A quasi-LR on the working response, not a true NB LRT.
+  Valid for ranking and permutation tests; absolute value is not an exact evidence ratio
+  for genes with μ < ~10.
+- **Founder effects**: Biased φ̂ inflates effect magnitudes and narrows SEs at the peak
+  locus. Effect *directions* are robust; do not report quantitative magnitudes for μ < 10.
+
+**EM algorithm decision — not implemented at scan layer:**
+
+EM for the full NB-GLMM likelihood requires an intractable E-step (no closed form for
+NB × Gaussian RE); the alternatives (MCEM, AGQ) are 100–1000× slower than PQL.
+For Stage 2 τ/h² estimation, Brent's method on the 1-D log-τ surface (~15 evals)
+strictly dominates EM (~50–500 linearly-convergent iterations). See GOALS.md for
+the SPEED-08 design notes.
+
+**Narrow EM win — Stage 1 φ prior hyperparameters:**
+
+EM for the empirical Bayes φ prior hyperparameters in `_wleb_shrink` (`nb.py`) is
+cheap and appropriate: it runs once per cell type over all genes, not per gene per
+chromosome. Replaces fixed `df_prior=10.0` with an estimated prior. Planned under
+flag `phi_prior='em'`; not yet implemented.
+
+**Better accuracy levers in priority order:**
+
+1. Low-count pre-filter: require mean pseudobulk ≥ 5 and non-zero in ≥ 50% of
+   strains before eGene calling. Below this threshold neither PQL nor EM is reliable.
+2. Phase 4 (`validate_phase4.py`) — measure PQL bias vs glmmTMB/AGQ reference on a
+   low-expression stratum. The bias number does not yet exist (Phase 4 unmeasured).
+3. Two-tier design: approximate PQL for genome-wide screening → Laplace-2 or AGQ
+   refit at the shortlist of significant peak loci only for biologically reported
+   founder effect sizes and CIs.
+4. Storey q-value (SWE-09) — changes eGene counts more than any PQL → EM upgrade.
+   π₀ estimation is the larger lever for FDR control.
+
+Refs: Breslow & Lin 1995 (DOI: 10.2307/2291224); Lin & Breslow 1996
+(DOI: 10.1080/01621459.1996.10476938); Chen et al. 2016 (PQL + Woodbury).
+
 ### Why LOCO kinship?
 The LOCO (leave-one-chromosome-out) kinship matrix is recomputed excluding markers
 on the chromosome being tested. This prevents the QTL signal from inflating the
@@ -366,6 +412,147 @@ $$\text{LOD}_\ell = \frac{n}{2} \log_{10}\!\left(\frac{\text{RSS}_0}{\text{RSS}_
 carrying founder $f$'s haplotype express ~0.5 SDs *below* the population mean at that locus
 (roughly the 31st percentile). To report biological effect sizes, re-run `get_allele_effects`
 on the un-RINTed log-normalized phenotype — betas will then be in log₂ CPM units.
+
+---
+
+## 5c. GENOME CACHE BUILD PIPELINE
+
+The genome cache (`cache.h5`) is built once per population and reused across all scans.
+The pipeline has four layers, each producing an intermediate consumed by the next.
+
+### Layer 0 — Raw sources
+
+Two independent raw sources, both required:
+
+**GigaMUGA array annotation (UWisc v4)**  
+Source: [Dryad doi:10.5061/dryad.689d2](https://datadryad.org/dataset/doi:10.5061/dryad.689d2)
+and [kbroman/MUGAarrays UWisc v4](https://github.com/kbroman/MUGAarrays/blob/main/UWisc/gm_uwisc_v4.csv)
+
+| File | Columns | Content |
+|---|---|---|
+| `GM_info.csv` | `marker, chr, Mbp_mm10, cM_cox, cM_g2f1, tier, Mbp_GRCm39, cM_cox_v3` | 112,913 marker positions (mm10 + GRCm39 liftover), Cox genetic map v3, probe tier |
+| `GM_allelecodes.csv` | `marker, chr, A, B` | Nucleotide identity of each allele code per marker |
+| `gmap/GM_gmap{chr}.csv` | `marker, chr, pos` | Per-chromosome genetic map (cM, GRCm39) |
+| `pmap/GM_pmap{chr}.csv` | `marker, chr, pos` | Per-chromosome physical map (Mb, GRCm39) |
+| `foundergeno/GM_foundergeno{chr}.csv` | `marker, A, B, C, D, E, F, G, H` | 8-founder genotypes in A/B/- encoding per chromosome |
+
+The Dryad dataset (`refsamples.csv.zip`) contains GigaMUGA genotype calls for ~500 reference
+samples across laboratory inbred strains, RI lines, outbred stocks, and wild mice — including
+the 8 CC founders and CC strains. The `GM_info.csv` and `foundergeno/` files above are derived
+from this dataset filtered to the relevant samples.
+
+**CC strain consensus genotypes**  
+Source: UNC Systems Genetics Core / CC Consortium (UNC CGD)  
+33 CC strains genotyped on GigaMUGA. Raw calls in ACGT nucleotide format (missing = `N`).
+
+### Layer 1 — Consensus matrix assembly
+
+The three genotype sources are joined into a single marker × sample matrix:
+
+```
+founders (8)  ← GM_foundergeno{chr}.csv  (A/B/- encoding, re-coded to ACGT via GM_allelecodes.csv)
+CC strains (33) ← UNC CGD consensus calls  (ACGT, missing = N)
+F1s (7)       ← inferred from founder pairs
+               B6J (dam) × AJ, 129S1J, NODJ, NZOJ, CASTJ, PWKJ, WSBJ
+               F1 call = heterozygous of both parent nucleotides (e.g. T/C)
+```
+
+Output: `GM_ccfo_mm39.csv` — markers × samples consensus matrix with columns
+`{marker, chr, pos_bp, <CC strains>, <founders>, <F1s>}`.
+The exact marker count and strain composition depend on the source files (genome build, QC
+filters, which CC strains were genotyped at the time of the build); they are not hardcoded.
+As of the mm39 CC build: 134,590 markers × 48 samples (33 CC + 8 founders + 7 F1s).
+This file is an intermediate — users do not supply it; `mosaiqtl build-cache` produces it internally.
+
+### Layer 2 — Marker filtering and genotype encoding
+
+```
+GM_ccfo_mm39.csv + gmap/ + pmap/
+  ↓  intersect markers: gm ∩ gmap ∩ pmap
+  ↓  find_unique_geno() on FOUNDERS ONLY
+       → drop markers monomorphic or fully-missing across 8 founders
+       → these markers carry zero haplotype-discrimination power
+  ↓  encode_geno() on founders → allele codes (A/B frame)
+  ↓  encode_geno() on CC strains using same founder-derived codes
+       (ensures haplotype assignments are founder-reference consistent)
+  ↓  write per-chr qtl2 CSVs + control.yaml
+```
+
+Key decision: `find_unique_geno` uses founder genotypes, not CC strains — the qtl2 reference
+pipeline definition. Using CC strains would conflate strain-level missingness with true founder
+monomorphism and admit markers uninformative for haplotype assignment.
+
+### Layer 3 — HMM and probability arrays
+
+```
+qtl2-formatted inputs
+  ↓  calc_genoprob() — forward-backward HMM
+       n_gen = 1 for CC (consensus map already encodes cumulative recombination history)
+       error_prob = 0.002 (GigaMUGA genotyping error rate)
+       optional: step_cM = 0.2 (pseudomarkers; included in kinship, excluded from HAPPY cache)
+  ↓  deterministic founder arrays — homozygous diplotype, prob = 1.0 at self-state
+  ↓  deterministic F1 arrays — prob = 0.5 each parent
+  ↓  merge 48 genotypes (33 CC + 8 founders + 7 F1)
+  ↓  genoprob_to_alleleprob() → calc_kinship(loco) → kinship_loco.h5
+```
+
+`n_gen = 1` is correct for CC: unlike DO where `n_gen` encodes breeding generations, the CC
+consensus genetic map already integrates ~26 generations of recombination history. Passing
+`n_gen > 1` would double-count those generations in the HMM transition probabilities.
+
+### Layer 4 — HDF5 cache
+
+```
+probs (48 × 8 founders × n_loci per chr, real markers only)
+  ↓  GenomeCache.to_hdf5('cache.h5')
+
+HDF5 layout:
+  /sample_ids              (48,) str   — axis order: founders → F1s → CC strains (alphanumeric)
+  /founders                (8,) str    — ['AJ','B6J','129S1J','NODJ','NZOJ','CASTJ','PWKJ','WSBJ']
+  /chr{c}/locus_ids        (n_loci,) str
+  /chr{c}/pos              (n_loci,) float  [Mb, GRCm39]
+  /chr{c}/probs            (n_loci, 48, 8) float32
+```
+
+Pseudomarkers are excluded from `cache.h5` — they appear in `kinship_loco.h5` and intermediate
+`.rds` files only. This ensures loci in `cache.h5` match `gmap.csv` exactly (loci_max_delta = 0
+in Phase 2 S1 validation).
+
+### Implementation
+
+Python-native (no R dependency): `GenomeCache.from_gigamuga()` in `genotype/genomecache.py`
+implements Layers 1–4 using `genotype/hmm.py` (pure-Python forward-backward).
+R reference: `validation/r_reference/build_genomecache.R` (11-step equivalent).
+
+**CLI entry point (planned): `mosaiqtl build-cache`** — see `SWE-BC-01` in `goals/GOALS.md`.
+
+The CLI is organized under a **population umbrella** rather than exposing input formats directly.
+A `--population` flag selects a named preset that bundles together the species, array, founder
+set, HMM parameters, and expected input layout. Users never specify "GigaMUGA" or "HAPPY" as
+mode names; the tool handles those details internally.
+
+| Preset | Species / genome | Array | Founders | HMM `n_gen` |
+|---|---|---|---|---|
+| `cc` | *Mus musculus* / mm39 | GigaMUGA | AJ, B6J, 129S1J, NODJ, NZOJ, CASTJ, PWKJ, WSBJ | 1 |
+| `do` | *Mus musculus* / mm39 | GigaMUGA | same 8 | `<breeding_gen>` (user-supplied) |
+
+Population presets are defined in `models/config.py::Population` and registered in a lookup
+used by both the CLI (`cli.py`) and `GenomeCache.from_gigamuga()`.
+
+A separate `--from-happy` conversion mode accepts an existing HAPPY cache directory from
+miQTL or R/qtl2 and converts it to HDF5 without re-running the HMM. This mode does not
+require `--population` because the probs are already computed.
+
+```bash
+# Build cache.h5 from raw GigaMUGA sources (CC mice)
+mosaiqtl build-cache --population cc \
+    --data-dir /path/to/GM/ \
+    --cc-cols cc_cols.txt \
+    --output cache.h5
+
+# Convert an existing miQTL HAPPY cache to HDF5
+mosaiqtl build-cache --from-happy /path/to/genomecache/ --output cache.h5
+```
 
 ---
 

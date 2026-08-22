@@ -69,23 +69,32 @@ def pos_merge(
     return pd.merge(left_d, right_d, on=["_chr", "_pos"]).dropna()
 
 
-def scan_result_to_df(scan: "ScanResult", gene_name: str) -> pd.DataFrame:
+def scan_result_to_df(
+    scan: "ScanResult",
+    gene_id: str,
+    gene_symbol: str = "",
+) -> pd.DataFrame:
     """Convert a ScanResult to a per-locus DataFrame.
 
     Parameters
     ----------
     scan:
         Completed scan result from ``scan_h2lmm`` or equivalent.
-    gene_name:
-        String written to the ``gene_name`` column — typically the gene symbol.
+    gene_id:
+        ENSMUSG ID (version-stripped) — stable join key written to the
+        ``gene_id`` column.
+    gene_symbol:
+        Display name (e.g. 'Ankrd39') written to the ``gene_symbol`` column.
+        Empty string when not available.
 
     Returns
     -------
-    DataFrame with columns: gene_name, chr, locus, pos_mb, lod.
+    DataFrame with columns: gene_id, gene_symbol, chr, locus, pos_mb, lod.
     """
     return pd.DataFrame(
         {
-            "gene_name": gene_name,
+            "gene_id": gene_id,
+            "gene_symbol": gene_symbol,
             "chr": np.asarray(scan.chromosomes),
             "locus": np.asarray(scan.locus_ids),
             "pos_mb": np.asarray(scan.positions),

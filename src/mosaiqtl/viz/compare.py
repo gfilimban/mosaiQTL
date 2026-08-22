@@ -28,11 +28,13 @@ from ..genotype.founders import (
 from ._theme import WASH
 
 # Default comparison colors — Python (series A) vs R/miQTL (series B).
-_COLOR_A: str = FOUNDER_COLORS["NODJ"]   # series A: blue (#4F6EAF)
-_COLOR_B: str = FOUNDER_COLORS["PWKJ"]   # series B: red  (#D83026)
+_COLOR_A: str = FOUNDER_COLORS["NODJ"]  # series A: blue (#4F6EAF)
+_COLOR_B: str = FOUNDER_COLORS["PWKJ"]  # series B: red  (#D83026)
 
-_CMAP = "crest"              # sequential colormap for LOD-magnitude scatter
-_CMAP_DEVIATION = "YlOrRd"  # sequential colormap for unsigned deviation (allele effects)
+_CMAP = "crest"  # sequential colormap for LOD-magnitude scatter
+_CMAP_DEVIATION = (
+    "YlOrRd"  # sequential colormap for unsigned deviation (allele effects)
+)
 
 
 def _set_style() -> None:
@@ -86,9 +88,9 @@ def lod_scatter(
         x_label: x-axis label text (should read "... LOD score").
         y_label: y-axis label text (should read "... LOD score").
         cbar_label: Colorbar label (default ``'peak LOD score'``).
-        priority_genes: ``{gene_name: color_hex}`` dict; matching rows are
+        priority_genes: ``{gene_symbol: color_hex}`` dict; matching rows are
             overlaid as bold annotated points at higher z-order.  Requires a
-            ``'gene_name'`` column in *df*.
+            ``'gene_symbol'`` column in *df*.
         sparse_mask: Boolean Series; ``True`` rows are drawn grey (collapsed
             loci), ``False`` rows are colored by peak LOD score.
         threshold: Genome-wide FWER LOD-score threshold applied to both axes
@@ -172,13 +174,17 @@ def lod_scatter(
     g.ax_joint.set_xlim(0, _lim)
     g.ax_joint.set_ylim(0, _lim)
     g.ax_joint.plot(
-        [0, _lim], [0, _lim],
-        color=COLOR_NEUTRAL_DARK, linewidth=0.8, linestyle="--", alpha=0.5,
+        [0, _lim],
+        [0, _lim],
+        color=COLOR_NEUTRAL_DARK,
+        linewidth=0.8,
+        linestyle="--",
+        alpha=0.5,
     )
 
-    if priority_genes and "gene_name" in df.columns:
+    if priority_genes and "gene_symbol" in df.columns:
         for gene, color in priority_genes.items():
-            sub = df[df["gene_name"] == gene]
+            sub = df[df["gene_symbol"] == gene]
             if sub.empty:
                 continue
             for _, row in sub.iterrows():
@@ -466,8 +472,14 @@ def allele_effects_comparison(
 
     dev = np.abs(a_m - 2.0 * b_m)
     sc = ax.scatter(
-        b_m, a_m, c=dev, cmap=_CMAP_DEVIATION,
-        alpha=0.4, s=5, linewidths=0, rasterized=True,
+        b_m,
+        a_m,
+        c=dev,
+        cmap=_CMAP_DEVIATION,
+        alpha=0.4,
+        s=5,
+        linewidths=0,
+        rasterized=True,
     )
     cbar = ax.get_figure().colorbar(sc, ax=ax, shrink=0.7, pad=0.02)
     cbar.set_label(f"|{label_a.split()[0]} − 2×{label_b.split()[0]}|", fontsize=9)
@@ -566,7 +578,7 @@ def lod_profiles_comparison(
         axes = [axes]
 
     for ax, gene in zip(axes, genes):
-        g_a = df_a[df_a["gene_name"] == gene].sort_values("pos_mb")
+        g_a = df_a[df_a["gene_symbol"] == gene].sort_values("pos_mb")
         ax.fill_between(g_a["pos_mb"], g_a["lod"], alpha=0.15, color=color_a, zorder=1)
         sns.lineplot(
             x=g_a["pos_mb"],
@@ -578,8 +590,8 @@ def lod_profiles_comparison(
             zorder=3,
         )
 
-        if df_b is not None and gene in df_b["gene_name"].values:
-            g_b = df_b[df_b["gene_name"] == gene].sort_values("pos_mb")
+        if df_b is not None and gene in df_b["gene_symbol"].values:
+            g_b = df_b[df_b["gene_symbol"] == gene].sort_values("pos_mb")
             sns.lineplot(
                 x=g_b["pos_mb"],
                 y=g_b["lod"],
@@ -1303,8 +1315,14 @@ def nb_vs_lmm_comparison(
     mask = np.isfinite(nb_c) & np.isfinite(lm_c)
 
     sns.scatterplot(
-        x=lm_c[mask], y=nb_c[mask], color=color_nb,
-        s=5, alpha=0.4, linewidths=0, rasterized=True, ax=ax,
+        x=lm_c[mask],
+        y=nb_c[mask],
+        color=color_nb,
+        s=5,
+        alpha=0.4,
+        linewidths=0,
+        rasterized=True,
+        ax=ax,
     )
 
     lim = max(lm_c[mask].max(), nb_c[mask].max()) * 1.05

@@ -1,30 +1,39 @@
-# mosaiQTL v0.6.0
+# mosaiQTL
 
 **Haplotype-based QTL mapping for multiparent populations.**  
-Maps molecular phenotypes to $J$ founder haplotypes — NB-GLMM primary model for raw pseudobulk
-counts, validated Gaussian LMM port for normalized phenotypes. CC mice (mm39); extensible to
-DO, MAGIC, and other MPPs.
+Maps molecular phenotypes to 8 founder haplotypes using NB-GLMM (raw pseudobulk counts) or
+Gaussian LMM (normalized phenotypes). Designed for CC/DO mice (mm39); extensible to other MPPs.
+
+## Contents
+
+- [Introduction](#introduction)
+- [Installation](#installation)
+- [Before You Start](#before-you-start)
+- [Usage](#usage)
+- [Inputs](#inputs)
+- [Outputs](#outputs)
+- [Models](#models)
+- [Examples (in preparation)](#examples-in-preparation)
+- [Documentation](#documentation)
+- [License](#license)
 
 ---
 
-## Why mosaiQTL?
+## Introduction
+
+mosaiQTL performs genome-wide haplotype-based QTL scans for single-cell modalities. It resolves
+associations to 8 founder haplotypes using a score test under a NB-GLMM or Gaussian LMM with
+LOCO (leave-one-chromosome-out) kinship correction.
+
+**Supported modalities:** snRNA-seq eQTL · ATAC-seq caQTL (planned) · splicing QTL (planned)
 
 | | mosaiQTL | miQTL (R) | tensorQTL |
 |---|---|---|---|
 | **Primary model** | NB-GLMM (counts) | Gaussian LMM | Gaussian linear |
-| **Haplotype scan** | ✓ ($J$ founders) | ✓ ($J$ founders) | ✗ |
+| **Haplotype scan** | ✓ (8 founders) | ✓ (8 founders) | ✗ |
 | **LOCO kinship** | ✓ mandatory | ✓ | ✗ |
 | **Raw count input** | ✓ | ✗ | ✗ |
-| **Speed vs miQTL** | **20× LMM · 678× permutation** | 1× | — |
-| **Peak RAM (43k genes)** | 897 MB | — | — |
-
-**NB-GLMM matters for counts.** Log-normalising pseudobulk counts and treating them as
-Gaussian inflates false positives for lowly-expressed genes. mosaiQTL models overdispersion
-explicitly — raw counts in, calibrated LOD scores out.
-
-**LOCO kinship is mandatory.** Including the test chromosome in the kinship inflates the
-random-effect estimate (proximal contamination). mosaiQTL recomputes $K$ excluding each
-chromosome under test.
+| **Peak RAM (43k genes, 20 chr)** | 897 MB | — | — |
 
 ---
 
@@ -36,196 +45,267 @@ conda activate mosaiqtl
 pip install -e '.[dev]'
 ```
 
-Core deps: `numpy scipy pandas h5py anndata seaborn matplotlib pydantic click`  
-Optional: `rpy2` (HAPPY `.RData` genome cache readers)
+Core deps (scan engine): `numpy scipy pandas h5py anndata`  
+Required for CLI and plots: `pydantic click seaborn matplotlib`  
+Optional: `rpy2` (read HAPPY `.RData` genome caches from miQTL/qtl2)
 
 ---
 
-## Quick start — CLI
+## Before You Start
 
-Five composable subcommands; each reads/writes CSV or HDF5, no hidden state between stages.
+mosaiQTL requires four inputs that you prepare once and reuse across all scans.
+
+**Genome cache (`--cache cache.h5`)**  
+An HDF5 file containing haplotype probabilities (samples × 8 CC founders × loci) and a loci
+map covering all GigaMUGA marker positions. mosaiQTL loads one chromosome at a time for
+constant-memory scanning.
+
+GigaMUGA marker annotations:
+- [Dryad — GigaMUGA consensus matrix](https://datadryad.org/dataset/doi:10.5061/dryad.689d2)
+- [UWisc v4 annotation](https://github.com/kbroman/MUGAarrays/blob/main/UWisc/gm_uwisc_v4.csv)
+
+HAPPY-format caches from miQTL or R/qtl2 can be read directly via `GenomeCache.from_happy_dir()`
+and converted to HDF5 via `cache.to_hdf5('cache.h5')`.
+
+**Pseudobulk counts (`--counts data.h5ad`)**  
+A genes × samples count matrix aggregated from your single-cell data. mosaiQTL does not perform
+aggregation — generate pseudobulk counts upstream using Scanpy or a similar tool, then pass the
+result as an AnnData `.h5ad` file. Counts must be in `.raw.X` (raw, non-normalised integers).
+
+**Gene info (`--gene-info gene_info.csv`)**  
+A CSV with columns: `gene_id` (Ensembl ID), `gene_symbol`, `chr`, `start`, `end`. Used to define
+the scan window around each gene's TSS and to annotate output files.
+
+**Sample metadata (`--metadata meta.csv`)**  
+A CSV with one row per sample. Required column: `sample_id`. Strongly recommended: `sex`
+(0 = male, 1 = female) and `batch` (sequencing run identifier). Both are included as covariates
+automatically when present.
+
+---
+
+## Usage
+
+### CLI
+
+**LMM** (Gaussian LMM — current working model):
+
+LMM requires four stages. The null heritability (h²) is estimated inside `scan` — no separate
+null fit is needed.
 
 ```bash
-# 1. NB null fit per gene (Stage 1; LMM skips this step)
-mosaiqtl fit-null \
-    --cache cache.h5 --counts data.h5ad --metadata meta.csv \
-    --output null_fit.csv [--cell-type 'type2x']
-
-# 2. Genome-wide QTL scan → per-gene peak LOD
-mosaiqtl scan \
-    --cache cache.h5 --counts data.h5ad --metadata meta.csv \
+# 1. Genome-wide scan → per-gene peak LOD
+mosaiqtl scan --model lmm \
+    --cache cache.h5 --counts data.h5ad \
+    --gene-info gene_info.csv --metadata meta.csv \
     --null-fit null_fit.csv --output peak_lod.csv
-    # LMM: add --model lmm (no fit-null needed)
 
-# 3. Permutation thresholds → GEV fit on max-LOD distribution
+# 2. Permutation thresholds → GEV (generalized extreme value) fit on max-LOD distribution
 mosaiqtl permute \
-    --cache cache.h5 --counts data.h5ad --metadata meta.csv \
+    --cache cache.h5 --counts data.h5ad \
+    --gene-info gene_info.csv --metadata meta.csv \
     --null-fit null_fit.csv --output perm/ --n-perms 1000
 
-# 4. Haplotype effect estimates at each gene's peak locus
+# 3. Haplotype effect estimates at each gene's peak locus
 mosaiqtl estimate \
-    --cache cache.h5 --counts data.h5ad --metadata meta.csv \
+    --cache cache.h5 --counts data.h5ad \
+    --gene-info gene_info.csv --metadata meta.csv \
     --scan-result peak_lod.csv --output allele_effects.csv
 
-# 5. Summary table + genome-wide Manhattan
+# 4. eGene summary table + genome-wide Manhattan
 mosaiqtl report \
     --scan-result peak_lod.csv --perm-dir perm/ --output-dir results/
 ```
 
-Outputs: `null_fit.csv` · `peak_lod.csv` · `perm/perm_max_lods.csv` ·
-`allele_effects.csv` · `results/eqtl_summary.csv` · `results/genome_summary.png`
+> **`--model` defaults to `'nb'`** (NB-GLMM). Pass `--model lmm` for the validated Gaussian path.
 
-### NB-GLMM vs LMM — which model?
-
-| | NB-GLMM (`--model nb`, default) | LMM (`--model lmm`) |
-|---|---|---|
-| **Input** | Raw integer pseudobulk counts | Log-normalised / continuous phenotype |
-| **Overdispersion** | Modelled explicitly (NB φ per gene) | Not modelled — inflated FP for low-expr genes |
-| **Stage 1 (`fit-null`)** | Required — estimates φ and σ² per gene | Not needed — h² estimated inside `scan` |
-| **Speed** | Slower (PQL null per gene × chr) | Faster (h² once per chr, FWL vectorised) |
-| **Use when** | snRNA-seq / ATAC-seq / any count data | Normalized bulk RNA-seq or fast exploration |
+**NB-GLMM** (primary model for raw pseudobulk counts; adds a null fit stage before scanning):
 
 ```bash
-# NB-GLMM (default) — two stages
-mosaiqtl fit-null --cache cache.h5 --counts data.h5ad --metadata meta.csv --output null_fit.csv
-mosaiqtl scan     --cache cache.h5 --counts data.h5ad --metadata meta.csv --null-fit null_fit.csv --output peak_lod.csv
+# 0. NB null fit — estimates overdispersion φ and variance σ² per gene
+mosaiqtl fit-null \
+    --cache cache.h5 --counts data.h5ad \
+    --gene-info gene_info.csv --metadata meta.csv \
+    --output null_fit.csv
 
-# LMM — skip fit-null entirely
-mosaiqtl scan     --cache cache.h5 --counts data.h5ad --metadata meta.csv --null-fit null_fit.csv --output peak_lod.csv --model lmm
+# 1–4. Same as LMM — pass the null fit to scan and permute
+mosaiqtl scan    --cache cache.h5 --counts data.h5ad --gene-info gene_info.csv --metadata meta.csv --null-fit null_fit.csv --output peak_lod.csv
+mosaiqtl permute --cache cache.h5 --counts data.h5ad --gene-info gene_info.csv --metadata meta.csv --null-fit null_fit.csv --output perm/ --n-perms 1000
+mosaiqtl estimate --cache cache.h5 --counts data.h5ad --gene-info gene_info.csv --metadata meta.csv --scan-result peak_lod.csv --output allele_effects.csv
+mosaiqtl report   --scan-result peak_lod.csv --perm-dir perm/ --output-dir results/
 ```
 
----
+Run `mosaiqtl <command> --help` for the full flag list per command.
 
-## Quick start — Python API
+### Python API
+
+Use the Python API when you need a single chromosome, a custom covariate matrix, or per-locus
+LOD values that the CLI does not write. For full pipeline runs, the CLI is recommended.
 
 ```python
+import numpy as np
+import pandas as pd
 from mosaiqtl.genotype.genomecache import GenomeCache
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 from mosaiqtl.qtl.scan import scan_h2lmm
 
-gc     = GenomeCache.from_hdf5('cache.h5')
-kd_raw = calc_kinship(gc, method='loco')          # one K per chromosome
-kd     = decomp_kinship(kd_raw)
+cache   = GenomeCache.from_hdf5('cache.h5')
+kinship = decomp_kinship(calc_kinship(cache, method='loco'))
 
+meta = pd.read_csv('meta.csv').set_index('sample_id')
+y    = meta['expression'].values     # (n,) strain-mean expression
+X    = np.column_stack([             # (n, p) covariate matrix
+    np.ones(len(y)),
+    meta['sex'].values,
+])
+
+# scan_h2lmm returns one chromosome at a time
 result = scan_h2lmm(
-    phenotype=y,          # (n,) strain-mean expression
-    genomecache=gc,
-    kinship_decomp=kd,
-    covariates=X,         # (n, p) including intercept; sex + batch minimum
+    phenotype=y,
+    genomecache=cache,
+    kinship_decomp=kinship,
+    covariates=X,
 )
-# result.lod     — (n_loci,) LOD scores
-# result.betas   — (n_loci, J) per-founder effects
-# result.pos_mb  — (n_loci,) genomic positions
 peak_idx = result.lod.argmax()
 print(f'Peak: chr{result.chr} {result.pos_mb[peak_idx]:.2f} Mb  LOD={result.lod[peak_idx]:.2f}')
 ```
+
+### HPC (Nextflow)
+
+```bash
+# Validate DAG — no compute
+nextflow run workflow/main.nf -stub-run -params-file config/default_params.yaml
+
+# Single cell type
+nextflow run workflow/main.nf -profile slurm \
+    -params-file config/gastroc_params.yaml -resume
+
+# Multiple cell types (celltypes_dir × all chromosomes)
+nextflow run workflow/main.nf -profile slurm \
+    -params-file config/ctxhipp_params.yaml -resume
+```
+
+See [`workflow/README.md`](workflow/README.md) for process DAG, resource labels, and SLURM
+configuration including Nextflow parameters (`scan_window`, `chroms`, `n_perms`, etc.).
+
+---
+
+## Inputs
+
+### File Inputs
+
+| Input | CLI flag | Format | Description |
+|---|---|---|---|
+| Genome cache | `--cache` | HDF5 | Haplotype probabilities + loci map; see [Before You Start](#before-you-start) |
+| Gene info | `--gene-info` | CSV | `gene_id`, `gene_symbol`, `chr`, `start`, `end` |
+| Pseudobulk counts | `--counts` | AnnData `.h5ad` | Genes × samples raw counts in `.raw.X` |
+| Sample metadata | `--metadata` | CSV | `sample_id` required; `sex` + `batch` auto-included as covariates |
+| NB null fit | `--null-fit` | CSV | Output of `mosaiqtl fit-null`; required for NB-GLMM scan |
+| LOCO kinship | `--kinship` | HDF5 | Optional — built from `--cache` if not provided |
+
+### Cell-type Inputs (Nextflow only)
+
+Set one mode. `celltypes_dir` takes precedence if both are set.
+
+**Multi-CT** — one scan job per cell type × chromosome:
+
+| Nextflow param | Description |
+|---|---|
+| `celltypes_dir` | Directory where each subdirectory is named after a cell type and contains `pseudobulk.h5`; per-CT `gene_info.csv` used if present, otherwise falls back to global `gene_info` |
+| `celltypes` | Cell types to include: `'all'` or comma-separated (e.g. `'glutamatergic_neuron,oligodendrocyte'`) |
+
+**Single-CT** — used when `celltypes_dir` is not set:
+
+| Nextflow param | Description |
+|---|---|
+| `phenotypes` | Pseudobulk HDF5 for a single cell type |
+| `celltype` | Cell type label for output paths (default: `'default'`) |
+
+### Nextflow Scan Parameters
+
+Configured in `config/*.yaml` or overridden on the command line with `--param value`.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `scan_window` | `'cis'` | `'cis'` (±`window_mb` around TSS), `'genome'`, or `'local'` |
+| `window_mb` | `1.0` | Half-window size in Mb; applies to `'cis'` and `'local'` modes |
+| `chroms` | `'all'` | `'all'` (chr1–19 + X) or comma-separated (e.g. `'1,2,8'`) |
+| `n_perms` | `1000` | Permutations per gene for GEV threshold estimation |
+| `output_dir` | `'results'` | Root output directory; per-CT results at `{output_dir}/{celltype}/` |
+| `seed` | `42` | Random seed for permutation reproducibility |
+
+---
+
+## Outputs
+
+### Intermediate files
+
+| File | Description |
+|---|---|
+| `null_fit.csv` | Per-gene NB-GLMM null fit — φ (overdispersion), σ² (variance), convergence flag (NB only) |
+| `allele_effects.csv` | Per-founder effect estimates + SE at each gene's peak locus |
+| `perm/perm_max_lods.csv` | Max-LOD distribution across permutations (one row per permutation) |
+
+### Final outputs
+
+Named `{tissue}_{celltype}_{suffix}`.
+
+| File | Description |
+|---|---|
+| `_eqtl_scan.csv` | Genome-wide scan — one row per gene × locus; `peak_locus` flag marks each gene's peak |
+| `_eqtl_peak.csv` | Peak locus per eGene — haplotype effects, significance, run metadata |
+| `_eqtl_finemapping.csv` | Sanger-resolution fine-mapping — PIP, credible set membership, CI bounds per variant |
+| `_eqtl_finemapping_peak.csv` | Lead variant per eGene — highest-LOD Sanger SNP with haplotype effects and significance |
+| `_eqtl_stats.csv` | Run-level summary — tissue, cell type, LOD threshold, GEV parameters, gene counts |
+| `genome_summary.png` | Genome-wide Manhattan and QC figures |
 
 ---
 
 ## Models
 
-| Model | Entry point | When to use |
+| Model | Function | When to use |
 |---|---|---|
-| **NB-GLMM + LOCO** | `qtl/nb.py` | Raw pseudobulk counts — primary for snRNA-seq eQTL |
+| **NB-GLMM + LOCO** | `scan_nb_gene()` | Raw pseudobulk counts — primary for snRNA-seq eQTL |
 | **Gaussian LMM** | `scan_h2lmm()` | Normalized expression; exact miQTL/qtl2 port |
 | **LMM + MI** | `scan_h2lmm_mi()` | Averages over haplotype-assignment uncertainty |
 | **Dispersion QTL** | `scan_vqtl()` | NB dispersion as phenotype (transcriptional noise) |
 | **Mediation** | `mediation_scan_qr()` | Candidate mediator LOD via QR Woodbury update |
-| **Epistasis** | `scan_epistasis()` | Pairwise GxG; conditional scan |
+| **Epistasis** | `scan_epistasis()` | Pairwise founder × founder interaction scan |
 
----
+**Choosing NB-GLMM vs LMM:**
 
-## Package structure
-
-```
-src/mosaiqtl/
-  cli.py              CLI entry point — fit-null / scan / permute / estimate / report
-  pipeline.py         discover(), characterize(), call_egenes(), finalize_egene_summary()
-  utils.py            rint(), build_z_matrix(), align_samples()
-  genotype/
-    genomecache.py    HDF5 B-tree cache; lazy per-chromosome load
-    kinship.py        LOCO kinship build + eigendecomposition
-    founders.py       Founder/F1/CC color constants — canonical source
-  qtl/
-    nb.py             NB-GLMM Stages 1 + 2 (primary)
-    lmm.py            Gaussian LMM engine
-    scan.py           scan_h2lmm(), scan_h2lmm_mi(), instability, MI
-    permutation.py    Null outcomes, GEV threshold, run_threshold_scans()
-    effects.py        get_allele_effects() — fixef and ranef (ridge BLUP)
-    mediation.py      mediation_scan_qr()
-    epistasis.py      scan_epistasis(), scan_conditional_with_y()
-    vqtl.py           scan_vqtl()
-  models/
-    records.py        ScanResult, VQTLResult, FounderEffect dataclasses
-    config.py         Population, ScanConfig, PipelineConfig (Pydantic)
-  io/
-    covariates.py     build_covariate_matrix() from sample metadata CSV
-    anndata_io.py     AnnData readers (backed=True; counts from .raw.X)
-    results_io.py     CSV serialisation with provenance header
-  viz/
-    _theme.py         Package identity palette and style helpers
-    genome.py         LOD profiles, Manhattan, genome summary
-    effects.py        Founder effect bars, coef_profile()
-    haplotypes.py     Haplotype heatmaps, epistasis grids
-    compare.py        R-vs-Python and cross-source comparison figures
-    celltypes.py      Cross-cell-type LOD and effect comparison
-```
-
----
-
-## Validation status
-
-Phases 1–2 use simulated CC data (`sparcc_cache`) — no real data needed for CI.
-
-| Phase | Description | Status |
+| | NB-GLMM (`--model nb`) | LMM (`--model lmm`) |
 |---|---|---|
-| **Phase 1** | Minimal miQTL workflow mirror: ROP r²=0.9975, MI r=0.9756, GEV Δ=0.154 | 🟢 passing |
-| **Phase 2** | Full miQTL port — 9/9 runnable sections (S1–S11) | 🟢 passing |
-| **Phase 3** | Speed + memory vs miQTL and R/qtl2 | 🟢 benchmarked |
-| **Phase 4** | NB-GLMM biological consistency (Piezo1 etc.) | 🔴 not yet run |
-| **Gastroc** | Real CC pseudobulk — Python scan complete; R comparison pending HPC | 🟡 in progress |
-
-### Running validation
-
-```bash
-# Phase 1
-Rscript validation/r_reference/sim_validation.R
-conda run -n bioinfo python validation/validate_sim.py
-
-# Phase 2
-Rscript validation/r_reference/phase2_validation.R
-conda run -n bioinfo python validation/validate_phase2.py
-
-# Phase 3
-Rscript validation/r_reference/phase3_validation.R
-conda run -n bioinfo python validation/validate_phase3.py
-
-# Gastroc (real data; HPC for full run)
-conda run -n bioinfo python validation/tools/convert_h5ad.py
-conda run -n bioinfo Rscript validation/r_reference/gastroc_miqtl_scan.R all 8 C
-bash validation/hpc/run_gastroc_slurm.sh
-```
+| **Input** | Raw integer pseudobulk counts | Log-normalised / continuous phenotype |
+| **Overdispersion** | Modelled explicitly (NB φ per gene) | Not modelled — inflated false positives for low-expr genes |
+| **Stage 0** | Required — `fit-null` estimates φ and σ² per gene | Not needed — h² estimated inside `scan` |
+| **Speed** | Slower (PQL null per gene × chr) | Faster (h² once per chr, FWL vectorised) |
+| **Use when** | snRNA-seq / ATAC-seq / count data | Normalized bulk RNA-seq or fast exploration |
 
 ---
 
-## Tests
+## Examples (in preparation)
 
-```bash
-pytest tests/unit/ -x -q                  # fast unit gate
-pytest tests/ --cov=src/mosaiqtl -q       # full suite + coverage
-make lint                                  # flake8 + mypy + interrogate
-```
+End-to-end worked examples showing expected inputs, commands, outputs, and figures for each
+pipeline stage. Each example is a complete record of a successful run.
+
+| Example | Description |
+|---|---|
+| `examples/gastroc_eqtl/` | Gastrocnemius snRNA-seq eQTL — single cell type, LMM, chr8 |
+| `examples/ctxhipp_eqtl/` | Cortex/hippocampus multi-cell-type eQTL — Nextflow, all chromosomes |
+| `examples/sim_cc/` | Simulated CC data — LMM scan with known planted QTL signal |
 
 ---
 
-## References
+## Documentation
 
-- Kang *et al.* (2008) *Genetics* 178:1709 — eigendecomposition LMM
-- Listgarten *et al.* (2012) *Nat Methods* 9:525 — LOCO kinship
-- Broman *et al.* (2019) *Genetics* 211:495 — R/qtl2
-- Keele *et al.* (2019) *G3* — miQTL
-- He *et al.* (2021) *Commun Biol* 4:629 — NEBULA-LN
-- Churchill *et al.* (2004) *Nat Genet* 36:1133 — Collaborative Cross
+| Resource | Content |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System design, model derivations, inference choices |
+| [`docs/math/`](docs/math/) | Step-by-step derivations for PQL, LOCO kinship, GEV thresholds |
+| [`workflow/README.md`](workflow/README.md) | Nextflow DAG, resource labels, SLURM configuration |
+| [`config/`](config/) | Annotated parameter files for gastroc and ctxhipp reference runs |
+
+---
 
 ## License
 

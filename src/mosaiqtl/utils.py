@@ -183,7 +183,7 @@ def build_tss_lookup(genes_df: "pd.DataFrame") -> "dict[str, float]":
     Parameters
     ----------
     genes_df :
-        DataFrame with at minimum a ``gene_name`` column and ``start`` column
+        DataFrame with at minimum a ``gene_symbol`` column and ``start`` column
         (base-pair coordinates).  Optional: ``end``, ``strand``.
 
     Returns
@@ -198,9 +198,9 @@ def build_tss_lookup(genes_df: "pd.DataFrame") -> "dict[str, float]":
     has_end = "end" in genes_df.columns
     for _, row in genes_df.iterrows():
         if has_strand and has_end and row["strand"] == "-":
-            lookup[row["gene_name"]] = float(row["end"]) / 1e6
+            lookup[row["gene_symbol"]] = float(row["end"]) / 1e6
         else:
-            lookup[row["gene_name"]] = float(row["start"]) / 1e6
+            lookup[row["gene_symbol"]] = float(row["start"]) / 1e6
     return lookup
 
 
@@ -215,7 +215,7 @@ def compute_near_tss_mb(
     peak_df :
         DataFrame with ``gene`` and ``peak_mb`` columns.
     gene_tss_df :
-        DataFrame with ``gene_name`` and ``tss_mb`` columns listing all known
+        DataFrame with ``gene_symbol`` and ``tss_mb`` columns listing all known
         transcript TSSs per gene.
 
     Returns
@@ -226,13 +226,13 @@ def compute_near_tss_mb(
     """
     near: dict[str, float] = {}
     for _, row in peak_df.iterrows():
-        cands = gene_tss_df[gene_tss_df["gene_name"] == row["gene_name"]]
+        cands = gene_tss_df[gene_tss_df["gene_symbol"] == row["gene_symbol"]]
         if cands.empty:
-            near[row["gene_name"]] = float("nan")
+            near[row["gene_symbol"]] = float("nan")
         else:
             idx = (cands["tss_mb"] - row["peak_mb"]).abs().idxmin()
-            near[row["gene_name"]] = float(cands.loc[idx, "tss_mb"])
-    return peak_df["gene_name"].map(near)
+            near[row["gene_symbol"]] = float(cands.loc[idx, "tss_mb"])
+    return peak_df["gene_symbol"].map(near)
 
 
 def _build_gm_idx(
@@ -242,7 +242,7 @@ def _build_gm_idx(
 
     Parameters
     ----------
-    gene_meta : DataFrame with a 'gene_name' column, or None.
+    gene_meta : DataFrame with a 'gene_symbol' column, or None.
 
     Returns
     -------
@@ -251,9 +251,9 @@ def _build_gm_idx(
     if (
         gene_meta is not None
         and not gene_meta.empty
-        and "gene_name" in gene_meta.columns
+        and "gene_symbol" in gene_meta.columns
     ):
-        return gene_meta.set_index("gene_name").to_dict("index")
+        return gene_meta.set_index("gene_symbol").to_dict("index")
     return None
 
 
@@ -275,7 +275,7 @@ def _enrich_scan_df(
     df        : per-gene scan result (modified in-place before reorder).
     gene_id   : key into gm_idx.
     gm_idx    : output of _build_gm_idx, or None.
-    id_cols   : identifier columns that lead the output (e.g. ['gene_name', 'chr']).
+    id_cols   : identifier columns that lead the output (e.g. ['gene_symbol', 'chr']).
     data_cols : scan-result columns that follow the gene_meta columns.
 
     Returns

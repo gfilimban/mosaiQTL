@@ -49,13 +49,15 @@ logger = logging.getLogger("mosaiqtl")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # canonical output schemas
+# gene_id is the stable join key (ENSMUSG ID, version-stripped).
+# gene_symbol is display-only (e.g. 'Ankrd39'); not guaranteed unique.
 # ─────────────────────────────────────────────────────────────────────────────
 
-LOD_COLS: list[str] = ["gene_name", "chr", "locus", "pos_mb", "lod"]
+LOD_COLS: list[str] = ["gene_id", "chr", "locus", "pos_mb", "lod"]
 
 ALLELE_EFFECTS_BASE_COLS: list[str] = [
-    "gene_name",
     "gene_id",
+    "gene_symbol",
     "chr",
     "start_mb",
     "peak_locus",
@@ -71,8 +73,8 @@ ALLELE_EFFECTS_BASE_COLS: list[str] = [
 ]
 
 PEAK_LOD_COLS: list[str] = [
-    "gene_name",
     "gene_id",
+    "gene_symbol",
     "chr",
     "start_mb",
     "near_tss_mb",
@@ -90,8 +92,8 @@ PEAK_LOD_COLS: list[str] = [
 ]
 
 EGENE_SUMMARY_COLS: list[str] = [
-    "gene_name",
     "gene_id",
+    "gene_symbol",
     "chr",
     "start_mb",
     "near_tss_mb",
@@ -107,6 +109,134 @@ EGENE_SUMMARY_COLS: list[str] = [
     "in_r_egenes",
 ]
 
+# ─────────────────────────────────────────────────────────────────────────────
+# eQTL output schemas
+# Column order: locus identity → alleles → haplotype freq → gene → association
+#               → haplotype effects → fine-mapping → significance → run metadata
+# All coordinates are integer bp (GRCm39). Mb appears only in cis_dist_mb
+# (signed diagnostic quantity, not a coordinate).
+# Allele annotation is haplotype-resolution throughout.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── shared building blocks ────────────────────────────────────────────────────
+
+# Shared locus + gene block used by both haplotype scan and Sanger fine-mapping.
+# hard_call_dosage excluded from fine-mapping (N/A at Sanger resolution).
+_LOCUS_COLS: list[str] = [
+    "variant",  # SPDI: {refseq_accn}:{pos_bp-1}:{ref}:{effect_allele}
+    "chr",  # e.g. 'chr8'
+    "pos",  # integer bp (GRCm39)
+    "ref",  # B6J allele = GRCm39 reference allele (VCF convention)
+    "effect_allele",  # non-ref allele for this haplotype group contrast
+    "other_allele",  # complement of effect_allele
+    "hard_call_dosage",  # constant 'F' — scan uses haplotype probs, not hard calls
+    "ref_founders",  # comma-joined founders carrying ref, e.g. 'AJ,B6J,129S1J,NODJ'
+    "alt_founders",  # comma-joined founders carrying effect_allele
+    "af",  # mean haplotype prob for alt_founders across CC strains
+    "maf",  # min(af, 1-af)
+    "mac",  # round(maf × n_strains) — strain level
+    "ma_sample",  # round(maf × n_sample) — replicate mouse level
+    "gene_id",  # ENSMUSG ID, version suffix stripped (join key)
+    "gene_symbol",  # gene symbol, e.g. 'Ankrd39' (display only)
+    "sd_phenotype",  # sqrt(rss0 / (n_valid - 1)) — SD after covariate regression
+    "n_sample",  # n_valid from null model fit
+    "lod",  # joint LOD across all 8 founders (7 df score test)
+    "h2_null_chr",  # LOCO null heritability (per-chromosome constant)
+    "pval_nominal",  # chi² p-value (7 df)
+    "log10p_nominal",  # -log10(pval_nominal)
+    "cis_dist_mb",  # signed distance TSS → locus (Mb); only Mb column in outputs
+    "effect_size",  # haplotype contrast: c_k^T β_founders
+    "se_effect_size",  # sqrt(c_k^T Var(β) c_k)
+]
+
+# Per-founder haplotype effects — only at peak/lead-SNP locus (one row per eGene)
+_FOUNDER_EFFECT_COLS: list[str] = [
+    "effect_AJ",
+    "effect_B6J",
+    "effect_129S1J",
+    "effect_NODJ",
+    "effect_NZOJ",
+    "effect_CASTJ",
+    "effect_PWKJ",
+    "effect_WSBJ",
+]
+
+# Gene-level significance — carried from haplotype scan, not re-estimated at Sanger
+_SIG_COLS: list[str] = [
+    "pval_perm",  # gene-level permutation p-value
+    "fdr",  # BH FDR across all scanned genes (SWE-09: Storey q-value planned)
+    "fdr_method",  # constant 'BH'
+    "significance",  # 'T' if passed LOD threshold AND fdr < 0.05
+]
+
+# Run-level metadata — constant for the whole file; peak/submission rows only
+# (not replicated on every per-locus scan row)
+_RUN_COLS: list[str] = [
+    "interaction",  # 'F' for all main-effect rows
+    "interaction_context",  # empty; OLS4 term ID only for dedicated interaction analyses
+    "conditional",  # empty
+    "conditional_method",  # empty
+]
+
+# ── schema definitions ────────────────────────────────────────────────────────
+
+# Haplotype scan — all cis loci × all scanned genes (intermediate, per-chromosome)
+EQTL_SCAN_COLS: list[str] = _LOCUS_COLS + ["peak_locus"]
+
+# Haplotype peak — filtered to peak_locus == 'T', peak_locus dropped,
+# per-founder effects + significance + run metadata appended.
+EQTL_PEAK_COLS: list[str] = _LOCUS_COLS + _FOUNDER_EFFECT_COLS + _SIG_COLS + _RUN_COLS
+
+# Sanger fine-mapping checkpoint — CS members + lead SNP per eGene.
+# hard_call_dosage excluded (N/A at Sanger resolution).
+# lead_snp == 'T' marks the highest-LOD SNP per eGene; 'F' for other CS members.
+EQTL_FINEMAPPING_COLS: list[str] = [
+    c for c in _LOCUS_COLS if c != "hard_call_dosage"
+] + [
+    "PIP",  # posterior inclusion probability
+    "PIP_method",  # 'ABF' or 'SuSiE-RSS'
+    "CS",  # 'T' if in the 95% credible set for this gene
+    "lead_snp",  # 'T' for the highest-LOD Sanger SNP per eGene; 'F' for other CS members
+    "ci_lo_bp",  # LOD-drop CI lower bound (bp) — haplotype scan window context
+    "ci_hi_bp",  # LOD-drop CI upper bound (bp)
+    "hap_peak_pos",  # GigaMUGA peak position (bp) — back-link to _eqtl_peak.csv
+    "hap_peak_variant",  # SPDI of GigaMUGA peak
+    "hap_peak_lod",  # LOD at GigaMUGA peak
+]
+
+# Sanger fine-mapping peak — submission file (one row per eGene).
+# Derived from EQTL_FINEMAPPING_COLS filtered to lead_snp == 'T', lead_snp dropped,
+# then per-founder effects + significance + run metadata appended.
+EQTL_FINEMAPPING_PEAK_COLS: list[str] = (
+    [c for c in EQTL_FINEMAPPING_COLS if c != "lead_snp"]
+    + _FOUNDER_EFFECT_COLS
+    + _SIG_COLS
+    + _RUN_COLS
+)
+
+# Summary stats — one row per chromosome + one 'genome' row per tissue × cell type.
+# git_hash populated from ProvenanceRecord.git_hash at write time.
+EQTL_STATS_COLS: list[str] = [
+    "tissue",
+    "celltype",
+    "chr",
+    "lod_threshold",
+    "gev_mu",
+    "gev_sigma",
+    "gev_xi",
+    "n_genes_scanned",
+    "n_egenes",
+    "n_loci",
+    "n_perms",
+    # global row only (chr == 'genome')
+    "fdr_threshold",
+    "scan_window_mb",
+    "scan_seed",
+    "gencode_version",
+    "ensembl_release",
+    "git_hash",
+]
+
 __all__ = [
     "LOD_COLS",
     "ALLELE_EFFECTS_BASE_COLS",
@@ -116,6 +246,11 @@ __all__ = [
     "FIXEF_MEDIATION_COLS",
     "SNP_SCAN_COLS",
     "CI_COLS",
+    "EQTL_SCAN_COLS",
+    "EQTL_PEAK_COLS",
+    "EQTL_FINEMAPPING_COLS",
+    "EQTL_FINEMAPPING_PEAK_COLS",
+    "EQTL_STATS_COLS",
     "call_egenes",
     "finalize_egene_summary",
     "discover",
@@ -146,13 +281,13 @@ def finalize_egene_summary(
     """
     out = egenes_df.copy()
     if n_founders is None:
-        beta_cols = [c for c in out.columns if c.startswith('beta_')]
+        beta_cols = [c for c in out.columns if c.startswith("beta_")]
         n_founders = len(beta_cols) if beta_cols else 8
         if not beta_cols:
             logger.warning(
-                'finalize_egene_summary: no beta_ columns found; '
-                'defaulting n_founders=8 for chi2 df — pass n_founders explicitly '
-                'for non-CC populations'
+                "finalize_egene_summary: no beta_ columns found; "
+                "defaulting n_founders=8 for chi2 df — pass n_founders explicitly "
+                "for non-CC populations"
             )
     if "peak_lod" in out.columns:
         out["chi2_haplotype"] = 2.0 * np.log(10) * out["peak_lod"]
@@ -171,34 +306,36 @@ def call_egenes(
     peak_lod_df: pd.DataFrame,
     threshold: float,
     effects_df: "pd.DataFrame | None" = None,
-    gene_col: str = "gene_name",
     lod_col: str = "peak_lod",
 ) -> pd.DataFrame:
     """Apply a LOD threshold and return one row per called eGene.
 
     Parameters
     ----------
-    peak_lod_df : DataFrame with columns [gene_name, peak_lod, chr, peak_locus, peak_mb]
-        Positional columns (chr, peak_locus, peak_mb) should be included at scan time
-        so that GxE/effect computations downstream are not blocked by a missing effects file.
+    peak_lod_df : DataFrame with columns [gene_id, gene_symbol, peak_lod,
+        chr, peak_locus, peak_mb].  gene_id is the stable ENSMUSG join key;
+        gene_symbol is the display name.  Positional columns (chr, peak_locus,
+        peak_mb) should be present at scan time so downstream GxE/effect steps
+        are not blocked by a missing effects file.
     threshold   : LOD threshold (e.g. from get_gev_thresholds)
-    effects_df  : optional allele-effects DataFrame — used only to fill chr/peak_locus/peak_mb
-        when those columns are absent from peak_lod_df (legacy fallback)
-    gene_col    : name of the gene_name identifier column
+    effects_df  : optional allele-effects DataFrame — used only to fill
+        chr/peak_locus/peak_mb when those columns are absent from peak_lod_df
+        (legacy fallback); merge is performed on gene_id
     lod_col     : name of the peak LOD column
 
     Returns
     -------
-    DataFrame with columns [gene_name, chr, peak_locus, peak_mb, peak_lod, ...] —
-    one row per called eGene; positional columns NaN only if absent from both inputs
+    DataFrame with columns [gene_id, gene_symbol, chr, peak_locus, peak_mb,
+    peak_lod, ...] — one row per called eGene; positional columns NaN only if
+    absent from both inputs
     """
     egenes = peak_lod_df[peak_lod_df[lod_col] >= threshold].copy()
     pos_cols = ("chr", "peak_locus", "peak_mb")
     missing = [c for c in pos_cols if c not in egenes.columns]
     if missing and effects_df is not None and len(effects_df) > 0:
-        fill_cols = [c for c in (gene_col, *missing) if c in effects_df.columns]
+        fill_cols = [c for c in ("gene_id", *missing) if c in effects_df.columns]
         if len(fill_cols) > 1:
-            egenes = egenes.merge(effects_df[fill_cols], on=gene_col, how="left")
+            egenes = egenes.merge(effects_df[fill_cols], on="gene_id", how="left")
     return egenes.reset_index(drop=True)
 
 

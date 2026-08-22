@@ -1,7 +1,17 @@
 # docs/REFERENCES.md — mosaiQTL Annotated Bibliography
 # Canonical citation source for all references in CLAUDE.md, GOALS.md, and ARCHITECTURE.md.
-# Format: citation | DOI | why it matters to mosaiQTL
+# Format: citation | DOI/URL | why it matters to mosaiQTL
 # Never auto-loaded by Claude Code. @-import only when writing derivations.
+
+---
+
+## DATA SOURCES — LAYER-0 PUBLIC INPUTS
+
+| Resource | URL | Contents |
+|---|---|---|
+| JAX Diversity Outbred Reference Data | https://www.jax.org/research-and-faculty/genetic-diversity-initiative/tools-data/diversity-outbred-reference-data | **Primary** source for all GigaMUGA reference files: `gm_uwisc_v4.csv` (marker positions on GRCm39 + Cox genetic map), `GigaMUGA_founder_consensus_genotypes.csv.gz` (8 CC/DO founder consensus calls), `GigaMUGA_genotypes.csv.gz` (280 reference samples, ACGT), `CC_consensus_genotypes.csv` (76 CC strain consensus calls), `cc_sample_metadata.csv` (funnel codes + Mt/Y origin), `cc_variants_grcm39_ens104.sqlite` (Sanger REL2021 SNPs/indels for fine-mapping). Sanger SNP VCF: `mgp_REL2021_snps.vcf.gz` (GRCm39). |
+
+See `docs/DATA_SOURCES.md` for the complete derivation chain from these files to `GM_ccfo_mm39_comprehensive.csv`.
 
 ---
 

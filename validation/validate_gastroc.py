@@ -2325,7 +2325,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             gene_pos_mb=gene_start_mb if _sw == 'local' else None,
                             window_mb=window_mb,
                         )
-                    df = _scan_to_df(scan, gene_name)
+                    df = _scan_to_df(scan, gene_id, gene_symbol=gene_name)
                     df.to_csv(py_lod_path,
                               mode='a',
                               header=not _lod_header_written,

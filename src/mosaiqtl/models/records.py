@@ -207,7 +207,7 @@ class QTLResult:
     attributes
     ----------
     gene_id : str
-    gene_name : str
+    gene_symbol : str
     cell_type : str or None
         cell type label for single-cell/pseudobulk; None for bulk
     data_granularity : DataGranularity
@@ -263,7 +263,7 @@ class QTLResult:
     """
 
     gene_id: str
-    gene_name: str
+    gene_symbol: str
     cell_type: Optional[str]
     data_granularity: DataGranularity
     population: str

@@ -573,7 +573,8 @@ class GenomeCache:
         #   allele_codes  <- find_unique_geno(geno = geno_founders_clean)
         #   geno_founders_encoded <- encode_geno(geno_founders_clean, allele_codes)
         #   geno_samples_encoded  <- encode_geno(geno_samples_clean,  allele_codes)
-        all_48 = cc_cols + list(founder_cols) + [f[0] for f in f1_crosses]
+        # axis order: Founders → F1s → CC strains (alphanumeric) — inviolable
+        all_48 = list(founder_cols) + [f[0] for f in f1_crosses] + cc_cols
 
         MISS_CODES = {"N", "-", "nan", ""}
         MISS_LIST = list(MISS_CODES | {"H"})  # excluded when finding a1/a2
@@ -629,7 +630,6 @@ class GenomeCache:
             )
 
         # ── parallel per-chromosome HMM (one worker per chr) ──────────────────
-        import os
         from concurrent.futures import ProcessPoolExecutor
 
         n_proc = min(len(tasks), os.cpu_count() or 4)
