@@ -47,7 +47,7 @@ pip install -e '.[dev]'
 
 Core deps (scan engine): `numpy scipy pandas h5py anndata`  
 Required for CLI and plots: `pydantic click seaborn matplotlib`  
-Optional: `rpy2` (read HAPPY `.RData` genome caches from miQTL/qtl2)
+Optional: `rpy2` (convert existing R-format genome caches to HDF5)
 
 ---
 
@@ -60,12 +60,25 @@ An HDF5 file containing haplotype probabilities (samples × 8 CC founders × loc
 map covering all GigaMUGA marker positions. mosaiQTL loads one chromosome at a time for
 constant-memory scanning.
 
-GigaMUGA marker annotations:
-- [Dryad — GigaMUGA consensus matrix](https://datadryad.org/dataset/doi:10.5061/dryad.689d2)
-- [UWisc v4 annotation](https://github.com/kbroman/MUGAarrays/blob/main/UWisc/gm_uwisc_v4.csv)
+Build a cache from public GigaMUGA reference data (CC mice, mm39):
 
-HAPPY-format caches from miQTL or R/qtl2 can be read directly via `GenomeCache.from_happy_dir()`
-and converted to HDF5 via `cache.to_hdf5('cache.h5')`.
+```bash
+mosaiqtl build-cache --population cc \
+    --data-dir /path/to/GM/ \
+    --cc-cols cc_cols.txt \
+    --output cache.h5
+```
+
+All required input files are freely available from the
+[JAX Diversity Outbred Reference Data](https://www.jax.org/research-and-faculty/genetic-diversity-initiative/tools-data/diversity-outbred-reference-data)
+page. See `docs/DATA_SOURCES.md` for the full provenance chain and file descriptions.
+
+Once built, load in Python with:
+
+```python
+from mosaiqtl.genotype.genomecache import GenomeCache
+cache = GenomeCache.from_hdf5('cache.h5')
+```
 
 **Pseudobulk counts (`--counts data.h5ad`)**  
 A genes × samples count matrix aggregated from your single-cell data. mosaiQTL does not perform
