@@ -4,7 +4,7 @@ build-backend = 'setuptools.build_meta'
 
 [project]
 name = 'mosaiqtl'
-version = '0.6.0'
+version = '0.6.1'
 description = 'Haplotype-based QTL mapping for multiparent populations; NB-GLMM primary, Gaussian LMM port, LOCO kinship'
 license = { text = 'GPL-3.0-or-later' }
 readme = 'README.md'
@@ -14,11 +14,12 @@ dependencies = [
     'scipy>=1.13',
     'pandas>=2.2',
     'h5py>=3.11',
-    'anndata>=0.10',
+    'anndata>=0.11',
     'matplotlib>=3.9',
     'seaborn>=0.13',
     'pydantic>=2.7',
     'click>=8.1',
+    'natsort>=8.4',
 ]
 
 [project.optional-dependencies]
