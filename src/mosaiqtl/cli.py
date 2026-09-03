@@ -1,15 +1,17 @@
 """mosaiQTL command-line interface.
 
-Each subcommand reads/writes HDF5 or CSV; no hidden state between stages.
-Run `mosaiqtl --help` for full option listing.
+Each command below is a self-contained step in the QTL mapping workflow: it
+reads its inputs from files and writes its results to files, so any step can
+be rerun on its own without repeating earlier ones. Run `mosaiqtl --help` for
+the full option listing.
 
-Stage flow
-----------
-1. fit-null  — Stage 1 NB-gamma null fit per gene → phi_shrunk.csv
-2. scan       — Stage 2 genome-wide PQL score scan → peak_lod.csv
-3. permute    — permutation threshold → perm_max_lods.csv
-4. estimate   — haplotype effects at peak loci → allele_effects.csv
-5. report     — eGene summary table + genome-wide Manhattan → eqtl_summary.csv
+Typical order of steps
+-----------------------
+1. fit-null  — per-gene baseline model (no genetic effect) → phi_shrunk.csv
+2. scan       — genome-wide association scan → peak_lod.csv
+3. permute    — significance threshold from shuffled data → perm_max_lods.csv
+4. estimate   — founder strain effects at each gene's peak → allele_effects.csv
+5. report     — summary table + Manhattan plot → eqtl_summary.csv
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ def _setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        format="%(asctime)s,%(msecs)03d %(levelname)-5s [%(module)s] %(message)s",
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
@@ -661,7 +663,25 @@ def estimate(
     "--fdr",
     default=0.05,
     show_default=True,
-    help="LOD threshold for eGene calling (applied after GEV 95th-pct).",
+    help="LOD threshold for eGene calling (applied after GEV 95th-pct); also "
+    "used as the Storey q-value cutoff when --pval-perm is given.",
+)
+@click.option(
+    "--allele-effects",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="allele_effects.csv from `estimate` — merges beta_{founder} effect "
+    "columns into eqtl_peak.csv. Omit to write eqtl_peak.csv with effect "
+    "columns blank.",
+)
+@click.option(
+    "--pval-perm",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="CSV with gene_id,pval_perm columns (per-gene calibrated permutation "
+    "p-value from qtl.permutation.calibrate_gene_pvalue) — enables the "
+    "Storey q-value significance call written into eqtl_peak.csv. Omit to "
+    "leave pval_perm/fdr/significance blank there.",
 )
 @click.option("--verbose", is_flag=True, default=False)
 def report(
@@ -669,18 +689,28 @@ def report(
     perm_dir: Path,
     output_dir: Path,
     fdr: float,
+    allele_effects: Optional[Path],
+    pval_perm: Optional[Path],
     verbose: bool,
 ) -> None:
     """Summary tables + QC plots from a completed scan.
 
     Reads peak_lod.csv + perm directory from prior subcommands.
-    Writes eqtl_summary.csv and genome_summary.png into OUTPUT_DIR.
+    Writes eqtl_summary.csv, genome_summary.png, eqtl_peak.csv, and
+    eqtl_stats.csv into OUTPUT_DIR. eqtl_peak.csv/eqtl_stats.csv populate the
+    IGVF EQTL_PEAK_COLS/EQTL_STATS_COLS schemas from data already produced by
+    this pipeline; the biallelic-contrast fields (variant/ref/ref_founders/
+    alt_founders/af/maf/mac/effect_size/...) stay NaN until the Sanger
+    fine-mapping subsystem supplies real REF/ALT calls.
     """
     _setup_logging(verbose)
     import numpy as np
     import pandas as pd
-    from .pipeline import call_egenes, finalize_egene_summary
+    from .genotype.founders import FOUNDER_ORDER
+    from .io.results_io import write_eqtl_peak, write_eqtl_stats
+    from .pipeline import calibrate_egenes_storey, call_egenes, finalize_egene_summary
     from .qtl.permutation import get_gev_thresholds, load_per_chr_thresholds
+    from .utils import git_hash
 
     peaks = pd.read_csv(scan_result)
     perm_path = perm_dir / "perm_max_lods.csv"
@@ -721,6 +751,76 @@ def report(
         logger.info("genome_summary.png written")
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not produce genome_summary.png: %s", exc)
+
+    # eqtl_peak.csv — IGVF EQTL_PEAK_COLS (minus biallelic-contrast fields)
+    effects_egenes = egenes_df.copy()
+    founder_names = list(FOUNDER_ORDER)
+    if allele_effects is not None:
+        ae = pd.read_csv(allele_effects)
+        beta_cols = [c for c in ae.columns if c.startswith("beta_")]
+        if beta_cols:
+            founder_names = [c[len("beta_"):] for c in beta_cols]
+            join_col = "gene_id" if "gene_id" in ae.columns else "gene_symbol"
+            effects_egenes = effects_egenes.merge(
+                ae[[join_col, *beta_cols]], on=join_col, how="left"
+            )
+        else:
+            logger.warning("%s has no beta_* columns; effect_* left blank", allele_effects)
+    else:
+        logger.info("--allele-effects not given; effect_* columns left blank")
+
+    if pval_perm is not None:
+        pv_series = pd.read_csv(pval_perm).set_index("gene_id")["pval_perm"]
+        effects_egenes = calibrate_egenes_storey(effects_egenes, pv_series, fdr_threshold=fdr)
+    else:
+        logger.info(
+            "--pval-perm not given; pval_perm/fdr/significance left blank in eqtl_peak.csv"
+        )
+
+    write_eqtl_peak(effects_egenes, founder_names, output_dir / "eqtl_peak.csv")
+    logger.info("eqtl_peak.csv written: %d rows", len(effects_egenes))
+
+    # eqtl_stats.csv — IGVF EQTL_STATS_COLS, per-chromosome + genome-wide rows
+    chrom_stats = []
+    for pf in sorted(perm_dir.glob("perm_max_lods_chr*.csv")):
+        chrom = pf.stem.replace("perm_max_lods_chr", "")
+        try:
+            chr_nulls = pd.read_csv(pf)["max_lod"].values
+            chr_thr, params = get_gev_thresholds(chr_nulls)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not fit GEV for chr%s: %s", chrom, exc)
+            continue
+        chr_peaks = (
+            peaks[peaks["chr"].astype(str) == chrom]
+            if "chr" in peaks.columns
+            else peaks.iloc[0:0]
+        )
+        chrom_stats.append(
+            {
+                "chr": chrom,
+                "lod_threshold": chr_thr,
+                "gev_mu": params.get("loc") if params else None,
+                "gev_sigma": params.get("scale") if params else None,
+                "gev_xi": params.get("c") if params else None,
+                "n_genes_scanned": int(len(chr_peaks)),
+                "n_egenes": (
+                    int((chr_peaks["peak_lod"] >= chr_thr).sum())
+                    if chr_thr is not None
+                    else None
+                ),
+                "n_perms": int(len(chr_nulls)),
+            }
+        )
+    genome_stats = {
+        "lod_threshold": gw_thr,
+        "n_genes_scanned": int(len(peaks)),
+        "n_egenes": int(len(egenes_df)),
+        "n_perms": int(len(max_lods)),
+        "fdr_threshold": fdr,
+        "git_hash": git_hash(),
+    }
+    write_eqtl_stats(chrom_stats, genome_stats, output_dir / "eqtl_stats.csv")
+    logger.info("eqtl_stats.csv written: %d rows", len(chrom_stats) + 1)
 
 
 if __name__ == "__main__":

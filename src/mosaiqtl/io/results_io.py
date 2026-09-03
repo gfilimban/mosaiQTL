@@ -1,11 +1,23 @@
-"""results_io — serialisation helpers for QTL scan outputs."""
+"""results_io — helpers for turning scan results into tables for output files."""
 
 from __future__ import annotations
 
+import os
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 import pandas as pd
+from scipy import stats as _sp_stats
+
+from mosaiqtl.pipeline import (
+    _LOCUS_COLS,
+    _SIG_COLS,
+    EQTL_PEAK_COLS,
+    EQTL_STATS_COLS,
+    LOD_COLS,
+)
 
 if TYPE_CHECKING:
     from mosaiqtl.models.records import ScanResult
@@ -20,26 +32,27 @@ def pos_merge(
     right_label: Optional[str] = None,
     round_dp: int = 3,
 ) -> pd.DataFrame:
-    """Inner-join two scan DataFrames on (chr, rounded pos_mb).
+    """join two scan result tables on matching (chromosome, position).
 
-    Deduplicates to the highest-value row per (chr, pos) before joining to
-    avoid many-to-many matches when multiple genes share a locus position.
+    keeps only the highest-value row per (chromosome, position) in each table
+    before joining, so multiple genes sharing a locus don't create duplicate
+    matched rows.
 
-    Parameters
+    parameters
     ----------
     left, right:
         DataFrames that each contain at least ``chr``, ``pos_mb``, and
         the column named by ``left_val`` / ``right_val``.
     left_val, right_val:
-        Column names to extract from each DataFrame.
+        column names to extract from each DataFrame.
     left_label, right_label:
-        Output column names.  When omitted: uses ``left_val`` / ``right_val``
+        output column names. when omitted: uses ``left_val`` / ``right_val``
         directly when they differ; adds ``_left`` / ``_right`` suffixes when
         both names are the same.
     round_dp:
-        Decimal places to round ``pos_mb`` before joining (default 3).
+        decimal places to round ``pos_mb`` to before matching (default 3).
 
-    Returns
+    returns
     -------
     DataFrame with columns ``_chr``, ``_pos``, and the two value columns.
     """
@@ -89,15 +102,211 @@ def scan_result_to_df(
 
     Returns
     -------
-    DataFrame with columns: gene_id, gene_symbol, chr, locus, pos_mb, lod.
+    DataFrame with columns given by ``pipeline.LOD_COLS`` (the single source
+    of truth for this schema — never redefined inline here).
     """
-    return pd.DataFrame(
-        {
-            "gene_id": gene_id,
-            "gene_symbol": gene_symbol,
-            "chr": np.asarray(scan.chromosomes),
-            "locus": np.asarray(scan.locus_ids),
-            "pos_mb": np.asarray(scan.positions),
-            "lod": np.asarray(scan.lod),
-        }
+    values = {
+        "gene_id": gene_id,
+        "gene_symbol": gene_symbol,
+        "chr": np.asarray(scan.chromosomes),
+        "locus": np.asarray(scan.locus_ids),
+        "pos_mb": np.asarray(scan.positions),
+        "lod": np.asarray(scan.lod),
+    }
+    return pd.DataFrame({col: values[col] for col in LOD_COLS})
+
+
+def _atomic_write_csv(df: pd.DataFrame, path: "Path | str") -> None:
+    """Write ``df`` to ``path`` atomically: temp file in the same dir, then rename.
+
+    Parameters
+    ----------
+    df:
+        DataFrame to write (no index column).
+    path:
+        Destination CSV path. Parent directory must already exist.
+    """
+    dest = Path(path)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=dest.parent, prefix=f".{dest.name}.", suffix=".tmp"
     )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            df.to_csv(fh, index=False)
+        os.replace(tmp_name, dest)
+    except Exception:
+        if os.path.exists(tmp_name):
+            os.remove(tmp_name)
+        raise
+
+
+def build_eqtl_peak_df(
+    effects_egenes_df: pd.DataFrame,
+    founder_names: list[str],
+) -> pd.DataFrame:
+    """Reindex a calibrated eGene table to the IGVF ``EQTL_PEAK_COLS`` schema.
+
+    Populates every field derivable from data the scan pipeline already
+    produces, and leaves the haplotype-block-to-biallelic-contrast fields
+    (``variant``, ``ref``, ``effect_allele``, ``other_allele``,
+    ``ref_founders``, ``alt_founders``, ``af``, ``maf``, ``mac``,
+    ``ma_sample``, ``effect_size``, ``se_effect_size``) as NaN — collapsing
+    an 8-founder haplotype dosage locus into a 2-allele contrast is not yet
+    implemented anywhere in the codebase (it depends on the unbuilt Sanger
+    fine-mapping subsystem, ``genotype/interpolation.py`` +
+    ``qtl/imputation.py``, which supplies real REF/ALT calls). Filling those
+    columns here would mean inventing a founder-split rule with no grounding
+    in real variant data.
+
+    Parameters
+    ----------
+    effects_egenes_df:
+        One row per eGene, produced by merging ``pipeline.calibrate_egenes_storey``
+        output (adds ``pval_perm``/``fdr``/``fdr_method``/``significance``) with
+        ``allele_effects.csv`` (``pipeline.ALLELE_EFFECTS_BASE_COLS`` +
+        ``beta_{founder}`` columns) on ``gene_id`` — the same merge pattern
+        already used for plotting in validate_tissue.py. Must contain at
+        least: gene_id, gene_symbol, chr, peak_mb, peak_lod, h2, n_valid,
+        rss0, pval_perm, fdr, fdr_method, significance, and one
+        ``beta_{founder}`` column per entry in ``founder_names``.
+        ``cis_dist_mb`` is carried through when present (e.g. joined from
+        ``peak_lod.csv``); NaN otherwise.
+    founder_names:
+        Display founder names (e.g. from ``_display_founders``) identifying
+        the ``beta_{founder}`` columns to rename to ``effect_{founder}``.
+
+    Returns
+    -------
+    DataFrame with columns given by ``pipeline.EQTL_PEAK_COLS``, in order.
+    """
+    out = pd.DataFrame(index=effects_egenes_df.index)
+    src = effects_egenes_df
+
+    out["chr"] = src.get("chr")
+    out["pos"] = (src["peak_mb"] * 1e6).round().astype("Int64") if "peak_mb" in src else pd.NA
+    out["hard_call_dosage"] = "F"
+    out["gene_id"] = src.get("gene_id")
+    out["gene_symbol"] = src.get("gene_symbol")
+    if "rss0" in src and "n_valid" in src:
+        out["sd_phenotype"] = np.sqrt(src["rss0"] / (src["n_valid"] - 1))
+    out["n_sample"] = src.get("n_valid")
+    out["lod"] = src.get("peak_lod")
+    out["h2_null_chr"] = src.get("h2")
+    if "peak_lod" in src:
+        chi2_haplotype = 2.0 * np.log(10) * src["peak_lod"]
+        out["pval_nominal"] = _sp_stats.chi2.sf(chi2_haplotype, df=len(founder_names) - 1)
+        with np.errstate(divide="ignore"):
+            out["log10p_nominal"] = -np.log10(out["pval_nominal"])
+    out["cis_dist_mb"] = src.get("cis_dist_mb", pd.NA)
+
+    # not yet computable — see docstring
+    for col in (
+        "variant",
+        "ref",
+        "effect_allele",
+        "other_allele",
+        "ref_founders",
+        "alt_founders",
+        "af",
+        "maf",
+        "mac",
+        "ma_sample",
+        "effect_size",
+        "se_effect_size",
+    ):
+        out[col] = pd.NA
+
+    for founder in founder_names:
+        beta_col = f"beta_{founder}"
+        out[f"effect_{founder}"] = src[beta_col] if beta_col in src else pd.NA
+
+    for col in _SIG_COLS:
+        out[col] = src.get(col, pd.NA)
+
+    out["interaction"] = "F"
+    out["interaction_context"] = ""
+    out["conditional"] = ""
+    out["conditional_method"] = ""
+
+    for col in _LOCUS_COLS:
+        if col not in out.columns:
+            out[col] = pd.NA
+
+    return out.reindex(columns=EQTL_PEAK_COLS).reset_index(drop=True)
+
+
+def write_eqtl_peak(
+    effects_egenes_df: pd.DataFrame,
+    founder_names: list[str],
+    out_path: "Path | str",
+) -> pd.DataFrame:
+    """Build the IGVF ``_eqtl_peak.csv`` table and write it atomically.
+
+    See ``build_eqtl_peak_df`` for the field-population rules and the
+    still-NaN haplotype-contrast columns.
+
+    Returns
+    -------
+    The DataFrame that was written (``pipeline.EQTL_PEAK_COLS`` schema).
+    """
+    df = build_eqtl_peak_df(effects_egenes_df, founder_names)
+    _atomic_write_csv(df, out_path)
+    return df
+
+
+def build_eqtl_stats_df(
+    chrom_stats: "list[dict]",
+    genome_stats: "dict | None" = None,
+) -> pd.DataFrame:
+    """Assemble the IGVF ``_eqtl_stats.csv`` table (per-chr + genome-wide rows).
+
+    Parameters
+    ----------
+    chrom_stats:
+        One dict per chromosome, keyed by any subset of
+        ``pipeline.EQTL_STATS_COLS`` (e.g. ``tissue``, ``celltype``, ``chr``,
+        ``lod_threshold``, ``gev_mu``, ``gev_sigma``, ``gev_xi``,
+        ``n_genes_scanned``, ``n_egenes``, ``n_loci``, ``n_perms``). A GEV
+        params dict from ``qtl.permutation.get_gev_thresholds`` uses scipy's
+        ``genextreme`` naming (``loc``/``scale``/``c``) rather than
+        ``gev_mu``/``gev_sigma``/``gev_xi`` — remap before calling this
+        (``loc``→``gev_mu``, ``scale``→``gev_sigma``, ``c``→``gev_xi``,
+        ``threshold``→``lod_threshold``).
+    genome_stats:
+        Optional single dict for the genome-wide summary row (``chr`` set to
+        ``'genome'`` if not already present) — the only row where
+        ``fdr_threshold``/``scan_window_mb``/``scan_seed``/``gencode_version``/
+        ``ensembl_release``/``git_hash`` are populated.
+
+    Returns
+    -------
+    DataFrame with columns given by ``pipeline.EQTL_STATS_COLS``, in order.
+    """
+    rows = list(chrom_stats)
+    if genome_stats is not None:
+        genome_row = dict(genome_stats)
+        genome_row.setdefault("chr", "genome")
+        rows.append(genome_row)
+    out = pd.DataFrame(rows)
+    for col in EQTL_STATS_COLS:
+        if col not in out.columns:
+            out[col] = pd.NA
+    return out.reindex(columns=EQTL_STATS_COLS).reset_index(drop=True)
+
+
+def write_eqtl_stats(
+    chrom_stats: "list[dict]",
+    genome_stats: "dict | None",
+    out_path: "Path | str",
+) -> pd.DataFrame:
+    """Build the IGVF ``_eqtl_stats.csv`` table and write it atomically.
+
+    See ``build_eqtl_stats_df`` for the input dict shapes.
+
+    Returns
+    -------
+    The DataFrame that was written (``pipeline.EQTL_STATS_COLS`` schema).
+    """
+    df = build_eqtl_stats_df(chrom_stats, genome_stats)
+    _atomic_write_csv(df, out_path)
+    return df
