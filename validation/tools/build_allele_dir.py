@@ -12,7 +12,7 @@
 #   then parses 3-row matrix, drops col1 (allele label), uses which.max per
 #   founder column to assign founder allele
 #
-# input: GM_ccfo_mm39.csv
+# input: GM_ccf1fo_mm39.csv
 #   founders are inbred: single nucleotide call = homozygous
 #
 # usage:
@@ -33,7 +33,7 @@ args = ap.parse_args()
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 data_dir   = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/miqtl'
-gm_path    = os.path.join(data_dir, 'input', 'GM_ccfo_mm39.csv')
+gm_path    = os.path.join(data_dir, 'input', 'GM_ccf1fo_mm39.csv')
 allele_dir = os.path.join(data_dir, 'output', 'allele_dir')
 snp_out    = os.path.join(data_dir, 'input',  'snp_genos.csv')
 

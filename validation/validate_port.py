@@ -69,7 +69,7 @@ def _is_done(key):   return not _ap_force and os.path.exists(_done_path(key))
 def _mark_done(key): open(_done_path(key), 'w').close()
 
 # GigaMUGA inputs
-GM_CSV      = os.path.join(miqtl_dir, 'input', 'GM_ccfo_mm39.csv')
+GM_CSV      = os.path.join(miqtl_dir, 'input', 'GM_ccf1fo_mm39.csv')
 GM_GMAP     = os.path.join(miqtl_dir, 'input', 'GM', 'gmap')   # per-chr fallback
 GM_PMAP     = os.path.join(miqtl_dir, 'input', 'GM', 'pmap')   # per-chr fallback
 # flat maps written by build_genomecache.R — used if present (preferred)
