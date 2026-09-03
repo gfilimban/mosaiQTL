@@ -44,7 +44,7 @@ Project: IGVF (Impact of Genomic Variation on Function), Seyedam Lab, UCI.
 | RNA-seq/DNA-seq | Within-transcriptomics mediation |            | Transcriptomics    | mediation.py            | 🟡 implemented    |
 | multi-omics     | Cross-omics mediation (e.g. ATAC → expression) | | Multi-omics | mediation.py       | 🔴 planned        |
 | LR-RNA-seq      | Splicing                         | sQTL       | Transcriptomics    | sqtl.py                 | 🔴 planned        |
-| RNA-seq/DNA-seq | Imputed SNP scan (Sanger-resolution)   |            | Genomics           | genotype/interpolation.py + qtl/imputation.py | 🔴 planned — haplotype prob interpolation to ~70M Sanger SNP positions; ABF + SuSiE-RSS posteriors. Supersedes GigaMUGA dosage scan (`snp_scan.py` deleted). Source: Sanger MGP VCF (mm39, CrossMap liftover from REL-2112). |
+| RNA-seq/DNA-seq | Imputed SNP scan (Sanger-resolution)   |            | Genomics           | genotype/interpolation.py + qtl/imputation.py | 🔴 planned — haplotype prob interpolation to 33,511,156 Sanger SNP positions; ABF + SuSiE-RSS posteriors. Supersedes GigaMUGA dosage scan (`snp_scan.py` deleted). Source: mgp_REL2021_snps_founders.vcf.gz (mm39-native from build, no liftover needed). |
 | ATAC-seq        | Chromatin accessibility          | caQTL      | Genomics           | atac.py                 | 🔴 planned        |
 | dRNA-seq        | RNA modification                 | rmodQTL    | Epigenomics        | mod.py                  | 🔴 planned        |
 | Fiber-seq       | DNA modification                 | dmodQTL    | Epigenomics        | mod.py                  | 🔴 planned        |
@@ -80,12 +80,12 @@ src/mosaiqtl/
 │   ├── hmm.py              # forward-backward HMM (n_gen=1 for CC)
 │   ├── kinship.py          # LOCO, eigendecomp cache, Woodbury identity
 │   ├── founders.py         # FOUNDER_ORDER, FOUNDER_COLORS, F1_COLORS
-│   ├── gm_db.py            # GigaMUGA allele database (GM_ccfo_mm39.csv → HDF5);
+│   ├── gm_db.py            # GigaMUGA allele database (GM_ccf1fo_mm39.csv → HDF5);
 │   │                       # build_founder_allele_db + load_founder_alleles.
 │   │                       # Source: GigaMUGA chip allele calls. Used by haplotype scan
 │   │                       # for GRCm39 ref/alt annotation and SPDI construction.
-│   ├── snp_db.py           # Sanger SNP database (Sanger MGP VCF → HDF5, ~70M positions,
-│   │                       # mm39 via CrossMap liftover from REL-2112);
+│   ├── snp_db.py           # Sanger SNP database (mgp_REL2021_snps_founders.vcf.gz → HDF5,
+│   │                       # 33,511,156 positions, mm39-native from build, no liftover);
 │   │                       # build_snp_db + load_founder_alleles (same API as gm_db).
 │   │                       # Used by imputed SNP scan for Sanger-position allele lookup.
 │   └── interpolation.py    # haplotype probability interpolation to non-cache positions;
@@ -141,7 +141,7 @@ src/mosaiqtl/
 **Planned modality modules** (not yet created):
 ```
 genotype/interpolation.py  # haplotype prob interpolation to Sanger SNP positions
-genotype/snp_db.py         # Sanger MGP VCF → HDF5 allele database (~70M positions, mm39)
+genotype/snp_db.py         # Sanger MGP VCF → HDF5 allele database (33,511,156 positions, mm39)
 qtl/imputation.py          # imputed SNP scan: interpolation → scan_h2lmm → ABF/SuSiE-RSS
 qtl/atac.py                # ATAC-seq Stage 1 — chromatin accessibility QTL
 qtl/sqtl.py                # splicing ratios Stage 1 — sQTL
@@ -450,24 +450,27 @@ Source: UNC Systems Genetics Core / CC Consortium (UNC CGD)
 The three genotype sources are joined into a single marker × sample matrix:
 
 ```
-founders (8)  ← GM_foundergeno{chr}.csv  (A/B/- encoding, re-coded to ACGT via GM_allelecodes.csv)
-CC strains (33) ← UNC CGD consensus calls  (ACGT, missing = N)
-F1s (7)       ← inferred from founder pairs
+founders (8)  ← majority-vote consensus over GigaMUGA_genotypes.csv.gz replicate samples,
+                 mapped via GigaMUGA_founder_metadata.csv (ACGT, unresolved = N)
+CC strains (33) ← UNC CGD consensus calls (CC_consensus_genotypes.csv; ACGT, missing = N)
+F1s (7)       ← inferred from founder columns (not raw F1 samples)
                B6J (dam) × AJ, 129S1J, NODJ, NZOJ, CASTJ, PWKJ, WSBJ
-               F1 call = heterozygous of both parent nucleotides (e.g. T/C)
+               F1 call = '{B6J_call}/{other_founder_call}', or N if either side is N
 ```
 
-Output: `GM_ccfo_mm39.csv` — markers × samples consensus matrix with columns
-`{marker, chr, pos_bp, <CC strains>, <founders>, <F1s>}`.
+Output: `GM_ccf1fo_mm39.csv` — markers × samples consensus matrix with columns
+`{marker, chr, pos_bp, <founders>, <F1s>, <CC strains>}`.
 The exact marker count and strain composition depend on the source files (genome build, QC
 filters, which CC strains were genotyped at the time of the build); they are not hardcoded.
-As of the mm39 CC build: 134,590 markers × 48 samples (33 CC + 8 founders + 7 F1s).
-This file is an intermediate — users do not supply it; `mosaiqtl build-cache` produces it internally.
+As of the mm39 CC build: 133,863 markers × 48 samples (8 founders + 7 F1s + 33 CC).
+This file is an intermediate — users do not supply it; `mosaiqtl build-cache` produces it
+internally. See `docs/DATA_SOURCES.md` for the full provenance chain and
+`validation/tools/build_gm_ccf1fo.py` for the rebuild script.
 
 ### Layer 2 — Marker filtering and genotype encoding
 
 ```
-GM_ccfo_mm39.csv + gmap/ + pmap/
+GM_ccf1fo_mm39.csv + gmap/ + pmap/
   ↓  intersect markers: gm ∩ gmap ∩ pmap
   ↓  find_unique_geno() on FOUNDERS ONLY
        → drop markers monomorphic or fully-missing across 8 founders
@@ -567,6 +570,30 @@ Raw FASTQ (per strain × batch)
   → Leiden clustering + cell-type annotation
   → Pseudo-bulk aggregation: sum raw UMI per unit × category
   → TMM / DESeq2 normalization
+  → Gene-inclusion filter                [validation/tools/convert_h5ad.py::_cpm_filter]
+      A gene passes in a given sample when BOTH hold: CPM > 1 AND raw count >= min_count
+      (default 5, CLI: --min_count). Kept overall when this combined condition holds in
+      >= 20% of samples. Grounded in the GTEx v8 eQTL pipeline convention (TPM > 0.1 AND
+      count >= 6, in >= 20% of samples — github.com/broadinstitute/gtex-pipeline/blob/
+      master/qtl/README.md): CPM alone is gameable by shallow-library samples, where a
+      trivial raw count (e.g. count=1) clears CPM>1 once lib_size < 1e6; the count floor
+      closes that gap without over-penalizing deep-library samples, where a count floor
+      alone would be too lenient. Because CPM = count/lib_size*1e6, the same min_count
+      constant has tissue-dependent relative strictness by design — nearly redundant with
+      CPM>1 at deep median library depth (e.g. ctxhipp, ~4.74M UMI/sample: CPM=1 ≈ count
+      4.74), a genuinely stricter non-redundant bar at shallower depth (e.g. gastroc,
+      ~1.77M UMI/sample: CPM=1 ≈ count 1.77) — it automatically scales its bite to each
+      tissue's sequencing depth rather than applying one fixed absolute standard.
+      Applied identically at whole-tissue granularity (`convert()`) and per-cell-type
+      granularity (`convert_celltype()`, on the CT's valid-sample subset) via the same
+      `_cpm_filter()` function — gene inclusion logic never diverges between the two.
+      `init_celltypes()` (the shared whole-tissue gene universe written once, before any
+      per-CT split) applies NO CPM filter — a cross-CT threshold would incorrectly drop
+      genes that are only expressed in one cell type.
+      Validated against gastroc real data (2026-08): unifying the whole-tissue gate from
+      CPM-only to the combined CPM+count gate at min_count=5 drops 3,014 / 17,745 genes
+      (17.0%), gains 0 — judged an acceptable, intentional tightening for statistically
+      accurate inference, not a regression.
   → Output: per-cell-type AnnData (adata.raw = raw counts) + sample metadata CSV
 
 [mosaiQTL BOUNDARY — inputs below here]

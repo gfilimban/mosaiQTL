@@ -9,9 +9,10 @@
 
 | Resource | URL | Contents |
 |---|---|---|
-| JAX Diversity Outbred Reference Data | https://www.jax.org/research-and-faculty/genetic-diversity-initiative/tools-data/diversity-outbred-reference-data | **Primary** source for all GigaMUGA reference files: `gm_uwisc_v4.csv` (marker positions on GRCm39 + Cox genetic map), `GigaMUGA_founder_consensus_genotypes.csv.gz` (8 CC/DO founder consensus calls), `GigaMUGA_genotypes.csv.gz` (280 reference samples, ACGT), `CC_consensus_genotypes.csv` (76 CC strain consensus calls), `cc_sample_metadata.csv` (funnel codes + Mt/Y origin), `cc_variants_grcm39_ens104.sqlite` (Sanger REL2021 SNPs/indels for fine-mapping). Sanger SNP VCF: `mgp_REL2021_snps.vcf.gz` (GRCm39). |
+| JAX Diversity Outbred Reference Data | https://www.jax.org/research-and-faculty/genetic-diversity-initiative/tools-data/diversity-outbred-reference-data | **Primary** source for all GigaMUGA reference files: `gm_uwisc_v4.csv` (marker positions on GRCm39 + Cox genetic map), `GigaMUGA_genotypes.csv.gz` (280 reference samples, raw per-sample ACGT/H/N calls — founder and F1 consensus is computed from this file + `GigaMUGA_founder_metadata.csv`, not from a separate pre-consensused file), `GigaMUGA_founder_metadata.csv` (sample → strain/letter mapping), `CC_consensus_genotypes.csv` (76 CC strain consensus calls), `cc_sample_metadata.csv` (funnel codes + Mt/Y origin). |
+| Sanger Mouse Genomes Project REL2021 | https://www.sanger.ac.uk/data/mouse-genomes-project/ | **Canonical Sanger MGP SNP reference**: `mgp_REL2021_snps_founders.vcf.gz` — built directly against GRCm39 (`bcftools mpileup -f Mus_musculus.GRCm39.dna.toplevel.fa.gz`, VEP-annotated Ensembl 104, high-confidence `FI=1` sites only, subset to the 7 non-reference CC/DO founders; C57BL/6J is absent because it *is* the GRCm39 reference and its genotype is implicitly REF/REF everywhere). No liftover is needed — the file is mm39-native from build. 33,511,156 SNPs genome-wide. |
 
-See `docs/DATA_SOURCES.md` for the complete derivation chain from these files to `GM_ccfo_mm39_comprehensive.csv`.
+See `docs/DATA_SOURCES.md` for the complete derivation chain from these files to `GM_ccf1fo_mm39.csv`.
 
 ---
 
