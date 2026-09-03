@@ -41,8 +41,9 @@ def prob_heatmap(
     """Haplotype dosage heatmap at a single locus, optionally sorted by phenotype.
 
     Founders are on the y-axis; samples (sorted ascending by phenotype) are on
-    the x-axis.  A secondary x-axis on top shows phenotype values at five
-    quantile positions, matching the miQTL ``prob.heatmap`` layout.
+    the x-axis. A secondary x-axis on top shows phenotype values at five
+    quantile positions, so it's clear those numbers are trait values rather
+    than genomic positions.
 
     Parameters
     ----------
@@ -76,15 +77,15 @@ def prob_heatmap(
         width = max(5.0, n_strains_in * 0.18)
         _, ax = plt.subplots(figsize=(width, 3.5), dpi=300)
 
-    mat = np.asarray(hap_probs, dtype=float)  # (n_strains, J)
+    mat = np.asarray(hap_probs, dtype=float)
     pheno_sorted: Optional[np.ndarray] = None
     if phenotype is not None:
         order = np.argsort(phenotype)
         mat = mat[order]
         pheno_sorted = phenotype[order]
 
-    # founders on y-axis (rows), strains on x-axis (columns) — matches miQTL layout
-    mat = mat.T  # (J, n_strains)
+    # transpose so founders are rows (y-axis) and strains are columns (x-axis)
+    mat = mat.T
     J = mat.shape[0]
     n_strains = mat.shape[1]
 
@@ -93,16 +94,13 @@ def prob_heatmap(
     )
     plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label="Haplotype Dose")
 
-    # y-axis: founder names
     ax.set_yticks(np.arange(J))
     ax.set_yticklabels(founders, fontsize=7)
 
-    # x-axis bottom: samples label; no individual ticks
     ax.set_xticks([])
     ax.set_xlabel("Strains (sorted by haplotype probability)", fontsize=8)
 
-    # x-axis top: trait values at 5 quantile-spaced sample positions
-    # — makes clear the numbers are trait values, not genomic coordinates
+    # show trait values at 5 evenly spaced sample positions on a second x-axis
     if pheno_sorted is not None and n_strains >= 5:
         ax_top = ax.twiny()
         tick_cols = np.linspace(0, n_strains - 1, 5).astype(int)
@@ -115,7 +113,7 @@ def prob_heatmap(
         ax_top.set_xlabel(f"{phenotype_id} (trait value)", fontsize=7, labelpad=4)
         _set_font(ax_top)
 
-    # title: gene name prominent; locus position secondary
+    # title shows gene name first, locus position second
     loc_parts = []
     if chrom:
         loc_parts.append(f"Chr {chrom}")

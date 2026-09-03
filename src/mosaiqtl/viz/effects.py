@@ -30,7 +30,12 @@ def _set_font(ax: plt.Axes) -> None:
 
 
 def _recover_full_betas(betas: np.ndarray) -> np.ndarray:
-    """Recover J-th founder via sum-to-zero: beta_J = -sum(betas[:J-1])."""
+    """Fill in the missing founder's effect so all effects sum to zero.
+
+    Founder effects are estimated relative to each other, so one founder is
+    left out of the model and its effect is whatever makes the group sum to
+    zero (it's not fixed at zero by assumption).
+    """
     return np.append(betas, -betas.sum())
 
 
@@ -87,12 +92,12 @@ def coef_profile(
     positions = positions[order]
     betas = betas[order]
 
-    # accept (n_loci, J) sum-to-zero betas or legacy (n_loci, J-1)
+    # fill in the missing founder's effect if it wasn't included
     j = len(founders)
     if betas.shape[1] == j - 1:
         full = np.column_stack([betas, -betas.sum(axis=1)])
     else:
-        full = betas  # already J columns
+        full = betas
 
     for fi, fname in enumerate(founders):
         color = FOUNDER_COLORS.get(fname, COLOR_CC_FALLBACK)
@@ -244,7 +249,7 @@ def effect_bars(
 
     colors = [FOUNDER_COLORS.get(f, COLOR_CC_FALLBACK) for f in founders]
     x = np.arange(J)
-    # compute range first so text placement is correct
+    # get the axis range first so annotation text placement is correct
     y_abs_max = float(np.nanmax(np.abs(full_b))) * 1.2 or 1.0
     ax.bar(
         x,
@@ -616,12 +621,12 @@ def haplotype_sex_profile(
 
 
 # ---------------------------------------------------------------------------
-# Per-chromosome and grid summaries
+# per-chromosome and grid summaries
 # ---------------------------------------------------------------------------
 
 
 def _eff_chr_sort_key(c: str) -> tuple[int, int]:
-    """Chromosome sort key matching _CHR_ORDER (1–19 then X)."""
+    """sort key for chromosomes in biological order: 1 through 19, then X."""
     try:
         return (0, _CHR_ORDER.index(c))
     except ValueError:

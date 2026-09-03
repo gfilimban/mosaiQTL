@@ -1,21 +1,19 @@
 """
 snp_db — founder allele database for haplotype-imputed SNP fine-mapping
 
-Reads a genotyping-array founder-genotype CSV (marker, chr, pos_bp,
-+ one column per founder), links each SNP to its nearest genome cache
-locus (direct join — computed once at build time), and writes an HDF5
-database keyed by chromosome.
+reads a genotyping-array file listing which allele each founder strain
+carries at each SNP, matches each SNP to the nearest marker already in the
+genome cache (done once, up front, not on every scan), and saves the result
+as an HDF5 file organized by chromosome.
 
-Population-agnostic: founder column names and order come from the
-Population instance (models/config.py), not from hard-coded CC constants.
-Works for any MPP (CC, DO, MAGIC, custom) provided the CSV columns match
-Population.founders.
+works for any multi-founder population, not just the Collaborative Cross:
+founder names and their order always come from the Population definition
+rather than being hard-coded here.
 
-At scan time, load_founder_alleles() returns the per-chromosome DataFrame
-that imputed_snp_scan_h2lmm() consumes as its snp_genos argument.
+at scan time, load_founder_alleles() reads this file back in and hands the
+result to the SNP scan function.
 
-Design: qtl2::index_snps() direct-join pattern.
-See docs/REFERENCES.md §SNP FINE-MAPPING.
+see docs/REFERENCES.md, SNP fine-mapping section, for background.
 """
 
 from __future__ import annotations
@@ -47,9 +45,10 @@ def _resolve_founders(
     population: "Population | None",
     founder_cols: list[str] | None,
 ) -> list[str]:
-    """Return the ordered founder column list to use.
+    """decide which founder names/order to use, in priority order.
 
-    Priority: explicit founder_cols > Population.founders > cache.founders.
+    priority: an explicit list passed in, then the Population definition,
+    then whatever the genome cache itself already has.
     """
     if founder_cols is not None:
         return list(founder_cols)
@@ -59,7 +58,7 @@ def _resolve_founders(
 
 
 def _n_alleles(row: np.ndarray) -> int:
-    """Count distinct non-missing alleles in a founder row."""
+    """count how many distinct alleles a founder row carries (ignoring missing calls)."""
     return len({a for a in row if a not in ("N", "H", "")})
 
 
@@ -76,33 +75,32 @@ def build_founder_allele_db(
     founder_cols: list[str] | None = None,
     max_dist_mb: float = 0.5,
 ) -> dict:
-    """Build a founder allele HDF5 database from a genotyping-array CSV.
+    """build a founder allele database from a genotyping-array file.
 
-    Each SNP is linked to its nearest genome cache locus by physical position
-    (direct join — computed once here, not at every scan call).
+    each SNP is matched to the nearest genome cache marker by physical
+    position, computed once here rather than at every scan.
 
-    Filtered out at build time:
-      - monomorphic SNPs (all founders carry the same non-N allele)
-      - SNPs with >2 distinct non-N alleles across founders
-      - SNPs whose nearest cache locus is > max_dist_mb away
+    SNPs are dropped if:
+      - every founder carries the same allele (no information to use)
+      - more than 2 distinct alleles appear across founders
+      - the nearest cache marker is farther than max_dist_mb away
 
     parameters
     ----------
-    gm_csv       : path to founder-genotype CSV.
-                   required columns: marker, chr, pos (bp), + one column per
-                   founder in the resolved founder list.
-    genomecache  : GenomeCache  supplies per-chromosome locus positions.
-    out_h5       : path for the output HDF5 file (created or overwritten).
+    gm_csv       : path to the founder-genotype CSV.
+                   required columns: marker, chr, pos (bp), plus one column
+                   per founder strain.
+    genomecache  : GenomeCache  supplies marker positions per chromosome.
+    out_h5       : output HDF5 path (created or overwritten).
     population   : Population or None
-                   when provided, Population.founders defines the expected
-                   founder column names and their order.  takes precedence
-                   over cache.founders.
+                   when given, its founder list and order take precedence
+                   over the cache's own founder list.
     founder_cols : list[str] or None
-                   explicit override for founder column names when they differ
-                   from both Population.founders and cache.founders (e.g.
-                   a non-CC array with custom strain naming).  takes precedence
-                   over population and cache.
-    max_dist_mb  : SNPs farther than this from the nearest cache locus are
+                   explicit override for founder column names, for cases
+                   where they don't match either the Population or the
+                   cache (e.g. a custom strain-naming scheme). takes
+                   precedence over both.
+    max_dist_mb  : SNPs farther than this from the nearest cache marker are
                    dropped (default 0.5 Mb).
 
     returns
@@ -128,7 +126,8 @@ def build_founder_allele_db(
     n_raw = len(raw)
     raw["pos_mb"] = raw["pos"] / 1e6
 
-    # ── filter monomorphic and multiallelic ───────────────────────────────────
+    # drop SNPs that are uninformative (same allele in all founders) or not
+    # biallelic (more than 2 distinct alleles)
     founder_calls = raw[fcols].values
     n_alleles = np.array(
         [_n_alleles(founder_calls[i]) for i in range(len(founder_calls))]
@@ -146,7 +145,7 @@ def build_founder_allele_db(
         len(raw),
     )
 
-    # ── direct join: link each SNP to nearest cache locus ────────────────────
+    # match each SNP to its nearest genome cache marker
     n_too_far = 0
     n_written = 0
     per_chr: dict[str, int] = {}
@@ -164,7 +163,7 @@ def build_founder_allele_db(
         )
 
         for chrom in genomecache.chromosomes:
-            # strip 'chr' prefix for CSV matching (CSV may use '1' not 'chr1')
+            # the CSV may label chromosomes '1' while the cache uses 'chr1'
             chr_key = chrom.lstrip("chr")
             chr_snps = raw[raw["chr"] == chr_key].copy()
             if len(chr_snps) == 0:
@@ -173,9 +172,8 @@ def build_founder_allele_db(
             lids_cache, pos_cache, _ = genomecache.get_chromosome(chrom)
             snp_pos = chr_snps["pos_mb"].to_numpy()
 
-            # nearest cache locus via searchsorted.
-            # Cache positions may be unsorted (HAPPY format stores loci in R's
-            # internal order, not genomic order).  Sort first, then map back.
+            # find the nearest cache marker for each SNP position; cache
+            # positions aren't guaranteed sorted, so sort first and map back
             sort_ord = np.argsort(pos_cache)
             pos_sorted = pos_cache[sort_ord]
 
@@ -185,7 +183,8 @@ def build_founder_allele_db(
             dist_l = np.abs(pos_sorted[idx_l] - snp_pos)
             best_sorted = np.where(dist_l <= dist_r, idx_l, idx_r)
             best_dist = np.minimum(dist_l, dist_r)
-            # map sorted indices back to original cache array indices
+            # translate positions in the sorted order back to the cache's
+            # original marker order
             best = sort_ord[best_sorted]
 
             close = best_dist <= max_dist_mb
@@ -260,9 +259,9 @@ def load_founder_alleles(
     h5_path: str | Path,
     chrom: str | None = None,
 ) -> pd.DataFrame:
-    """Load founder allele database for one or all chromosomes.
+    """load founder allele database for one or all chromosomes.
 
-    Founder column names and order are read from the HDF5 metadata —
+    founder column names and order are read from the HDF5 metadata —
     no population-specific assumptions at load time.
 
     parameters
@@ -288,7 +287,7 @@ def load_founder_alleles(
         n_f = len(fcols)
 
         def _decode(arr: np.ndarray) -> np.ndarray:
-            """Decode bytes elements to str, leaving str elements unchanged."""
+            """decode bytes elements to str, leaving str elements unchanged."""
             return np.array(
                 [v.decode() if isinstance(v, bytes) else v for v in arr]
             ).astype(str)

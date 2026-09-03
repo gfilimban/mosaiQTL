@@ -482,7 +482,7 @@ def calc_genoprob_cc(
 
     for s in range(n_cc):
         if s % 5 == 0:
-            log.debug(f"  strain {s+1}/{n_cc}")
+            log.debug(f"calc_genoprob_cc: strain {s+1}/{n_cc} ({100.0*(s+1)/n_cc:.1f}%)")
         obs = np.array([obs_map.get(str(g), -1) for g in geno_matrix[:, s]])
         # (n_markers, n_states) posterior diplotype probs + forward/backward state
         gamma, alpha, beta = forward_backward(obs, E, T_list, init)

@@ -53,7 +53,7 @@ logger = logging.getLogger("mosaiqtl")
 # gene_symbol is display-only (e.g. 'Ankrd39'); not guaranteed unique.
 # ─────────────────────────────────────────────────────────────────────────────
 
-LOD_COLS: list[str] = ["gene_id", "chr", "locus", "pos_mb", "lod"]
+LOD_COLS: list[str] = ["gene_id", "gene_symbol", "chr", "locus", "pos_mb", "lod"]
 
 ALLELE_EFFECTS_BASE_COLS: list[str] = [
     "gene_id",
@@ -163,10 +163,10 @@ _FOUNDER_EFFECT_COLS: list[str] = [
 
 # Gene-level significance — carried from haplotype scan, not re-estimated at Sanger
 _SIG_COLS: list[str] = [
-    "pval_perm",  # gene-level permutation p-value
-    "fdr",  # BH FDR across all scanned genes (SWE-09: Storey q-value planned)
-    "fdr_method",  # constant 'BH'
-    "significance",  # 'T' if passed LOD threshold AND fdr < 0.05
+    "pval_perm",  # Beta-calibrated per-gene permutation p-value
+    "fdr",  # Storey q-value across all genes that cleared the Stage-1 GEV gate
+    "fdr_method",  # constant 'storey'
+    "significance",  # 'T' if fdr <= fdr_threshold
 ]
 
 # Run-level metadata — constant for the whole file; peak/submission rows only
@@ -252,6 +252,7 @@ __all__ = [
     "EQTL_FINEMAPPING_PEAK_COLS",
     "EQTL_STATS_COLS",
     "call_egenes",
+    "calibrate_egenes_storey",
     "finalize_egene_summary",
     "discover",
     "characterize",
@@ -308,7 +309,14 @@ def call_egenes(
     effects_df: "pd.DataFrame | None" = None,
     lod_col: str = "peak_lod",
 ) -> pd.DataFrame:
-    """Apply a LOD threshold and return one row per called eGene.
+    """Apply a genome-wide LOD threshold — the coarse Stage-1 promotion gate.
+
+    A raw threshold comparison is cheap but treats every gene as though it
+    shares one null distribution, which is not statistically valid for a
+    final FDR call. Genes cleared here are candidates for the expensive
+    per-gene Beta+Storey calibration in calibrate_egenes_storey(), which
+    produces the real significance call; this function alone is not a
+    final eGene list.
 
     Parameters
     ----------
@@ -326,8 +334,8 @@ def call_egenes(
     Returns
     -------
     DataFrame with columns [gene_id, gene_symbol, chr, peak_locus, peak_mb,
-    peak_lod, ...] — one row per called eGene; positional columns NaN only if
-    absent from both inputs
+    peak_lod, ...] — one row per gene clearing the Stage-1 gate; positional
+    columns NaN only if absent from both inputs
     """
     egenes = peak_lod_df[peak_lod_df[lod_col] >= threshold].copy()
     pos_cols = ("chr", "peak_locus", "peak_mb")
@@ -337,6 +345,56 @@ def call_egenes(
         if len(fill_cols) > 1:
             egenes = egenes.merge(effects_df[fill_cols], on="gene_id", how="left")
     return egenes.reset_index(drop=True)
+
+
+def calibrate_egenes_storey(
+    egenes_df: pd.DataFrame,
+    pval_perm: "dict[str, float] | pd.Series",
+    gene_col: str = "gene_id",
+    fdr_threshold: float = 0.05,
+) -> pd.DataFrame:
+    """Populate the significance block (_SIG_COLS) via per-gene Beta + Storey.
+
+    Stage-2 of eGene calling: takes genes that already cleared call_egenes'
+    Stage-1 threshold gate, attaches their per-gene Beta-calibrated
+    permutation p-value (produced upstream, one call to
+    qtl.permutation.calibrate_gene_pvalue per gene), estimates π₀ and
+    q-values across them via Storey's method, and gates the final
+    significance call on q ≤ fdr_threshold rather than the raw LOD.
+
+    Parameters
+    ----------
+    egenes_df     : DataFrame from call_egenes — must contain gene_col.
+    pval_perm     : dict or Series {gene_col value: p_adj} — the calibrated
+        p-value for each gene, as returned by
+        qtl.permutation.calibrate_gene_pvalue.
+    gene_col      : join key present in both egenes_df and pval_perm.
+    fdr_threshold : q-value cutoff for significance (default 0.05).
+
+    Returns
+    -------
+    DataFrame — egenes_df with pval_perm, fdr, fdr_method, significance
+    columns added/overwritten (_SIG_COLS).
+    """
+    from .qtl import fdr as fdr_module
+
+    out = egenes_df.copy()
+    pv = pval_perm if isinstance(pval_perm, pd.Series) else pd.Series(pval_perm)
+    out["pval_perm"] = out[gene_col].map(pv)
+
+    q_values, pi0 = fdr_module.storey_qvalue(out["pval_perm"].to_numpy())
+    out["fdr"] = q_values
+    out["fdr_method"] = "storey"
+    out["significance"] = np.where(out["fdr"] <= fdr_threshold, "T", "F")
+
+    logger.info(
+        "calibrate_egenes_storey: n_genes=%d  pi0=%.4f  n_egenes(fdr<=%.2f)=%d",
+        len(out),
+        pi0,
+        fdr_threshold,
+        int((out["significance"] == "T").sum()),
+    )
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────

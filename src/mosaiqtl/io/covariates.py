@@ -55,11 +55,11 @@ def build_covariate_matrix(
         captures library size, batch, and other latent confounders jointly.
         0 to disable. requires pseudobulk_counts when > 0.
     n_genotype_pcs : int
-        number of genotype PCs for population structure correction.
+        number of genotype PCs to correct for population structure.
         0 to disable. requires kinship_matrix and kinship_sample_ids when > 0.
-        informative for DO, MPP, F2, and structured populations only —
-        not permitted for CC: LOCO kinship already captures all structure.
-        requires population to be set when > 0.
+        only meaningful for populations with residual structure beyond LOCO
+        kinship (e.g. DO, F2); not permitted for CC, where LOCO kinship
+        already captures all structure. requires population to be set when > 0.
     population : str, Population, or None
         population design. accepts a Population instance (preferred) or a
         string name ('cc', 'do', 'mpp', 'f2', 'structured').
@@ -155,24 +155,24 @@ def build_covariate_matrix(
 
 
 def encode_sex(series: "pd.Series") -> "pd.Series":
-    """Encode a sex column to float (Male/M/0 → 0.0, Female/F/1 → 1.0).
+    """encode a sex column to float (male → 0.0, female → 1.0).
 
-    Accepts any of: 'Male'/'Female', 'M'/'F', 'm'/'f', 0/1, 0.0/1.0.
-    Unknown values map to 0.0 (treated as male); a warning is logged.
+    accepts any of: 'Male'/'Female', 'M'/'F', 'm'/'f', 0/1, 0.0/1.0.
+    unrecognised values default to 0.0 (male) with a logged warning.
 
-    Parameters
+    parameters
     ----------
     series : pd.Series
-        Raw sex column from sample metadata.
+        raw sex column from sample metadata.
 
-    Returns
+    returns
     -------
     pd.Series
-        Float64 series with same index, values in {0.0, 1.0}.
+        float64 series with same index, values in {0.0, 1.0}.
     """
 
     def _map(v: object) -> float:
-        """Map a sex value (string label or numeric) to 0.0 (male) or 1.0 (female)."""
+        """map a sex value (string label or numeric) to 0.0 (male) or 1.0 (female)."""
         if isinstance(v, (int, float, np.integer, np.floating)):
             return float(v)
         s = str(v).strip().lower()
@@ -192,28 +192,28 @@ def build_sex_dataset_covariates(
     dataset_col: str = "dataset",
     dataset_categories: "list[str] | None" = None,
 ) -> "np.ndarray":
-    """Build a covariate matrix aligned to ``sample_order`` for sex + dataset design.
+    """build a covariate matrix aligned to ``sample_order`` for a sex + dataset model.
 
-    Matches R formula ``~ sex + dataset`` with Founder as reference level.
+    the reference (dropped) dataset category is Founder.
 
-    Parameters
+    parameters
     ----------
     meta :
-        Sample metadata DataFrame; must contain ``sample_id``, ``sex``, and
+        sample metadata DataFrame; must contain ``sample_id``, ``sex``, and
         the column named by ``dataset_col``.
     sample_order :
-        Ordered list of sample IDs; defines the row order of the output.
+        ordered list of sample IDs; defines the row order of the output.
     dataset_col :
-        Column in ``meta`` holding the dataset/batch label (default ``'dataset'``).
+        column in ``meta`` holding the dataset/batch label (default ``'dataset'``).
     dataset_categories :
-        Ordered category list for the dataset column; the first entry becomes
-        the reference level (dropped in dummies).  Defaults to
+        ordered category list for the dataset column; the first entry becomes
+        the reference level (dropped in dummies). defaults to
         ``['Founder', 'CC1', 'CC2', 'CC3', 'F1']``.
 
-    Returns
+    returns
     -------
     np.ndarray  (n_samples, n_covariates)
-        Columns: sex (0=F, 1=M), then one-hot dataset dummies (reference dropped).
+        columns: sex (0=F, 1=M), then one-hot dataset dummies (reference dropped).
     """
     import pandas as pd
 
@@ -232,7 +232,7 @@ def build_sex_dataset_covariates(
 
 
 def _loco_sufficient(population: Optional[Union[str, Population]]) -> bool:
-    """Return True when LOCO kinship fully absorbs population structure.
+    """return True when LOCO kinship fully absorbs population structure.
 
     accepts a Population instance (preferred) or a string name for backward
     compatibility. the string path treats 'cc' as loco_sufficient=True since
@@ -246,7 +246,7 @@ def _loco_sufficient(population: Optional[Union[str, Population]]) -> bool:
 
 
 def _check_nan(df: pd.DataFrame, col: str) -> None:
-    """Raise MissingCovariateError if any value in col is NaN."""
+    """raise MissingCovariateError if any value in col is NaN."""
     bad = df.index[df[col].isna()].tolist()
     if bad:
         raise MissingCovariateError(f"NaN in covariate '{col}' for samples: {bad}")
@@ -276,7 +276,7 @@ def _expression_pcs(
 
     n_components = min(n_pcs, min(normed.shape) - 1)
     _, _, vt = svds(normed, k=n_components)
-    scores = normed @ vt[::-1].T  # svds returns ascending order — reverse
+    scores = normed @ vt[::-1].T  # svds ranks smallest-to-largest, so reverse
 
     cols = [f"expr_pc{i + 1}" for i in range(n_components)]
     return pd.DataFrame(scores, index=sample_ids, columns=cols)
@@ -290,8 +290,9 @@ def _genotype_pcs(
 ) -> pd.DataFrame:
     """top-n eigenvectors of the genome-wide kinship matrix.
 
-    captures population structure for DO, MPP, F2, and structured populations.
-    eigh returns ascending eigenvalues — reversed to get top structure first.
+    captures leftover population structure not already absorbed by LOCO
+    kinship. eigenvalues come back smallest-to-largest, so they're reversed
+    to put the strongest structure first.
     """
     k_df = pd.DataFrame(
         kinship_matrix, index=kinship_sample_ids, columns=kinship_sample_ids

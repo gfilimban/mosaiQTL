@@ -1,13 +1,16 @@
 """
-effects — allele haplotype effect estimation and locus characterization
+effects — per-founder haplotype effect estimation and locus characterization
 
-two estimation methods for haplotype effects:
+estimates how much each founder strain's haplotype shifts the phenotype at
+a given locus, two ways:
 
-  fixef: γ̂ = G⁺ c   (pseudoinverse; identical to genome scan betas at that locus)
-  ranef: γ̂ = (G + λI)⁻¹ c   (ridge/BLUP; λ = σ²_e / σ²_a from empirical Bayes)
+  fixef: a direct least-squares estimate, identical to the effect sizes the
+         genome scan itself reports at that locus.
+  ranef: a shrunk (ridge/BLUP) estimate that pulls noisy per-founder effects
+         toward zero, weighted by how much real signal vs. noise is present.
 
-both use the FWL-rotated gram matrix G = H_perp'H_perp and cross-term
-c = H_perp'e₀ derived from the LOCO-LMM eigendecomp at the requested locus.
+both build on the same residualized, kinship-corrected regression used by
+the genome-wide scan, evaluated at one specific locus.
 """
 
 from __future__ import annotations
@@ -43,12 +46,16 @@ def _locus_fwl(
     eigvecs: np.ndarray,
     h2: float,
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    """FWL gram matrix and residual cross-term at one locus.
+    """residualize haplotype probabilities and phenotype at one locus.
+
+    removes the covariate and kinship structure from both the haplotype
+    probabilities and the phenotype, then returns the quantities needed to
+    solve for founder effects.
 
     returns (c, G, rss0) where:
-      c    = H_perp' e₀  — (J,) cross-term
-      G    = H_perp' H_perp — (J, J) weighted gram matrix
-      rss0 = null model RSS
+      c    = cross-term between residual haplotype probs and residual phenotype
+      G    = (J, J) gram matrix of residual haplotype probabilities
+      rss0 = residual sum of squares of the null model (no haplotype effect)
     """
     delta = h2 / max(1.0 - h2, 1e-10)
     w_sqrt = 1.0 / np.sqrt(delta * eigvals + 1.0)
@@ -67,11 +74,11 @@ def _locus_fwl(
     e0 = yt - xt @ beta_null
     rss0 = float(e0 @ e0)
 
-    xt_pinv = np.linalg.solve(xtwx, xt.T)  # (p, n)
-    h_perp = ht - xt @ (xt_pinv @ ht)  # (n, J)
+    xt_pinv = np.linalg.solve(xtwx, xt.T)
+    h_perp = ht - xt @ (xt_pinv @ ht)  # haplotype probs with covariates removed
 
-    c = h_perp.T @ e0  # (J,)
-    G = h_perp.T @ h_perp  # (J, J)
+    c = h_perp.T @ e0
+    G = h_perp.T @ h_perp
     return c, G, rss0
 
 
@@ -106,10 +113,10 @@ def get_allele_effects(
     sample_ids     : list of str or None
         replicate sample IDs; when provided phenotype/covariates are
         reduced to strain means via Z before the refit.
-    use_rint       : bool   apply RINT transform
+    use_rint       : bool   rank-normalize the phenotype before scanning
     method         : str    'fixef' (default) or 'ranef'
-        fixef: γ̂ = G⁺ c  (pseudoinverse; matches scan betas exactly)
-        ranef: γ̂ = (G + λI)⁻¹ c  (ridge/BLUP; empirical-Bayes λ)
+        fixef: direct least-squares estimate, matches the scan's own effects
+        ranef: shrunk ridge/BLUP estimate, weighted by signal vs. noise
     h2             : float or None   pre-estimated null h²; re-estimated if None
     founder_names  : list of str or None   defaults to genomecache.founders
 
@@ -128,7 +135,7 @@ def get_allele_effects(
         len(founder_names),
     )
 
-    # ── resolve Z and validity ────────────────────────────────────────────────
+    # map replicate samples onto strains and mark which ones are usable
     sid = list(sample_ids) if sample_ids is not None else list(genomecache.sample_ids)
     cache_ids = list(genomecache.sample_ids)
     if sid == cache_ids:
@@ -152,28 +159,27 @@ def get_allele_effects(
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((len(y), 1)), x])
 
-    # replicate-aware: strain-mean transform
+    # when replicates exist, collapse them to per-strain means first
     if z_sub is not None:
         r_counts = z_sub.sum(axis=0)
         y = (z_sub.T @ y) / r_counts
         x = (z_sub.T @ x) / r_counts[:, None]
 
-    # ── kinship eigendecomp (already at strain level) ─────────────────────────
+    # kinship eigendecomposition for this chromosome (already at strain level)
     ev = kinship_decomp[chrom]["values"]
     evc = kinship_decomp[chrom]["vectors"]
 
-    # ── estimate h² if not provided ──────────────────────────────────────────
+    # estimate the null heritability if the caller didn't already supply one
     if h2 is None:
         h2, _ = lmm_module.estimate_h2_null(evc.T @ y, evc.T @ x, ev)
 
-    # ── haplotype probs at locus (strain-level, J columns) ───────────────────
+    # haplotype probabilities at this locus (strain level, one column per founder)
     lids, _, probs_chr = genomecache.get_chromosome(chrom)
     matches = np.where(lids == locus_id)[0]
     if len(matches) == 0:
         raise ValueError(f"locus {locus_id!r} not found on chr {chrom!r}")
-    h = probs_chr[int(matches[0])]  # (m, J) — strain level
+    h = probs_chr[int(matches[0])]
 
-    # ── FWL gram matrix and cross-term ────────────────────────────────────────
     c, G, rss0 = _locus_fwl(y, x, h, ev, evc, h2)
     n = len(y)
     p = x.shape[1]
@@ -189,7 +195,7 @@ def get_allele_effects(
             locus_id,
         )
 
-    # ── solve for betas and compute covariance ────────────────────────────────
+    # solve for per-founder effects and their standard errors
     if method == "fixef":
         G_pinv = np.linalg.pinv(G, rcond=1e-10)
         betas = G_pinv @ c
@@ -197,13 +203,13 @@ def get_allele_effects(
         sigma2 = rss1 / max(n - p - q, 1)
         cov_b = sigma2 * G_pinv
     elif method == "ranef":
-        # ridge with λ = σ²_e / σ²_a (empirical-Bayes signal-to-noise)
+        # shrink toward zero by an amount set from the ratio of residual
+        # noise to estimated true signal (empirical-Bayes ridge penalty)
         G_pinv = np.linalg.pinv(G, rcond=1e-10)
         b_fix = G_pinv @ c
         rss1 = max(rss0 - float(c @ b_fix), 1e-30)
         sigma2_e = rss1 / max(n - p - q, 1)
         signal = max(rss0 - rss1, 0.0)
-        # allele-effect variance: empirical Bayes estimate
         sigma2_a = max(signal / max(q, 1) / n, sigma2_e * 1e-4)
         lam = sigma2_e / sigma2_a
         G_ridge = G + lam * np.eye(J)
@@ -212,7 +218,6 @@ def get_allele_effects(
         except np.linalg.LinAlgError:
             G_r_inv = np.linalg.pinv(G_ridge)
         betas = G_r_inv @ c
-        # ridge covariance: σ²_e (G+λI)⁻¹ G (G+λI)⁻¹
         cov_b = sigma2_e * G_r_inv @ G @ G_r_inv
     else:
         raise ValueError(f"method must be 'fixef' or 'ranef', got {method!r}")
@@ -256,16 +261,16 @@ def qtl_gxe_lrt(
     lod_additive: float,
     h2: float | None = None,
 ) -> dict[str, float]:
-    """Single-locus LMM likelihood-ratio test for haplotype × sex interaction.
+    """test whether the haplotype effect at one locus differs by sex.
 
-    Computes LOD_gxe = LOD_full − LOD_additive at the peak locus, where
-    LOD_full adds J interaction columns [H ⊙ sex] to the test matrix.
-    Equivalent to miQTL ``scan.h2lmm(intcovar=sex)`` evaluated at one locus
-    instead of genome-wide — same statistical model, lower compute.
+    computes LOD_gxe = LOD_full - LOD_additive at the peak locus, where
+    LOD_full adds one interaction column per founder (haplotype probability
+    times sex) to the model. this asks: beyond the average haplotype effect,
+    does the effect size itself change between males and females?
 
-    The 1-way haplotype effect (``chi2_haplotype``, ``p_haplotype``) is
-    derived at zero cost from the existing scan LOD via the LRT identity:
-    ``chi2 = 2 ln(10) × LOD``, ``p ~ χ²(J−1)``.
+    the plain haplotype effect (chi2_haplotype, p_haplotype) is derived for
+    free from the LOD already computed by the scan, via the standard
+    likelihood-ratio-to-chi-square conversion.
 
     parameters
     ----------

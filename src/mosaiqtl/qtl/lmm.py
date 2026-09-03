@@ -1,21 +1,26 @@
 """
-lmm — linear mixed model engine
+lmm — Gaussian linear mixed model engine for haplotype QTL scans.
 
-implements the eigendecomposition-based fast LMM from
-Kang et al. (2008, Genetics) as used in qtl2.
+folds relatedness (kinship) into the model as a random effect, then
+rotates the data by the kinship matrix's eigenvectors once so that an
+otherwise expensive per-locus matrix solve becomes cheap diagonal-weighted
+regression.
 
 model:
-    y = H γ + X α + u + ε
-    u ~ N(0, σ²_g K)
-    ε ~ N(0, σ²_e I)
+    y = H gamma + X alpha + u + noise
+    u ~ N(0, sigma_g^2 K)      (relatedness/kinship random effect)
+    noise ~ N(0, sigma_e^2 I)  (residual noise)
 
 after eigendecomposition K = U D U':
     rotate: y* = U'y,  X* = U'X,  H* = U'H
-    Var(y*) = σ²_g D + σ²_e I  — diagonal, O(n) weights
-    LOD = (n/2) log10(RSS_0 / RSS_1)       [ML,     h²   estimated once under null via REML  [
-  - h² optimized with scipy.optimize.minimize_scalar on [0,1] + grid safeguard
-  - brute check: compare optimized fit against h²=0 (brute-force safeguard)
-  - LOD uses ML formula (n/2 log10 ratio), not REML
+    Var(y*) = sigma_g^2 D + sigma_e^2 I  — diagonal, so each rotated
+        sample gets its own scalar weight instead of a full matrix solve
+    LOD = (n/2) log10(RSS_0 / RSS_1), using the ML (not REML) likelihood
+
+heritability (h²) is estimated once under the null model (no locus effect)
+and held fixed for the genome scan: a grid search over h² locates a
+starting point, a bounded numerical optimizer refines it, and a final
+check against h²=0 guards against settling on a worse local answer.
 """
 
 import gc
@@ -419,6 +424,7 @@ def scan_chromosome_batch(
     model: str = "additive",
     batch_size: int = 500,
     return_peak_positions: bool = False,
+    loci_mask: "np.ndarray | None" = None,
 ) -> "np.ndarray | tuple[np.ndarray, np.ndarray]":
     """scan one chromosome for a batch of permuted phenotypes.
 
@@ -449,13 +455,20 @@ def scan_chromosome_batch(
                  level (n) when z_mat is supplied.
     model      : 'additive' or 'full'
     batch_size : int  mini-batch size over the N_perms axis (memory control)
+    loci_mask  : np.ndarray (n_loci_chrom,) bool or None
+        when given, restricts the scan to the True-marked loci on this
+        chromosome (e.g. a gene's cis window) before any precomputation.
+        None (default) scans every locus on the chromosome.
 
     returns
     -------
-    np.ndarray (N_perms,)  per-permutation max LOD on this chromosome, or
+    np.ndarray (N_perms,)  per-permutation max LOD over the scanned loci, or
     tuple (max_lods, peak_positions) when return_peak_positions=True
     """
     locus_ids, positions_c, probs = genomecache.get_chromosome(chrom)
+    if loci_mask is not None:
+        probs = probs[loci_mask]
+        positions_c = positions_c[loci_mask]
     nf = genomecache.n_founders
     n = eigvals.shape[0]
     n_perms = Y_mat.shape[1]

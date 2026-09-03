@@ -1,39 +1,30 @@
 """
-nb — negative binomial genome-wide scan (primary model)
+nb — the primary QTL scan model, built for raw (overdispersed) count data.
 
-two-stage design:
-  stage 1 — null model + dispersion (cell level)
-      fit_null_sc_native(counts_cells, sample_ids, ...)
-          NEBULA-LN: NB-gamma mixed model with per-subject random effect
-          absorbs within-strain cell-to-cell variability and between-strain
-          overdispersion simultaneously. sigma_sample = per-gene subject
-          variance component; dispersion = cell-level NB overdispersion.
-      shrinkage via _wleb_shrink (WLEB framework).
+two stages:
 
-  stage 2 — genome-wide scan (pseudobulk per sample, vectorised)
-      for each gene: pseudobulk counts (one per individual sample) + shrunk dispersion
-      score test over all loci via einsum — O(L × n × J²) per chromosome.
-      sigma_sample optionally inflates score test denominator to account for
-      residual within-strain variability not captured by fixed covariates.
+stage 1 (cell level) fits a null (no-genotype) model per gene to estimate two
+things directly from the single-cell counts: the negative-binomial dispersion
+(how much more variable the counts are than a Poisson would predict) and a
+per-subject random effect that separates cell-to-cell variability within one
+animal from variability between animals. dispersion estimates are then
+shrunk toward a trend line across genes of similar expression level, which
+stabilizes noisy per-gene estimates without erasing real differences between
+genes.
 
-model:
-  cell level (stage 1):
-      Y_ij ~ NB(μ_ij, φ_g),   log μ_ij = X_j β_g + log s_j + u_i
-      u_i ~ N(0, σ²_g)         subject random effect per gene g
-
-  pseudobulk scan (stage 2):
-      S_ig = Σ_j Y_ij           pseudobulk sum per sample i, gene g
-      H₀: log E[S_ig] = X_i β₀ + log(n_i s̄_i)
-      H₁: log E[S_ig] = H_iℓ γ + X_i β + log(n_i s̄_i)
-      Q_ℓ = U_ℓᵀ I_ℓ⁻¹ U_ℓ ~ χ²(J−1)   score test
-
-  note: stage 2 operates on n individual-sample pseudobulk observations,
-  not m strain means. multiple samples sharing a genotype are kept distinct;
-  the Z-matrix (n × m) expands the m-row haplotype matrix to n rows.
-  when kinship_loco is provided, the per-chromosome null uses a PQL NB-GLMM
-  with LOCO kinship random effect via the Woodbury identity.
-
-references: He et al. 2021 (NEBULA-LN); Chen et al. 2016 AJHG (PQL score test)
+stage 2 (genome-wide scan) works on pseudobulk counts — each gene's counts
+summed up per individual sample — using the dispersion from stage 1 held
+fixed, and tests every locus in the genome with one fast statistical test
+(a score test) rather than fitting a full model at every locus. the scan
+keeps one row per sample, not one row per genotype: when several samples
+share the same genotype, each is kept as its own row, and a mapping matrix
+expands the genotype-level haplotype probabilities out to sample-level rows
+before the test runs. when relatedness (kinship) information is supplied,
+the null model for each chromosome also accounts for relatedness among
+genotypes using a computational shortcut (the Woodbury identity) that avoids
+ever building a full sample-by-sample matrix, keeping memory and compute
+cost tied to the number of distinct genotypes rather than the number of
+samples.
 """
 
 import gc
@@ -71,29 +62,28 @@ __all__ = [
 
 
 def _tmm_norm_factors(counts_mat, ref_col=None, trim_m=0.3, trim_a=0.05):
-    """Per-sample TMM scaling factors via trimmed mean of M-values.
+    """per-sample normalization factors that correct for library composition.
 
-    Reference sample: the sample whose 75th-percentile count is closest
-    to the median 75th-percentile across all samples. This minimises the
-    average M-value magnitude and therefore the trimming loss.
-    Computes log-ratios (M) and average log-expression (A) relative to
-    the reference, trims the most extreme M and A fractions, and returns
-    weighted-mean M per sample as the log2 scaling factor. Add to
-    log(lib_size) to get the full log-offset for each sample.
+    total read count alone (library size) is not enough to make samples
+    comparable — a sample with a few very highly expressed genes can skew
+    every other gene's apparent expression downward. this computes an extra
+    correction factor per sample, on top of library size, by comparing every
+    sample to one reference sample and trimming away the genes with the most
+    extreme fold-change and expression-level values before averaging.
 
     counts_mat : (n_genes, n_samples)  raw integer counts
-    ref_col    : int or None  reference column index; if None uses the
-                 sample whose 75th-percentile count is closest to the
-                 dataset median (default qtl2/edgeR heuristic).
-    trim_m     : float  fraction of M-values to trim from each tail (default 0.3)
-    trim_a     : float  fraction of A-values to trim from each tail (default 0.05)
-    returns    : (n_samples,) log-scale TMM normalisation factors
+    ref_col    : int or None  reference sample's column index; if None, picks
+                 the sample whose 75th-percentile count is closest to the
+                 dataset-wide median (a standard default choice)
+    trim_m     : float  fraction of extreme fold-change genes to drop from each tail (default 0.3)
+    trim_a     : float  fraction of extreme expression-level genes to drop from each tail (default 0.05)
+    returns    : (n_samples,) log-scale normalization factors
     """
     counts_mat = np.asarray(counts_mat, dtype=np.float64)
     n_genes, n_samples = counts_mat.shape
     lib_sizes = counts_mat.sum(axis=0).clip(1.0)  # (n_samples,)
 
-    # choose reference sample: closest 75th-pctile count to dataset median
+    # pick the reference sample: closest 75th-percentile count to the dataset median
     if ref_col is None:
         q75 = np.percentile(counts_mat, 75, axis=0)
         ref_col = int(np.argmin(np.abs(q75 - np.median(q75))))
@@ -108,7 +98,7 @@ def _tmm_norm_factors(counts_mat, ref_col=None, trim_m=0.3, trim_a=0.05):
         obs = counts_mat[:, k]
         obs_lib = lib_sizes[k]
 
-        # keep genes with counts > 0 in both samples
+        # only compare genes with nonzero counts in both samples
         keep = (obs > 0) & (ref_counts > 0)
         if keep.sum() < 10:
             continue
@@ -116,18 +106,18 @@ def _tmm_norm_factors(counts_mat, ref_col=None, trim_m=0.3, trim_a=0.05):
         obs_k = obs[keep]
         ref_k = ref_counts[keep]
 
-        # M: log-ratio of relative expression
+        # fold-change (M) between this sample and the reference, per gene
         M = np.log2(obs_k / obs_lib) - np.log2(ref_k / ref_lib)
-        # A: average log-expression
+        # average expression level (A) between this sample and the reference
         A = 0.5 * (np.log2(obs_k / obs_lib) + np.log2(ref_k / ref_lib))
 
-        # asymptotic variance for weighting
+        # down-weight noisier (lower-count) genes when averaging
         w = (obs_lib - obs_k) / (obs_lib * obs_k) + (ref_lib - ref_k) / (
             ref_lib * ref_k
         )
         w = np.maximum(w, 1e-12)
 
-        # trim by M and A simultaneously
+        # drop the most extreme fold-change and expression-level genes before averaging
         lo_m, hi_m = np.percentile(M, [trim_m * 100, (1 - trim_m) * 100])
         lo_a, hi_a = np.percentile(A, [trim_a * 100, (1 - trim_a) * 100])
         use = (M >= lo_m) & (M <= hi_m) & (A >= lo_a) & (A <= hi_a)
@@ -136,11 +126,11 @@ def _tmm_norm_factors(counts_mat, ref_col=None, trim_m=0.3, trim_a=0.05):
 
         log_factors[k] = float(np.sum(M[use] / w[use]) / np.sum(1.0 / w[use]))
 
-    return log_factors  # log2 scale; add to log(lib_size) to get full offset
+    return log_factors  # log2 scale; add to log(library size) for the full per-sample offset
 
 
 def _tmm_offsets(counts_mat, lib_sizes=None):
-    """Log library size per sample (total counts, floor 1).
+    """log library size per sample (total counts, floor 1).
 
     counts_mat : (n_genes, n_samples)
     returns    : (n_samples,) log offsets
@@ -151,16 +141,16 @@ def _tmm_offsets(counts_mat, lib_sizes=None):
 
 
 def _irls_nb_pseudobulk(S, x, phi_size, offsets, max_iter=25, tol=1e-7):
-    """IRLS for NB GLM on pseudobulk counts.
+    """Iteratively re-weighted least squares fit of an NB model to pseudobulk counts.
 
     phi_size  : NB size parameter r (= 1/sigma2 for subject-level NB)
     returns mu (n,), beta (p,)
     """
-    eta = offsets.copy()  # init: mu = exp(offset)
+    eta = offsets.copy()  # start from mu = exp(offset), i.e. no covariate effect yet
     mu = np.exp(eta)
     for _ in range(max_iter):
-        W = mu / (1.0 + mu / phi_size)  # NB working weight
-        z = eta + (S - mu) / mu  # working response
+        W = mu / (1.0 + mu / phi_size)  # NB weight for this iteration
+        z = eta + (S - mu) / mu  # working response for the weighted regression
         Wx = x * W[:, None]
         try:
             beta = np.linalg.solve(Wx.T @ x, Wx.T @ (z - offsets))
@@ -177,9 +167,9 @@ def _irls_nb_pseudobulk(S, x, phi_size, offsets, max_iter=25, tol=1e-7):
 
 
 def _nr_k(S, M, k_init=1.0, max_iter=25, tol=1e-6):
-    """Newton-Raphson for k = 1/sigma2 in NB pseudobulk marginal likelihood.
+    """solve for the NB dispersion parameter k = 1/sigma2 by Newton-Raphson.
 
-    Marginal: S_i ~ NB(M_i, 1/k).  Gradient + Hessian use digamma/polygamma.
+    marginal model: S_i ~ NB(M_i, 1/k).
     """
     k = max(float(k_init), 1e-4)
     S = np.asarray(S, float)
@@ -204,11 +194,11 @@ def _nr_k(S, M, k_init=1.0, max_iter=25, tol=1e-6):
 
 
 def _phi_mom(counts_g, mu_cell):
-    """Method-of-moments cell-level NB dispersion estimate.
+    """method-of-moments estimate of cell-level NB dispersion.
 
     counts_g : (n_cells,)  raw UMI counts
     mu_cell  : (n_cells,)  expected counts per cell
-    returns phi (cell-level dispersion = 1/r_cell)
+    returns phi (cell-level dispersion)
     """
     r = (counts_g - mu_cell) ** 2
     phi = np.mean((r - mu_cell) / (mu_cell**2 + 1e-8))
@@ -216,10 +206,11 @@ def _phi_mom(counts_g, mu_cell):
 
 
 def _wleb_shrink(phi_hat, mean_expr, df_prior=10.0):
-    """Weighted likelihood empirical Bayes dispersion shrinkage.
+    """shrink each gene's dispersion toward a trend line across expression level.
 
-    Shrinks per-gene phi toward a trended prior as a function of mean expression.
-    Follows Robinson & Smyth 2007 (tagwise dispersion in edgeR).
+    a single gene's dispersion estimate is noisy on its own; pooling information
+    from genes at a similar expression level (an empirical-Bayes prior) gives a
+    more stable estimate without erasing real per-gene differences.
 
     phi_hat   : (n_genes,)
     mean_expr : (n_genes,)  mean pseudobulk count per gene
@@ -228,9 +219,8 @@ def _wleb_shrink(phi_hat, mean_expr, df_prior=10.0):
     ok = np.isfinite(phi_hat) & (phi_hat > 0) & (mean_expr > 0)
     if ok.sum() < 5:
         return phi_hat.copy()
-    # trended prior: lowess on log(phi) ~ log(mean)
+    # build the trend: bin genes by expression level, use each bin's median dispersion
     log_m = np.log(mean_expr[ok] + 1e-8)
-    # simple: smooth via binned mean (robust to outliers)
     n_bins = min(10, ok.sum() // 5)
     bins = np.percentile(log_m, np.linspace(0, 100, n_bins + 1))
     prior = np.full(len(phi_hat), np.nanmedian(phi_hat[ok]))
@@ -242,12 +232,11 @@ def _wleb_shrink(phi_hat, mean_expr, df_prior=10.0):
                 (log_m[bin_idx] >= bins[b]) & (log_m[bin_idx] <= bins[b + 1])
             ]
             prior_b = float(np.median(phi_hat[subset]))
-            # assign prior to all genes in this expression range
+            # apply this bin's prior to every gene in the same expression range
             log_expr = np.log(mean_expr + 1e-8)
             full_mask = (log_expr >= bins[b]) & (log_expr <= bins[b + 1])
             prior[full_mask] = prior_b
-    # posterior: (df_prior * prior + df_gene * phi) / (df_prior + df_gene)
-    # df_gene = 1 (single per-gene estimate), df_prior as specified
+    # blend each gene's own estimate with the trend, weighted by how much we trust the trend
     shrunk = (df_prior * prior + phi_hat) / (df_prior + 1.0)
     shrunk[~ok] = phi_hat[~ok]
     return np.maximum(shrunk, 1e-6)
@@ -259,11 +248,11 @@ def fit_null_sc_native(
     covariates_cells: "np.ndarray | None" = None,
     verbose: bool = False,
 ) -> dict:
-    """Native NEBULA-LN Stage 1 null fit — no edgepython required.
+    """fit the stage 1 null model (NEBULA-LN) directly, with no external dependency.
 
-    Implements the NB-gamma mixed model from He et al. 2021, using the LN
-    approximation for large CPS. Alternates IRLS for beta and Newton-Raphson
-    for k=1/sigma2, followed by EB shrinkage of cell-level dispersion.
+    fits an NB-gamma mixed model per gene: alternates a weighted regression step
+    for the fixed effects and a Newton-Raphson step for the dispersion, then
+    applies empirical-Bayes shrinkage to the cell-level dispersion estimates.
 
     Args:
         counts_cells: Raw UMI count matrix, shape (n_genes, n_cells).
@@ -274,10 +263,10 @@ def fit_null_sc_native(
 
     Returns:
         Dict compatible with fit_null_sc output, containing:
-            dispersion: (n_genes_pass,) raw MOM cell-level phi,
-            dispersion_shrunk: (n_genes_pass,) EB-shrunk phi,
+            dispersion: (n_genes_pass,) raw cell-level dispersion,
+            dispersion_shrunk: (n_genes_pass,) shrunk dispersion,
             dispersion_use: (n_genes_pass,) same as dispersion_shrunk,
-            sigma_sample: (n_genes_pass,) subject-level overdispersion sigma2,
+            sigma_sample: (n_genes_pass,) subject-level overdispersion,
             gene_mask: (n_genes,) bool pass/fail filter,
             fitted_values: None (not computed at cell level).
     """
@@ -287,23 +276,23 @@ def fit_null_sc_native(
     samples, inv = np.unique(sample_ids, return_inverse=True)
     n_samp = len(samples)
 
-    # subject-level pseudobulk and library sizes
-    lib_cell = counts_cells.sum(axis=0) + 1.0  # (n_cells,) per-cell total + 1
+    # sum cell counts up to the subject (sample) level
+    lib_cell = counts_cells.sum(axis=0) + 1.0  # per-cell total, floored at 1
     lib_samp = np.zeros(n_samp)
     ncell_s = np.zeros(n_samp)
     np.add.at(lib_samp, inv, lib_cell)
     np.add.at(ncell_s, inv, 1.0)
 
-    # pseudobulk count matrix for TMM: sum gene counts per subject
+    # pseudobulk matrix used only to compute per-subject normalization factors
     pb_for_tmm = np.zeros((counts_cells.shape[0], n_samp), dtype=np.float64)
     np.add.at(pb_for_tmm.T, inv, counts_cells.T)
 
-    # TMM factors (log2 scale) → convert to natural log and add to log(lib_samp)
-    tmm_log2 = _tmm_norm_factors(pb_for_tmm)  # (n_samp,) log2
-    offsets_samp = np.log(lib_samp.clip(1)) + tmm_log2 * np.log(2)  # (n_samp,)
+    # combine library size with the normalization factor into one log-offset
+    tmm_log2 = _tmm_norm_factors(pb_for_tmm)  # log2-scale normalization factor
+    offsets_samp = np.log(lib_samp.clip(1)) + tmm_log2 * np.log(2)
     del pb_for_tmm
 
-    # subject-level design matrix
+    # subject-level design matrix (covariates averaged from cell level)
     if covariates_cells is not None:
         cov_c = np.asarray(covariates_cells, float)
         cov_s = np.zeros((n_samp, cov_c.shape[1]))
@@ -316,7 +305,8 @@ def fit_null_sc_native(
     else:
         x_samp = np.ones((n_samp, 1))
 
-    # gene-level filter: cpc > 0.005 and expressed in >= 5 cells
+    # keep only genes with sufficient expression: mean count per cell > 0.005
+    # and detected in at least 5 cells
     mean_cpc = counts_cells.mean(axis=1)
     n_expr = (counts_cells > 0).sum(axis=1)
     gene_mask = (mean_cpc > 0.005) & (n_expr >= 5)
@@ -331,16 +321,16 @@ def fit_null_sc_native(
 
     for gi, g in enumerate(idx):
         counts_g = counts_cells[g]
-        # pseudobulk sum per subject
+        # sum this gene's counts up to one value per subject
         S = np.zeros(n_samp)
         np.add.at(S, inv, counts_g)
 
-        # initial phi: MOM on pseudobulk residuals
+        # starting guess for dispersion from the pseudobulk mean/variance
         pb_mean = S.mean()
         pb_var = S.var()
         phi_pb_init = max((pb_var - pb_mean) / (pb_mean**2 + 1e-8), 1e-3)
 
-        # NEBULA-LN: alternate beta (IRLS) and k (NR)
+        # alternate fitting the fixed effects and the dispersion until stable
         k = 1.0 / max(phi_pb_init, 1e-3)
         mu_s = np.ones(n_samp)
         for _ in range(8):
@@ -350,21 +340,22 @@ def fit_null_sc_native(
         sigma2[gi] = 1.0 / max(k, 1e-6)
         mean_pb[gi] = float(mu_s.mean())
 
-        # cell-level phi: MOM after removing subject scale factor
+        # cell-level dispersion, after factoring out each subject's overall scale
         v_hat = (S / mu_s.clip(1e-8))[inv]  # (n_cells,)
         mu_cell = v_hat * (mu_s / ncell_s.clip(1))[inv]
         phi_hat[gi] = _phi_mom(counts_g, mu_cell)
 
         if verbose and gi % max(1, n_pass // 10) == 0:
             logger.info(
-                "  %d/%d  phi=%.3f  sigma2=%.3f",
+                "fit_null_sc_native: gene %d/%d (%.1f%%) phi=%.3f sigma2=%.3f",
                 gi + 1,
                 n_pass,
+                100.0 * (gi + 1) / n_pass,
                 phi_hat[gi],
                 sigma2[gi],
             )
 
-    # EB shrinkage
+    # shrink dispersion toward the cross-gene trend
     phi_shrunk = _wleb_shrink(phi_hat, mean_pb)
 
     return {
@@ -391,24 +382,24 @@ def fit_null_sc(
     verbose: bool = False,
     use_native: bool = True,
 ) -> dict:
-    """Fit NEBULA-LN null model on cell-level counts for all genes.
+    """fit the stage 1 null model on cell-level counts for every gene.
 
-    Dispatches to the native numpy/scipy implementation by default
-    (use_native=True). The legacy edgepython path (use_native=False) is
-    retained for backward compatibility but requires edgepython installed.
-    Run once per cell type before the genome-wide scan.
+    uses the built-in implementation by default (use_native=True), which has
+    no external dependencies. the older path (use_native=False) is kept for
+    backward compatibility but requires an optional external package to be
+    installed. run this once per cell type, before the genome-wide scan.
 
     Args:
         counts_cells: Raw UMI count matrix, shape (n_genes, n_cells).
         strain_ids: Strain/subject label per cell, length n_cells.
         covariates_cells: Cell-level covariate matrix (n_cells, p) or None.
             If None, intercept only.
-        norm_method: Normalisation method passed to edgepython; ignored by
+        norm_method: Normalization method for the legacy path; ignored by
             the native path. Either 'TMM' or 'none'.
-        shrink: Apply EB dispersion shrinkage (default True).
+        shrink: Apply dispersion shrinkage (default True).
         verbose: Log progress at INFO level if True.
-        use_native: Use native implementation (recommended). Set False to
-            use the legacy edgepython path (requires edgepython installed).
+        use_native: Use the built-in implementation (recommended). Set False
+            to use the legacy path (requires the optional external package).
 
     Returns:
         Dict containing dispersion_use (n_genes_filtered,), sigma_sample
@@ -420,7 +411,7 @@ def fit_null_sc(
             counts_cells, strain_ids, covariates_cells, verbose=verbose
         )
 
-    # ── legacy edgepython path ────────────────────────────────────────────
+    # legacy path — requires the optional external package to be installed
     import edgepython as ep
     import pandas as pd
 
@@ -1028,7 +1019,12 @@ def scan_nb_multi_gene(
         )
         results[str(gid)] = res
         if (gi + 1) % max(1, n // 10) == 0:
-            logger.info("scan_nb_multi_gene: %d/%d genes", gi + 1, n)
+            logger.info(
+                "scan_nb_multi_gene: gene %d/%d (%.1f%%)",
+                gi + 1,
+                n,
+                100.0 * (gi + 1) / n,
+            )
         del res
         gc.collect()
     return results
@@ -1209,8 +1205,8 @@ def scan_nb(
         lib_sizes: Log library size offset per strain (n_strains,) or None.
         kinship_loco: LOCO kinship dict {chr: ndarray (m, m)} or None.
             Strongly recommended for multiparent populations.
-        norm_method: Normalisation method for the legacy edgepython path;
-            ignored by the native Stage 1. Either 'TMM' or 'none'.
+        norm_method: Normalisation method for the legacy path; ignored by
+            the native Stage 1. Either 'TMM' or 'none'.
         shrink_disp: Apply EB dispersion shrinkage (default True).
         cis_loci_dict: Restrict each gene's scan to its cis loci or None.
         output_path: If set, scan_nb_multi_gene writes incremental CSV output

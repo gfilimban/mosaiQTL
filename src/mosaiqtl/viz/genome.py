@@ -22,6 +22,7 @@ from ._theme import (
     KW_THRESHOLD,
     KW_REFERENCE,
     KW_DOT_MUTED,
+    KW_BOX,
     apply_theme,
     info_box,
 )
@@ -30,8 +31,8 @@ from .effects import effect_bars as _effect_bars
 _CHR_ORDER: list[str] = [str(i) for i in range(1, 20)] + ["X"]
 _CHR_GAP_MB: float = 10.0
 
-# ── semantic scan-series color aliases ───────────────────────────────────────
-# MI overlay = secondary series; instability = accent; SNP = muted neutral.
+# ── color aliases for overlay series ─────────────────────────────────────────
+# MI overlay = secondary color; instability = accent color; SNP = muted grey.
 _MI_COLOR: str = BRAND_SECONDARY
 _INST_COLOR: str = BRAND_ACCENT
 _SNP_COLOR: str = MUTED
@@ -151,7 +152,7 @@ def lod_profile(
             _ann = f"LOD={peak_lod:.1f}"
             if locus_id:
                 _ann = f"{locus_id}\n{_ann}"
-            # flip ha so annotation does not run past the plot edge
+            # switch text alignment so the label doesn't run off the plot edge
             _x_mid = float(positions[0] + positions[-1]) / 2.0
             _peak_ha = "right" if float(peak_pos) > _x_mid else "left"
             ax.text(
@@ -163,7 +164,7 @@ def lod_profile(
                 va="bottom",
                 ha=_peak_ha,
             )
-    # gene name label — upper-left
+    # gene name in the upper-left corner
     if gene:
         ax.text(
             0.02,
@@ -175,7 +176,7 @@ def lod_profile(
             fontweight="bold",
             color=color,
         )
-    # h² — bottom-right so it never clashes with legend at upper-right
+    # heritability (h²) in the bottom-right, away from the legend
     if h2 is not None:
         ax.text(
             0.98,
@@ -922,7 +923,8 @@ def cis_distance_histogram(
     ax.set_ylim(bottom=0)
     ax.set_xlabel("Cis distance  (peak − TSS, Mb)", fontsize=11)
     ax.set_ylabel("Number of eGenes", fontsize=11)
-    ax.legend(fontsize=8.5, frameon=False, loc="lower right", ncol=1)
+    _leg = ax.legend(fontsize=8.5, frameon=True, loc="lower right", ncol=1)
+    _leg.get_frame().set(**KW_BOX)
     apply_theme(ax)
     return ax
 
@@ -996,7 +998,7 @@ def cis_distance_panel(
     _ref_kw: dict = KW_REFERENCE.copy()
     _thr_kw: dict = KW_THRESHOLD.copy()
 
-    # ── panel 1: full range scatter ──────────────────────────────────────────
+    # ── panel 1: full-range scatter ──────────────────────────────────────────
     if _is_lo.any():
         ax_full.scatter(_dist[_is_lo], _lod[_is_lo], **_scatter_lo_kw)
     ax_full.scatter(_dist[_hi], _lod[_hi], c=_lod[_hi], **_scatter_hi_kw)
@@ -1426,8 +1428,8 @@ def perm_distribution(
     ax.set_ylabel("Density", fontsize=13, fontweight="bold")
     ax.tick_params(labelsize=11)
     ax.set_ylim(bottom=0)
-    # explicit Patch proxy guarantees histplot color swatch shows in legend
-    # regardless of seaborn version (BarContainer labels not always auto-collected)
+    # add the histogram's legend swatch manually — the plotting library doesn't
+    # always pick it up on its own
     _hist_proxy = _Patch(facecolor=_hist_clr, alpha=0.55, label="permutations")
     _h, _l = ax.get_legend_handles_labels()
     ax.legend(
@@ -1494,9 +1496,11 @@ def egene_lod_distribution(
         above,
         bins=shared_bins,
         color=BRAND_PRIMARY,
-        alpha=0.85,
+        alpha=0.90,
         ax=ax,
-        linewidth=0,
+        linewidth=1.1,
+        edgecolor=INK,
+        zorder=3,
         label="eGenes",
     )
 
@@ -1701,7 +1705,7 @@ def ci_strip(
         ax.plot([lo, hi], [i, i], color=bar_color, linewidth=3, solid_capstyle="round")
         sns.scatterplot(x=[pk], y=[i], color=INK, s=18, zorder=3, ax=ax)
 
-    # median CI width reference line — vertical line at the median peak + offset
+    # vertical line marking the median confidence-interval width
     ax.axvline(
         float(np.nanmean(peak_mb)) + med_width / 2,
         color=INK,
@@ -1966,7 +1970,7 @@ def instability_lod_overlay(
 
     lines1, labels1 = ax.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
-    # lower-left: gene text occupies upper-left; info box occupies upper-right
+    # legend goes lower-left since the gene name and info box already fill the top corners
     ax.legend(
         lines1 + lines2, labels1 + labels2, fontsize=9, frameon=False, loc="lower left"
     )
@@ -2086,7 +2090,7 @@ def mi_scan_overlay(
     ax.tick_params(labelsize=11)
     ax.set_xlim(float(pos[0]), float(pos[-1]))
     ax.set_ylim(0, max(float(np.concatenate([scan, mi]).max()) * 1.2, 1.0))
-    # lower-left: gene text occupies upper-left; info box occupies upper-right
+    # legend goes lower-left since the gene name and info box already fill the top corners
     ax.legend(fontsize=9, frameon=False, loc="lower left")
     sns.despine(ax=ax)
     apply_theme(ax)
@@ -2440,25 +2444,40 @@ def timing_memory_summary(
     )
     ax_t = axes[0] if has_mem else axes
 
-    ax_t.barh(labels, elapsed_s, color=BRAND_PRIMARY, alpha=0.85, edgecolor="none")
-    ax_t.invert_yaxis()
+    elapsed_s = np.asarray(elapsed_s, dtype=float)
+    sns.barplot(
+        x=elapsed_s, y=labels, orient="h", color=BRAND_PRIMARY, alpha=0.85,
+        edgecolor="none", ax=ax_t,
+    )
+    # per-section timings routinely span two-plus orders of magnitude (e.g. the
+    # genome-wide LMM scan vs. a permutation pass) — a shared linear x-axis
+    # reduces every smaller bar to an invisible hairline, so log-scale whenever
+    # the spread warrants it and label each bar with its exact value.
+    _finite = elapsed_s[elapsed_s > 0]
+    if len(_finite) > 1 and _finite.max() / _finite.min() >= 20:
+        ax_t.set_xscale("log")
+    for _i, _v in enumerate(elapsed_s):
+        ax_t.text(_v, _i, f"  {_v:,.1f}s", va="center", ha="left",
+                   fontsize=8.5, color=INK)
     ax_t.set_xlabel("Elapsed (s)", fontsize=13, fontweight="bold")
     ax_t.tick_params(labelsize=11)
     sns.despine(ax=ax_t)
 
     if has_mem:
-        axes[1].barh(
-            labels,
-            peak_heap_mb.astype(float),
-            color=MUTED,
-            alpha=0.85,
-            edgecolor="none",
+        heap = peak_heap_mb.astype(float)
+        sns.barplot(
+            x=heap, y=labels, orient="h", color=MUTED, alpha=0.85,
+            edgecolor="none", ax=axes[1],
         )
-        axes[1].invert_yaxis()
+        for _i, _v in enumerate(heap):
+            axes[1].text(_v, _i, f"  {_v:,.0f} MB", va="center", ha="left",
+                          fontsize=8.5, color=INK)
         axes[1].set_xlabel("Peak heap (MB)", fontsize=13, fontweight="bold")
         axes[1].tick_params(labelsize=11)
+        axes[1].margins(x=0.12)
         sns.despine(ax=axes[1])
 
+    ax_t.margins(x=0.12)
     apply_theme(ax_t)
     return fig
 
@@ -2617,7 +2636,7 @@ def peak_locus_zoom(
 
 
 # ---------------------------------------------------------------------------
-# Private helpers
+# private helpers
 # ---------------------------------------------------------------------------
 
 
@@ -2641,7 +2660,7 @@ def _ordered_chrs(chr_series: pd.Series) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Per-chromosome figure iterators
+# per-chromosome figure iterators
 # ---------------------------------------------------------------------------
 
 
@@ -2911,7 +2930,7 @@ def locus_panels_per_chr(
     genes_df : pd.DataFrame, optional
         Gene annotation table (``start_mb``, ``end_mb``, ``gene_symbol`` or
         ``gene_id``, optional ``strand``). When provided with *tss_mb_map*,
-        adds an IGV gene body track below the zoom panel.
+        adds a genome-browser-style gene body track below the zoom panel.
     zoom_window_mb : float
         Margin around the [TSS, peak] interval in the zoom panel. Default 1.0 Mb.
     gtf_path : str, optional
@@ -3000,7 +3019,7 @@ def locus_panels_per_chr(
 
 
 # ---------------------------------------------------------------------------
-# IGV-style gene track helper
+# genome-browser-style gene track helper
 # ---------------------------------------------------------------------------
 
 
@@ -3014,23 +3033,24 @@ def _gene_track(
     near_tss_mb: Optional[float] = None,
     exon_df: Optional[pd.DataFrame] = None,
 ) -> None:
-    """Draw an IGV-style gene body track on *ax*.
+    """Draw a genome-browser-style gene body track on *ax*.
 
     When *exon_df* is supplied (from :func:`~mosaiqtl.io.annotation_io.load_exons_from_gtf`),
-    each gene is rendered with its real transcript/exon/CDS/UTR structure:
+    each gene is drawn with its real transcript/exon/CDS/UTR structure:
 
-    * Thin intron backbone spanning the full canonical transcript extent.
+    * Thin intron line spanning the full transcript.
     * UTR blocks (``feature == 'UTR'`` or exon portions not covered by CDS)
       at medium height.
-    * CDS blocks at full height.
-    * Directional chevrons (›/‹) in every intron gap.
-    * TSS arrowhead at the 5′ end.
+    * CDS blocks (coding exons) at full height.
+    * Directional arrows (›/‹) marking the strand in every intron gap.
+    * An arrowhead at the transcription start site (5′ end).
 
-    When *exon_df* is ``None``, only a thin backbone with chevrons is drawn
-    (honest representation when annotation data is unavailable).
+    When *exon_df* is ``None``, only a thin gene-body line with direction
+    arrows is drawn (an honest representation when annotation data is
+    unavailable, rather than guessing at exon structure).
 
     *peak_pos* and *near_tss_mb* are drawn as vertical lines so their
-    position relative to surrounding gene bodies is immediately readable.
+    position relative to surrounding genes is immediately readable.
 
     Parameters
     ----------
@@ -3073,7 +3093,7 @@ def _gene_track(
             _exon_by_gene[str(_gn_key)] = _grp.reset_index(drop=True)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # SINGLE-GENE MODE — IGV-style: x-axis = gene body, large visible blocks
+    # single-gene mode — x-axis spans the gene body; blocks drawn large and legible
     # ══════════════════════════════════════════════════════════════════════════
     if len(vis) == 1 and not vis.empty:
         _g = vis.iloc[0]
@@ -3103,11 +3123,11 @@ def _gene_track(
         _gspan = max(_ghi - _glo, 1e-6)
         _margin = _gspan * 0.05
 
-        # IGV block heights (tall enough to be clearly readable)
+        # block heights, tall enough to read clearly
         _HUTR = 0.38  # UTR blocks (GTF feature 'UTR')
         _HCDS = 0.62  # coding exon blocks (GTF feature 'CDS'; legend label: 'exon')
 
-        # Feature colors: CDS=NODJ blue, UTR=muted slate, intron/arrow=neutral
+        # feature colors: CDS=NODJ blue, UTR=muted slate, intron/arrow=neutral
         _CLR_CDS = BRAND_PRIMARY  # #4A90C4 blue — coding exons
         _CLR_UTR = MUTED  # neutral grey — untranslated regions
         _CLR_BB = INK  # thin intron backbone
@@ -3176,8 +3196,8 @@ def _gene_track(
                         clip_on=True,
                     )
 
-            # 3. directional arrow markers in intron gaps (ax.plot with marker,
-            #    not data — same category as CI segment lines in viz CLAUDE.md)
+            # 3. directional arrow markers in intron gaps — these are plot
+            #    decoration, not data points, so a plain marker is used
             _ivs = sorted(
                 [
                     (float(r["start_mb"]), float(r["end_mb"]))
@@ -3340,7 +3360,7 @@ def _gene_track(
         return  # ── end single-gene mode ──────────────────────────────────
 
     # ══════════════════════════════════════════════════════════════════════════
-    # MULTI-GENE MODE — row-packed, compact heights
+    # multi-gene mode — row-packed, compact heights
     # ══════════════════════════════════════════════════════════════════════════
     _H_BACKBONE = 0.06
     _H_UTR = 0.14
@@ -3598,7 +3618,7 @@ def _gene_track(
 
 
 # ---------------------------------------------------------------------------
-# Single-figure grid summaries
+# single-figure grid summaries
 # ---------------------------------------------------------------------------
 
 
@@ -3625,10 +3645,10 @@ def locus_panel(
     - *peak_betas* → founder effect bar panel at the top.
     - always → full-chromosome LOD profile.
     - *tss_mb* → zoomed cis-window LOD panel with TSS and peak annotated.
-    - *genes_df* (requires *tss_mb*) → IGV-style gene body track sharing the
-      zoom panel's x-axis; shows *peak_pos* (red) and *near_tss_mb* (green
-      dashed) as vertical markers so the QTL locus is immediately readable
-      relative to surrounding gene bodies.
+    - *genes_df* (requires *tss_mb*) → genome-browser-style gene body track
+      sharing the zoom panel's x-axis; shows *peak_pos* (red) and
+      *near_tss_mb* (green dashed) as vertical markers so the QTL locus is
+      immediately readable relative to surrounding genes.
 
     Parameters
     ----------
@@ -3650,8 +3670,8 @@ def locus_panel(
     genes_df : pd.DataFrame, optional
         Gene annotation table; requires columns ``start_mb``, ``end_mb``, and
         either ``gene_symbol`` or ``gene_id``. Optional ``strand`` column.  When
-        provided together with *tss_mb*, adds an IGV-style gene body track below
-        the zoom panel.
+        provided together with *tss_mb*, adds a genome-browser-style gene body
+        track below the zoom panel.
     zoom_window_mb : float
         Half-width of margin around the [TSS, peak] interval. Default 5.0 Mb.
     threshold : float, optional
@@ -3724,7 +3744,7 @@ def locus_panel(
     if chrom:
         title = f"{title}  chr{chrom}" if title else f"chr{chrom}"
 
-    # ── panel 1: IGV gene body track (top) — highlight gene only ────────────
+    # ── panel 1: gene body track (top) — highlight gene only ────────────────
     if has_track and zoom_lo is not None and zoom_hi is not None:
         ax_track = axes_flat[ax_idx]
         ax_idx += 1
@@ -3757,8 +3777,8 @@ def locus_panel(
 
     # ── panel 2: zoomed cis-window LOD — ±window_mb around peak ─────────────
     # x-axis = zoom_lo..zoom_hi so the LOD bump is visible.
-    # Gene body extent is shaded in blue so it's spatially anchored to the
-    # gene track above.  Peak and TSS lines carry through from the full-chr
+    # gene body extent is shaded in blue so it's spatially anchored to the
+    # gene track above. peak and TSS lines carry through from the full-chr
     # view below, creating a drill-down visual hierarchy:
     #   full chr → zoom window (shaded in chr panel) → gene body (shaded in zoom panel)
     if has_zoom and zoom_lo is not None and zoom_hi is not None:

@@ -1,22 +1,24 @@
 """
 scan — genome-wide haplotype QTL scan
 
-orchestrates the scan across chromosomes for a single phenotype,
-combining genome cache, kinship, and the LMM engine.
+Runs the haplotype-based QTL scan chromosome by chromosome for one
+phenotype, tying together the genome cache, the kinship matrices, and
+the underlying linear mixed model engine.
 
-global design — pheno_id / geno_id split:
-    pheno_id : identifiers for each row of phenotype data (n)
-    geno_id  : identifiers for rows of the genome cache (m ≤ n)
+Two identifier spaces are in play:
+    pheno_id : one identifier per row of phenotype data (n rows total)
+    geno_id  : one identifier per row of the genome cache (m rows, m <= n)
 
-when n > m (replicated CC strains), a Z matrix (n×m) maps each
-phenotype sample to its strain genotype. phenotype and covariates
-are reduced to strain means (m,) before scanning. h² and the scan
-both operate at strain level (m×m K_m eigendecomp); H is never
-expanded to n.
+Some designs have multiple phenotype replicates per genotyped strain
+(n > m). In that case a mapping matrix (Z, shape n x m) links each
+phenotype sample to its strain's genotype, and both phenotype and
+covariates are averaged down to one value per strain (m,) before
+scanning. Heritability and the scan itself then run at the strain
+level (m x m kinship), never expanded back out to n.
 
-when n == m and ids match, Z == I and all results are identical
-to the 1:1 case.
-
+When there's one phenotype row per genotyped strain (n == m) with
+matching IDs, this mapping is just the identity and results match
+the simple one-sample-per-strain case exactly.
 """
 
 import gc
@@ -49,27 +51,27 @@ __all__ = [
 
 
 class ScanResult:
-    """container for genome-wide scan output.
+    """holds the results of a genome-wide (or per-chromosome) QTL scan.
 
     attributes
     ----------
-    locus_ids    : np.ndarray (L,) str   marker identifiers
-    chromosomes  : np.ndarray (L,) str   chromosome per locus
-    positions    : np.ndarray (L,) float physical position (Mb)
-    lod          : np.ndarray (L,) float LOD scores
-    p_value      : np.ndarray (L,) float F-test p-values
-    betas        : np.ndarray (L, J)     founder haplotype effects (sum ≈ 0)
-    h2_null      : dict {chrom: float}   null h² per LOCO chr
+    locus_ids    : np.ndarray (L,) str   marker names
+    chromosomes  : np.ndarray (L,) str   chromosome of each marker
+    positions    : np.ndarray (L,) float physical position in Mb
+    lod          : np.ndarray (L,) float LOD score at each marker
+    p_value      : np.ndarray (L,) float F-test p-value at each marker
+    betas        : np.ndarray (L, J)     estimated effect of each founder haplotype (roughly sums to 0 per marker)
+    h2_null      : dict {chrom: float}   estimated heritability under the null model, per chromosome
     phenotype_id : str
     """
 
     def __init__(self, **kwargs):
-        """Set all scan result fields from keyword arguments."""
+        """store all scan result fields, given as keyword arguments."""
         for k, v in kwargs.items():
             setattr(self, k, v)
 
     def peak_locus(self):
-        """return dict with peak locus info."""
+        """return the locus with the highest LOD score, as a dict of its stats."""
         idx = np.argmax(self.lod)
         return {
             "locus_id": self.locus_ids[idx],
@@ -81,7 +83,7 @@ class ScanResult:
         }
 
     def to_dataframe(self):
-        """convert to pandas DataFrame."""
+        """convert the scan result into a pandas DataFrame, one row per locus."""
         df = pd.DataFrame(
             {
                 "locus_id": self.locus_ids,
@@ -97,18 +99,19 @@ class ScanResult:
 
 
 def _resolve_z(sample_ids, genomecache, pheno_id=None, geno_id=None):
-    """build (Z, valid_mask, n_eff) for a given sample set.
+    """build the sample-to-strain mapping matrix for a given sample set.
 
-    if sample_ids already matches the cache order exactly (n == m, same ids),
-    returns Z=None (signals identity to callers — no expansion needed).
-    otherwise builds the full Z matrix.
+    if sample_ids already lines up exactly with the cache's strain order
+    (same count, same ids), returns None for the mapping matrix — this
+    tells callers no expansion is needed, they can treat samples and
+    strains as the same thing. otherwise builds the full mapping.
 
     parameters
     ----------
     sample_ids   : array-like  phenotype-level ids (n)
     genomecache : GenomeCache
-    pheno_id     : str or None  column name in sample_ids (if DataFrame)
-    geno_id      : str or None  column name for geno lookup (if DataFrame)
+    pheno_id     : str or None  column name in sample_ids (if a DataFrame)
+    geno_id      : str or None  column name for genotype lookup (if a DataFrame)
 
     returns
     -------
@@ -138,15 +141,17 @@ def scan_h2lmm(
     gene_pos_mb=None,
     window_mb=10.0,
 ):
-    """haplotype-based genome-wide scan with LOCO LMM.
+    """haplotype-based genome-wide QTL scan using a linear mixed model with
+    leave-one-chromosome-out (LOCO) kinship.
 
-    supports both 1:1 (n == m) and replicated (n > m) designs.
+    handles both a simple one-sample-per-strain design (n == m) and a
+    replicated design where multiple phenotype samples share one genotyped
+    strain (n > m).
 
     replicated design: when sample_ids differs from genomecache.sample_ids,
-    Z is built automatically and phenotype/covariates are reduced to strain
-    means before scanning. h² is estimated at strain level (m×m K_m
-    eigendecomp) and the scan operates entirely in the m-dimensional strain
-    space.
+    the sample-to-strain mapping is built automatically and phenotype and
+    covariates are averaged to strain means before scanning. heritability
+    and the scan itself then run entirely at the strain level.
 
     parameters
     ----------
@@ -156,20 +161,20 @@ def scan_h2lmm(
     kinship_decomp  : dict or None  {chrom: {'values':, 'vectors':}}
     sample_ids      : array-like (n,) or None
         phenotype-level sample identifiers. if None, assumed to match
-        genomecache.sample_ids in order (1:1 case).
+        genomecache.sample_ids in order (one sample per strain).
     use_rint        : bool  apply rank-inverse normal transformation
     phenotype_id    : str
     model           : str  'additive' (default) or 'full'
-        'additive' — 8 haplotype columns per locus (J founders).
-        'full'     — J*(J+1)/2 diplotype columns constructed from additive
-                     probs via outer product P(fi/fj)=P(fi)*P(fj); valid
-                     for CC inbred data where heterozygous probs ≈ 0.
+        'additive' — one column per founder haplotype at each locus (J founders).
+        'full'     — one column per possible founder pair at each locus,
+                     built from the additive probabilities by multiplying
+                     each pair's probabilities together; valid for CC inbred
+                     data, where truly heterozygous animals are essentially absent.
     scan_window     : str  'cis' | 'genome' | 'local'  (default 'cis')
-        'cis'    — scan only the chromosome carrying the gene (gene_chr
-                   required); equivalent to passing a single-chr kinship dict.
+        'cis'    — scan only the chromosome carrying the gene (gene_chr required).
         'genome' — scan all chromosomes present in kinship_decomp.
         'local'  — cis scan restricted to loci within ±window_mb of the
-                   gene TSS (gene_chr and gene_pos_mb required).
+                   gene's transcription start site (gene_chr and gene_pos_mb required).
     gene_chr        : str or None  chromosome of the gene (required for cis/local)
     gene_pos_mb     : float or None  TSS position in Mb (required for local)
     window_mb       : float  half-window in Mb for local mode (default 10.0)
@@ -198,18 +203,20 @@ def scan_h2lmm(
             phenotype_id,
         )
 
-    # resolve Z mapping
+    # build the sample-to-strain mapping
     sid = list(sample_ids) if sample_ids is not None else list(genomecache.sample_ids)
     z_mat, valid_sid = _resolve_z(sid, genomecache)
 
-    # combine sample validity with phenotype NaN mask
+    # a sample is usable only if it has both a phenotype value and a genotype match
     valid_pheno = ~np.isnan(phenotype)
     valid = valid_pheno & valid_sid
     if valid.sum() < n:
         logger.info(
-            f"{phenotype_id}: {n - valid.sum()} samples excluded "
-            f"({(~valid_pheno).sum()} NaN pheno, "
-            f"{(~valid_sid).sum()} missing geno)"
+            "scan_h2lmm: %s  n_excluded=%d  (nan_pheno=%d  missing_geno=%d)",
+            phenotype_id,
+            n - valid.sum(),
+            (~valid_pheno).sum(),
+            (~valid_sid).sum(),
         )
     n_valid = int(valid.sum())
     if n_valid < 10:
@@ -221,7 +228,7 @@ def scan_h2lmm(
 
     y = phenotype[valid].copy()
 
-    # covariates
+    # covariates (add an intercept column if the caller didn't include one)
     if covariates is not None:
         x = covariates[valid].copy()
         if not np.allclose(x[:, 0], 1.0):
@@ -229,18 +236,17 @@ def scan_h2lmm(
     else:
         x = np.ones((len(y), 1))
 
-    # Z matrix for this valid subset
+    # keep only the mapping rows for samples that passed the validity check
     z_sub = z_mat[valid] if z_mat is not None else None
 
-    # RINT at sample level — matches miQTL's canonical replicated design: scan.h2lmm
-    # applies RINT to all n samples before any reduction. z_sub is retained and passed
-    # to scan_chromosome, which expands H from m→n via Z and fuses with eigvec rotation.
-    # The kinship is expanded to K_n = Z K_m Z^T per chromosome in the loop below,
-    # giving LODs on the same n-sample scale as miQTL's sample-level scan.
+    # normalise the phenotype at the individual-sample level, before any
+    # averaging down to strains — this keeps LOD scores on the same scale
+    # as a per-sample scan, since the kinship is later expanded back out
+    # to sample level (K_n = Z K_m Z^T) in the loop below.
     if use_rint:
         y = rint(y)
 
-    # kinship
+    # compute kinship if the caller didn't supply one already
     if kinship_decomp is None:
         kd_raw = kin_module.calc_kinship(genomecache, method="loco")
         kinship_decomp = kin_module.decomp_kinship(kd_raw)
@@ -249,8 +255,8 @@ def scan_h2lmm(
     all_lod, all_pval, all_betas = [], [], []
     h2_null_dict = {}
 
-    # restrict to chromosomes with kinship available; avoids noisy skip messages
-    # when kinship_decomp is built for a single chromosome (e.g. --chr 8)
+    # only scan chromosomes we actually have kinship for — avoids noisy skip
+    # messages when kinship_decomp was built for a single chromosome
     _chrom_list = [c for c in genomecache.chromosomes if c in kinship_decomp]
     if scan_window in ("cis", "local"):
         _gene_chr = str(gene_chr)
@@ -261,21 +267,20 @@ def scan_h2lmm(
         _evc = kinship_decomp[chrom]["vectors"]
 
         if z_sub is not None:
-            # expand LOCO kinship to sample level: K_n = Z K_m Z^T.
-            # eigendecomp is O(n³) but n≤416 — negligible; shared across all loci.
-            _K_m = (_evc * _ev) @ _evc.T  # broadcast avoids np.diag temp
+            # expand the strain-level kinship out to sample level and
+            # re-decompose; this is a small matrix (n ≤ 416) so the cost
+            # is negligible, and it's shared across every locus on this chromosome.
+            _K_m = (_evc * _ev) @ _evc.T
             _K_n = z_sub @ _K_m @ z_sub.T
             evals, evecs = np.linalg.eigh(_K_n)
             del _K_m, _K_n
         elif _evc.shape[0] > len(y):
-            # Defensive guard: in the z_sub=None path, valid_sid is all-True
-            # (caller contract: all phenotype sample IDs are present in the
-            # genomecache). This branch is therefore only reachable if the caller
-            # passes a phenotype with NaN values, which violates the contract.
-            # If triggered: the original code did `_evc[valid]` (row-subsetting
-            # eigenvectors), which is mathematically invalid — a row-subset of
-            # an eigenvector matrix is not the eigendecomp of the submatrix.
-            # Correct path: reconstruct K_sub and re-decompose.
+            # this path should only be reached if the caller passed a phenotype
+            # with missing values while every sample otherwise matches the
+            # genotype cache directly (no mapping matrix needed). rebuild the
+            # kinship for just the valid samples and re-decompose it, rather
+            # than naively dropping rows from the eigenvectors (which would not
+            # give a valid eigendecomposition of the smaller matrix).
             logger.warning(
                 "scan_h2lmm: %s — phenotype has %d NaN values; "
                 "caller should pass a clean phenotype vector",
@@ -291,7 +296,7 @@ def scan_h2lmm(
 
         y_rot = evecs.T @ y
         x_rot = evecs.T @ x
-        # use fixed h2 when provided (e.g. from scan_h2lmm_mi)
+        # reuse a pre-estimated heritability if one was supplied (e.g. from scan_h2lmm_mi)
         if fixed_h2_dict is not None and chrom in fixed_h2_dict:
             h2 = fixed_h2_dict[chrom]
         else:
@@ -307,8 +312,11 @@ def scan_h2lmm(
             mask = np.abs(chr_res["positions"] - gene_pos_mb) <= window_mb
             if not mask.any():
                 logger.debug(
-                    f"{phenotype_id}: no loci within {window_mb} Mb of "
-                    f"{gene_pos_mb:.3f} on {chrom}; skipping"
+                    "scan_h2lmm: %s  no loci within %.1fMb of %.3f on chr%s — skipped",
+                    phenotype_id,
+                    window_mb,
+                    gene_pos_mb,
+                    chrom,
                 )
                 continue
             chr_res = {
@@ -380,20 +388,21 @@ def scan_multi_gene(
     output_dir: "Path | None" = None,
     model: str = "additive",
 ) -> "dict[str, ScanResult]":
-    """scan multiple genes sharing the same genome cache and kinship.
+    """scan many genes at once, sharing the same genome cache and kinship.
 
-    chromosome-outer, gene-inner loop: precompute_chromosome is called once
-    per chromosome for all genes, amortising the O(n_loci·n·m·J) rotation
-    across G genes.  K_n eigendecomposition is also computed once per
-    chromosome.
+    the chromosome is the outer loop and genes are the inner loop: the
+    per-chromosome setup (haplotype probability rotation, kinship
+    eigendecomposition) is done once and reused for every gene on that
+    chromosome, rather than repeating it per gene.
 
-    when output_dir is set, a per-chromosome LOD CSV (lod_chr{ch}.csv) is
-    written immediately after each chromosome completes.  this bounds peak
-    memory to one chromosome's worth of LOD rows rather than the full genome.
+    when output_dir is set, a per-chromosome LOD file (lod_chr{ch}.csv) is
+    written as soon as that chromosome finishes. this keeps peak memory
+    bounded to one chromosome's worth of results rather than the whole genome.
 
-    phenotype_matrix must not contain NaN for samples that pass the common
-    validity mask (sample present in genomecache).  genes with degenerate
-    phenotypes are handled gracefully by estimate_h2_null's sentinel return.
+    phenotype_matrix must not contain NaN values for any sample that is
+    present in the genome cache. genes with a near-constant (degenerate)
+    phenotype are handled gracefully by falling back to a safe default
+    heritability estimate rather than failing.
 
     parameters
     ----------
@@ -481,7 +490,7 @@ def scan_multi_gene(
         ev = kinship_decomp[chrom]["values"]
         evc = kinship_decomp[chrom]["vectors"]
 
-        # expand LOCO kinship to sample level K_n = Z K_m Z^T (once per chr)
+        # expand the strain-level kinship to sample level, once per chromosome
         if z_sub is not None:
             _K_m = (evc * ev) @ evc.T
             _K_n = z_sub @ _K_m @ z_sub.T
@@ -490,7 +499,7 @@ def scan_multi_gene(
         else:
             evals, evecs = ev, evc
 
-        # chromosome-constant H rotation — amortised across all genes on chr
+        # this per-chromosome setup is shared by every gene on this chromosome
         chr_data = lmm_module.precompute_chromosome(
             genomecache, chrom, evals, evecs, z_sub, model
         )
@@ -503,7 +512,7 @@ def scan_multi_gene(
         else:
             genes_this_chr = gene_ids
 
-        # per-chr streaming accumulators (arrays — no per-row dict overhead)
+        # buffers for this chromosome's rows, if streaming to disk
         if output_dir is not None:
             _chr_gene: list = []
             _chr_locus: list = []
@@ -525,7 +534,10 @@ def scan_multi_gene(
                 mask = np.abs(chr_res["positions"] - tss) <= window_mb
                 if not mask.any():
                     logger.debug(
-                        "%s: no loci within %.1f Mb on %s", gid, window_mb, chrom
+                        "scan_multi_gene: %s  no loci within %.1fMb on chr%s",
+                        gid,
+                        window_mb,
+                        chrom,
                     )
                     continue
                 chr_res = {
@@ -565,10 +577,10 @@ def scan_multi_gene(
                 }
             ).to_csv(_lod_path, index=False)
             logger.info(
-                "[%d/%d] chr%s: %d genes  %d rows  %.1fs → %s",
+                "scan_multi_gene: chr%s (%d/%d)  n_genes=%d  n_rows=%d  elapsed=%.1fs → %s",
+                chrom,
                 ci,
                 n_chrs,
-                chrom,
                 len(genes_this_chr),
                 len(_chr_gene),
                 time.perf_counter() - t_chr,
@@ -577,10 +589,10 @@ def scan_multi_gene(
             del _chr_gene, _chr_locus, _chr_pos, _chr_lod
         else:
             logger.info(
-                "[%d/%d] chr%s: %d genes  %.1fs",
+                "scan_multi_gene: chr%s (%d/%d)  n_genes=%d  elapsed=%.1fs",
+                chrom,
                 ci,
                 n_chrs,
-                chrom,
                 len(genes_this_chr),
                 time.perf_counter() - t_chr,
             )
@@ -621,7 +633,8 @@ def grab_locus_from_scan(scan_result):
 
 
 def lod_drop_ci(scan_result, chrom, drop=1.5):
-    """1.5-LOD-drop confidence interval on a single chromosome.
+    """confidence interval around the peak on one chromosome, defined as the
+    span of loci whose LOD stays within `drop` LOD units of the peak.
 
     returns (lo_mb, hi_mb, peak_mb).
     """
@@ -638,8 +651,6 @@ def lod_drop_ci(scan_result, chrom, drop=1.5):
 
 def find_peaks(scan_result, threshold, drop=1.5, allow_multiple=False, min_lod_gap=1.5):
     """find significant QTL peaks in a genome-wide scan.
-
-    mirrors qtl2::find_peaks(scanone, map, threshold, drop, peakdrop).
 
     parameters
     ----------
@@ -744,8 +755,8 @@ def fixef_eqtl_scan(
     phenotype_id="unknown",
     just_these_loci=None,
 ):
-    """fixed-effect eQTL scan — OLS, no kinship.
-
+    """fixed-effect eQTL scan — plain least-squares regression, no kinship
+    correction for relatedness.
 
     parameters
     ----------
@@ -788,11 +799,11 @@ def fixef_eqtl_scan(
 
     for chrom in genomecache.chromosomes:
         lids, pos, probs = genomecache.get_chromosome(chrom)
-        nf = genomecache.n_founders  # J — all founders; lstsq handles rank J-1
+        nf = genomecache.n_founders  # use all founder columns; lstsq handles the rank deficiency
         for i_l, lid in enumerate(lids):
             if just_these_loci and lid not in just_these_loci:
                 continue
-            h = probs[i_l]  # (n, J) — all founders
+            h = probs[i_l]  # haplotype probabilities for all founders at this locus
             if z_sub is not None:
                 h = z_sub @ h
             z_ = np.hstack([h, x])
@@ -809,7 +820,7 @@ def fixef_eqtl_scan(
                 all_pos.append(pos[i_l])
                 continue
             lod = max((n / 2.0) * np.log10(max(rss0, 1e-30) / max(rss1, 1e-30)), 0.0)
-            # effective rank: rank([H, X]) - rank(X) = haplotype df
+            # degrees of freedom contributed by the haplotype term alone
             q_eff = max(int(np.linalg.matrix_rank(z_, tol=1e-10)) - p, 0)
             df2 = n - p - q_eff
             if df2 > 0 and rss1 > 0 and q_eff > 0:
@@ -851,11 +862,11 @@ def instability_lm_scan(
 ):
     """bootstrap instability scan — fixed-effect only.
 
-    subsamples strains b times, runs fixef_eqtl_scan() on each subsample,
-    reports mean LOD and peak proportion across bootstraps.
-
-        pre-generated sample matrix from generate.simple.sample.outcomes.matrix).
-    this implementation handles sampling internally.
+    repeatedly draws a random subset of strains, scans each subset the same
+    way as fixef_eqtl_scan(), and reports the average LOD plus how often
+    each locus came out as the peak across all the subsets. a locus that
+    is consistently the peak across many random subsamples is a more
+    trustworthy signal than one that only peaks once.
 
     parameters
     ----------
@@ -883,7 +894,8 @@ def instability_lm_scan(
         subsample_prop,
     )
 
-    # pre-reduce to strain means once so subsample indices are always in [0, n_strains)
+    # reduce to strain means once, up front, so subsample indices always
+    # fall in [0, n_strains) rather than the larger replicate-sample range
     if sample_ids is not None:
         _z, _vs = _resolve_z(list(sample_ids), genomecache)
         _valid = (~np.isnan(phenotype)) & _vs
@@ -906,8 +918,8 @@ def instability_lm_scan(
     n = len(y_scan)
     k = max(int(n * subsample_prop), 2)
 
-    # derive which chromosomes contain the requested loci — avoids loading all
-    # 20 chromosomes per subsample when just_these_loci restricts to one chr
+    # only look at chromosomes that actually contain a requested locus, so we
+    # don't load the whole genome when just_these_loci restricts to one chromosome
     if just_these_loci:
         _loci_set = set(just_these_loci)
         _active_chroms = [
@@ -919,10 +931,10 @@ def instability_lm_scan(
         _active_chroms = list(genomecache.chromosomes)
 
     class _SubCache:
-        """Genome cache view restricted to a subset of strain indices."""
+        """genome cache view restricted to a subset of strain indices."""
 
         def __init__(self, cache, idx):
-            """Wrap cache, storing the index subset for subsetting probs."""
+            """wrap the cache, remembering which strain indices to keep."""
             self._c = cache
             self._idx = idx
             self.chromosomes = _active_chroms
@@ -930,11 +942,12 @@ def instability_lm_scan(
             self.sample_ids = [cache.sample_ids[i] for i in idx]
 
         def get_chromosome(self, chrom):
-            """Return lids, pos, and subset probs for chrom."""
+            """return locus ids, positions, and probs subset to the chosen strains."""
             lids, pos, probs = self._c.get_chromosome(chrom)
             return lids, pos, probs[:, self._idx, :]
 
-    # Load all loci probs once — avoids n_subsamples × n_loci HDF5 reads
+    # load haplotype probabilities for every requested locus just once, up
+    # front — much faster than re-reading the same data from disk on every subsample
     _loci_set = set(just_these_loci) if just_these_loci else None
     _lids_chunks, _chrs_chunks, _pos_chunks, _prob_chunks = [], [], [], []
     for chrom in _active_chroms:
@@ -977,17 +990,17 @@ def instability_lm_scan(
         if not np.allclose(x_b[:, 0], 1.0):
             x_b = np.hstack([np.ones((k, 1)), x_b])
 
-        # FWL: residualise y against x_b once
+        # remove the covariate effect from the phenotype once, up front
         e0_b = y_b - x_b @ np.linalg.lstsq(x_b, y_b, rcond=None)[0]
         rss0_b = float(e0_b @ e0_b)
 
-        # subsampled haplotype probs: (L, k, J)
+        # haplotype probabilities for the subsampled strains at every locus
         H_b = probs_all[:, idx, :]
 
-        # project out covariates from H: H_perp = M_X H
-        Xp_b = np.linalg.pinv(x_b)  # (p, k)
-        proj = np.einsum("pn,lnj->lpj", Xp_b, H_b)  # (L, p, J)
-        H_perp = H_b - np.einsum("np,lpj->lnj", x_b, proj)  # (L, k, J)
+        # remove the same covariate effect from the haplotype probabilities
+        Xp_b = np.linalg.pinv(x_b)
+        proj = np.einsum("pn,lnj->lpj", Xp_b, H_b)
+        H_perp = H_b - np.einsum("np,lpj->lnj", x_b, proj)
         del H_b, proj
 
         G = np.einsum("lni,lnj->lij", H_perp, H_perp)  # (L, J, J)
@@ -1006,7 +1019,7 @@ def instability_lm_scan(
 
         if (_si + 1) % 10 == 0 or _si == n_subsamples - 1:
             logger.debug(
-                "%s instability: %d/%d subsamples  %.1fs elapsed",
+                "instability_lm_scan: %s subsample %d/%d  elapsed=%.1fs",
                 phenotype_id,
                 _si + 1,
                 n_subsamples,
@@ -1050,7 +1063,10 @@ def scan_h2lmm_mi(
 ):
     """multiple-imputation haplotype scan.
 
-    samples n_imp diplotype states per locus and averages LOD scores.
+    at each locus, draws n_imp random hard genotype calls (rather than using
+    the soft haplotype probabilities directly) and averages the resulting
+    LOD scores. this captures the extra uncertainty that comes from genotype
+    calling, rather than treating the probabilities as if they were exact.
 
     parameters
     ----------
@@ -1096,8 +1112,9 @@ def scan_h2lmm_mi(
     if scan_window in ("cis", "local"):
         _chrom_list = [c for c in _chrom_list if c == str(gene_chr)]
 
-    # pre-estimate h² once from the REAL cache — held fixed across all imputations.
-    # replicate-aware: same strain-mean path as scan_h2lmm.
+    # estimate heritability once from the real haplotype probabilities and hold
+    # it fixed across all imputations; replicate samples are reduced to strain
+    # means the same way as in scan_h2lmm.
     _sid_mi = (
         list(sample_ids) if sample_ids is not None else list(genomecache.sample_ids)
     )
@@ -1131,16 +1148,14 @@ def scan_h2lmm_mi(
         _h2, _ = lmm_module.estimate_h2_null(_yr, _xr, _ev, method="ml")
         fixed_h2[_c] = _h2
 
-    # ── one pass per chromosome — all n_imp imputations vectorised ──────────
-    # scan_chromosome_mi generates n_imp one-hot draws at once and computes
-    # H_perp/G/G_pinv in a single batched einsum, eliminating:
-    #   - n_imp × GenomeCache object constructions
-    #   - n_imp × scan_chromosome calls per chromosome
+    # one pass per chromosome; all n_imp imputations are drawn and scanned
+    # together in a single batched computation rather than looping n_imp times
     all_lids: list[np.ndarray] = []
     all_chrs: list[np.ndarray] = []
     all_pos: list[np.ndarray] = []
     all_lod: list[np.ndarray] = []
-    # p_value and betas from soft-prob scan on first chromosome (reference only)
+    # p_value and betas are taken from a reference scan on the soft
+    # probabilities (not from the imputations) — used for reporting only
     all_pval: list[np.ndarray] = []
     all_betas: list[np.ndarray] = []
     h2_null_dict: dict[str, float] = {}
@@ -1160,7 +1175,7 @@ def scan_h2lmm_mi(
             n_imp=n_imp,
             rng=rng,
         )
-        # reference scan on soft probs — for p_value/betas fields only
+        # reference scan on the soft probabilities, for p_value/betas fields only
         cd_ref = lmm_module.precompute_chromosome(genomecache, chrom, ev, evc)
         ref = lmm_module.scan_chromosome(
             y_base, cd_ref, x_base, ev, evc, fixed_h2[chrom]
@@ -1174,7 +1189,10 @@ def scan_h2lmm_mi(
         all_betas.append(ref["betas"])
         h2_null_dict[chrom] = fixed_h2[chrom]
         logger.debug(
-            "%s MI chr%s done (%d loci)", phenotype_id, chrom, len(ref["locus_ids"])
+            "scan_h2lmm_mi: %s chr%s  n_loci=%d",
+            phenotype_id,
+            chrom,
+            len(ref["locus_ids"]),
         )
 
     _mi_lod = np.concatenate(all_lod)
@@ -1265,7 +1283,13 @@ def scan_multi_gene_mi(
         if not gene_chr:
             logger.warning("scan_multi_gene_mi: no chr for %s — skipped", gene_id)
             continue
-        logger.debug("scan_multi_gene_mi: [%d/%d] %s", _g + 1, _n_genes_mi, gene_id)
+        logger.debug(
+            "scan_multi_gene_mi: gene %d/%d (%.1f%%) %s",
+            _g + 1,
+            _n_genes_mi,
+            100.0 * (_g + 1) / _n_genes_mi,
+            gene_id,
+        )
         peak_mb = peak_mb_map.get(gene_id) if peak_mb_map else None
         scan_kw: "dict" = dict(
             scan_window="local" if peak_mb is not None else "cis",
@@ -1460,12 +1484,12 @@ def scan_multi_gene_lmm(
     founder_names: "list[str] | None" = None,
     model: str = "additive",
 ) -> pd.DataFrame:
-    """streaming LMM scan over a set of genes; returns peak statistics DataFrame.
+    """streaming LMM scan over a set of genes; returns a peak-statistics DataFrame.
 
-    chromosome-outer, gene-inner loop with precomputed H rotation — mirrors
-    scan_multi_gene but accepts a dict-based expression cache (consistent with
-    scan_multi_gene_mi / instability_scan_multi_gene) and captures per-gene
-    rss0/rss1 for diagnostic statistics.
+    same chromosome-outer, gene-inner strategy as scan_multi_gene, but takes
+    a dict-based expression cache (matching scan_multi_gene_mi and
+    instability_scan_multi_gene) and also records each gene's residual sum
+    of squares before and after the haplotype term, for diagnostic use.
 
     parameters
     ----------
@@ -1591,14 +1615,14 @@ def scan_multi_gene_lmm(
             lid_arr = np.asarray(chr_res["locus_ids"])
             rss0 = chr_res.get("rss0", float("nan"))
             rss1_arr = chr_res.get("rss1", None)
-            betas_all = chr_res.get("betas", None)  # (n_loci, J)
+            betas_all = chr_res.get("betas", None)
 
             if scan_window == "local" and gene_pos_mb_map is not None:
                 tss = float(gene_pos_mb_map[gene_id])
                 mask = np.abs(pos_arr - tss) <= window_mb
                 if not mask.any():
                     logger.debug(
-                        "%s: no loci within %.1fMb on chr%s",
+                        "scan_multi_gene_lmm: %s  no loci within %.1fMb on chr%s",
                         gene_id,
                         window_mb,
                         chrom,
@@ -1672,9 +1696,9 @@ def scan_multi_gene_lmm(
         del _lod_rows
 
         logger.info(
-            "[%d] scan_multi_gene_lmm chr%s: %d genes  %.1fs",
-            ci,
+            "scan_multi_gene_lmm: chr%s (%d)  n_genes=%d  elapsed=%.1fs",
             chrom,
+            ci,
             len(genes_this_chr),
             time.perf_counter() - t_chr,
         )
