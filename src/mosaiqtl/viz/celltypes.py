@@ -40,6 +40,7 @@ _FOUNDERS_DISPLAY: list[str] = FOUNDER_ORDER
 __all__ = [
     "safe_ct",
     "resolve_ct_scan_dir",
+    "ct_filename_suffix",
     "discover_cell_types",
     "build_ct_palette",
     "pair_order",
@@ -55,6 +56,7 @@ __all__ = [
     "ct_pairwise_effects_scatter",
     "ct_lod_distributions",
     "ct_cis_distance_comparison",
+    "compare_scan_types",
 ]
 
 
@@ -77,10 +79,16 @@ def safe_ct(ct: str) -> str:
     return ct.replace(" ", "_")
 
 
-def resolve_ct_scan_dir(data_dir: Path, ct: str) -> Path:
-    """Return the py_data path for a cell type under the standard layout.
+def resolve_ct_scan_dir(data_dir: Path, ct: str, scan_tag: str) -> Path:
+    """Return the scan-tag root path for a cell type under the standard layout.
 
-    Layout: ``data_dir/celltypes/<safe_ct>/py_data/``
+    Layout: ``data_dir/celltypes/<safe_ct>/<scan_tag>/`` — this is the
+    scan-tag ROOT, holding ``core/``, ``extended/``, and ``plots/``
+    subdirectories. Scan CSVs (``peak_lod.csv``, ``allele_effects.csv``,
+    ``lod.csv``, ``threshold.csv``) live under ``<returned path>/core/``;
+    callers that read those files must append ``'core'`` themselves — this
+    function does not, so that the same returned path also serves as the
+    base for ``<returned path>/plots/``.
 
     Parameters
     ----------
@@ -88,24 +96,58 @@ def resolve_ct_scan_dir(data_dir: Path, ct: str) -> Path:
         Root data directory (e.g. ``gastroc_data/``).
     ct :
         Cell-type label (spaces allowed; sanitised internally).
+    scan_tag :
+        Scan-configuration token ('C', 'G', 'L_w1.0', ...) distinguishing runs
+        with different scan_type/window_mb — see the caller's ``_scan_tag()``.
 
     Returns
     -------
     Path
         Resolved path (not guaranteed to exist).
     """
-    return data_dir / "celltypes" / safe_ct(ct) / "py_data"
+    return data_dir / "celltypes" / safe_ct(ct) / scan_tag
 
 
-def discover_cell_types(celltypes_dir: Path) -> list[str]:
+def ct_filename_suffix(token: Optional[str], scan_tag: str) -> str:
+    """Filename suffix identifying a cell type (or whole-tissue) + scan config.
+
+    Mirrors the run-writer's own ``_sfx()`` convention: every core scan CSV
+    (``lod``/``peak_lod``/``allele_effects``/``threshold``) is written as
+    ``<base>_<suffix>.csv`` so a copied-out file keeps its run identity.
+    *token* here is always an already-sanitised cell-type directory name (as
+    returned by :func:`discover_cell_types`), never a raw label — no further
+    sanitisation is applied.
+
+    Parameters
+    ----------
+    token :
+        Sanitised cell-type directory name, or ``None`` for a whole-tissue run.
+    scan_tag :
+        Scan-configuration token ('C', 'G', 'Lw1', ...).
+
+    Returns
+    -------
+    str
+        e.g. ``'astrocyte_Lw1'``, ``'whole_C'``.
+    """
+    return f"{token if token is not None else 'whole'}_{scan_tag}"
+
+
+def discover_cell_types(celltypes_dir: Path, scan_tag: str) -> list[str]:
     """Auto-discover cell type names under the standard directory layout.
 
-    Scans for ``celltypes_dir/<name>/py_data/peak_lod.csv``.
+    Scans for ``celltypes_dir/<name>/<scan_tag>/core/peak_lod_<name>_<scan_tag>.csv``
+    — scan CSVs write into the ``core/`` subdirectory of the scan-tag directory
+    (sibling to ``extended/`` and ``plots/``), not directly under it, and carry
+    a ``_<celltype>_<scan_tag>`` filename suffix (see :func:`ct_filename_suffix`).
 
     Parameters
     ----------
     celltypes_dir :
         Directory containing one subdirectory per cell type.
+    scan_tag :
+        Scan-configuration token ('C', 'G', 'L_w1.0', ...) — only cell types
+        with output under this specific scan configuration are discovered.
 
     Returns
     -------
@@ -117,7 +159,8 @@ def discover_cell_types(celltypes_dir: Path) -> list[str]:
         return cts
     for sub in sorted(celltypes_dir.iterdir()):
         if sub.is_dir() and sub.name != "compare":
-            if (sub / "py_data" / "peak_lod.csv").exists():
+            _sfx = ct_filename_suffix(sub.name, scan_tag)
+            if (sub / scan_tag / "core" / f"peak_lod_{_sfx}.csv").exists():
                 cts.append(sub.name)
     return cts
 
@@ -300,20 +343,22 @@ def load_gene_lod(path: Path, gene: str) -> Optional[pd.DataFrame]:
         return None
 
 
-def load_threshold(py_data: Path) -> Optional[float]:
-    """Read the genome-wide FWER threshold from ``py_data/threshold.csv``.
+def load_threshold(path: Path) -> Optional[float]:
+    """Read the genome-wide FWER threshold from a ``threshold_<suffix>.csv`` file.
 
     Parameters
     ----------
-    py_data :
-        Directory containing ``threshold.csv``.
+    path :
+        Path to the threshold CSV file (e.g. ``core/threshold_whole_C.csv`` —
+        build with :func:`ct_filename_suffix`). Takes the full path directly,
+        matching :func:`load_peak_lod`/:func:`load_allele_effects`, rather than
+        hardcoding a bare ``threshold.csv`` name internally.
 
     Returns
     -------
     float or None
         Threshold LOD value, or ``None`` if the file is absent or unparseable.
     """
-    path = py_data / "threshold.csv"
     if not path.exists():
         return None
     try:
@@ -340,6 +385,7 @@ def ct_vs_whole_lod_scatter(
     compare_dir: Path,
     palette: "dict[str, str]",
     threshold: Optional[float],
+    scan_tag: str,
     rep_gene: Optional[str] = None,
 ) -> None:
     """Per-cell-type LOD scatter vs whole tissue; export quadrant gene lists.
@@ -360,17 +406,26 @@ def ct_vs_whole_lod_scatter(
         Color palette from :func:`build_ct_palette`.
     threshold :
         FWER threshold LOD value for quadrant lines, or ``None``.
+    scan_tag :
+        Scan-configuration token ('C', 'G', 'Lw1', ...) — selects which
+        suffixed CSVs to read via :func:`ct_filename_suffix`.
     rep_gene :
         Optional gene name to highlight on every scatter.
     """
-    whole_df = load_peak_lod(whole_py_data / "peak_lod.csv", suffix="whole")
+    whole_df = load_peak_lod(
+        whole_py_data / f"peak_lod_{ct_filename_suffix(None, scan_tag)}.csv",
+        suffix="whole",
+    )
     if whole_df is None:
         logger.warning("ct_vs_whole_lod_scatter: whole-tissue peak_lod.csv not found")
         return
 
     for ct in cell_types:
         try:
-            ct_df = load_peak_lod(ct_dirs[ct] / "peak_lod.csv", suffix=ct)
+            ct_df = load_peak_lod(
+                ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.csv",
+                suffix=ct,
+            )
             if ct_df is None:
                 continue
             merged = whole_df[["gene_symbol", "peak_lod_whole"]].merge(
@@ -427,6 +482,7 @@ def ct_vs_whole_effects_scatter(
     ct_dirs: "dict[str, Path]",
     whole_py_data: Path,
     ct_out_dirs: "dict[str, Path]",
+    scan_tag: str,
 ) -> None:
     """Per-cell-type allele-effects scatter vs whole tissue.
 
@@ -440,8 +496,13 @@ def ct_vs_whole_effects_scatter(
         Whole-tissue ``py_data/`` directory.
     ct_out_dirs :
         Mapping from cell-type label to its output plot directory.
+    scan_tag :
+        Scan-configuration token ('C', 'G', 'Lw1', ...) — selects which
+        suffixed CSVs to read via :func:`ct_filename_suffix`.
     """
-    whole_eff = load_allele_effects(whole_py_data / "allele_effects.csv")
+    whole_eff = load_allele_effects(
+        whole_py_data / f"allele_effects_{ct_filename_suffix(None, scan_tag)}.csv"
+    )
     if whole_eff is None:
         logger.warning(
             "ct_vs_whole_effects_scatter: whole-tissue allele_effects.csv not found"
@@ -452,7 +513,9 @@ def ct_vs_whole_effects_scatter(
 
     for ct in cell_types:
         try:
-            ct_eff = load_allele_effects(ct_dirs[ct] / "allele_effects.csv")
+            ct_eff = load_allele_effects(
+                ct_dirs[ct] / f"allele_effects_{ct_filename_suffix(ct, scan_tag)}.csv"
+            )
             if ct_eff is None:
                 continue
             ct_long = melt_betas(ct_eff, f"beta_{ct}")
@@ -510,6 +573,7 @@ def ct_lod_profile_overlay(
     palette: "dict[str, str]",
     threshold: Optional[float],
     rep_gene: str,
+    scan_tag: str,
 ) -> None:
     """LOD profile overlay for a representative gene across cell types and whole tissue.
 
@@ -529,8 +593,13 @@ def ct_lod_profile_overlay(
         FWER threshold LOD value, or ``None``.
     rep_gene :
         Gene name for which to overlay LOD profiles.
+    scan_tag :
+        Scan-configuration token ('C', 'G', 'Lw1', ...) — selects which
+        suffixed CSVs to read via :func:`ct_filename_suffix`.
     """
-    whole_peak = load_peak_lod(whole_py_data / "peak_lod.csv")
+    whole_peak = load_peak_lod(
+        whole_py_data / f"peak_lod_{ct_filename_suffix(None, scan_tag)}.csv"
+    )
     peak_chr: Optional[str] = None
     if whole_peak is not None and "gene_symbol" in whole_peak.columns:
         row = whole_peak[whole_peak["gene_symbol"] == rep_gene]
@@ -555,12 +624,14 @@ def ct_lod_profile_overlay(
         df = df.sort_values("pos_mb")
         return df["pos_mb"].values, df["lod"].values
 
-    whole_trace = _get_trace(whole_py_data / "lod.csv")
+    whole_trace = _get_trace(
+        whole_py_data / f"lod_{ct_filename_suffix(None, scan_tag)}.csv"
+    )
 
     ct_traces: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for ct in cell_types:
         try:
-            tr = _get_trace(ct_dirs[ct] / "lod.csv")
+            tr = _get_trace(ct_dirs[ct] / f"lod_{ct_filename_suffix(ct, scan_tag)}.csv")
             if tr is not None:
                 ct_traces[ct] = tr
             else:
@@ -636,6 +707,7 @@ def ct_pairwise_lod_scatter(
     ct_out_dirs: "dict[str, Path]",
     compare_dir: Path,
     threshold: Optional[float],
+    scan_tag: str,
     rep_gene: Optional[str] = None,
 ) -> None:
     """Pairwise cell-type LOD scatter + lower-triangle summary grid.
@@ -652,11 +724,17 @@ def ct_pairwise_lod_scatter(
         Shared comparison output directory.
     threshold :
         FWER threshold LOD value, or ``None``.
+    scan_tag :
+        Scan-configuration token ('C', 'G', 'Lw1', ...) — selects which
+        suffixed CSVs to read via :func:`ct_filename_suffix`.
     rep_gene :
         Optional gene name to highlight on every scatter.
     """
     ct_frames: dict[str, Optional[pd.DataFrame]] = {
-        ct: load_peak_lod(ct_dirs[ct] / "peak_lod.csv", suffix=ct) for ct in cell_types
+        ct: load_peak_lod(
+            ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.csv", suffix=ct
+        )
+        for ct in cell_types
     }
 
     pairs: list[tuple[str, str]] = []
@@ -781,6 +859,7 @@ def ct_pairwise_effects_scatter(
     cell_types: list[str],
     ct_dirs: "dict[str, Path]",
     ct_out_dirs: "dict[str, Path]",
+    scan_tag: str,
 ) -> None:
     """Pairwise cell-type allele-effects scatter.
 
@@ -792,9 +871,15 @@ def ct_pairwise_effects_scatter(
         Mapping from cell-type label to its ``py_data/`` directory.
     ct_out_dirs :
         Mapping from cell-type label to its output plot directory.
+    scan_tag :
+        Scan-configuration token ('C', 'G', 'Lw1', ...) — selects which
+        suffixed CSVs to read via :func:`ct_filename_suffix`.
     """
     ct_effects: dict[str, Optional[pd.DataFrame]] = {
-        ct: load_allele_effects(ct_dirs[ct] / "allele_effects.csv") for ct in cell_types
+        ct: load_allele_effects(
+            ct_dirs[ct] / f"allele_effects_{ct_filename_suffix(ct, scan_tag)}.csv"
+        )
+        for ct in cell_types
     }
 
     pairs: list[tuple[str, str]] = []
@@ -876,6 +961,7 @@ def ct_lod_distributions(
     compare_dir: Path,
     palette: "dict[str, str]",
     threshold: Optional[float],
+    scan_tag: str,
 ) -> None:
     """Per-cell-type LOD density vs whole tissue; multi-panel summary grid.
 
@@ -893,8 +979,14 @@ def ct_lod_distributions(
         Color palette from :func:`build_ct_palette`.
     threshold :
         FWER threshold LOD value, or ``None``.
+    scan_tag :
+        Scan-configuration token ('C', 'G', 'Lw1', ...) — selects which
+        suffixed CSVs to read via :func:`ct_filename_suffix`.
     """
-    whole_df = load_peak_lod(whole_py_data / "peak_lod.csv", suffix="whole")
+    whole_df = load_peak_lod(
+        whole_py_data / f"peak_lod_{ct_filename_suffix(None, scan_tag)}.csv",
+        suffix="whole",
+    )
     whole_lods: Optional[np.ndarray] = (
         whole_df["peak_lod_whole"].values
         if whole_df is not None and "peak_lod_whole" in whole_df.columns
@@ -903,7 +995,10 @@ def ct_lod_distributions(
 
     for ct in cell_types:
         try:
-            ct_df = load_peak_lod(ct_dirs[ct] / "peak_lod.csv", suffix=ct)
+            ct_df = load_peak_lod(
+                ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.csv",
+                suffix=ct,
+            )
             if ct_df is None:
                 continue
             ct_col = f"peak_lod_{ct}"
@@ -945,7 +1040,10 @@ def ct_lod_distributions(
             ax.set_visible(False)
         for i, ct in enumerate(cell_types):
             try:
-                ct_df = load_peak_lod(ct_dirs[ct] / "peak_lod.csv", suffix=ct)
+                ct_df = load_peak_lod(
+                    ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.csv",
+                    suffix=ct,
+                )
                 if ct_df is None:
                     continue
                 ct_col = f"peak_lod_{ct}"
@@ -987,6 +1085,7 @@ def ct_cis_distance_comparison(
     whole_py_data: Path,
     compare_dir: Path,
     palette: "dict[str, str]",
+    scan_tag: str,
 ) -> None:
     """Signed cis-distance violin + proximal-fraction curves across sources.
 
@@ -1002,6 +1101,9 @@ def ct_cis_distance_comparison(
         Shared comparison output directory.
     palette :
         Color palette from :func:`build_ct_palette`.
+    scan_tag :
+        Scan-configuration token ('C', 'G', 'Lw1', ...) — selects which
+        suffixed CSVs to read via :func:`ct_filename_suffix`.
     """
     sources: dict[str, tuple] = {}
 
@@ -1009,7 +1111,7 @@ def ct_cis_distance_comparison(
         """Return the TSS column name present in df (near_tss_mb preferred)."""
         return "near_tss_mb" if "near_tss_mb" in df.columns else "start_mb"
 
-    w_path = whole_py_data / "peak_lod.csv"
+    w_path = whole_py_data / f"peak_lod_{ct_filename_suffix(None, scan_tag)}.csv"
     if w_path.exists():
         _wdf = pd.read_csv(w_path)
         _wtss = _tss_col(_wdf)
@@ -1022,7 +1124,7 @@ def ct_cis_distance_comparison(
             )
 
     for ct in cell_types:
-        ct_path = ct_dirs[ct] / "peak_lod.csv"
+        ct_path = ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.csv"
         if not ct_path.exists():
             continue
         _cdf = pd.read_csv(ct_path)
@@ -1046,3 +1148,206 @@ def ct_cis_distance_comparison(
     fig.savefig(out, dpi=300, transparent=True, bbox_inches="tight")
     plt.close(fig)
     logger.info("ct_cis_distance_comparison: %s  (%d sources)", out, len(sources))
+
+
+def compare_scan_types(
+    entity_label: str,
+    scan_tags: list[str],
+    scan_dirs: "dict[str, Path]",
+    out_dir: Path,
+    threshold: Optional[float] = None,
+    rep_gene: Optional[str] = None,
+) -> None:
+    """Pairwise scan-type LOD + allele-effects comparison for one entity.
+
+    Same pairwise pattern as :func:`ct_pairwise_lod_scatter` /
+    :func:`ct_pairwise_effects_scatter`, but the axis being compared is scan
+    configuration (e.g. ``'C'`` vs ``'L_w1'``) rather than cell type, for a
+    single fixed cell type or whole-tissue entity. Every output filename is
+    prefixed with ``safe_ct(entity_label)`` so files copied out of their
+    originating directory still identify which entity they came from — scan
+    tags alone (``C``, ``L_w1``) are not distinguishable across cell types.
+
+    Parameters
+    ----------
+    entity_label :
+        Cell-type label, or ``'whole'`` for the whole-tissue entity being
+        compared across scan configurations.
+    scan_tags :
+        Scan-tag labels to compare pairwise (e.g. ``['C', 'L_w1']``).
+    scan_dirs :
+        Mapping from scan tag to its ``core/`` output directory (holding
+        ``peak_lod.csv`` / ``allele_effects.csv`` for that scan run).
+    out_dir :
+        Output directory for comparison plots and quadrant CSVs.
+    threshold :
+        FWER threshold LOD value for quadrant lines, or ``None``.
+    rep_gene :
+        Optional gene name to highlight on every scatter.
+    """
+    prefix = safe_ct(entity_label)
+    tag_frames: dict[str, Optional[pd.DataFrame]] = {
+        tag: load_peak_lod(scan_dirs[tag] / "peak_lod.csv", suffix=tag)
+        for tag in scan_tags
+    }
+    tag_effects: dict[str, Optional[pd.DataFrame]] = {
+        tag: load_allele_effects(scan_dirs[tag] / "allele_effects.csv")
+        for tag in scan_tags
+    }
+
+    pairs: list[tuple[str, str]] = []
+    for i, tag_a in enumerate(scan_tags):
+        for tag_b in scan_tags[i + 1 :]:  # noqa: E203
+            pairs.append(tuple(sorted((tag_a, tag_b))))
+
+    for x_tag, y_tag in pairs:
+        try:
+            df_x = tag_frames.get(x_tag)
+            df_y = tag_frames.get(y_tag)
+            if df_x is None or df_y is None:
+                logger.warning(
+                    "compare_scan_types %s: missing data for %s / %s",
+                    entity_label,
+                    x_tag,
+                    y_tag,
+                )
+                continue
+            merged = df_x[["gene_symbol", f"peak_lod_{x_tag}"]].merge(
+                df_y[["gene_symbol", f"peak_lod_{y_tag}"]],
+                on="gene_symbol",
+                how="inner",
+            )
+            if merged.empty:
+                logger.warning(
+                    "compare_scan_types %s: no shared genes %s / %s",
+                    entity_label,
+                    x_tag,
+                    y_tag,
+                )
+                continue
+            logger.debug(
+                "compare_scan_types %s %s vs %s: %d genes",
+                entity_label,
+                x_tag,
+                y_tag,
+                len(merged),
+            )
+            _cmp_scatter(
+                merged,
+                x_col=f"peak_lod_{x_tag}",
+                y_col=f"peak_lod_{y_tag}",
+                x_label=f"{x_tag} peak LOD",
+                y_label=f"{y_tag} peak LOD",
+                threshold_x=threshold,
+                threshold_y=threshold,
+                priority_genes={rep_gene: INK} if rep_gene else None,
+                save_path=out_dir / f"{prefix}_{x_tag}_vs_{y_tag}_lod.png",
+            )
+            plt.close("all")
+            if threshold is not None:
+                _cols = ["gene_symbol", f"peak_lod_{x_tag}", f"peak_lod_{y_tag}"]
+                _x = merged[f"peak_lod_{x_tag}"]
+                _y = merged[f"peak_lod_{y_tag}"]
+                _quadrants = {
+                    f"{prefix}_{x_tag}_vs_{y_tag}_shared_egenes.csv": merged[
+                        (_x >= threshold) & (_y >= threshold)
+                    ].sort_values(f"peak_lod_{x_tag}", ascending=False),
+                    f"{prefix}_{x_tag}_vs_{y_tag}_{x_tag}_specific_egenes.csv": merged[
+                        (_x >= threshold) & (_y < threshold)
+                    ].sort_values(f"peak_lod_{x_tag}", ascending=False),
+                    f"{prefix}_{x_tag}_vs_{y_tag}_{y_tag}_specific_egenes.csv": merged[
+                        (_x < threshold) & (_y >= threshold)
+                    ].sort_values(f"peak_lod_{y_tag}", ascending=False),
+                }
+                for fname, df_q in _quadrants.items():
+                    out_csv = out_dir / fname
+                    df_q[_cols].to_csv(out_csv, index=False)
+                    logger.info(
+                        "compare_scan_types %s %s/%s: %d genes -> %s",
+                        entity_label,
+                        x_tag,
+                        y_tag,
+                        len(df_q),
+                        out_csv,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "compare_scan_types %s %s/%s: %s",
+                entity_label,
+                x_tag,
+                y_tag,
+                exc,
+                exc_info=True,
+            )
+
+        try:
+            eff_x = tag_effects.get(x_tag)
+            eff_y = tag_effects.get(y_tag)
+            if eff_x is None or eff_y is None:
+                logger.warning(
+                    "compare_scan_types effects %s: missing for %s / %s",
+                    entity_label,
+                    x_tag,
+                    y_tag,
+                )
+                continue
+
+            long_x = melt_betas(eff_x, f"beta_{x_tag}")
+            long_y = melt_betas(eff_y, f"beta_{y_tag}")
+            if long_x.empty or long_y.empty:
+                logger.warning(
+                    "compare_scan_types effects %s: no betas for %s / %s",
+                    entity_label,
+                    x_tag,
+                    y_tag,
+                )
+                continue
+
+            merge_cols = (
+                ["gene_symbol", "beta_col"]
+                if "gene_symbol" in long_x.columns and "gene_symbol" in long_y.columns
+                else ["beta_col"]
+            )
+            merged_eff = long_x[merge_cols + [f"beta_{x_tag}"]].merge(
+                long_y[merge_cols + [f"beta_{y_tag}"]],
+                on=merge_cols,
+                how="inner",
+            )
+            if merged_eff.empty:
+                logger.warning(
+                    "compare_scan_types effects %s: no overlap %s / %s",
+                    entity_label,
+                    x_tag,
+                    y_tag,
+                )
+                continue
+
+            founders_present = [
+                f
+                for f in _FOUNDERS_DISPLAY
+                if f"beta_{f}"
+                in merged_eff.get("beta_col", pd.Series(dtype=str)).values
+            ]
+            fig, ax = plt.subplots(figsize=(5, 5), dpi=300)
+            _cmp_allele_effects(
+                betas_a=merged_eff[f"beta_{x_tag}"].values,
+                betas_b=merged_eff[f"beta_{y_tag}"].values,
+                founders=founders_present,
+                label_a=x_tag,
+                label_b=y_tag,
+                ax=ax,
+            )
+            fig.tight_layout()
+            save_path = out_dir / f"{prefix}_{x_tag}_vs_{y_tag}_effects.png"
+            fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+            plt.close(fig)
+            logger.debug("compare_scan_types effects: saved %s", save_path)
+        except Exception as exc:
+            logger.warning(
+                "compare_scan_types effects %s %s/%s: %s",
+                entity_label,
+                x_tag,
+                y_tag,
+                exc,
+                exc_info=True,
+            )

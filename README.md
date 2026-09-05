@@ -126,8 +126,12 @@ mosaiqtl estimate \
 
 # 4. eGene summary table + genome-wide Manhattan
 mosaiqtl report \
-    --scan-result peak_lod.csv --perm-dir perm/ --output-dir results/
+    --scan-result peak_lod.csv --perm-dir perm/ --output-dir results/ \
+    --allele-effects allele_effects.csv --pval-perm pval_perm.csv
 ```
+
+`--allele-effects`/`--pval-perm` are optional: omit either to still get `eqtl_peak.csv`, just
+with the corresponding columns (founder betas / Storey significance) left blank.
 
 > **`--model` defaults to `'nb'`** (NB-GLMM). Pass `--model lmm` for the validated Gaussian path.
 
@@ -262,14 +266,15 @@ Configured in `config/*.yaml` or overridden on the command line with `--param va
 
 Named `{tissue}_{celltype}_{suffix}`.
 
-| File | Description |
-|---|---|
-| `_eqtl_scan.csv` | Genome-wide scan — one row per gene × locus; `peak_locus` flag marks each gene's peak |
-| `_eqtl_peak.csv` | Peak locus per eGene — haplotype effects, significance, run metadata |
-| `_eqtl_finemapping.csv` | Sanger-resolution fine-mapping — PIP, credible set membership, CI bounds per variant |
-| `_eqtl_finemapping_peak.csv` | Lead variant per eGene — highest-LOD Sanger SNP with haplotype effects and significance |
-| `_eqtl_stats.csv` | Run-level summary — tissue, cell type, LOD threshold, GEV parameters, gene counts |
-| `genome_summary.png` | Genome-wide Manhattan and QC figures |
+| File | Status | Description |
+|---|---|---|
+| `eqtl_peak.csv` | ✅ | Peak locus per eGene — haplotype effects, significance, run metadata. Biallelic-contrast columns (`variant`, `ref_founders`, `af`, `maf`, `mac`, …) are written but left blank — see 🟡 below. |
+| `eqtl_stats.csv` | ✅ | Run-level summary — tissue, cell type, LOD threshold, GEV parameters, gene counts |
+| `genome_summary.png` | ✅ | Genome-wide Manhattan and QC figures |
+| `eqtl_summary.csv` | ✅ | eGene summary table (pre-IGVF-schema; kept alongside the files above) |
+| `_eqtl_scan.csv` | 🟡 writer not yet built | Genome-wide scan — one row per gene × locus; `peak_locus` flag marks each gene's peak. Same schema shape as `eqtl_peak.csv` (biallelic columns would stay blank the same way) — blocked only on `mosaiqtl scan` retaining full per-locus rows instead of just each gene's peak, and a `write_eqtl_scan()` counterpart to `write_eqtl_peak()`. Not Sanger-blocked. |
+| `_eqtl_finemapping.csv` | 🔴 blocked on Sanger fine-mapping subsystem | Sanger-resolution fine-mapping — PIP, credible set membership, CI bounds per variant. Needs real variant-level REF/ALT calls collapsed from the 8-founder haplotype locus, which doesn't exist yet. |
+| `_eqtl_finemapping_peak.csv` | 🔴 blocked on Sanger fine-mapping subsystem | Lead variant per eGene — highest-LOD Sanger SNP with haplotype effects and significance |
 
 ---
 

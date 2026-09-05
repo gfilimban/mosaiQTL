@@ -242,18 +242,16 @@ def _build_gm_idx(
 
     Parameters
     ----------
-    gene_meta : DataFrame with a 'gene_symbol' column, or None.
+    gene_meta : DataFrame with a 'gene_id' column (the stable identity key;
+        gene_symbol travels along as a plain data column, joined in for
+        display), or None.
 
     Returns
     -------
     dict keyed by gene_id, or None when gene_meta is absent.
     """
-    if (
-        gene_meta is not None
-        and not gene_meta.empty
-        and "gene_symbol" in gene_meta.columns
-    ):
-        return gene_meta.set_index("gene_symbol").to_dict("index")
+    if gene_meta is not None and not gene_meta.empty and "gene_id" in gene_meta.columns:
+        return gene_meta.set_index("gene_id").to_dict("index")
     return None
 
 
@@ -275,7 +273,7 @@ def _enrich_scan_df(
     df        : per-gene scan result (modified in-place before reorder).
     gene_id   : key into gm_idx.
     gm_idx    : output of _build_gm_idx, or None.
-    id_cols   : identifier columns that lead the output (e.g. ['gene_symbol', 'chr']).
+    id_cols   : identifier columns that lead the output (e.g. ['gene_id', 'chr']).
     data_cols : scan-result columns that follow the gene_meta columns.
 
     Returns

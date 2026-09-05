@@ -176,15 +176,11 @@ if (hpc_mode) {
 }
 
 out_dir      <- 'validation/gastroc_data'
-r_data_dir   <- file.path(out_dir, 'r_data')   # all R outputs go here
-# HPC per-chr jobs write into a chr-specific subdirectory under r_data/
-s4_out_dir   <- if (hpc_mode) file.path(r_data_dir, paste0('chr', chr_arg)) else r_data_dir
-plot_dir     <- file.path(out_dir, 'plots')
 pheno_rds    <- file.path(out_dir, 'gastroc_pheno.rds')
-dir.create(r_data_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create(s4_out_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create(plot_dir,   recursive = TRUE, showWarnings = FALSE)
-if (hpc_mode) cat(sprintf('[hpc] chr=%s  out=%s\n', chr_arg, s4_out_dir))
+# r_data_dir/s4_out_dir/plot_dir (scan_tag-scoped) are constructed below, after the
+# gene_info fallback resolves the FINAL scan_type — scan_type can silently downgrade
+# to 'G' there when gene_info.csv is missing, and scan_tag must reflect that or the
+# scan's actual output would land tagged as the CLI-requested (but unused) scan_type
 
 # ── load / build phenotype data.frame ────────────────────────────────────────
 if (file.exists(pheno_rds)) {
@@ -254,6 +250,19 @@ if (file.exists(gene_info_path)) {
     cat('[gene_info] gene_info.csv not found — falling back to G scan (all genes × all chr)\n')
   scan_type <- 'G'
 }
+
+# scan_tag recomputed here (not just at arg-parse time) in case the gene_info
+# fallback above just downgraded scan_type to 'G' — keeps the output directory
+# name truthful about the scan actually performed
+scan_tag     <- if (scan_type == 'L') sprintf('L_w%g', scan_window_mb) else scan_type
+r_data_dir   <- file.path(out_dir, scan_tag, 'r_data')   # all R outputs go here
+# HPC per-chr jobs write into a chr-specific subdirectory under r_data/
+s4_out_dir   <- if (hpc_mode) file.path(r_data_dir, paste0('chr', chr_arg)) else r_data_dir
+plot_dir     <- file.path(out_dir, scan_tag, 'plots')
+dir.create(r_data_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(s4_out_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(plot_dir,   recursive = TRUE, showWarnings = FALSE)
+if (hpc_mode) cat(sprintf('[hpc] chr=%s  out=%s\n', chr_arg, s4_out_dir))
 
 # ── canonical strain order: Founders → F1s → CC (alphanumeric) ───────────────
 FOUNDER_ORDER <- c('AJ', 'B6J', '129S1J', 'NODJ', 'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ')

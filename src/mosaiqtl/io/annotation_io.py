@@ -96,7 +96,11 @@ def load_exons_from_gtf(
                 continue
             attrs = _parse_attrs(fields[8])
             row = {
-                "gene_symbol": attrs.get("gene_symbol", ""),
+                # GTF stores the display symbol under the 'gene_name' attribute key
+                # (GENCODE convention); 'gene_symbol' is not a GTF attribute at all
+                # and always parsed as empty, silently disabling every downstream
+                # per-gene exon lookup.
+                "gene_symbol": attrs.get("gene_name", ""),
                 "gene_id": attrs.get("gene_id", ""),
                 "feature": feature,
                 "start_mb": feat_start / 1e6,

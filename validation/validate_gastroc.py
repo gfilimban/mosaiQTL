@@ -1795,6 +1795,28 @@ def _make_comparison_plots(
 # main validation run
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _scan_tag(scan_type: str, window_mb: float) -> str:
+    """Directory-safe token identifying a scan configuration.
+
+    Used to nest output under a scan-type-specific subdirectory so that runs
+    with different ``scan_type`` (or, for local mode, different ``window_mb``)
+    against the same data/out dir never overwrite each other's results.
+
+    Parameters
+    ----------
+    scan_type :
+        'C' (chromosome), 'G' (genome-wide), or 'L' (local ±window_mb).
+    window_mb :
+        Half-window size in Mb; only distinguishes the tag when scan_type=='L'.
+
+    Returns
+    -------
+    str
+        e.g. 'C', 'G', 'L_w1.0', 'L_w2.5'.
+    """
+    return scan_type if scan_type != 'L' else f'L_w{window_mb:g}'
+
+
 def run(data_dir: Path, out_dir: Path, sections: set[int],
         force: bool, n_genes: int | None,
         scan_type: str = 'C',
@@ -1808,7 +1830,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     ----------
     data_dir         : root of gastroc_data/ — contains metadata.csv and r_data/;
                        in CT mode this is also the CT dir with counts_lognorm.h5
-    out_dir          : directory where py_data/ (or CT-mode flat outputs) are written
+    out_dir          : directory where {scan_tag}/py_data/ (or CT-mode {scan_tag}/
+                       flat outputs) are written — see _scan_tag(); differing
+                       scan_type/window_mb runs nest under distinct scan_tag subdirs
+                       so they never overwrite each other's output
     scan_type        : 'C' (cis), 'G' (genome-wide), or 'L' (local ±window_mb of TSS)
     window_mb        : half-window size in Mb for L mode (ignored for C/G)
     scan_chr         : chromosomes to scan; None = all chromosomes in kinship_decomp
@@ -1818,11 +1843,15 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     # in CT mode: outputs go flat into out_dir (no py_data/ subdir);
     # cmp_dir points to a shared celltypes/compare/ for CT-vs-CT comparison CSVs
     _ct_mode = celltype is not None
-    r_data  = GASTROC_DATA / 'r_data'   # R reference always from whole-tissue
-    py_dir  = out_dir if _ct_mode else out_dir / 'py_data'
-    cmp_dir = (GASTROC_DATA / 'celltypes' / 'compare'
-               if _ct_mode else out_dir / 'compare')
-    plt_dir = plt_dir_override if plt_dir_override is not None else out_dir / 'plots'
+    _stag = _scan_tag(scan_type, window_mb)  # e.g. 'C', 'G', 'L_w1.0'
+    # scan-type-scoped so a 'C'/'G'/'L' (or differing window_mb) rerun never
+    # overwrites another scan configuration's output — see _scan_tag()
+    r_data  = GASTROC_DATA / _stag / 'r_data'   # R reference always from whole-tissue
+    py_dir  = (out_dir / _stag) if _ct_mode else (out_dir / _stag / 'py_data')
+    cmp_dir = (GASTROC_DATA / _stag / 'celltypes' / 'compare'
+               if _ct_mode else out_dir / _stag / 'compare')
+    plt_dir = ((plt_dir_override / _stag) if plt_dir_override is not None
+               else out_dir / _stag / 'plots')
     ext_dir  = py_dir / 'extended'
     core_dir = py_dir / 'core'
     dirs_to_make = [py_dir, cmp_dir, plt_dir, core_dir, ext_dir,
@@ -2293,12 +2322,16 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             y_sub, _chr_data_ch, _x_full_ch, _evals_ch, _evecs_ch, h2)
                         if _sw == 'local' and gene_start_mb is not None:
                             _mask = np.abs(chr_res['positions'] - gene_start_mb) <= window_mb
+                            if not _mask.any():
+                                log.debug(
+                                    '    %s: no loci within %.1fMb of %.3f on chr%s'
+                                    ' — skipped', gene_name, window_mb, gene_start_mb, ch)
+                                continue
                             chr_res = {
                                 k: (v[_mask] if isinstance(v, np.ndarray)
                                     and len(v) == len(_mask) else v)
                                 for k, v in chr_res.items()
                             }
-                            chr_res['locus_ids'] = np.asarray(chr_res['locus_ids'])[_mask]
                         n_loci_res = len(chr_res['locus_ids'])
                         scan = ScanResult(
                             locus_ids   = chr_res['locus_ids'],
@@ -2913,14 +2946,14 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     _gene_meta: 'pd.DataFrame | None' = None
     _peak_mb_map: 'dict[str, float]' = {}
     if egenes_df is not None and len(egenes_df) > 0:
-        _gm_cols = [c for c in ['gene_symbol', 'near_tss_mb', 'cis_dist_mb', 'peak_lod', 'peak_mb']
+        _gm_cols = [c for c in ['gene_id', 'gene_symbol', 'near_tss_mb', 'cis_dist_mb', 'peak_lod', 'peak_mb']
                     if c in egenes_df.columns]
         _gene_meta = (egenes_df[_gm_cols]
-                      .drop_duplicates('gene_symbol')
+                      .drop_duplicates('gene_id')
                       .rename(columns={'peak_lod': 'peak_lod_lmm', 'peak_mb': 'peak_mb_lmm'})
                       .copy())
         _peak_mb_map = {
-            str(r['gene_symbol']): float(r['peak_mb_lmm'])
+            str(r['gene_id']): float(r['peak_mb_lmm'])
             for _, r in _gene_meta.iterrows()
             if pd.notna(r.get('peak_mb_lmm'))
         }
@@ -2941,14 +2974,14 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 results['mi_scan'] = None
             else:
                 h5_path = data_dir / 'counts_lognorm.h5'
-                _mi_ids = [r['gene_symbol']
+                _mi_ids = [r['gene_id']
                            for _, r in egenes_df.iterrows()]
                 _mi_counts, _mi_loaded, _mi_sids = _load_expression(h5_path, _mi_ids)
                 _mi_expr = {gid: _mi_counts[i].astype(float)
                             for i, gid in enumerate(_mi_loaded)}
                 _mi_chr_map = {}
                 for _, erow in egenes_df.iterrows():
-                    gid = erow['gene_symbol']
+                    gid = erow['gene_id']
                     _mi_chr_map[gid] = str(erow.get('chr', peak_chr))
                 geno_ids_mi = [meta_geno_map.get(s, s) for s in _mi_sids]
                 cov_mi = _build_covariates(meta, _mi_sids)
@@ -3017,14 +3050,14 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 results['snp_lod_r'] = None
             else:
                 h5_path = data_dir / 'counts_lognorm.h5'
-                _snp_ids = [r['gene_symbol']
+                _snp_ids = [r['gene_id']
                             for _, r in egenes_df.iterrows()]
                 _snp_counts, _snp_loaded, _snp_sids = _load_expression(h5_path, _snp_ids)
                 _snp_expr = {gid: _snp_counts[i].astype(float)
                              for i, gid in enumerate(_snp_loaded)}
                 _snp_chr_map = {}
                 for _, erow in egenes_df.iterrows():
-                    gid = erow['gene_symbol']
+                    gid = erow['gene_id']
                     _snp_chr_map[gid] = str(erow.get('chr', peak_chr))
                 geno_ids_snp = [meta_geno_map.get(s, s) for s in _snp_sids]
                 cov_snp = _build_covariates(meta, _snp_sids)
@@ -3107,12 +3140,13 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 h5_path  = data_dir / 'counts_lognorm.h5'
                 # restrict mediator pool to eGenes: a valid mediator must itself be
                 # haplotype-regulated — non-eGenes have no haplotype effect to mediate
-                egene_names_set = set(egenes_df['gene_symbol'].dropna())
-                gene_info_egenes = gene_info[gene_info['gene_name'].isin(egene_names_set)]
+                egene_ids_set = set(egenes_df['gene_id'].dropna())
+                gene_info_egenes = gene_info[gene_info['gene_id'].isin(egene_ids_set)]
                 pairs    = select_cis_mediation_pairs(
                     egenes_df, gene_info_egenes,
                     window_mb=10.0,
-                    info_gene_col='gene_name',
+                    gene_col='gene_id',
+                    info_gene_col='gene_id',
                 )
                 log.info('  %d (outcome, mediator) pairs from eGene proximity filter', len(pairs))
                 # group by (outcome, chr) — select_cis_mediation_pairs guarantees
@@ -3203,7 +3237,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 results['bootstrap_ci'] = None
             else:
                 h5_path = data_dir / 'counts_lognorm.h5'
-                _ci_ids = [r['gene_symbol']
+                _ci_ids = [r['gene_id']
                            for _, r in egenes_df.iterrows()]
                 _ci_counts, _ci_loaded, _ci_sids = _load_expression(h5_path, _ci_ids)
                 _ci_expr = {gid: _ci_counts[i].astype(float)
@@ -3212,7 +3246,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 _ci_chr_map = {}
                 _ci_peak_map = {}
                 for _, erow in egenes_df.iterrows():
-                    gid = erow['gene_symbol']
+                    gid = erow['gene_id']
                     _ci_chr_map[gid] = str(erow.get('chr', peak_chr))
                     _ci_peak_map[gid] = float(erow.get('peak_mb', np.nan))
                 geno_ids_ci = [meta_geno_map.get(s, s) for s in _ci_sids]
@@ -3273,7 +3307,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 results['instability'] = None
             else:
                 h5_path = data_dir / 'counts_lognorm.h5'
-                _inst_ids = [r['gene_symbol']
+                _inst_ids = [r['gene_id']
                              for _, r in egenes_df.iterrows()]
                 _inst_counts, _inst_loaded, _inst_sids = _load_expression(h5_path, _inst_ids)
                 _inst_expr = {gid: _inst_counts[i].astype(float)
@@ -3281,7 +3315,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 del _inst_counts
                 _inst_chr_map = {}
                 for _, erow in egenes_df.iterrows():
-                    gid = erow['gene_symbol']
+                    gid = erow['gene_id']
                     _inst_chr_map[gid] = str(erow.get('chr', peak_chr))
                 geno_ids_inst = [meta_geno_map.get(s, s) for s in _inst_sids]
                 cov_inst = _build_covariates(meta, _inst_sids)
@@ -3512,12 +3546,25 @@ def main() -> None:
                          'produces comparison plots; exits after completion')
     ap.add_argument('--celltypes', nargs='+', default=None, metavar='CT',
                     help='cell-type labels for --compare-celltypes; auto-discovered '
-                         'from celltypes/<name>/<input-version>/py_data/s4_peak_lod.csv '
-                         'when omitted')
+                         'from celltypes/<name>/<scan_tag>/peak_lod.csv when omitted '
+                         '(scan_tag from --scan_type/--window_mb)')
     ap.add_argument('--rep-gene', default='Piezo1',
                     help='representative gene for LOD profile overlay in '
                          '--compare-celltypes (default: Piezo1)')
     args = ap.parse_args()
+
+    # parse scan_type (handle "L:2.5" format) — needed early for --compare-celltypes'
+    # scan_tag-scoped path resolution, in addition to run() below
+    _scan_type_raw = args.scan_type.upper()
+    window_mb      = args.window_mb
+    if _scan_type_raw.startswith('L'):
+        _parts = _scan_type_raw.split(':')
+        if len(_parts) >= 2:
+            window_mb = float(_parts[1])
+        scan_type = 'L'
+    else:
+        scan_type = _scan_type_raw   # 'C' or 'G'
+    _stag = _scan_tag(scan_type, window_mb)
 
     # ── --compare-celltypes: cross-CT comparison, exits when done ────────────
     if args.compare_celltypes:
@@ -3525,16 +3572,16 @@ def main() -> None:
         if args.celltypes:
             _cts = [_ct_safe(c) for c in args.celltypes]
         else:
-            _cts = _ct_discover(_celltypes_dir)
+            _cts = _ct_discover(_celltypes_dir, _stag)
         if not _cts:
-            log.error('no cell types found under %s', _celltypes_dir)
+            log.error('no cell types found under %s (scan_tag=%s)', _celltypes_dir, _stag)
             sys.exit(1)
-        log.info('--compare-celltypes  cell_types=%s  rep_gene=%s',
-                 _cts, args.rep_gene)
-        _ct_scan_dirs  = {ct: _ct_resolve_dir(GASTROC_DATA, ct) for ct in _cts}
-        _ct_plot_dirs  = {ct: GASTROC_DATA / 'plots' / 'celltypes' / ct for ct in _cts}
-        _compare_out   = GASTROC_DATA / 'plots' / 'celltypes' / 'compare'
-        _whole_py_data = OUT_DIR / 'py_data'
+        log.info('--compare-celltypes  cell_types=%s  rep_gene=%s  scan_tag=%s',
+                 _cts, args.rep_gene, _stag)
+        _ct_scan_dirs  = {ct: _ct_resolve_dir(GASTROC_DATA, ct, _stag) for ct in _cts}
+        _ct_plot_dirs  = {ct: GASTROC_DATA / 'plots' / 'celltypes' / ct / _stag for ct in _cts}
+        _compare_out   = GASTROC_DATA / 'plots' / 'celltypes' / 'compare' / _stag
+        _whole_py_data = OUT_DIR / _stag / 'py_data'
         for d in list(_ct_plot_dirs.values()) + [_compare_out]:
             d.mkdir(parents=True, exist_ok=True)
         _palette   = _ct_palette(_cts)
@@ -3589,16 +3636,7 @@ def main() -> None:
             if args.instability:
                 sections.add(11)
 
-    # parse scan_type (handle "L:2.5" format)
-    scan_type_raw = args.scan_type.upper()
-    window_mb     = args.window_mb
-    if scan_type_raw.startswith('L'):
-        parts = scan_type_raw.split(':')
-        if len(parts) >= 2:
-            window_mb = float(parts[1])
-        scan_type = 'L'
-    else:
-        scan_type = scan_type_raw   # 'C' or 'G'
+    # scan_type/window_mb (and _stag) already parsed above, before --compare-celltypes
 
     # parse --chr
     if args.chr.lower() == 'all':
@@ -3638,6 +3676,7 @@ def main() -> None:
              _ct_label or 'whole_tissue')
     log.info('  data_dir = %s', _run_data_dir)
     log.info('  out_dir  = %s', _run_out_dir)
+    log.info('  scan_tag = %s  (output nests under this — see run()::_scan_tag)', _stag)
 
     run(_run_data_dir, _run_out_dir, sections, args.force, args.n_genes,
         scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,

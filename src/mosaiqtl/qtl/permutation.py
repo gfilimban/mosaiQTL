@@ -30,7 +30,7 @@ from ..utils import _build_gm_idx, _enrich_scan_df
 
 logger = logging.getLogger("mosaiqtl")
 
-CI_COLS: list[str] = ["gene_symbol", "chr", "peak_mb", "ci_lo", "ci_hi", "ci_width_mb"]
+CI_COLS: list[str] = ["gene_id", "chr", "peak_mb", "ci_lo", "ci_hi", "ci_width_mb"]
 
 __all__ = [
     "KinshipSingularError",
@@ -909,14 +909,16 @@ def ci_scan_multi_gene(
     seed           : int  base seed; incremented per gene
     use_rint       : bool
     output_path    : Path or None  stream CSV here; None accumulates in RAM
-    gene_meta      : DataFrame keyed by 'gene_symbol' — extra columns joined into each row
+    gene_meta      : DataFrame keyed by 'gene_id' (the identity key; carries
+                     gene_symbol and any other display columns) — extra
+                     columns joined into each row
 
     returns
     -------
-    pd.DataFrame  columns: gene_symbol, chr [+ gene_meta cols], peak_mb, ci_lo, ci_hi, ci_width_mb
+    pd.DataFrame  columns: gene_id, chr [+ gene_meta cols], peak_mb, ci_lo, ci_hi, ci_width_mb
     """
     _gm_idx = _build_gm_idx(gene_meta)
-    _id_cols = ["gene_symbol", "chr"]
+    _id_cols = ["gene_id", "chr"]
     _data_cols = ["peak_mb", "ci_lo", "ci_hi", "ci_width_mb"]
     _first = True
     _buf: "list[pd.DataFrame]" = []
@@ -962,7 +964,7 @@ def ci_scan_multi_gene(
             _df = pd.DataFrame(
                 [
                     {
-                        "gene_symbol": gene_id,
+                        "gene_id": gene_id,
                         "chr": gene_chr,
                         "peak_mb": float(peak_mb),
                         "ci_lo": ci_info["ci_lo"],

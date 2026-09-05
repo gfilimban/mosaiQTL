@@ -2446,8 +2446,13 @@ def timing_memory_summary(
 
     elapsed_s = np.asarray(elapsed_s, dtype=float)
     sns.barplot(
-        x=elapsed_s, y=labels, orient="h", color=BRAND_PRIMARY, alpha=0.85,
-        edgecolor="none", ax=ax_t,
+        x=elapsed_s,
+        y=labels,
+        orient="h",
+        color=BRAND_PRIMARY,
+        alpha=0.85,
+        edgecolor="none",
+        ax=ax_t,
     )
     # per-section timings routinely span two-plus orders of magnitude (e.g. the
     # genome-wide LMM scan vs. a permutation pass) — a shared linear x-axis
@@ -2457,8 +2462,9 @@ def timing_memory_summary(
     if len(_finite) > 1 and _finite.max() / _finite.min() >= 20:
         ax_t.set_xscale("log")
     for _i, _v in enumerate(elapsed_s):
-        ax_t.text(_v, _i, f"  {_v:,.1f}s", va="center", ha="left",
-                   fontsize=8.5, color=INK)
+        ax_t.text(
+            _v, _i, f"  {_v:,.1f}s", va="center", ha="left", fontsize=8.5, color=INK
+        )
     ax_t.set_xlabel("Elapsed (s)", fontsize=13, fontweight="bold")
     ax_t.tick_params(labelsize=11)
     sns.despine(ax=ax_t)
@@ -2466,12 +2472,24 @@ def timing_memory_summary(
     if has_mem:
         heap = peak_heap_mb.astype(float)
         sns.barplot(
-            x=heap, y=labels, orient="h", color=MUTED, alpha=0.85,
-            edgecolor="none", ax=axes[1],
+            x=heap,
+            y=labels,
+            orient="h",
+            color=MUTED,
+            alpha=0.85,
+            edgecolor="none",
+            ax=axes[1],
         )
         for _i, _v in enumerate(heap):
-            axes[1].text(_v, _i, f"  {_v:,.0f} MB", va="center", ha="left",
-                          fontsize=8.5, color=INK)
+            axes[1].text(
+                _v,
+                _i,
+                f"  {_v:,.0f} MB",
+                va="center",
+                ha="left",
+                fontsize=8.5,
+                color=INK,
+            )
         axes[1].set_xlabel("Peak heap (MB)", fontsize=13, fontweight="bold")
         axes[1].tick_params(labelsize=11)
         axes[1].margins(x=0.12)
@@ -3281,14 +3299,14 @@ def _gene_track(
                     clip_on=True,
                 )
 
-        # 4. prominent TSS arrowhead — size proportional to gene length
-        _adx = _gspan * 0.08
+        # 4. TSS arrowhead — size proportional to gene length
+        _adx = _gspan * 0.05
         if _str == "+":
             ax.annotate(
                 "",
                 xy=(_tss + _adx, _y),
                 xytext=(_tss, _y),
-                arrowprops=dict(arrowstyle="->", color=_clr, lw=2.0, mutation_scale=22),
+                arrowprops=dict(arrowstyle="->", color=_clr, lw=1.5, mutation_scale=14),
                 zorder=6,
                 annotation_clip=False,
             )
@@ -3297,7 +3315,7 @@ def _gene_track(
                 "",
                 xy=(_tss - _adx, _y),
                 xytext=(_tss, _y),
-                arrowprops=dict(arrowstyle="->", color=_clr, lw=2.0, mutation_scale=22),
+                arrowprops=dict(arrowstyle="->", color=_clr, lw=1.5, mutation_scale=14),
                 zorder=6,
                 annotation_clip=False,
             )
@@ -3697,6 +3715,22 @@ def locus_panel(
     has_zoom = tss_mb is not None
     has_track = genes_df is not None and has_zoom
 
+    # strand of the scanned gene — drives the TSS arrow direction on the
+    # full-chromosome panel below; independent of has_track since that panel
+    # is drawn whenever tss_mb is given, GTF or no GTF
+    _gene_strand = "+"
+    if (
+        genes_df is not None
+        and highlight_gene is not None
+        and "strand" in genes_df.columns
+    ):
+        _gn_col_strand = (
+            "gene_symbol" if "gene_symbol" in genes_df.columns else "gene_id"
+        )
+        _strand_rows = genes_df[genes_df[_gn_col_strand] == highlight_gene]
+        if not _strand_rows.empty:
+            _gene_strand = str(_strand_rows.iloc[0]["strand"])
+
     # ── pre-compute zoom bounds (needed before panel layout) ──────────────────
     zoom_lo: Optional[float] = None
     zoom_hi: Optional[float] = None
@@ -3727,12 +3761,12 @@ def locus_panel(
         + [1.0]
         + ([2.0] if has_betas else [])
     )
-    fig_h = 2.5 * sum(ratios)
+    fig_h = 2.0 * sum(ratios)
 
     fig, axes = plt.subplots(
         len(ratios),
         1,
-        figsize=(10, fig_h),
+        figsize=(16, fig_h),
         dpi=300,
         gridspec_kw={"height_ratios": ratios},
         squeeze=False,
@@ -3891,9 +3925,10 @@ def locus_panel(
     if tss_mb is not None:
         _ylim2 = ax_full.get_ylim()
         _arrow_y = _ylim2[1] * 0.06
+        _chr_adx = 0.3 if _gene_strand == "+" else -0.3
         ax_full.annotate(
             "",
-            xy=(tss_mb + 0.3, _arrow_y),
+            xy=(tss_mb + _chr_adx, _arrow_y),
             xytext=(tss_mb, _arrow_y),
             arrowprops=dict(arrowstyle="->", color=MUTED, lw=1.0),
         )

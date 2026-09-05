@@ -18,17 +18,30 @@ Cell-type mode (--celltype / --all_celltypes):
     --all_celltypes converts every subtype in the h5ad in one pass.
     --exclude_celltypes skips named subtypes (default: low-quality).
 
-Gene coordinates (gene_id, chr, start, end, strand) are read directly from
-adata.var when present. If adata.var lacks chr/start/end/strand entirely (e.g. a
-pseudobulk h5ad built from an annotated h5ad whose var carried no coordinates),
-they are filled from the external vM36 reference at sibling qtl/input/gene_info.vm36.csv,
-matched on gene_id — an exact (versioned) match first, falling back to a
-version-stripped match, then to gene_name. gene_id itself is never modified: the
-versioned form is preserved exactly as sourced in every output. tss_bp is derived
-from those columns (start for + strand, end for - strand) and written to
+gene_id (versioned Ensembl ID, e.g. 'ENSMUSG00000051951.6') is the identity key
+for every gene, everywhere in the pipeline: the HDF5 'genes' dataset in
+counts_lognorm.h5, the join key in every exp_gene_info_*.csv, and the key
+convert_celltype() uses to intersect against the whole-tissue gene universe.
+adata.var_names is NOT used for gene identity anywhere downstream — it is
+cohort-dependent (some cohorts index var by gene symbol, others by the same
+versioned Ensembl ID as gene_id) and was the root cause of a stale, ambiguous
+'gene_name' column mirroring whatever var_names happened to be per cohort; that
+column has been removed. adata.var must carry a 'gene_id' column — this is
+required, not optional, and conversion raises if it is absent.
+
+Gene coordinates (chr, start, end, strand) are read directly from adata.var
+when present. If adata.var lacks them entirely (e.g. a pseudobulk h5ad built
+from an annotated h5ad whose var carried no coordinates), they are filled from
+the external vM36 reference at sibling qtl/input/gene_info.vm36.csv, matched on
+gene_id — an exact (versioned) match first, falling back to a version-stripped
+match, then to gene_name (the reference file's own column, unrelated to the
+identity key above). gene_id itself is never modified: the versioned form is
+preserved exactly as sourced in every output. tss_bp is derived from those
+columns (start for + strand, end for - strand) and written to
 exp_gene_info_*.csv for use downstream as cis_dist_mb = (locus_pos - tss_bp) / 1e6.
-gene_symbol is derived separately (adata.var['gene_name'] when the cohort ships
-it, else var_names itself) — see _derive_gene_symbol.
+gene_symbol is the real display name (adata.var['gene_name'] when the cohort
+ships it separately from its index, else var_names itself) — see
+_derive_gene_symbol. It is a display-only column, never a join key.
 
 Usage:
     python validation/tools/convert_h5ad.py --tissue gastroc
@@ -86,10 +99,8 @@ def _derive_gene_symbol(var: pd.DataFrame) -> pd.Series:
 
     Prefers adata.var['gene_name'] when present (the cohort already ships the
     real symbol separately from its index); falls back to var_names itself
-    otherwise. Never touches var_names or the exp_gene_info 'gene_name'
-    column (the join key against counts_lognorm.h5's 'genes' dataset, which
-    must stay exactly var_names) — this is purely the display-symbol source
-    for the separate 'gene_symbol' column.
+    otherwise. Purely a display-symbol source for the 'gene_symbol' column —
+    gene identity/joins always use gene_id, never this.
     """
     if 'gene_name' in var.columns:
         return var['gene_name']
@@ -265,10 +276,14 @@ def _cpm_filter(X: np.ndarray, lib_sizes: np.ndarray, var: pd.DataFrame,
     threshold = int(np.ceil(min_frac * n_samples))
     keep = n_pass >= threshold
 
-    # deliberately excludes gene_id/chr/start/end — callers already have coordinates
+    if 'gene_id' not in var.columns:
+        raise ValueError(
+            "adata.var has no 'gene_id' column — gene_id is the required identity "
+            'key; var_names is cohort-dependent and is never used for gene identity')
+    # deliberately excludes chr/start/end — callers already have coordinates
     # from adata.var directly and merge only the stats columns (see _CPM_STATS_COLS)
-    # to avoid pandas _x/_y suffix collisions on the shared gene_name key.
-    report = pd.DataFrame({'gene_name': var.index})
+    # to avoid pandas _x/_y suffix collisions on the shared gene_id key.
+    report = pd.DataFrame({'gene_id': var['gene_id'].values})
     for col in ('total_counts', 'mean_counts', 'n_cells_by_counts', 'pct_dropout_by_counts'):
         if col in var.columns:
             report[col] = var[col].values
@@ -285,11 +300,12 @@ def _cpm_filter(X: np.ndarray, lib_sizes: np.ndarray, var: pd.DataFrame,
     return keep, report
 
 
-# stats-only columns from _cpm_filter's report — deliberately excludes gene_id/chr/
-# start/end/strand, which the caller already has from adata.var; merging the full
-# report (coordinates included) against an adata.var-derived frame on 'gene_name'
-# produces pandas _x/_y suffix collisions on every shared coordinate column.
-_CPM_STATS_COLS = ['gene_name', 'total_counts', 'mean_counts', 'n_cells_by_counts',
+# gene_id (the join key) plus stats-only columns from _cpm_filter's report —
+# deliberately excludes chr/start/end/strand, which the caller already has from
+# adata.var; merging the full report (coordinates included) against an
+# adata.var-derived frame on 'gene_id' produces pandas _x/_y suffix collisions
+# on every shared coordinate column.
+_CPM_STATS_COLS = ['gene_id', 'total_counts', 'mean_counts', 'n_cells_by_counts',
                    'pct_dropout_by_counts', 'n_samples_pass', 'frac_samples_pass',
                    'n_samples_cpm_gt1', 'frac_samples_cpm_gt1',
                    'n_samples_count_ge_min', 'frac_samples_count_ge_min',
@@ -298,6 +314,11 @@ _CPM_STATS_COLS = ['gene_name', 'total_counts', 'mean_counts', 'n_cells_by_count
 
 def _write_counts_h5(adata: anndata.AnnData, sorted_idx: 'pd.Index',
                      out_path: pathlib.Path) -> None:
+    if 'gene_id' not in adata.var.columns:
+        raise ValueError(
+            "adata.var has no 'gene_id' column — gene_id is the required identity "
+            'key for the HDF5 genes dataset; var_names is cohort-dependent and is '
+            'never used for gene identity')
     sub = adata[sorted_idx]
     # exclude obs with zero library size (sample had no cells of this CT)
     valid_mask = sub.obs['psbulk_counts'].values > 0
@@ -312,7 +333,7 @@ def _write_counts_h5(adata: anndata.AnnData, sorted_idx: 'pd.Index',
     lib_sizes = sub.obs['psbulk_counts'].values.astype(np.float32)
     with np.errstate(divide='ignore', invalid='ignore'):
         lognorm = np.log2(X / lib_sizes[:, None] * 1e6 + 1.0)
-    genes   = np.array(adata.var_names, dtype='S')
+    genes   = np.array(adata.var['gene_id'], dtype='S')
     samples = sub.obs['sample_id'].values.astype('S')
     log.info('writing %s', out_path)
     with h5py.File(out_path, 'w') as f:
@@ -382,16 +403,22 @@ def init_celltypes(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str,
              ', '.join(meta_cols))
     obs_unique.to_csv(meta_path, index=False)
 
-    # ── exp_gene_info_{tissue}_universe.csv: coordinates for ALL genes in var_names ──
+    # ── exp_gene_info_{tissue}_universe.csv: coordinates for ALL genes ───────
     # No CPM filter — per-CT filtering is done in convert_celltype(). Named with a
     # _universe suffix so this never collides with convert()'s CPM-filtered
     # exp_gene_info_{tissue}.csv (whole-tissue mode writes to the same out_dir).
-    # Coordinates come directly from adata.var (gene_id, chr, start, end, strand).
-    coord_cols = [c for c in ('gene_id', 'chr', 'start', 'end', 'strand')
-                  if c in adata.var.columns]
+    # Coordinates come directly from adata.var; gene_id is the identity key
+    # (required) — convert_celltype() re-reads this file's gene_id column to
+    # build the whole-tissue gene universe set.
+    if 'gene_id' not in adata.var.columns:
+        raise ValueError(
+            "adata.var has no 'gene_id' column — gene_id is the required identity "
+            'key; var_names is cohort-dependent and is never used for gene identity')
+    coord_cols = ['gene_id'] + [c for c in ('chr', 'start', 'end', 'strand')
+                                 if c in adata.var.columns]
     exp_gene_info = adata.var[coord_cols].copy()
     exp_gene_info['gene_symbol'] = _derive_gene_symbol(adata.var)
-    exp_gene_info = exp_gene_info.reset_index(names='gene_name')
+    exp_gene_info = exp_gene_info.reset_index(drop=True)
     n_missing_coords = exp_gene_info[coord_cols].isna().any(axis=1).sum()
     if n_missing_coords:
         log.warning('  %d genes missing one or more coordinate columns in adata.var',
@@ -443,15 +470,18 @@ def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str,
     obs.reset_index(drop=True).to_csv(meta_path, index=False)
 
     # ── exp_gene_info_{tissue}.csv ────────────────────────────────────────────
-    # coordinates from adata.var; expression filter stats from filter report
-    coord_cols = [c for c in ('gene_id', 'chr', 'start', 'end', 'strand')
-                  if c in adata.var.columns]
+    # coordinates from adata.var; expression filter stats from filter report;
+    # gene_id is the identity key (required — same column already carried the
+    # HDF5 'genes' dataset written above, so counts_lognorm.h5 and this CSV
+    # always join cleanly on gene_id)
+    coord_cols = ['gene_id'] + [c for c in ('chr', 'start', 'end', 'strand')
+                                 if c in adata.var.columns]
     exp_gene_info = adata.var[coord_cols].copy()
     exp_gene_info['gene_symbol'] = _derive_gene_symbol(adata.var)
     exp_gene_info = (
-        exp_gene_info.reset_index(names='gene_name')
+        exp_gene_info.reset_index(drop=True)
         .merge(report[[c for c in _CPM_STATS_COLS if c in report.columns]],
-               on='gene_name', how='left')
+               on='gene_id', how='left')
     )
     exp_gene_info = _fill_missing_coords(exp_gene_info)
     exp_gene_info = _add_tss_bp(exp_gene_info)
@@ -485,7 +515,7 @@ def convert_celltype(h5ad_path: pathlib.Path, celltype: str,
 
     Two-step gene filter:
       1. Intersect with whole-tissue gene universe (exp_gene_info_{tissue}_universe.csv,
-         written by init_celltypes() — the unfiltered var_names list, distinct from
+         written by init_celltypes() — the unfiltered gene_id set, distinct from
          convert()'s CPM-filtered exp_gene_info_{tissue}.csv).
       2. Combined expression-breadth gate via _cpm_filter, on valid samples only:
          CPM > 1 AND raw count >= min_count, in >= 20% of valid samples.
@@ -502,7 +532,7 @@ def convert_celltype(h5ad_path: pathlib.Path, celltype: str,
         raise FileNotFoundError(
             f'exp_gene_info_{tissue}_universe.csv not found at {wt_exp_path} — '
             f'run init_celltypes() first')
-    passing_genes = set(pd.read_csv(wt_exp_path, usecols=['gene_name'])['gene_name'])
+    passing_genes = set(pd.read_csv(wt_exp_path, usecols=['gene_id'])['gene_id'])
     log.info('  whole-tissue gene universe: %d genes', len(passing_genes))
 
     log.info('reading %s', h5ad_path)
@@ -516,8 +546,12 @@ def convert_celltype(h5ad_path: pathlib.Path, celltype: str,
         raise ValueError(f'{ct_col}={celltype!r} not found. available: {available}')
 
     # ── step 1: intersect with whole-tissue gene universe ────────────────────
-    ct_genes = [g for g in adata.var_names if g in passing_genes]
-    adata = adata[:, ct_genes].copy()
+    if 'gene_id' not in adata.var.columns:
+        raise ValueError(
+            "adata.var has no 'gene_id' column — gene_id is the required identity "
+            'key; var_names is cohort-dependent and is never used for gene identity')
+    ct_mask = adata.var['gene_id'].isin(passing_genes)
+    adata = adata[:, ct_mask].copy()
 
     # ── step 2: identify valid samples ───────────────────────────────────────
     lib_sizes   = adata.obs['psbulk_counts'].values.astype(np.float32)
@@ -571,18 +605,19 @@ def convert_celltype(h5ad_path: pathlib.Path, celltype: str,
     ct_stats['n_samples_zero_lib'] = n_excluded
 
     # ── exp_gene_info_{ct}.csv: coordinates from adata.var + CT CPM stats ────
-    coord_cols = [c for c in ('gene_id', 'chr', 'start', 'end', 'strand')
-                  if c in adata.var.columns]
+    # gene_id is the identity key (required, see step 1 above)
+    coord_cols = ['gene_id'] + [c for c in ('chr', 'start', 'end', 'strand')
+                                 if c in adata.var.columns]
     # stats-only merge (see _CPM_STATS_COLS) plus the two CT-specific columns added
     # onto ct_stats above — coordinates come from adata.var, never from ct_stats,
-    # to avoid pandas _x/_y suffix collisions on the shared gene_id/chr/start/end.
+    # to avoid pandas _x/_y suffix collisions on the shared chr/start/end/strand.
     ct_stats_cols = _CPM_STATS_COLS + ['n_samples_valid', 'n_samples_zero_lib']
     exp_gene_info_ct = adata.var[coord_cols].copy()
     exp_gene_info_ct['gene_symbol'] = _derive_gene_symbol(adata.var)
     exp_gene_info_ct = (
-        exp_gene_info_ct.reset_index(names='gene_name')
+        exp_gene_info_ct.reset_index(drop=True)
         .merge(ct_stats[[c for c in ct_stats_cols if c in ct_stats.columns]],
-               on='gene_name', how='left')
+               on='gene_id', how='left')
     )
     exp_gene_info_ct = _fill_missing_coords(exp_gene_info_ct)
     exp_gene_info_ct = _add_tss_bp(exp_gene_info_ct)
