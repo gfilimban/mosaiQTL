@@ -191,6 +191,108 @@ class TestRunThresholdScans:
                 phenotype=None,
             )
 
+    # ── local-window (gene_pos_mb/window_mb) wiring ──────────────────────
+
+    def test_default_path_unaffected_by_new_params(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tiny_strain_covariates
+    ):
+        """Explicitly passing gene_pos_mb=None/window_mb=None (the new
+        defaults) must reproduce byte-identical output to the pre-existing
+        call signature that never mentioned them — i.e. adding the local-
+        window option did not alter default (genome-wide) behavior."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+
+        kd = decomp_kinship(tiny_kinship)
+        null = generate_null_outcomes(tiny_strain_phenotype, n_perms=5, seed=42)
+
+        before = run_threshold_scans(
+            null,
+            tiny_cache,
+            phenotype=tiny_strain_phenotype,
+            covariates=tiny_strain_covariates,
+            kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
+            use_rint=False,
+        )
+        after = run_threshold_scans(
+            null,
+            tiny_cache,
+            phenotype=tiny_strain_phenotype,
+            covariates=tiny_strain_covariates,
+            kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
+            use_rint=False,
+            gene_pos_mb=None,
+            window_mb=None,
+        )
+        np.testing.assert_array_equal(before[0], after[0])
+        assert before[1].keys() == after[1].keys()
+        for c in before[1]:
+            np.testing.assert_array_equal(before[1][c], after[1][c])
+
+    def test_gene_pos_mb_without_chrom_raises(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+    ):
+        """gene_pos_mb/window_mb anchor a window to one chromosome — without
+        chrom there is no chromosome to anchor to, so this must fail loudly
+        rather than silently scanning genome-wide."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+
+        kd = decomp_kinship(tiny_kinship)
+        null = generate_null_outcomes(tiny_strain_phenotype, n_perms=2, seed=5)
+        with pytest.raises(ValueError, match="chrom"):
+            run_threshold_scans(
+                null,
+                tiny_cache,
+                phenotype=tiny_strain_phenotype,
+                kinship_decomp=kd,
+                kinship_loco=tiny_kinship,
+                chrom=None,
+                gene_pos_mb=1.0,
+                window_mb=0.1,
+                use_rint=False,
+            )
+
+    def test_local_window_restricts_loci_vs_genome_wide(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+    ):
+        """A local window covering exactly one of tiny_cache's 15 loci on
+        chr '1' must scan strictly fewer loci than the whole-chromosome null
+        — proving loci_mask is actually reaching scan_chromosome_batch, not
+        silently ignored. Positions are np.linspace(1.0, 100.0, 15), so a
+        window of gene_pos_mb=1.0 +/- 0.1 admits only the first locus."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        from unittest.mock import patch
+        from mosaiqtl.qtl import lmm as lmm_module
+
+        kd = decomp_kinship(tiny_kinship)
+        null = generate_null_outcomes(tiny_strain_phenotype, n_perms=3, seed=6)
+
+        seen_masks = []
+        real_scan = lmm_module.scan_chromosome_batch
+
+        def _spy(*args, **kwargs):
+            seen_masks.append(kwargs.get("loci_mask"))
+            return real_scan(*args, **kwargs)
+
+        with patch.object(lmm_module, "scan_chromosome_batch", side_effect=_spy):
+            run_threshold_scans(
+                null,
+                tiny_cache,
+                phenotype=tiny_strain_phenotype,
+                kinship_decomp=kd,
+                kinship_loco=tiny_kinship,
+                chrom="1",
+                gene_pos_mb=1.0,
+                window_mb=0.1,
+                use_rint=False,
+            )
+
+        assert len(seen_masks) >= 1
+        mask = seen_masks[0]
+        assert mask is not None
+        assert mask.sum() == 1  # only the locus at position 1.0
+
 
 # ── run_positional_scans ──────────────────────────────────────────────────────
 

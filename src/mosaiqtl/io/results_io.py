@@ -15,11 +15,13 @@ from mosaiqtl.pipeline import (
     _LOCUS_COLS,
     _SIG_COLS,
     EQTL_PEAK_COLS,
+    EQTL_SCAN_COLS,
     EQTL_STATS_COLS,
     LOD_COLS,
 )
 
 if TYPE_CHECKING:
+    from mosaiqtl.genotype.genomecache import GenomeCache
     from mosaiqtl.models.records import ScanResult
 
 
@@ -144,7 +146,7 @@ def build_eqtl_peak_df(
     effects_egenes_df: pd.DataFrame,
     founder_names: list[str],
 ) -> pd.DataFrame:
-    """Reindex a calibrated eGene table to the IGVF ``EQTL_PEAK_COLS`` schema.
+    """Reindex a calibrated eGene table to the ``EQTL_PEAK_COLS`` schema.
 
     Populates every field derivable from data the scan pipeline already
     produces, and leaves the haplotype-block-to-biallelic-contrast fields
@@ -183,7 +185,9 @@ def build_eqtl_peak_df(
     src = effects_egenes_df
 
     out["chr"] = src.get("chr")
-    out["pos"] = (src["peak_mb"] * 1e6).round().astype("Int64") if "peak_mb" in src else pd.NA
+    out["pos"] = (
+        (src["peak_mb"] * 1e6).round().astype("Int64") if "peak_mb" in src else pd.NA
+    )
     out["hard_call_dosage"] = "F"
     out["gene_id"] = src.get("gene_id")
     out["gene_symbol"] = src.get("gene_symbol")
@@ -194,7 +198,9 @@ def build_eqtl_peak_df(
     out["h2_null_chr"] = src.get("h2")
     if "peak_lod" in src:
         chi2_haplotype = 2.0 * np.log(10) * src["peak_lod"]
-        out["pval_nominal"] = _sp_stats.chi2.sf(chi2_haplotype, df=len(founder_names) - 1)
+        out["pval_nominal"] = _sp_stats.chi2.sf(
+            chi2_haplotype, df=len(founder_names) - 1
+        )
         with np.errstate(divide="ignore"):
             out["log10p_nominal"] = -np.log10(out["pval_nominal"])
     out["cis_dist_mb"] = src.get("cis_dist_mb", pd.NA)
@@ -240,7 +246,7 @@ def write_eqtl_peak(
     founder_names: list[str],
     out_path: "Path | str",
 ) -> pd.DataFrame:
-    """Build the IGVF ``_eqtl_peak.csv`` table and write it atomically.
+    """Build the ``_eqtl_peak.csv`` table and write it atomically.
 
     See ``build_eqtl_peak_df`` for the field-population rules and the
     still-NaN haplotype-contrast columns.
@@ -258,7 +264,7 @@ def build_eqtl_stats_df(
     chrom_stats: "list[dict]",
     genome_stats: "dict | None" = None,
 ) -> pd.DataFrame:
-    """Assemble the IGVF ``_eqtl_stats.csv`` table (per-chr + genome-wide rows).
+    """Assemble the ``_eqtl_stats.csv`` table (per-chr + genome-wide rows).
 
     Parameters
     ----------
@@ -299,7 +305,7 @@ def write_eqtl_stats(
     genome_stats: "dict | None",
     out_path: "Path | str",
 ) -> pd.DataFrame:
-    """Build the IGVF ``_eqtl_stats.csv`` table and write it atomically.
+    """Build the ``_eqtl_stats.csv`` table and write it atomically.
 
     See ``build_eqtl_stats_df`` for the input dict shapes.
 
@@ -308,5 +314,163 @@ def write_eqtl_stats(
     The DataFrame that was written (``pipeline.EQTL_STATS_COLS`` schema).
     """
     df = build_eqtl_stats_df(chrom_stats, genome_stats)
+    _atomic_write_csv(df, out_path)
+    return df
+
+
+# _SANGER_COLS — subset of _LOCUS_COLS that the Sanger fine-mapping subsystem
+# populates; left as NaN in the haplotype-only scan output.
+_SANGER_COLS: list[str] = [
+    "variant",
+    "ref",
+    "effect_allele",
+    "other_allele",
+    "ref_founders",
+    "alt_founders",
+    "af",
+    "maf",
+    "mac",
+    "ma_sample",
+    "effect_size",
+    "se_effect_size",
+]
+
+# _NULL_MODEL_COLS — columns derivable from the per-gene null model fit that are
+# not stored on ScanResult (they come from the separate null-fit CSV).  Also NaN
+# in haplotype-scan eqtl_scan output; populated when the eqtl_peak writer merges
+# in the allele-effects DataFrame.
+_NULL_MODEL_COLS: list[str] = [
+    "h2_null_chr",
+    "n_sample",
+    "sd_phenotype",
+    "cis_dist_mb",
+]
+
+
+def build_eqtl_scan_df(
+    scan: "dict[str, ScanResult]",
+    genomecache: "GenomeCache",
+    gene_symbol_map: "dict[str, str] | None" = None,
+    n_founders: int = 7,
+) -> pd.DataFrame:
+    """Reindex all per-locus scan rows to the ``EQTL_SCAN_COLS`` schema.
+
+    Produces one row per (gene × scanned locus), which is the full intermediate
+    scan table before peak-filtering.  The ``peak_locus`` column flags the
+    argmax-LOD row per gene with ``'T'``; all others are ``'F'``.
+
+    Fields populated from ``ScanResult``
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ``chr``, ``pos`` (integer bp), ``hard_call_dosage`` (constant ``'F'``),
+    ``gene_id``, ``gene_symbol``, ``lod``, ``pval_nominal`` (chi² with
+    ``n_founders`` df), ``log10p_nominal``, and ``peak_locus``.
+
+    Fields left as NaN
+    ~~~~~~~~~~~~~~~~~~
+    * Sanger fine-mapping fields (``variant``, ``ref``, ``effect_allele``,
+      ``other_allele``, ``ref_founders``, ``alt_founders``, ``af``, ``maf``,
+      ``mac``, ``ma_sample``, ``effect_size``, ``se_effect_size``) — require the
+      unbuilt Sanger fine-mapping subsystem.
+    * Null-model fields (``h2_null_chr``, ``n_sample``, ``sd_phenotype``,
+      ``cis_dist_mb``) — not stored on ``ScanResult``; available in the
+      per-gene null-fit CSV and added by the ``eqtl_peak`` writer after merging
+      allele effects.
+
+    Parameters
+    ----------
+    scan:
+        ``{gene_id: ScanResult}`` mapping produced by ``pipeline.discover()``.
+        Genes with empty scan results (zero loci) are silently skipped.
+    genomecache:
+        ``GenomeCache`` used for the scan — consulted to resolve locus IDs to
+        chromosome labels.  Only locus-ID and position arrays are accessed (no
+        haplotype probability load).
+    gene_symbol_map:
+        Optional ``{gene_id: gene_symbol}`` for the display-name column.  When
+        ``None``, ``gene_symbol`` is left as an empty string.
+    n_founders:
+        Chi-squared degrees of freedom for ``pval_nominal`` (default 7 = eight
+        founders minus one intercept constraint).
+
+    Returns
+    -------
+    DataFrame with columns given by ``pipeline.EQTL_SCAN_COLS``, in order.
+    """
+    # Build locus-id → chromosome lookup from the cache.  Accessing lids and
+    # positions per chromosome is lightweight — no haplotype-probability loads.
+    locus_chr: dict[str, str] = {}
+    for chrom in genomecache.chromosomes:
+        lids, _pos, _probs = genomecache.get_chromosome(chrom)
+        for lid in lids:
+            locus_chr[lid] = chrom
+
+    sym_map = gene_symbol_map or {}
+    chi2_scale = 2.0 * np.log(10)  # convert LOD to chi2 statistic
+
+    rows: list[dict] = []
+    for gene_id, sr in scan.items():
+        if len(sr.lod) == 0:
+            continue
+        gene_symbol = sym_map.get(gene_id, "")
+        peak_idx = int(np.argmax(sr.lod))
+
+        for i, (lid, pos_mb_val, lod_val) in enumerate(zip(sr.loci, sr.pos_mb, sr.lod)):
+            chrom = locus_chr.get(lid, str(sr.chr))
+            pos_bp = int(round(float(pos_mb_val) * 1e6))
+
+            chi2_val = chi2_scale * float(lod_val)
+            if chi2_val >= 0.0:
+                pval = float(_sp_stats.chi2.sf(chi2_val, df=n_founders))
+                with np.errstate(divide="ignore"):
+                    log10p = float(-np.log10(pval)) if pval > 0.0 else np.inf
+            else:
+                pval = np.nan
+                log10p = np.nan
+
+            rows.append(
+                {
+                    "chr": chrom,
+                    "pos": pos_bp,
+                    "hard_call_dosage": "F",
+                    "gene_id": gene_id,
+                    "gene_symbol": gene_symbol,
+                    "lod": float(lod_val),
+                    "pval_nominal": pval,
+                    "log10p_nominal": log10p,
+                    "peak_locus": "T" if i == peak_idx else "F",
+                }
+            )
+
+    out = pd.DataFrame(rows) if rows else pd.DataFrame(columns=EQTL_SCAN_COLS)
+
+    # NaN-fill all columns the haplotype scan cannot populate.
+    for col in _SANGER_COLS + _NULL_MODEL_COLS:
+        if col not in out.columns:
+            out[col] = pd.NA
+
+    # Remaining EQTL_SCAN_COLS not yet present also get NaN.
+    for col in EQTL_SCAN_COLS:
+        if col not in out.columns:
+            out[col] = pd.NA
+
+    return out.reindex(columns=EQTL_SCAN_COLS).reset_index(drop=True)
+
+
+def write_eqtl_scan(
+    scan: "dict[str, ScanResult]",
+    genomecache: "GenomeCache",
+    out_path: "Path | str",
+    gene_symbol_map: "dict[str, str] | None" = None,
+    n_founders: int = 7,
+) -> pd.DataFrame:
+    """Build the ``_eqtl_scan.csv`` table and write it atomically.
+
+    See ``build_eqtl_scan_df`` for field-population rules and NaN columns.
+
+    Returns
+    -------
+    The DataFrame that was written (``pipeline.EQTL_SCAN_COLS`` schema).
+    """
+    df = build_eqtl_scan_df(scan, genomecache, gene_symbol_map, n_founders)
     _atomic_write_csv(df, out_path)
     return df

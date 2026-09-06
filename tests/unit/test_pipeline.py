@@ -129,6 +129,87 @@ class TestDiscoverLmm:
         dr = discover(pheno_mat, ["g1"], tiny_cache, model="lmm")
         assert dr.genomecache is tiny_cache
 
+    # ── windowed scanning (scan_window/gene_chr_map/gene_pos_mb_map) ──────
+    # scan_multi_gene already implements windowed scanning natively (see
+    # qtl/CLAUDE.md); these tests cover discover()'s forwarding of it.
+
+    def test_default_scan_window_forwarded_as_genome(
+        self, tiny_cache, tiny_strain_phenotype
+    ):
+        """Omitting the new windowing kwargs (the pre-existing call shape)
+        must still reach scan_multi_gene as scan_window='genome' with no
+        window args — i.e. adding lmm windowing support did not change
+        default behavior."""
+        from unittest.mock import patch
+        from mosaiqtl import pipeline as pipeline_module
+        from mosaiqtl.qtl.scan import scan_multi_gene as real_scan_multi_gene
+
+        pheno_mat = tiny_strain_phenotype[:, None]
+        with patch.object(
+            pipeline_module,
+            "scan_multi_gene",
+            side_effect=real_scan_multi_gene,
+        ) as mock_scan:
+            discover(pheno_mat, ["g1"], tiny_cache, model="lmm")
+        _, kwargs = mock_scan.call_args
+        assert kwargs["scan_window"] == "genome"
+        assert kwargs["gene_chr_map"] is None
+        assert kwargs["gene_pos_mb_map"] is None
+
+    def test_local_scan_window_forwarded(self, tiny_cache, tiny_strain_phenotype):
+        """scan_window='local' plus gene_chr_map/gene_pos_mb_map/window_mb
+        must reach scan_multi_gene unchanged — this is the forwarding the
+        cli.py `scan` and `permute` local-window flags rely on."""
+        from unittest.mock import patch
+        from mosaiqtl import pipeline as pipeline_module
+        from mosaiqtl.qtl.scan import scan_multi_gene as real_scan_multi_gene
+
+        pheno_mat = tiny_strain_phenotype[:, None]
+        gene_chr_map = {"g1": "1"}
+        gene_pos_mb_map = {"g1": 1.0}
+        with patch.object(
+            pipeline_module,
+            "scan_multi_gene",
+            side_effect=real_scan_multi_gene,
+        ) as mock_scan:
+            discover(
+                pheno_mat,
+                ["g1"],
+                tiny_cache,
+                model="lmm",
+                scan_window="local",
+                gene_chr_map=gene_chr_map,
+                gene_pos_mb_map=gene_pos_mb_map,
+                window_mb=0.1,
+            )
+        _, kwargs = mock_scan.call_args
+        assert kwargs["scan_window"] == "local"
+        assert kwargs["gene_chr_map"] == gene_chr_map
+        assert kwargs["gene_pos_mb_map"] == gene_pos_mb_map
+        assert kwargs["window_mb"] == 0.1
+
+    def test_local_scan_window_restricts_loci(self, tiny_cache, tiny_strain_phenotype):
+        """End-to-end (no mocking): a local window covering exactly one of
+        tiny_cache's 15 loci on chr '1' (positions are
+        np.linspace(1.0, 100.0, 15); gene_pos_mb=1.0 +/- 0.1 admits only the
+        first) must scan strictly fewer loci than the genome-wide default,
+        proving the restriction actually reaches the real lmm scan engine —
+        not just that the kwargs were passed along."""
+        pheno_mat = tiny_strain_phenotype[:, None]
+        dr_genome = discover(pheno_mat, ["g1"], tiny_cache, model="lmm")
+        dr_local = discover(
+            pheno_mat,
+            ["g1"],
+            tiny_cache,
+            model="lmm",
+            scan_window="local",
+            gene_chr_map={"g1": "1"},
+            gene_pos_mb_map={"g1": 1.0},
+            window_mb=0.1,
+        )
+        assert len(dr_local.scan["g1"].lod) == 1
+        assert len(dr_local.scan["g1"].lod) < len(dr_genome.scan["g1"].lod)
+
 
 # ── discover — model='nb' ─────────────────────────────────────────────────────
 
