@@ -4616,3 +4616,161 @@ def nb_scan_recovery_summary(
 
     fig.tight_layout()
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Sample identity cube
+# ---------------------------------------------------------------------------
+
+
+def sample_identity_cube(
+    metadata: pd.DataFrame,
+    *,
+    tissue_col: str = 'tissue',
+    replicate_col: str = 'replicate',
+    strain_col: str = 'strain',
+    hap_bins: 'dict[str, str] | None' = None,
+    tissue_order: 'list[str] | None' = None,
+    replicate_order: 'list[str] | None' = None,
+    figsize: 'tuple[float, float]' = (11, 11),
+    elev: float = 20.0,
+    azim: float = -55.0,
+    voxel_alpha: float = 0.88,
+    edge_color: str = 'white',
+) -> plt.Figure:
+    """8×8×8 voxel cube: sample identity across tissues, replicates, and founder haplotypes.
+
+    Each axis maps to one experimental dimension:
+
+    - **X** — up to 8 tissues
+    - **Y** — up to 8 replicates
+    - **Z** — 8 founder haplotype bins (FOUNDER_ORDER: AJ → WSBJ)
+
+    A voxel is filled whenever at least one sample occupies that
+    (tissue, replicate, founder-bin) cell and is colored by the founder
+    palette.  CC strains and F1s are compressed to the 8-bin haplotype
+    axis via ``hap_bins`` — a ``{strain: dominant_founder_name}`` mapping
+    derived from ``argmax`` of genome-wide ancestry proportions.
+
+    Parameters
+    ----------
+    metadata : pd.DataFrame
+        One row per sample; must contain ``tissue_col``, ``replicate_col``,
+        and ``strain_col``.
+    tissue_col : str
+        Column name for tissue labels.
+    replicate_col : str
+        Column name for replicate identifiers (any hashable type; up to 8).
+    strain_col : str
+        Column name for genotype/strain identifiers.
+    hap_bins : dict[str, str], optional
+        ``{strain: founder_name}`` — assigns every strain to one of the 8
+        FOUNDER_ORDER bins.  Strains absent from the mapping are skipped.
+        Pass ``None`` to use all strains without binning (requires strain
+        names to already be founder names).
+    tissue_order : list[str], optional
+        Explicit tissue ordering (first 8 used).  Defaults to natsorted
+        unique values from ``tissue_col``.
+    replicate_order : list[str], optional
+        Explicit replicate ordering (first 8 used).  Defaults to natsorted
+        unique values from ``replicate_col``.
+    figsize : tuple[float, float]
+        Figure size in inches.
+    elev : float
+        3-D view elevation in degrees.
+    azim : float
+        3-D view azimuth in degrees.
+    voxel_alpha : float
+        Voxel face opacity (0–1).
+    edge_color : str
+        Voxel edge color (default white).
+
+    Returns
+    -------
+    plt.Figure
+
+    Examples
+    --------
+    Build ``hap_bins`` from genome-wide argmax of a GenomeCache:
+
+    >>> import numpy as np
+    >>> from mosaiqtl.genotype.founders import FOUNDER_ORDER
+    >>> # probs: dict[strain, np.ndarray shape (n_founders,)]
+    >>> hap_bins = {s: FOUNDER_ORDER[int(np.argmax(p))] for s, p in probs.items()}
+    >>> fig = sample_identity_cube(meta_df, hap_bins=hap_bins)
+    >>> fig.savefig('sample_identity_cube.png', bbox_inches='tight', dpi=300)
+    """
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers 3-D projection
+
+    import natsort
+
+    from ..genotype.founders import COLOR_CC_FALLBACK, FOUNDER_COLORS, FOUNDER_ORDER
+
+    # ── resolve axis orders (up to 8 each) ───────────────────────────────────
+    def _nat8(series: pd.Series) -> list[str]:
+        return natsort.natsorted(series.dropna().astype(str).unique())[:8]
+
+    tissues = list(tissue_order[:8]) if tissue_order else _nat8(metadata[tissue_col])
+    replicates = (
+        list(replicate_order[:8]) if replicate_order else _nat8(metadata[replicate_col])
+    )
+    founders = list(FOUNDER_ORDER)  # 8 bins, canonical order
+
+    n_t, n_r, n_f = len(tissues), len(replicates), len(founders)
+
+    tissue_idx = {t: i for i, t in enumerate(tissues)}
+    rep_idx = {r: i for i, r in enumerate(replicates)}
+    founder_idx = {f: i for i, f in enumerate(founders)}
+
+    # ── occupancy ────────────────────────────────────────────────────────────
+    filled = np.zeros((n_t, n_r, n_f), dtype=bool)
+    _bins = hap_bins or {}
+
+    for _, row in metadata.iterrows():
+        t = str(row[tissue_col])
+        r = str(row[replicate_col])
+        s = str(row[strain_col])
+
+        if t not in tissue_idx or r not in rep_idx:
+            continue
+
+        # resolve founder bin: explicit map → identity (already a founder name)
+        fname = _bins.get(s) or (s if s in founder_idx else None)
+        fi = founder_idx.get(fname)  # type: ignore[arg-type]
+        if fi is None:
+            continue
+
+        filled[tissue_idx[t], rep_idx[r], fi] = True
+
+    # ── face color array (n_t, n_r, n_f, 4) ─────────────────────────────────
+    def _hex_rgba(hex_str: str, alpha: float) -> 'tuple[float, float, float, float]':
+        h = hex_str.lstrip('#')
+        r, g, b = (int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
+        return (r, g, b, alpha)
+
+    fc: np.ndarray = np.zeros((n_t, n_r, n_f, 4), dtype=float)
+    for fi, fname in enumerate(founders):
+        fc[:, :, fi, :] = _hex_rgba(FOUNDER_COLORS[fname], voxel_alpha)
+
+    # ── plot ──────────────────────────────────────────────────────────────────
+    fig = plt.figure(figsize=figsize, dpi=300)
+    ax = fig.add_subplot(111, projection='3d')
+
+    ax.voxels(filled, facecolors=fc, edgecolors=edge_color)
+
+    # axis tick placement at voxel midpoints
+    ax.set_xticks(np.arange(n_t) + 0.5)
+    ax.set_yticks(np.arange(n_r) + 0.5)
+    ax.set_zticks(np.arange(n_f) + 0.5)
+
+    ax.set_xticklabels(tissues, fontsize=7, rotation=30, ha='right')
+    ax.set_yticklabels(replicates, fontsize=7)
+    ax.set_zticklabels(founders, fontsize=8, fontweight='bold')
+
+    ax.set_xlabel('Tissue', labelpad=10, fontsize=9)
+    ax.set_ylabel('Replicate', labelpad=10, fontsize=9)
+    ax.set_zlabel('Founder haplotype', labelpad=10, fontsize=9)
+
+    ax.view_init(elev=elev, azim=azim)
+
+    return fig

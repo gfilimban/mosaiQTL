@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
@@ -28,6 +29,69 @@ def _set_font(ax: plt.Axes) -> None:
         [ax.xaxis.label, ax.yaxis.label] + ax.get_xticklabels() + ax.get_yticklabels()
     ):
         item.set_fontfamily(["Carlito", "Calibri", "DejaVu Sans"])
+
+
+def founder_legend(
+    founders: list[str] = FOUNDER_ORDER,
+    *,
+    title: str = 'Founder',
+    ncol: Optional[int] = None,
+    figsize: tuple[float, float] = (2.5, 2.2),
+) -> plt.Figure:
+    """Standalone founder color legend — isolated figure, no data axes.
+
+    Creates a separate figure containing only the founder patch legend, so the
+    companion data figure (``coef_profile``, ``effect_bars``, etc.) can be
+    rendered with ``show_legend=False`` and the full axes area is available for
+    data.  The caller places or saves both figures independently.
+
+    Parameters
+    ----------
+    founders : list[str]
+        Founder display names in the desired legend order.
+    title : str
+        Bold legend title (default ``'Founder'``).
+    ncol : int, optional
+        Number of columns in the legend.  Defaults to ``ceil(len(founders) / 8)``
+        so that no single column contains more than 8 entries — giving 1 column
+        for the 8 founders alone and 6 columns when all 48 genotypes are present.
+    figsize : tuple[float, float]
+        Figure dimensions in inches (default fits 8 founders in one column).
+
+    Returns
+    -------
+    plt.Figure
+        Single-axes figure with the legend and all axes decoration hidden.
+
+    Examples
+    --------
+    >>> fig_data = coef_profile(pos, betas, show_legend=False)
+    >>> fig_leg  = founder_legend()
+    >>> fig_leg.savefig('founder_legend.png', bbox_inches='tight', dpi=300)
+    """
+    import math
+
+    n = len(founders)
+    _ncol = ncol if ncol is not None else max(1, math.ceil(n / 8))
+
+    handles = [
+        mpatches.Patch(color=FOUNDER_COLORS.get(f, COLOR_CC_FALLBACK), label=f)
+        for f in founders
+    ]
+    fig, ax = plt.subplots(figsize=figsize, dpi=300)
+    legend = ax.legend(
+        handles,
+        founders,
+        title=title,
+        loc='upper left',
+        ncol=_ncol,
+        fontsize=9,
+        title_fontsize=9,
+        frameon=False,
+    )
+    legend.get_title().set_fontweight('bold')
+    ax.axis('off')
+    return fig
 
 
 def _recover_full_betas(betas: np.ndarray) -> np.ndarray:
@@ -121,8 +185,14 @@ def coef_profile(
     ax.set_xlabel(f"Chr {chrom} position (Mb)" if chrom else "Position (Mb)")
     ax.set_ylabel(ylabel)
     if show_legend:
+        import math
+
         ax.legend(
-            fontsize=6, ncol=4, frameon=False, loc="upper right", handlelength=1.2
+            fontsize=6,
+            ncol=max(1, math.ceil(len(founders) / 8)),
+            frameon=False,
+            loc='upper right',
+            handlelength=1.2,
         )
     sns.despine(ax=ax)
     _set_font(ax)
