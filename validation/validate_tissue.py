@@ -2893,8 +2893,34 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _gids = [meta_geno_map.get(s, s) for s in _sids]
                     _y    = _cts[0].astype(float)
 
-                    # genome-wide scan: pass full kinship_decomp so max is taken
-                    # across ALL chromosomes per permutation replicate
+                    # L (local) mode: the real per-gene scan never leaves a
+                    # ±window_mb window around the gene's own TSS, so a null
+                    # drawn from a genome-wide (or even whole-chromosome) max
+                    # tests far more loci than the real scan ever did —
+                    # inflating the threshold and understating power. Restrict
+                    # the representative gene's null scan to its own
+                    # chr/window so the multiple-testing burden matches.
+                    # C/G modes keep the genome-wide null: 'C' still tests
+                    # every locus on some chromosome per gene (the max can
+                    # land on any of them), and 'G' is genome-wide already.
+                    _perm_chrom = None
+                    _perm_gene_pos_mb = None
+                    if scan_type == 'L':
+                        _perm_row = gene_info[gene_info['gene_id'] == _perm_id]
+                        if not _perm_row.empty:
+                            _prow = _perm_row.iloc[0]
+                            _perm_chrom = str(_prow['chr'])
+                            if 'strand' in _perm_row.columns and _prow['strand'] == '-':
+                                _perm_gene_pos_mb = float(_prow['end']) / 1e6
+                            else:
+                                _perm_gene_pos_mb = float(_prow['start']) / 1e6
+                            log.info('  local-window null: chr%s  TSS=%.3fMb  ±%.1fMb',
+                                     _perm_chrom, _perm_gene_pos_mb, window_mb)
+                        else:
+                            log.warning('  %s not found in gene_info — falling back to '
+                                        'genome-wide null for representative gene %s',
+                                        _perm_id, _perm_gene)
+
                     _null = generate_null_outcomes(_y, n_perms=1000, seed=1)
                     _t_perm_scan = time.perf_counter()
                     _gw_max, _chr_nulls = run_threshold_scans(
@@ -2902,8 +2928,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         phenotype=_y,
                         covariates=None,
                         kinship_decomp=kinship_decomp,
-                        chrom=None,
+                        chrom=_perm_chrom,
                         sample_ids=_gids,
+                        gene_pos_mb=_perm_gene_pos_mb,
+                        window_mb=window_mb if _perm_chrom is not None else None,
                     )
                     _perm_scan_elapsed = time.perf_counter() - _t_perm_scan
                     chr_null_lods = _chr_nulls
