@@ -430,3 +430,120 @@ class TestParametricHelpers:
         )
         assert max_lods.shape == (n_perms,)
         assert np.all(max_lods >= 0)
+
+
+# ── calibrate_gene_pvalue ─────────────────────────────────────────────────────
+
+
+class TestCalibrateGenePvalue:
+    """calibrate_gene_pvalue: per-gene Beta-calibrated p-value (SWE-09)."""
+
+    def test_returns_tuple_of_four(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tiny_strain_covariates
+    ):
+        """Returns (p_adj, a_hat, b_hat, h2) — all finite scalars."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
+
+        kd = decomp_kinship(tiny_kinship)
+        c0 = list(tiny_cache.chromosomes)[0]
+        result = calibrate_gene_pvalue(
+            tiny_strain_phenotype,
+            tiny_cache,
+            chrom=c0,
+            peak_lod=2.0,
+            covariates=tiny_strain_covariates,
+            kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
+            n_perms=20,
+            use_rint=False,
+            seed=7,
+        )
+        assert len(result) == 4
+        p_adj, a_hat, b_hat, h2_g = result
+        for val in (p_adj, a_hat, b_hat, h2_g):
+            assert np.isfinite(val), f"expected finite, got {val}"
+
+    def test_p_adj_in_unit_interval(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+    ):
+        """p_adj must be in [0, 1]."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
+
+        kd = decomp_kinship(tiny_kinship)
+        c0 = list(tiny_cache.chromosomes)[0]
+        p_adj, *_ = calibrate_gene_pvalue(
+            tiny_strain_phenotype,
+            tiny_cache,
+            chrom=c0,
+            peak_lod=1.5,
+            kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
+            n_perms=20,
+            use_rint=False,
+            seed=11,
+        )
+        assert 0.0 <= p_adj <= 1.0
+
+    def test_beta_calibrate_pvalue_monotone(self):
+        """beta_calibrate_pvalue (the inner function) gives smaller p for higher LOD.
+
+        The full calibrate_gene_pvalue monotone property cannot be reliably
+        demonstrated on the 10-strain tiny fixture — with such small n, the
+        parametric null easily produces LODs as high as the observed value by
+        chance, saturating p_adj at 1.0.  Instead we test the Beta-calibration
+        step directly with fabricated null_max_lods drawn from a controlled
+        distribution where the ordering is guaranteed.
+        """
+        from mosaiqtl.qtl.fdr import beta_calibrate_pvalue
+
+        rng = np.random.default_rng(99)
+        # null drawn from a distribution with typical LOD around 1-2
+        null_lods = rng.gamma(shape=2.0, scale=0.8, size=200)
+        p_low, *_ = beta_calibrate_pvalue(0.5, null_lods, df=7)
+        p_high, *_ = beta_calibrate_pvalue(8.0, null_lods, df=7)
+        assert p_high < p_low, (
+            f"higher LOD should give smaller p: p(LOD=8)={p_high:.4f} "
+            f"vs p(LOD=0.5)={p_low:.4f}"
+        )
+
+    def test_raises_without_kinship(self, tiny_cache, tiny_strain_phenotype):
+        """Missing kinship_decomp or kinship_loco raises ValueError."""
+        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
+
+        c0 = list(tiny_cache.chromosomes)[0]
+        with pytest.raises(ValueError, match="kinship_decomp"):
+            calibrate_gene_pvalue(
+                tiny_strain_phenotype,
+                tiny_cache,
+                chrom=c0,
+                peak_lod=1.0,
+                kinship_decomp=None,
+                kinship_loco=None,
+                n_perms=5,
+            )
+
+    def test_reproducible_with_seed(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+    ):
+        """Same seed → identical p_adj."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
+
+        kd = decomp_kinship(tiny_kinship)
+        c0 = list(tiny_cache.chromosomes)[0]
+        kwargs = dict(
+            y_gene=tiny_strain_phenotype,
+            genomecache=tiny_cache,
+            chrom=c0,
+            peak_lod=2.0,
+            kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
+            n_perms=15,
+            use_rint=False,
+            seed=42,
+        )
+        p1, *_ = calibrate_gene_pvalue(**kwargs)
+        p2, *_ = calibrate_gene_pvalue(**kwargs)
+        assert p1 == p2
