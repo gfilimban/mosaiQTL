@@ -450,6 +450,10 @@ def discover(
     cis_loci_dict=None,
     n_cores=1,
     kinship_decomp=None,
+    scan_window="genome",
+    gene_chr_map=None,
+    gene_pos_mb_map=None,
+    window_mb=10.0,
 ):
     """Layer 1 — genome-wide haplotype QTL scan for a set of genes.
 
@@ -462,12 +466,21 @@ def discover(
     sample_ids       : array-like (n,) or None
     model            : 'nb' (default) or 'lmm'
         'nb'  — NB GLM on raw counts; no kinship; primary mosaiQTL model
-        'lmm' — gaussian lmm scan with loco kinship correction
+        'lmm' — gaussian lmm scan with loco kinship correction; validated port
     lib_sizes        : np.ndarray (n,) or None  (nb only) log-offset
-    cis_loci_dict    : dict {gene_id: set} or None  restrict scan to cis window
+    cis_loci_dict    : dict {gene_id: set} or None  (nb only) explicit locus
+                       subset per gene, passed straight to qtl/nb.py::scan_nb
     n_cores          : int
     kinship_decomp   : dict or None  pre-computed LOCO kinship (lmm only);
                        computed internally if None
+    scan_window      : str  'genome' | 'cis' | 'local'  (lmm only; default
+                       'genome'), passed straight to scan_multi_gene
+    gene_chr_map     : dict {gene_id: str} or None  (lmm only) required for
+                       scan_window='cis' or 'local'
+    gene_pos_mb_map  : dict {gene_id: float} or None  (lmm only) TSS in Mb;
+                       required for scan_window='local'
+    window_mb        : float  (lmm only) half-window in Mb for
+                       scan_window='local' (default 10.0)
 
     returns
     -------
@@ -497,9 +510,13 @@ def discover(
             phenotype_matrix,
             gene_ids,
             genomecache,
+            gene_chr_map=gene_chr_map,
             covariates=covariates,
             kinship_decomp=kinship_decomp,
             sample_ids=sample_ids,
+            scan_window=scan_window,
+            gene_pos_mb_map=gene_pos_mb_map,
+            window_mb=window_mb,
         )
         return DiscoveryResult(
             scan=scan_results,

@@ -212,6 +212,8 @@ def run_threshold_scans(
     z_mat=None,
     seed=1,
     batch_size=500,
+    gene_pos_mb=None,
+    window_mb=None,
 ):
     """scan null phenotype columns to build the peak-LOD null distribution.
 
@@ -272,6 +274,15 @@ def run_threshold_scans(
     batch_size     : int  mini-batch size for the fast vectorised path
         (fix_h2=True + plain).  500 balances memory and loop overhead;
         reduce if RAM is tight.
+    gene_pos_mb    : float or None  representative gene's TSS position in Mb.
+        with window_mb, restricts the null scan on `chrom` to loci within
+        ±window_mb of this position — matching a local/cis real scan so its
+        permutation threshold is drawn from the same locus set instead of a
+        genome-wide (or whole-chromosome) null, which would be miscalibrated
+        for a scan that never considered those other loci in the first place.
+        requires `chrom` to be given (the window anchors to one chromosome) —
+        raises ValueError if `chrom` is None.
+    window_mb      : float or None  half-window in Mb around gene_pos_mb.
 
     returns
     -------
@@ -298,6 +309,11 @@ def run_threshold_scans(
     if permutation_method not in ("plain", "parametric"):
         raise ValueError(
             f"permutation_method must be 'plain' or 'parametric', got {permutation_method!r}"
+        )
+    if gene_pos_mb is not None and window_mb is not None and chrom is None:
+        raise ValueError(
+            "gene_pos_mb/window_mb require chrom (the local window anchors to "
+            "one chromosome) — pass chrom=<gene's own chromosome> for a local scan"
         )
 
     _t0 = time.perf_counter()
@@ -443,6 +459,10 @@ def run_threshold_scans(
     for c in chrs:
         ev, evc = _ev_evc(c)
         h2 = h2_fixed[c]
+        loci_mask = None
+        if gene_pos_mb is not None and window_mb is not None and c == chrom:
+            _, positions_c, _ = genomecache.get_chromosome(c)
+            loci_mask = np.abs(positions_c - gene_pos_mb) <= window_mb
         try:
             chr_max = lmm_module.scan_chromosome_batch(
                 null_mat_gw,
@@ -454,6 +474,7 @@ def run_threshold_scans(
                 h2,
                 z_mat=z_mat,
                 batch_size=batch_size,
+                loci_mask=loci_mask,
             )
         except KinshipSingularError as exc:
             logger.warning("run_threshold_scans: chr%s skipped — %s", c, exc)
