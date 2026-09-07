@@ -2353,8 +2353,58 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             log.info('\nLMM scan: FWL-vectorized score test with LOCO kinship  scan_type=%s  chrs=%s...',
                      scan_type, chrs_to_scan)
 
+            # ── sample breakdown — printed once before scan so users can
+            # assess per-strain replicate depth before committing to a long run
+            _n_total = len(meta)
+            _n_strains = meta['genotype'].nunique()
+            _rep_counts = (meta.groupby('genotype', sort=False)
+                               .size()
+                               .sort_values(ascending=False))
+            _min_rep = int(_rep_counts.min())
+            _max_rep = int(_rep_counts.max())
+            _med_rep = float(_rep_counts.median())
+            log.info('  samples: %d total  %d strains  replicates/strain '
+                     'min=%d  median=%.1f  max=%d',
+                     _n_total, _n_strains, _min_rep, _med_rep, _max_rep)
+            if _min_rep == 1:
+                _singles = sorted(_rep_counts[_rep_counts == 1].index.tolist())
+                log.warning('  %d strain(s) with n=1 replicate (low-power): %s',
+                            len(_singles), ', '.join(_singles))
+            # one line per strain: strain  n_samples  [dataset breakdown if >1 dataset]
+            _multi_dataset = meta['dataset'].nunique() > 1 if 'dataset' in meta.columns else False
+            for _strain, _n in natsorted(_rep_counts.items(), key=lambda x: x[0]):
+                if _multi_dataset:
+                    _ds_counts = (meta[meta['genotype'] == _strain]
+                                  .groupby('dataset').size()
+                                  .to_dict())
+                    _ds_str = '  ' + '  '.join(f'{d}:{n}' for d, n in sorted(_ds_counts.items()))
+                else:
+                    _ds_str = ''
+                log.info('    %-20s  n=%d%s', _strain, _n, _ds_str)
+
             import json as _json
             from importlib.metadata import version as _pkg_version
+
+            # ── sample_breakdown.csv — written alongside scan_info.json ──────
+            # tidy per-strain replicate table; one row per sample so downstream
+            # scripts can filter / pivot without re-parsing metadata.csv
+            _breakdown_cols = ['strain', 'n_samples']
+            if _multi_dataset:
+                _breakdown_cols.append('dataset_breakdown')
+            _breakdown_rows = []
+            for _strain, _n in natsorted(_rep_counts.items(), key=lambda x: x[0]):
+                _row: dict = {'strain': _strain, 'n_samples': int(_n)}
+                if _multi_dataset:
+                    _ds_counts = (meta[meta['genotype'] == _strain]
+                                  .groupby('dataset').size().to_dict())
+                    _row['dataset_breakdown'] = ';'.join(
+                        f'{d}:{n}' for d, n in sorted(_ds_counts.items()))
+                _breakdown_rows.append(_row)
+            _breakdown_df = pd.DataFrame(_breakdown_rows, columns=_breakdown_cols)
+            _breakdown_df.to_csv(py_dir / 'sample_breakdown.csv', index=False)
+            log.info('  sample_breakdown.csv written → %s', py_dir / 'sample_breakdown.csv')
+
+            # ── scan_info.json — provenance + sample summary ──────────────────
             (py_dir / 'scan_info.json').write_text(_json.dumps({
                 'mosaiqtl_version': _pkg_version('mosaiqtl'),
                 'git_hash':         _git_hash(),
@@ -2363,6 +2413,15 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 'scan_type':        scan_type,
                 'chr':              ','.join(chrs_to_scan) if chrs_to_scan else 'all',
                 'n_genes':          n_genes,
+                'samples': {
+                    'n_total':   _n_total,
+                    'n_strains': _n_strains,
+                    'min_reps':  _min_rep,
+                    'max_reps':  _max_rep,
+                    'per_strain': {str(s): int(n)
+                                   for s, n in natsorted(_rep_counts.items(),
+                                                         key=lambda x: x[0])},
+                },
             }, indent=2))
 
             h5_path = data_dir / 'counts_lognorm.h5'
@@ -2449,8 +2508,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _chr_data_ch = precompute_chromosome(
                         cache, ch, _evals_ch, _evecs_ch, z_mat=_z_sub_ch)
                     _chr_precomputed = True
-                    log.info('    chr%s: H precomputed (%d loci  %d samples)',
-                             ch, len(_chr_data_ch['locus_ids']), _z_sub_ch.shape[0])
+                    log.info('    chr%s: H precomputed (%d loci)',
+                             ch, len(_chr_data_ch['locus_ids']))
 
                 log.info('  running LMM scan on chr%s ...', ch)
                 t_chr = time.perf_counter()

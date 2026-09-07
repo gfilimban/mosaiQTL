@@ -2299,8 +2299,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _chr_data_ch = precompute_chromosome(
                         cache, ch, _evals_ch, _evecs_ch, z_mat=_z_sub_ch)
                     _chr_precomputed = True
-                    log.info('    chr%s: H precomputed (%d loci  %d samples)',
-                             ch, len(_chr_data_ch['locus_ids']), _z_sub_ch.shape[0])
+                    log.info('    chr%s: H precomputed (%d loci)',
+                             ch, len(_chr_data_ch['locus_ids']))
 
                 log.info('  running LMM scan on chr%s ...', ch)
                 t_chr = time.perf_counter()
