@@ -86,7 +86,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from mosaiqtl.genotype.founders import (
     COLOR_CC_FALLBACK, COLOR_NEUTRAL_DARK, COLOR_NEUTRAL_LIGHT,
-    F1_COLORS, FOUNDER_CODE, FOUNDER_COLORS, FOUNDER_ORDER,
+    F1_COLORS, FOUNDER_CODE, FOUNDER_COLORS, FOUNDER_ORDER, STRAIN_ORDER,
 )
 from mosaiqtl.utils import chr_sort_key as _chr_sort_key
 
@@ -2371,9 +2371,24 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 _singles = sorted(_rep_counts[_rep_counts == 1].index.tolist())
                 log.warning('  %d strain(s) with n=1 replicate (low-power): %s',
                             len(_singles), ', '.join(_singles))
+            # canonical sort: founders (FOUNDER_ORDER) → F1s (F1_COLORS order)
+            # → CC strains (natsorted); unknown strains append natsorted at end
+            _strain_rank: dict[str, int] = {s: i for i, s in enumerate(STRAIN_ORDER)}
+            _ns_keys = natsorted(_rep_counts.index.tolist())
+            _ns_rank: dict[str, int] = {s: i for i, s in enumerate(_ns_keys)}
+
+            def _canonical_key(strain: str) -> tuple:
+                known = _strain_rank.get(strain)
+                if known is not None:
+                    return (0, known, 0)        # founders + F1s first
+                return (1, 0, _ns_rank.get(strain, 0))  # CC strains natsorted
+
+            _sorted_strains: list[tuple] = sorted(
+                _rep_counts.items(), key=lambda x: _canonical_key(x[0]))
+
             # one line per strain: strain  n_samples  [dataset breakdown if >1 dataset]
             _multi_dataset = meta['dataset'].nunique() > 1 if 'dataset' in meta.columns else False
-            for _strain, _n in natsorted(_rep_counts.items(), key=lambda x: x[0]):
+            for _strain, _n in _sorted_strains:
                 if _multi_dataset:
                     _ds_counts = (meta[meta['genotype'] == _strain]
                                   .groupby('dataset').size()
@@ -2393,7 +2408,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             if _multi_dataset:
                 _breakdown_cols.append('dataset_breakdown')
             _breakdown_rows = []
-            for _strain, _n in natsorted(_rep_counts.items(), key=lambda x: x[0]):
+            for _strain, _n in _sorted_strains:
                 _row: dict = {'strain': _strain, 'n_samples': int(_n)}
                 if _multi_dataset:
                     _ds_counts = (meta[meta['genotype'] == _strain]
@@ -2419,9 +2434,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     'n_strains': _n_strains,
                     'min_reps':  _min_rep,
                     'max_reps':  _max_rep,
-                    'per_strain': {str(s): int(n)
-                                   for s, n in natsorted(_rep_counts.items(),
-                                                         key=lambda x: x[0])},
+                    'per_strain': {str(s): int(n) for s, n in _sorted_strains},
                 },
             }, indent=2))
 
