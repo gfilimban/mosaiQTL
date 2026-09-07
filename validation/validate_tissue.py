@@ -204,6 +204,7 @@ from mosaiqtl.pipeline import (
     LOD_COLS, ALLELE_EFFECTS_BASE_COLS, PEAK_LOD_COLS, EGENE_SUMMARY_COLS,
 )
 from mosaiqtl.utils import build_z_matrix, rint
+from natsort import natsorted
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 log = logging.getLogger('validate_tissue')
@@ -4035,7 +4036,6 @@ def main() -> None:
 
     # ── all-celltypes mode ────────────────────────────────────────────────────
     if args.all_celltypes:
-        from natsort import natsorted  # already a dep; import locally to keep top-level clean
         _cts_root = data_dir / 'celltypes'
         if not _cts_root.is_dir():
             log.error('celltypes/ directory not found under %s — run convert_h5ad.py first',
