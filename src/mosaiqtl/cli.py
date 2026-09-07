@@ -1,15 +1,17 @@
 """mosaiQTL command-line interface.
 
-Each subcommand reads/writes HDF5 or CSV; no hidden state between stages.
-Run `mosaiqtl --help` for full option listing.
+Each command below is a self-contained step in the QTL mapping workflow: it
+reads its inputs from files and writes its results to files, so any step can
+be rerun on its own without repeating earlier ones. Run `mosaiqtl --help` for
+the full option listing.
 
-Stage flow
-----------
-1. fit-null  — Stage 1 NB-gamma null fit per gene → phi_shrunk.csv
-2. scan       — Stage 2 genome-wide PQL score scan → peak_lod.csv
-3. permute    — permutation threshold → perm_max_lods.csv
-4. estimate   — haplotype effects at peak loci → allele_effects.csv
-5. report     — eGene summary table + genome-wide Manhattan → eqtl_summary.csv
+Typical order of steps
+-----------------------
+1. fit-null  — per-gene baseline model (no genetic effect) → phi_shrunk.csv
+2. scan       — genome-wide association scan → peak_lod.csv
+3. permute    — significance threshold from shuffled data → perm_max_lods.csv
+4. estimate   — founder strain effects at each gene's peak → allele_effects.csv
+5. report     — summary table + Manhattan plot → eqtl_summary.csv
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ def _setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        format="%(asctime)s,%(msecs)03d %(levelname)-5s [%(module)s] %(message)s",
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
@@ -42,6 +44,51 @@ def _detect_ct_col(obs_columns: list[str]) -> Optional[str]:
         if "cell" in cl and "type" in cl:
             return c
     return None
+
+
+def _gene_window_lookup(gene_info) -> dict:
+    """Build {gene_id: (chr, tss_mb)} from a gene-info table.
+
+    TSS is the strand-aware gene boundary (start for '+', end for '-') so a
+    local-window scan is centered on the actual transcription start site, not
+    just the lower genomic coordinate. Requires gene_id/chr/start columns;
+    end/strand are optional (missing strand assumes '+').
+    """
+    has_strand = "strand" in gene_info.columns
+    lookup: dict = {}
+    for _, row in gene_info.iterrows():
+        if has_strand and row["strand"] == "-" and "end" in gene_info.columns:
+            tss_mb = float(row["end"]) / 1e6
+        else:
+            tss_mb = float(row["start"]) / 1e6
+        lookup[str(row["gene_id"])] = (str(row["chr"]), tss_mb)
+    return lookup
+
+
+def _build_cis_loci_dict(
+    genomecache, gene_window: dict, gene_ids: list, window_mb: float
+) -> dict:
+    """Build {gene_id: {locus_id, ...}} restricting each gene to ±window_mb of its TSS.
+
+    Genes missing from `gene_window` (no gene-info row) are omitted — callers
+    fall back to a genome-wide scan for those via cis_loci_dict.get(gid, None).
+    """
+    import numpy as np
+
+    cis_loci_dict: dict = {}
+    pos_cache: dict = {}
+    for gid in gene_ids:
+        win = gene_window.get(str(gid))
+        if win is None:
+            continue
+        gchr, tss_mb = win
+        if gchr not in pos_cache:
+            lids_c, pos_c, _ = genomecache.get_chromosome(gchr)
+            pos_cache[gchr] = (lids_c, pos_c)
+        lids_c, pos_c = pos_cache[gchr]
+        mask = np.abs(pos_c - tss_mb) <= window_mb
+        cis_loci_dict[str(gid)] = set(lids_c[mask].tolist())
+    return cis_loci_dict
 
 
 @click.group()
@@ -218,7 +265,37 @@ def fit_null(
 @click.option(
     "--cell-type", default=None, help="Cell type label to subset from AnnData obs."
 )
+@click.option(
+    "--gene-info",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="CSV with gene_id/chr/start[/end/strand] columns; required for "
+    "--scan-window local.",
+)
+@click.option(
+    "--scan-window",
+    default="genome",
+    show_default=True,
+    type=click.Choice(["genome", "local"]),
+    help="'genome' scans every locus; 'local' restricts each gene to "
+    "±window-mb of its own TSS (needs --gene-info). Works for both "
+    "--model nb and --model lmm.",
+)
+@click.option(
+    "--window-mb",
+    default=1.0,
+    show_default=True,
+    help="Half-window in Mb around each gene's TSS for --scan-window local.",
+)
 @click.option("--n-cores", default=1, show_default=True, help="Parallel scan threads.")
+@click.option(
+    "--eqtl-scan/--no-eqtl-scan",
+    default=False,
+    show_default=True,
+    help="Also write eqtl_scan.csv (EQTL_SCAN_COLS — all loci × all genes) "
+    "alongside peak_lod.csv.  Omit for large genome-wide runs where the "
+    "per-locus file would be very large; include for cis-window scans.",
+)
 @click.option("--verbose", is_flag=True, default=False)
 def scan(
     cache: Path,
@@ -228,7 +305,11 @@ def scan(
     output: Path,
     model: str,
     cell_type: Optional[str],
+    gene_info: Optional[Path],
+    scan_window: str,
+    window_mb: float,
     n_cores: int,
+    eqtl_scan: bool,
     verbose: bool,
 ) -> None:
     """Stage 2: genome-wide QTL scan → per-gene peak LOD.
@@ -243,6 +324,9 @@ def scan(
     import anndata
     from .genotype.genomecache import GenomeCache
     from .pipeline import discover
+
+    if scan_window == "local" and gene_info is None:
+        raise click.ClickException("--scan-window local requires --gene-info.")
 
     logger.info("Loading genome cache: %s", cache)
     gc = GenomeCache.from_hdf5(cache)
@@ -297,11 +381,35 @@ def scan(
     counts_filt = counts_mat[:, gene_mask]
     gene_ids_filt = [g for g, ok in zip(gene_ids, gene_mask) if ok]
     logger.info(
-        "Scan: %d genes × %d cells (model=%s)",
+        "Scan: %d genes × %d cells (model=%s, scan_window=%s)",
         len(gene_ids_filt),
         counts_filt.shape[0],
         model,
+        scan_window,
     )
+
+    cis_loci_dict: Optional[dict] = None
+    gene_chr_map: Optional[dict] = None
+    gene_pos_mb_map: Optional[dict] = None
+    if scan_window == "local":
+        gene_info_df = pd.read_csv(gene_info)
+        gene_window = _gene_window_lookup(gene_info_df)
+        n_missing = sum(1 for g in gene_ids_filt if str(g) not in gene_window)
+        if n_missing:
+            logger.warning(
+                "Scan: %d/%d genes missing from --gene-info — scanned genome-wide",
+                n_missing,
+                len(gene_ids_filt),
+            )
+        if model == "nb":
+            # nb's score-test scan takes an explicit per-gene locus subset
+            # (qtl/nb.py::scan_nb) rather than a window it resolves itself.
+            cis_loci_dict = _build_cis_loci_dict(
+                gc, gene_window, gene_ids_filt, window_mb
+            )
+        else:  # lmm — scan_multi_gene resolves the window itself per gene
+            gene_chr_map = {gid: chrom for gid, (chrom, _) in gene_window.items()}
+            gene_pos_mb_map = {gid: tss for gid, (_, tss) in gene_window.items()}
 
     output.parent.mkdir(parents=True, exist_ok=True)
     disc = discover(
@@ -312,7 +420,12 @@ def scan(
         sample_ids=sample_ids,
         model=model,
         lib_sizes=lib_sizes,
+        cis_loci_dict=cis_loci_dict,
         n_cores=n_cores,
+        scan_window=scan_window if model == "lmm" else "genome",
+        gene_chr_map=gene_chr_map,
+        gene_pos_mb_map=gene_pos_mb_map,
+        window_mb=window_mb,
     )
 
     # flatten ScanResult per gene to peak-lod rows
@@ -334,6 +447,13 @@ def scan(
     result_df = pd.DataFrame(rows)
     result_df.to_csv(output, index=False)
     logger.info("Scan written to %s (%d genes)", output, len(result_df))
+
+    if eqtl_scan:
+        from .io.results_io import write_eqtl_scan as _write_eqtl_scan
+
+        eqtl_scan_path = output.parent / "eqtl_scan.csv"
+        _write_eqtl_scan(disc.scan, gc, eqtl_scan_path)
+        logger.info("eqtl_scan written to %s", eqtl_scan_path)
 
 
 # ── permute ───────────────────────────────────────────────────────────────
@@ -388,6 +508,30 @@ def scan(
     type=click.Choice(["parametric", "plain"]),
     help="Permutation mode: 'parametric' (miQTL default) or 'plain'.",
 )
+@click.option(
+    "--gene-info",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="Gene-info CSV (gene_id, chr, start[, end, strand]); required for "
+    "--scan-window local.",
+)
+@click.option(
+    "--scan-window",
+    default="genome",
+    show_default=True,
+    type=click.Choice(["genome", "local"]),
+    help="'genome' draws the null from the whole genome/chromosome (matches a "
+    "genome-wide or chromosome-wide real scan); 'local' restricts the "
+    "representative gene's null scan to ±window-mb of its own TSS, matching a "
+    "real scan that never leaves that window.",
+)
+@click.option(
+    "--window-mb",
+    default=1.0,
+    show_default=True,
+    help="Half-window in Mb around the representative gene's TSS, used only "
+    "when --scan-window local.",
+)
 @click.option("--verbose", is_flag=True, default=False)
 def permute(
     cache: Path,
@@ -398,6 +542,9 @@ def permute(
     n_perms: int,
     gene: Optional[str],
     perm_method: str,
+    gene_info: Optional[Path],
+    scan_window: str,
+    window_mb: float,
     verbose: bool,
 ) -> None:
     """Permutation thresholds → GEV fit on max-LOD distribution.
@@ -406,6 +553,8 @@ def permute(
     Writes perm_max_lods.csv and perm_max_lods_chr{c}.csv into OUTPUT directory.
     """
     _setup_logging(verbose)
+    if scan_window == "local" and gene_info is None:
+        raise click.ClickException("--scan-window local requires --gene-info.")
     import numpy as np
     import pandas as pd
     import anndata
@@ -463,6 +612,28 @@ def permute(
     null_outcomes = generate_null_outcomes(
         phenotype, n_perms=n_perms, method="permutation"
     )
+
+    perm_chrom: Optional[str] = None
+    perm_gene_pos_mb: Optional[float] = None
+    if scan_window == "local":
+        gene_info_df = pd.read_csv(gene_info)
+        gene_window = _gene_window_lookup(gene_info_df)
+        win = gene_window.get(str(rep_gene))
+        if win is None:
+            logger.warning(
+                "permute: %s not found in --gene-info — falling back to "
+                "genome-wide null",
+                rep_gene,
+            )
+        else:
+            perm_chrom, perm_gene_pos_mb = win
+            logger.info(
+                "permute: local-window null: chr%s TSS=%.3fMb ±%.1fMb",
+                perm_chrom,
+                perm_gene_pos_mb,
+                window_mb,
+            )
+
     max_lods, chr_null_lods = run_threshold_scans(
         null_outcomes,
         gc,
@@ -470,6 +641,9 @@ def permute(
         covariates=covariates,
         kinship_decomp=kinship_decomp,
         kinship_loco=kd_raw,
+        chrom=perm_chrom,
+        gene_pos_mb=perm_gene_pos_mb,
+        window_mb=window_mb if perm_chrom is not None else None,
         permutation_method=perm_method,
     )
 
@@ -661,7 +835,25 @@ def estimate(
     "--fdr",
     default=0.05,
     show_default=True,
-    help="LOD threshold for eGene calling (applied after GEV 95th-pct).",
+    help="LOD threshold for eGene calling (applied after GEV 95th-pct); also "
+    "used as the Storey q-value cutoff when --pval-perm is given.",
+)
+@click.option(
+    "--allele-effects",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="allele_effects.csv from `estimate` — merges beta_{founder} effect "
+    "columns into eqtl_peak.csv. Omit to write eqtl_peak.csv with effect "
+    "columns blank.",
+)
+@click.option(
+    "--pval-perm",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="CSV with gene_id,pval_perm columns (per-gene calibrated permutation "
+    "p-value from qtl.permutation.calibrate_gene_pvalue) — enables the "
+    "Storey q-value significance call written into eqtl_peak.csv. Omit to "
+    "leave pval_perm/fdr/significance blank there.",
 )
 @click.option("--verbose", is_flag=True, default=False)
 def report(
@@ -669,18 +861,28 @@ def report(
     perm_dir: Path,
     output_dir: Path,
     fdr: float,
+    allele_effects: Optional[Path],
+    pval_perm: Optional[Path],
     verbose: bool,
 ) -> None:
     """Summary tables + QC plots from a completed scan.
 
     Reads peak_lod.csv + perm directory from prior subcommands.
-    Writes eqtl_summary.csv and genome_summary.png into OUTPUT_DIR.
+    Writes eqtl_summary.csv, genome_summary.png, eqtl_peak.csv, and
+    eqtl_stats.csv into OUTPUT_DIR. eqtl_peak.csv/eqtl_stats.csv populate the
+    IGVF EQTL_PEAK_COLS/EQTL_STATS_COLS schemas from data already produced by
+    this pipeline; the biallelic-contrast fields (variant/ref/ref_founders/
+    alt_founders/af/maf/mac/effect_size/...) stay NaN until the Sanger
+    fine-mapping subsystem supplies real REF/ALT calls.
     """
     _setup_logging(verbose)
     import numpy as np
     import pandas as pd
-    from .pipeline import call_egenes, finalize_egene_summary
+    from .genotype.founders import FOUNDER_ORDER
+    from .io.results_io import write_eqtl_peak, write_eqtl_stats
+    from .pipeline import calibrate_egenes_storey, call_egenes, finalize_egene_summary
     from .qtl.permutation import get_gev_thresholds, load_per_chr_thresholds
+    from .utils import git_hash
 
     peaks = pd.read_csv(scan_result)
     perm_path = perm_dir / "perm_max_lods.csv"
@@ -721,6 +923,80 @@ def report(
         logger.info("genome_summary.png written")
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not produce genome_summary.png: %s", exc)
+
+    # eqtl_peak.csv — IGVF EQTL_PEAK_COLS (minus biallelic-contrast fields)
+    effects_egenes = egenes_df.copy()
+    founder_names = list(FOUNDER_ORDER)
+    if allele_effects is not None:
+        ae = pd.read_csv(allele_effects)
+        beta_cols = [c for c in ae.columns if c.startswith("beta_")]
+        if beta_cols:
+            founder_names = [c[len("beta_") :] for c in beta_cols]  # noqa: E203
+            join_col = "gene_id" if "gene_id" in ae.columns else "gene_symbol"
+            effects_egenes = effects_egenes.merge(
+                ae[[join_col, *beta_cols]], on=join_col, how="left"
+            )
+        else:
+            logger.warning(
+                "%s has no beta_* columns; effect_* left blank", allele_effects
+            )
+    else:
+        logger.info("--allele-effects not given; effect_* columns left blank")
+
+    if pval_perm is not None:
+        pv_series = pd.read_csv(pval_perm).set_index("gene_id")["pval_perm"]
+        effects_egenes = calibrate_egenes_storey(
+            effects_egenes, pv_series, fdr_threshold=fdr
+        )
+    else:
+        logger.info(
+            "--pval-perm not given; pval_perm/fdr/significance left blank in eqtl_peak.csv"
+        )
+
+    write_eqtl_peak(effects_egenes, founder_names, output_dir / "eqtl_peak.csv")
+    logger.info("eqtl_peak.csv written: %d rows", len(effects_egenes))
+
+    # eqtl_stats.csv — IGVF EQTL_STATS_COLS, per-chromosome + genome-wide rows
+    chrom_stats = []
+    for pf in sorted(perm_dir.glob("perm_max_lods_chr*.csv")):
+        chrom = pf.stem.replace("perm_max_lods_chr", "")
+        try:
+            chr_nulls = pd.read_csv(pf)["max_lod"].values
+            chr_thr, params = get_gev_thresholds(chr_nulls)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not fit GEV for chr%s: %s", chrom, exc)
+            continue
+        chr_peaks = (
+            peaks[peaks["chr"].astype(str) == chrom]
+            if "chr" in peaks.columns
+            else peaks.iloc[0:0]
+        )
+        chrom_stats.append(
+            {
+                "chr": chrom,
+                "lod_threshold": chr_thr,
+                "gev_mu": params.get("loc") if params else None,
+                "gev_sigma": params.get("scale") if params else None,
+                "gev_xi": params.get("c") if params else None,
+                "n_genes_scanned": int(len(chr_peaks)),
+                "n_egenes": (
+                    int((chr_peaks["peak_lod"] >= chr_thr).sum())
+                    if chr_thr is not None
+                    else None
+                ),
+                "n_perms": int(len(chr_nulls)),
+            }
+        )
+    genome_stats = {
+        "lod_threshold": gw_thr,
+        "n_genes_scanned": int(len(peaks)),
+        "n_egenes": int(len(egenes_df)),
+        "n_perms": int(len(max_lods)),
+        "fdr_threshold": fdr,
+        "git_hash": git_hash(),
+    }
+    write_eqtl_stats(chrom_stats, genome_stats, output_dir / "eqtl_stats.csv")
+    logger.info("eqtl_stats.csv written: %d rows", len(chrom_stats) + 1)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Optional
 
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -29,8 +31,76 @@ def _set_font(ax: plt.Axes) -> None:
         item.set_fontfamily(["Carlito", "Calibri", "DejaVu Sans"])
 
 
+def founder_legend(
+    founders: list[str] = FOUNDER_ORDER,
+    *,
+    title: str = 'Founder',
+    ncol: Optional[int] = None,
+    figsize: tuple[float, float] = (2.5, 2.2),
+) -> plt.Figure:
+    """Standalone founder color legend — isolated figure, no data axes.
+
+    Creates a separate figure containing only the founder patch legend, so the
+    companion data figure (``coef_profile``, ``effect_bars``, etc.) can be
+    rendered with ``show_legend=False`` and the full axes area is available for
+    data.  The caller places or saves both figures independently.
+
+    Parameters
+    ----------
+    founders : list[str]
+        Founder display names in the desired legend order.
+    title : str
+        Bold legend title (default ``'Founder'``).
+    ncol : int, optional
+        Number of columns in the legend.  Defaults to ``ceil(len(founders) / 8)``
+        so that no single column contains more than 8 entries — giving 1 column
+        for the 8 founders alone and 6 columns when all 48 genotypes are present.
+    figsize : tuple[float, float]
+        Figure dimensions in inches (default fits 8 founders in one column).
+
+    Returns
+    -------
+    plt.Figure
+        Single-axes figure with the legend and all axes decoration hidden.
+
+    Examples
+    --------
+    >>> fig_data = coef_profile(pos, betas, show_legend=False)
+    >>> fig_leg  = founder_legend()
+    >>> fig_leg.savefig('founder_legend.png', bbox_inches='tight', dpi=300)
+    """
+    import math
+
+    n = len(founders)
+    _ncol = ncol if ncol is not None else max(1, math.ceil(n / 8))
+
+    handles = [
+        mpatches.Patch(color=FOUNDER_COLORS.get(f, COLOR_CC_FALLBACK), label=f)
+        for f in founders
+    ]
+    fig, ax = plt.subplots(figsize=figsize, dpi=300)
+    legend = ax.legend(
+        handles,
+        founders,
+        title=title,
+        loc='upper left',
+        ncol=_ncol,
+        fontsize=9,
+        title_fontsize=9,
+        frameon=False,
+    )
+    legend.get_title().set_fontweight('bold')
+    ax.axis('off')
+    return fig
+
+
 def _recover_full_betas(betas: np.ndarray) -> np.ndarray:
-    """Recover J-th founder via sum-to-zero: beta_J = -sum(betas[:J-1])."""
+    """Fill in the missing founder's effect so all effects sum to zero.
+
+    Founder effects are estimated relative to each other, so one founder is
+    left out of the model and its effect is whatever makes the group sum to
+    zero (it's not fixed at zero by assumption).
+    """
     return np.append(betas, -betas.sum())
 
 
@@ -87,12 +157,12 @@ def coef_profile(
     positions = positions[order]
     betas = betas[order]
 
-    # accept (n_loci, J) sum-to-zero betas or legacy (n_loci, J-1)
+    # fill in the missing founder's effect if it wasn't included
     j = len(founders)
     if betas.shape[1] == j - 1:
         full = np.column_stack([betas, -betas.sum(axis=1)])
     else:
-        full = betas  # already J columns
+        full = betas
 
     for fi, fname in enumerate(founders):
         color = FOUNDER_COLORS.get(fname, COLOR_CC_FALLBACK)
@@ -115,8 +185,14 @@ def coef_profile(
     ax.set_xlabel(f"Chr {chrom} position (Mb)" if chrom else "Position (Mb)")
     ax.set_ylabel(ylabel)
     if show_legend:
+        import math
+
         ax.legend(
-            fontsize=6, ncol=4, frameon=False, loc="upper right", handlelength=1.2
+            fontsize=6,
+            ncol=max(1, math.ceil(len(founders) / 8)),
+            frameon=False,
+            loc='upper right',
+            handlelength=1.2,
         )
     sns.despine(ax=ax)
     _set_font(ax)
@@ -244,13 +320,29 @@ def effect_bars(
 
     colors = [FOUNDER_COLORS.get(f, COLOR_CC_FALLBACK) for f in founders]
     x = np.arange(J)
-    # compute range first so text placement is correct
-    y_abs_max = float(np.nanmax(np.abs(full_b))) * 1.2 or 1.0
+
+    # Clip display range to ±_BETA_CLIP so pathological estimates from
+    # near-zero-support founders (|beta| >> 5 RINT-SD) don't collapse the
+    # readable part of the axis into a sliver or trigger scientific-notation
+    # tick labels.  The raw value is still shown as a text annotation.
+    _BETA_CLIP = 5.0
+    raw_abs_max = float(np.nanmax(np.abs(full_b)))
+    _clipped = raw_abs_max > _BETA_CLIP
+    y_abs_max = (min(raw_abs_max, _BETA_CLIP) * 1.2) or 1.0
+
+    # clip bars to display range so bars don't overflow the axes
+    full_b_plot = np.clip(full_b, -_BETA_CLIP, _BETA_CLIP) if _clipped else full_b
+    full_se_plot = (
+        np.where(np.abs(full_b) > _BETA_CLIP, np.nan, full_se)
+        if (full_se is not None and _clipped)
+        else full_se
+    )
+
     ax.bar(
         x,
-        full_b,
+        full_b_plot,
         color=colors,
-        yerr=full_se,
+        yerr=full_se_plot,
         capsize=3,
         error_kw={"linewidth": 0.8, "ecolor": COLOR_NEUTRAL_DARK},
     )
@@ -266,53 +358,61 @@ def effect_bars(
                     alpha=0.6,
                     zorder=0,
                 )
+
+    def _annotate_bar(idx: int, val: float, *, va: str, xytext: tuple) -> None:
+        """Annotate one bar; if clipped, label at the clip boundary instead."""
+        raw = float(full_b[idx])
+        is_clipped = abs(raw) > _BETA_CLIP
+        label = f"{raw:+.2f}{'*' if is_clipped else ''}"
+        # place at the actual (possibly clipped) bar top, not the raw value
+        y_pos = float(np.clip(val, -_BETA_CLIP, _BETA_CLIP))
+        ax.annotate(
+            label,
+            xy=(idx, y_pos),
+            xytext=xytext,
+            textcoords="offset points",
+            fontsize=9 if is_clipped else 10,
+            fontweight="bold",
+            ha="center",
+            va=va,
+            color=colors[idx],
+        )
+
     # annotate the founder with the largest absolute effect
     top_idx = int(np.nanargmax(np.abs(full_b)))
     top_val = float(full_b[top_idx])
-    top_offset = (0, 8) if top_val >= 0 else (0, -8)
-    top_va = "bottom" if top_val >= 0 else "top"
-    ax.annotate(
-        f"{top_val:+.2f}",
-        xy=(top_idx, top_val),
-        xytext=top_offset,
-        textcoords="offset points",
-        fontsize=10,
-        fontweight="bold",
-        ha="center",
-        va=top_va,
-        color=colors[top_idx],
+    _annotate_bar(
+        top_idx,
+        top_val,
+        va="bottom" if top_val >= 0 else "top",
+        xytext=((0, 8) if top_val >= 0 else (0, -8)),
     )
     # annotate the opposite-direction extreme only if meaningfully large (> 0.1)
     if top_val >= 0:
         opp_val = float(np.nanmin(full_b))
         opp_idx = int(np.nanargmin(full_b))
         if opp_val < -0.1:
-            ax.annotate(
-                f"{opp_val:+.2f}",
-                xy=(opp_idx, opp_val),
-                xytext=(0, -8),
-                textcoords="offset points",
-                fontsize=10,
-                fontweight="bold",
-                ha="center",
-                va="top",
-                color=colors[opp_idx],
-            )
+            _annotate_bar(opp_idx, opp_val, va="top", xytext=(0, -8))
     else:
         opp_val = float(np.nanmax(full_b))
         opp_idx = int(np.nanargmax(full_b))
         if opp_val > 0.1:
-            ax.annotate(
-                f"{opp_val:+.2f}",
-                xy=(opp_idx, opp_val),
-                xytext=(0, 8),
-                textcoords="offset points",
-                fontsize=10,
-                fontweight="bold",
-                ha="center",
-                va="bottom",
-                color=colors[opp_idx],
-            )
+            _annotate_bar(opp_idx, opp_val, va="bottom", xytext=(0, 8))
+
+    # warn in-plot when any bar was clipped
+    if _clipped:
+        ax.text(
+            0.99,
+            0.01,
+            f"* clipped at ±{_BETA_CLIP:.0f} (max |β| = {raw_abs_max:.1f})",
+            transform=ax.transAxes,
+            fontsize=7,
+            ha="right",
+            va="bottom",
+            color=COLOR_NEUTRAL_DARK,
+            style="italic",
+        )
+
     ax.set_xticks(x)
     ax.set_xticklabels(
         founders, rotation=40, ha="right", fontsize=11, fontweight="bold"
@@ -320,6 +420,8 @@ def effect_bars(
     ax.set_ylabel(ylabel, fontsize=13)
     ax.tick_params(labelsize=11)
     ax.set_ylim(-y_abs_max, y_abs_max)
+    # never allow scientific notation on the y-axis regardless of range
+    ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
     title = gene if gene else "Founder effects"
     if locus:
         title += f"  @{locus}"
@@ -616,12 +718,12 @@ def haplotype_sex_profile(
 
 
 # ---------------------------------------------------------------------------
-# Per-chromosome and grid summaries
+# per-chromosome and grid summaries
 # ---------------------------------------------------------------------------
 
 
 def _eff_chr_sort_key(c: str) -> tuple[int, int]:
-    """Chromosome sort key matching _CHR_ORDER (1–19 then X)."""
+    """sort key for chromosomes in biological order: 1 through 19, then X."""
     try:
         return (0, _CHR_ORDER.index(c))
     except ValueError:

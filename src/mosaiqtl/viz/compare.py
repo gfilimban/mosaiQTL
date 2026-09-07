@@ -1,10 +1,13 @@
-"""Comparison figures for mosaiQTL validation.
+"""plots that compare two sets of results side by side.
 
-Series labels are caller-determined at invocation time via ``label_a``/``label_b``.
-The default pairing is Python (series A, blue) vs R / miQTL (series B, red), but any
-two named series can be compared without changing function semantics.
+every function here takes two named series — ``label_a``/``label_b`` — and
+draws them together (scatter, overlaid histograms, or overlaid profiles) so
+the two can be checked for agreement. the usual pairing is a Python run
+(series A, blue) against a reference run in another language (series B,
+red), but any two comparable result sets work.
 
-All colors imported from ``mosaiqtl.genotype.founders`` — no inline hex.
+all colors come from ``mosaiqtl.genotype.founders`` — colors are never
+hardcoded here.
 """
 
 from __future__ import annotations
@@ -27,18 +30,16 @@ from ..genotype.founders import (
 )
 from ._theme import WASH
 
-# Default comparison colors — Python (series A) vs R/miQTL (series B).
+# Default comparison colors — series A (blue) vs series B (red).
 _COLOR_A: str = FOUNDER_COLORS["NODJ"]  # series A: blue (#4F6EAF)
 _COLOR_B: str = FOUNDER_COLORS["PWKJ"]  # series B: red  (#D83026)
 
-_CMAP = "crest"  # sequential colormap for LOD-magnitude scatter
-_CMAP_DEVIATION = (
-    "YlOrRd"  # sequential colormap for unsigned deviation (allele effects)
-)
+_CMAP = "crest"  # color scale for LOD-score scatter points
+_CMAP_DEVIATION = "YlOrRd"  # color scale for how far two allele effects disagree
 
 
 def _set_style() -> None:
-    """Apply consistent plot style."""
+    """apply consistent plot style."""
     sns.set_style("ticks")
     plt.rcParams.update(
         {
@@ -50,7 +51,7 @@ def _set_style() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Joint scatter (LOD × LOD with KDE marginals)
+# joint scatter (LOD × LOD with KDE marginals)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -70,42 +71,41 @@ def lod_scatter(
     quadrant_color: str = COLOR_THRESHOLD,
     save_path: Optional[object] = None,
 ) -> tuple[plt.Figure, plt.Axes]:
-    """JointGrid scatter with KDE marginals, identity line, and stats box.
+    """scatter of one gene's LOD score in series A vs series B, with density curves on each axis.
 
-    When a threshold is supplied (via *threshold* for a shared cutoff, or
-    *threshold_x*/*threshold_y* for axis-specific cutoffs — e.g. comparing a
-    cell-type scan against a whole-tissue scan with different genome-wide
-    FWER thresholds), dotted lines are drawn on both axes splitting the plot
-    into four quadrants, and the eGene count in each quadrant (number of
-    points whose coordinates exceed the respective threshold) is annotated
-    in a bordered box, matching the four-corner layout of a typical
-    cell-type-vs-whole-tissue peak LOD score comparison.
+    a dashed diagonal marks perfect agreement (y = x), and a box reports the
+    correlation. when a threshold is supplied (via *threshold* for a shared
+    cutoff, or *threshold_x*/*threshold_y* for two different cutoffs — e.g.
+    comparing a cell-type scan against a whole-tissue scan, which can have
+    different significance thresholds), dotted lines split the plot into
+    four quadrants and each quadrant is labeled with how many genes fall in
+    it (e.g. genes significant in both series vs. only one).
 
     Args:
-        df: Merged data containing *x_col* and *y_col*.
-        x_col: Column name for the x axis.
-        y_col: Column name for the y axis.
+        df: merged data containing *x_col* and *y_col*.
+        x_col: column name for the x axis.
+        y_col: column name for the y axis.
         x_label: x-axis label text (should read "... LOD score").
         y_label: y-axis label text (should read "... LOD score").
-        cbar_label: Colorbar label (default ``'peak LOD score'``).
-        priority_genes: ``{gene_symbol: color_hex}`` dict; matching rows are
-            overlaid as bold annotated points at higher z-order.  Requires a
+        cbar_label: colorbar label (default ``'peak LOD score'``).
+        priority_genes: ``{gene_symbol: color_hex}`` dict; matching genes are
+            drawn bigger, labeled, and on top of the other points. requires a
             ``'gene_symbol'`` column in *df*.
-        sparse_mask: Boolean Series; ``True`` rows are drawn grey (collapsed
+        sparse_mask: boolean Series; ``True`` rows are drawn grey (collapsed
             loci), ``False`` rows are colored by peak LOD score.
-        threshold: Genome-wide FWER LOD-score threshold applied to both axes
-            when *threshold_x*/*threshold_y* are not given individually.
-        threshold_x: FWER threshold for the x-axis series; overrides
-            *threshold* on that axis only. Required together with
+        threshold: genome-wide FWER probability threshold applied to both
+            axes when *threshold_x*/*threshold_y* are not given individually.
+        threshold_x: FWER probability threshold for the x-axis series;
+            overrides *threshold* on that axis only. required together with
             *threshold_y* (or *threshold*) to draw quadrant lines.
-        threshold_y: FWER threshold for the y-axis series; overrides
-            *threshold* on that axis only.
-        quadrant_color: Hex color for the threshold lines and eGene-count
+        threshold_y: FWER probability threshold for the y-axis series;
+            overrides *threshold* on that axis only.
+        quadrant_color: hex color for the threshold lines and gene-count
             annotation boxes (default ``'#E8870A'`` orange).
-        save_path: File path to save the figure; skipped when ``None``.
+        save_path: file path to save the figure; skipped when ``None``.
 
     Returns:
-        Tuple of ``(Figure, joint Axes)``.
+        tuple of ``(Figure, joint Axes)``.
     """
     import logging
 
@@ -208,9 +208,9 @@ def lod_scatter(
                 legend=False,
             )
 
-    # ── threshold lines + per-quadrant eGene counts ───────────────────────────
-    # Resolve per-axis thresholds: threshold_x/threshold_y take precedence;
-    # fall back to shared threshold; skip entirely when none are given.
+    # ── threshold lines + per-quadrant gene counts ────────────────────────────
+    # threshold_x/threshold_y (per-axis) take priority over the shared
+    # threshold; if neither is set, no threshold lines are drawn at all.
     _thr_x: Optional[float] = threshold_x if threshold_x is not None else threshold
     _thr_y: Optional[float] = threshold_y if threshold_y is not None else threshold
 
@@ -218,11 +218,10 @@ def lod_scatter(
         ax_j = g.ax_joint
         ax_j.axvline(_thr_x, color=quadrant_color, lw=1.4, ls=":", zorder=4)
         ax_j.axhline(_thr_y, color=quadrant_color, lw=1.4, ls=":", zorder=4)
-        # draw threshold tick on marginals so the reader can see where it falls
+        # repeat the threshold line on the marginal density panels too
         g.ax_marg_x.axvline(_thr_x, color=quadrant_color, lw=1.2, ls=":", alpha=0.8)
         g.ax_marg_y.axhline(_thr_y, color=quadrant_color, lw=1.2, ls=":", alpha=0.8)
 
-        # four quadrant masks (using column vectors, not transform coordinates)
         x_vals = df[x_col].values
         y_vals = df[y_col].values
         _box_kw = dict(
@@ -232,7 +231,7 @@ def lod_scatter(
             linewidth=1.5,
             alpha=0.92,
         )
-        # top-right: both above threshold — shared eGenes
+        # top-right: significant in both series
         n_tr = int(np.sum((x_vals >= _thr_x) & (y_vals >= _thr_y)))
         ax_j.text(
             0.97,
@@ -247,7 +246,7 @@ def lod_scatter(
             bbox=_box_kw,
             zorder=5,
         )
-        # top-left: only y-axis series above threshold
+        # top-left: significant only in the y-axis series
         n_tl = int(np.sum((x_vals < _thr_x) & (y_vals >= _thr_y)))
         ax_j.text(
             0.03,
@@ -262,7 +261,7 @@ def lod_scatter(
             bbox=_box_kw,
             zorder=5,
         )
-        # bottom-right: only x-axis series above threshold
+        # bottom-right: significant only in the x-axis series
         n_br = int(np.sum((x_vals >= _thr_x) & (y_vals < _thr_y)))
         ax_j.text(
             0.97,
@@ -277,7 +276,7 @@ def lod_scatter(
             bbox=_box_kw,
             zorder=5,
         )
-        # bottom-left: neither above threshold
+        # bottom-left: not significant in either series
         n_bl = int(np.sum((x_vals < _thr_x) & (y_vals < _thr_y)))
         ax_j.text(
             0.03,
@@ -293,7 +292,7 @@ def lod_scatter(
             zorder=5,
         )
 
-    # ── stats box (top-left corner — moves down when quadrant counts present) ──
+    # stats box sits top-left; nudged down when quadrant counts are also shown
     _stats_va = "top"
     _stats_y = 0.95 if (_thr_x is None or _thr_y is None) else 0.80
     stats_text = f"r²   = {r2:.4f}\n" f"r_sp = {r_spearman:.4f}\n" f"n    = {len(df):,}"
@@ -337,7 +336,7 @@ def lod_scatter(
     return g.fig, g.ax_joint
 
 
-#: Backward-compatible alias.
+#: backward-compatible alias.
 joint_lod_scatter = lod_scatter
 
 
@@ -357,20 +356,20 @@ def lod_density_comparison(
     threshold: Optional[float] = None,
     ax: Optional[plt.Axes] = None,
 ) -> plt.Axes:
-    """Overlaid LOD-score density histograms with KDE curves for two series.
+    """overlay the LOD-score distributions of two series as histograms with smoothed curves.
 
     Args:
-        lods_a: Series-A peak-LOD values; skipped when ``None`` or empty.
-        lods_b: Series-B peak-LOD values; skipped when ``None`` or empty.
-        label_a: Legend label for series A (default ``'A'``).
-        label_b: Legend label for series B (default ``'B'``).
-        color_a: Hex color for series A (default blue).
-        color_b: Hex color for series B (default red).
-        threshold: FWER threshold drawn as a dotted vertical line when provided.
-        ax: Existing Axes to draw on; creates a new figure (dpi=300) if ``None``.
+        lods_a: series-A peak-LOD values; skipped when ``None`` or empty.
+        lods_b: series-B peak-LOD values; skipped when ``None`` or empty.
+        label_a: legend label for series A (default ``'A'``).
+        label_b: legend label for series B (default ``'B'``).
+        color_a: hex color for series A (default blue).
+        color_b: hex color for series B (default red).
+        threshold: FWER probability threshold drawn as a dotted vertical line when provided.
+        ax: existing Axes to draw on; creates a new figure (dpi=300) if ``None``.
 
     Returns:
-        The Axes containing the plot.
+        the Axes containing the plot.
     """
     _set_style()
     if ax is None:
@@ -429,7 +428,7 @@ def lod_density_comparison(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Allele effects scatter
+# allele effects scatter
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -442,24 +441,24 @@ def allele_effects_comparison(
     label_b: str = "B (per-allele)",
     ax: Optional[plt.Axes] = None,
 ) -> plt.Axes:
-    """Scatter of per-founder betas from two series, colored by ``|A − 2B|``.
+    """scatter of per-founder betas from two series, colored by ``|A − 2B|``.
 
-    Note: the ``|A − 2B|`` deviation metric assumes the canonical Python/R
-    2× scale convention where Python stores per-haplotype effects (0–1 scale)
-    and R stores per-allele effects (0–2 scale).  Pass pre-scaled betas and
+    note: the ``|A − 2B|`` deviation metric assumes the canonical Python/R
+    2× scale convention where Python stores per-haplotype effects (0-1 scale)
+    and R stores per-allele effects (0-2 scale). pass pre-scaled betas and
     ignore the colorbar when comparing two same-scale series.
 
     Args:
-        betas_a: Series-A allele effects, shape ``(n,)``.
-        betas_b: Series-B allele effects, shape ``(n,)``.
-        founders: Founder display-name list retained for API consistency
+        betas_a: series-A allele effects, shape ``(n,)``.
+        betas_b: series-B allele effects, shape ``(n,)``.
+        founders: founder display-name list retained for API consistency
             (not used in the scatter body; callers use it for titles).
-        label_a: Legend / axis label for series A.
-        label_b: Legend / axis label for series B.
-        ax: Existing Axes; creates a new figure (dpi=300) if ``None``.
+        label_a: legend / axis label for series A.
+        label_b: legend / axis label for series B.
+        ax: existing Axes; creates a new figure (dpi=300) if ``None``.
 
     Returns:
-        The Axes containing the plot.
+        the Axes containing the plot.
     """
     _set_style()
     if ax is None:
@@ -538,7 +537,7 @@ def allele_effects_comparison(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stacked LOD profile panels
+# stacked LOD profile panels
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -554,22 +553,22 @@ def lod_profiles_comparison(
     color_b: str = _COLOR_B,
     thr: Optional[float] = None,
 ) -> plt.Figure:
-    """Stacked panels (one per gene) showing LOD traces for two series.
+    """stacked panels (one per gene) showing LOD traces for two series.
 
     Args:
-        df_a: Series-A LOD data with columns ``[gene, pos_mb, lod]``.
-        df_b: Series-B LOD data with columns ``[gene, pos_mb, lod]``; skipped
+        df_a: series-A LOD data with columns ``[gene, pos_mb, lod]``.
+        df_b: series-B LOD data with columns ``[gene, pos_mb, lod]``; skipped
             when ``None`` or when a gene is absent.
-        genes: Gene names to include (one panel per gene).
-        chrom: Chromosome label for the shared x-axis title.
-        label_a: Legend label for series A (default ``'A'``).
-        label_b: Legend label for series B (default ``'B'``).
-        color_a: Hex color for series A.
-        color_b: Hex color for series B.
-        thr: FWER threshold drawn as a dotted horizontal line when provided.
+        genes: gene names to include (one panel per gene).
+        chrom: chromosome label for the shared x-axis title.
+        label_a: legend label for series A (default ``'A'``).
+        label_b: legend label for series B (default ``'B'``).
+        color_a: hex color for series A.
+        color_b: hex color for series B.
+        thr: FWER probability threshold drawn as a dotted horizontal line when provided.
 
     Returns:
-        The Figure containing the stacked panels.
+        the Figure containing the stacked panels.
     """
     _set_style()
     n = len(genes)
@@ -650,24 +649,24 @@ def lod_profile_overlay(
     fwer_thr: Optional[float] = None,
     ax: Optional[plt.Axes] = None,
 ) -> plt.Axes:
-    """Single-panel LOD profile with an optional second overlay trace.
+    """single-panel LOD profile with an optional second overlay trace.
 
     Args:
-        pos_a: Genomic positions (Mb) for series A, shape ``(n_loci,)``.
+        pos_a: genomic positions (Mb) for series A, shape ``(n_loci,)``.
         lod_a: LOD scores for series A, shape ``(n_loci,)``.
-        pos_b: Positions for series B; omitted when ``None``.
+        pos_b: positions for series B; omitted when ``None``.
         lod_b: LOD scores for series B; omitted when ``None``.
-        label_a: Legend label for series A.
-        label_b: Legend label for series B.
-        color_a: Hex color for series A.
-        color_b: Hex color for series B.
-        chrom: Chromosome label appended to the x-axis title.
-        gene: Gene name shown as a bold top-left annotation.
-        fwer_thr: Horizontal threshold line drawn when provided.
-        ax: Existing Axes; creates a new figure (dpi=300) if ``None``.
+        label_a: legend label for series A.
+        label_b: legend label for series B.
+        color_a: hex color for series A.
+        color_b: hex color for series B.
+        chrom: chromosome label appended to the x-axis title.
+        gene: gene name shown as a bold top-left annotation.
+        fwer_thr: FWER probability threshold drawn as a horizontal line when provided.
+        ax: existing Axes; creates a new figure (dpi=300) if ``None``.
 
     Returns:
-        The Axes containing the plot.
+        the Axes containing the plot.
     """
     _set_style()
     if ax is None:
@@ -724,7 +723,7 @@ def lod_profile_overlay(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Kinship heatmap comparison
+# kinship heatmap comparison
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -736,19 +735,19 @@ def kinship_comparison(
     label_b: str = "B",
     ax: Optional[plt.Axes] = None,
 ) -> plt.Axes:
-    """Side-by-side heatmaps and element-wise scatter for two kinship matrices.
+    """side-by-side heatmaps and element-wise scatter for two kinship matrices.
 
     Args:
-        k_a: Kinship matrix for series A, shape ``(m, m)``.
-        k_b: Kinship matrix for series B, shape ``(m, m)``.
-        label_a: Label for series A (default ``'A'``).
-        label_b: Label for series B (default ``'B'``).
-        ax: Existing Axes for the scatter panel; creates a new figure if ``None``.
-            When provided the figure is expected to already contain heat-map
+        k_a: kinship matrix for series A, shape ``(m, m)``.
+        k_b: kinship matrix for series B, shape ``(m, m)``.
+        label_a: label for series A (default ``'A'``).
+        label_b: label for series B (default ``'B'``).
+        ax: existing Axes for the scatter panel; creates a new figure if ``None``.
+            when provided the figure is expected to already contain heat-map
             panels alongside it — otherwise only the scatter is drawn.
 
     Returns:
-        The scatter Axes.
+        the scatter Axes.
     """
     _set_style()
     if ax is None:
@@ -809,7 +808,7 @@ def kinship_comparison(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Founder-effect bar comparison
+# founder-effect bar comparison
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -824,20 +823,20 @@ def founder_effects_comparison(
     color_b: str = _COLOR_B,
     ax: Optional[plt.Axes] = None,
 ) -> plt.Axes:
-    """Grouped bar chart of per-founder effects from two series at a single locus.
+    """grouped bar chart of per-founder effects from two series at a single locus.
 
     Args:
-        betas_a: Series-A per-founder effects, shape ``(n_founders,)``.
-        betas_b: Series-B per-founder effects, shape ``(n_founders,)``.
-        founders: Founder display names, length ``n_founders``.
-        label_a: Legend label for series A.
-        label_b: Legend label for series B.
-        color_a: Bar fill color for series A.
-        color_b: Bar fill color for series B.
-        ax: Existing Axes; creates a new figure (dpi=300) if ``None``.
+        betas_a: series-A per-founder effects, shape ``(n_founders,)``.
+        betas_b: series-B per-founder effects, shape ``(n_founders,)``.
+        founders: founder display names, length ``n_founders``.
+        label_a: legend label for series A.
+        label_b: legend label for series B.
+        color_a: bar fill color for series A.
+        color_b: bar fill color for series B.
+        ax: existing Axes; creates a new figure (dpi=300) if ``None``.
 
     Returns:
-        The Axes containing the plot.
+        the Axes containing the plot.
     """
     _set_style()
     if ax is None:
@@ -879,7 +878,7 @@ def founder_effects_comparison(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Permutation max-LOD comparison
+# permutation max-LOD comparison
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -895,22 +894,22 @@ def perm_lod_comparison(
     threshold_b: Optional[float] = None,
     ax: Optional[plt.Axes] = None,
 ) -> plt.Axes:
-    """Overlaid histograms of permutation max-LOD distributions for two series.
+    """overlaid histograms of permutation max-LOD distributions for two series.
 
     Args:
-        series_a: Series-A max-LOD null values (one per permutation).
-        series_b: Series-B max-LOD null values.
-        label_a: Legend label for series A.
-        label_b: Legend label for series B.
-        color_a: Hex color for series A.
-        color_b: Hex color for series B.
+        series_a: series-A max-LOD null values (one per permutation).
+        series_b: series-B max-LOD null values.
+        label_a: legend label for series A.
+        label_b: legend label for series B.
+        color_a: hex color for series A.
+        color_b: hex color for series B.
         threshold_a: GEV 95th-percentile threshold for series A; drawn as a
             vertical dashed line when provided.
         threshold_b: GEV 95th-percentile threshold for series B.
-        ax: Existing Axes; creates a new figure (dpi=300) if ``None``.
+        ax: existing Axes; creates a new figure (dpi=300) if ``None``.
 
     Returns:
-        The Axes containing the plot.
+        the Axes containing the plot.
     """
     _set_style()
     if ax is None:
@@ -971,22 +970,22 @@ def mi_rop_comparison(
     color_rop: str = _COLOR_B,
     ax: Optional[plt.Axes] = None,
 ) -> plt.Axes:
-    """Overlay MI-averaged LOD and ROP LOD profiles for one gene.
+    """overlay MI-averaged LOD and ROP LOD profiles for one gene.
 
     Args:
-        mi_pos: Genomic positions (Mb) for the MI scan, shape ``(n_loci,)``.
+        mi_pos: genomic positions (Mb) for the MI scan, shape ``(n_loci,)``.
         mi_lod: MI-averaged LOD scores, shape ``(n_loci,)``.
-        rop_pos: Genomic positions (Mb) for the ROP scan, shape ``(n_loci,)``.
+        rop_pos: genomic positions (Mb) for the ROP scan, shape ``(n_loci,)``.
         rop_lod: ROP LOD scores, shape ``(n_loci,)``.
-        chrom: Chromosome label for the x-axis.
-        gene: Gene name shown as a bold top-left annotation.
-        fwer_thr: Horizontal threshold line.
-        color_mi: Hex color for the MI trace (default blue).
-        color_rop: Hex color for the ROP trace (default red).
-        ax: Existing Axes; creates a new figure (dpi=300) if ``None``.
+        chrom: chromosome label for the x-axis.
+        gene: gene name shown as a bold top-left annotation.
+        fwer_thr: FWER probability threshold drawn as a horizontal line.
+        color_mi: hex color for the MI trace (default blue).
+        color_rop: hex color for the ROP trace (default red).
+        ax: existing Axes; creates a new figure (dpi=300) if ``None``.
 
     Returns:
-        The Axes containing the plot.
+        the Axes containing the plot.
     """
     _set_style()
     if ax is None:
@@ -1057,22 +1056,22 @@ def mediation_lod_comparison(
     color_mediated: str = _COLOR_B,
     ax: Optional[plt.Axes] = None,
 ) -> plt.Axes:
-    """Overlay base LOD and mediated LOD profiles for one (outcome, mediator) pair.
+    """overlay base LOD and mediated LOD profiles for one (outcome, mediator) pair.
 
     Args:
-        base_pos: Positions (Mb) for the base scan.
-        base_lod: Base LOD scores (outcome ~ H, no mediator covariate).
-        mediated_pos: Positions (Mb) for the mediated scan.
-        mediated_lod: Mediated LOD scores (outcome ~ H | mediator).
-        chrom: Chromosome label for the x-axis.
-        gene: Outcome gene name shown as a bold top-left annotation.
-        mediator: Mediator gene name appended to the annotation.
-        color_base: Hex color for the base LOD trace.
-        color_mediated: Hex color for the mediated LOD trace.
-        ax: Existing Axes; creates a new figure (dpi=300) if ``None``.
+        base_pos: positions (Mb) for the base scan.
+        base_lod: base LOD scores (outcome ~ H, no mediator covariate).
+        mediated_pos: positions (Mb) for the mediated scan.
+        mediated_lod: mediated LOD scores (outcome ~ H | mediator).
+        chrom: chromosome label for the x-axis.
+        gene: outcome gene name shown as a bold top-left annotation.
+        mediator: mediator gene name appended to the annotation.
+        color_base: hex color for the base LOD trace.
+        color_mediated: hex color for the mediated LOD trace.
+        ax: existing Axes; creates a new figure (dpi=300) if ``None``.
 
     Returns:
-        The Axes containing the plot.
+        the Axes containing the plot.
     """
     _set_style()
     if ax is None:
@@ -1141,22 +1140,22 @@ def instability_lod_comparison(
     color_rop: str = _COLOR_B,
     ax: Optional[plt.Axes] = None,
 ) -> plt.Axes:
-    """Overlay instability-scan LOD and ROP LOD profiles for one gene.
+    """overlay instability-scan LOD and ROP LOD profiles for one gene.
 
     Args:
-        inst_pos: Positions (Mb) for the instability scan.
-        inst_lod: Instability LOD scores (mean over subsamples).
-        rop_pos: Positions (Mb) for the ROP scan.
+        inst_pos: positions (Mb) for the instability scan.
+        inst_lod: instability LOD scores (mean over subsamples).
+        rop_pos: positions (Mb) for the ROP scan.
         rop_lod: ROP LOD scores.
-        chrom: Chromosome label for the x-axis.
-        gene: Gene name shown as a bold top-left annotation.
-        fwer_thr: Horizontal threshold line.
-        color_inst: Hex color for the instability trace.
-        color_rop: Hex color for the ROP trace.
-        ax: Existing Axes; creates a new figure (dpi=300) if ``None``.
+        chrom: chromosome label for the x-axis.
+        gene: gene name shown as a bold top-left annotation.
+        fwer_thr: FWER probability threshold drawn as a horizontal line.
+        color_inst: hex color for the instability trace.
+        color_rop: hex color for the ROP trace.
+        ax: existing Axes; creates a new figure (dpi=300) if ``None``.
 
     Returns:
-        The Axes containing the plot.
+        the Axes containing the plot.
     """
     _set_style()
     if ax is None:
@@ -1229,19 +1228,19 @@ def phi_distribution(
     color_raw: str = _COLOR_B,
     ax: Optional[plt.Axes] = None,
 ) -> plt.Axes:
-    """Histogram of EB-shrunk (and optionally raw) per-gene dispersion estimates.
+    """histogram of EB-shrunk (and optionally raw) per-gene dispersion estimates.
 
     Args:
         phi_vals: EB-shrunk overdispersion values ``φ`` per gene.
-        phi_raw: Raw (pre-shrinkage) overdispersion values per gene; omitted
+        phi_raw: raw (pre-shrinkage) overdispersion values per gene; omitted
             when ``None``.
-        gene: Gene label shown as a bold top-left annotation.
-        color_shrunk: Hex color for the shrunk-φ histogram.
-        color_raw: Hex color for the raw-φ histogram.
-        ax: Existing Axes; creates a new figure (dpi=300) if ``None``.
+        gene: gene label shown as a bold top-left annotation.
+        color_shrunk: hex color for the shrunk-φ histogram.
+        color_raw: hex color for the raw-φ histogram.
+        ax: existing Axes; creates a new figure (dpi=300) if ``None``.
 
     Returns:
-        The Axes containing the plot.
+        the Axes containing the plot.
     """
     _set_style()
     if ax is None:
@@ -1294,17 +1293,17 @@ def nb_vs_lmm_comparison(
     color_nb: str = _COLOR_A,
     ax: Optional[plt.Axes] = None,
 ) -> plt.Axes:
-    """Scatter of NB score LOD vs Gaussian LMM LOD at matched loci.
+    """scatter of NB score LOD vs Gaussian LMM LOD at matched loci.
 
     Args:
         lod_nb: NB score LOD values, shape ``(n_loci,)``.
         lod_lmm: Gaussian LMM LOD values at the same loci, shape ``(n_loci,)``.
-        gene: Gene label shown as a bold top-left annotation.
-        color_nb: Hex color for the scatter points.
-        ax: Existing Axes; creates a new figure (dpi=300) if ``None``.
+        gene: gene label shown as a bold top-left annotation.
+        color_nb: hex color for the scatter points.
+        ax: existing Axes; creates a new figure (dpi=300) if ``None``.
 
     Returns:
-        The Axes containing the plot.
+        the Axes containing the plot.
     """
     _set_style()
     if ax is None:
@@ -1380,7 +1379,7 @@ def nb_vs_lmm_comparison(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Cis-distance comparison across sources (cell types / whole tissue)
+# cis-distance comparison across sources (cell types / whole tissue)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -1391,21 +1390,21 @@ def cis_distance_comparison(
     zoom_mb: float = 1.0,
     windows_mb: tuple[float, ...] = (0.5, 1.0, 2.0, 5.0, 10.0),
 ) -> plt.Figure:
-    """Two-panel cis-distance comparison across cell types or scan runs.
+    """two-panel cis-distance comparison across cell types or scan runs.
 
     Args:
-        sources: Mapping of ``source_label`` →
+        sources: mapping of ``source_label`` →
             ``(peak_lod, tss_mb, peak_mb)`` arrays, each shape ``(n_genes,)``.
-            Sources are plotted in iteration order; put whole-tissue first.
-        palette: Optional mapping of source label → hex color.  Falls back to
+            sources are plotted in iteration order; put whole-tissue first.
+        palette: optional mapping of source label → hex color. falls back to
             ``COLOR_CC_FALLBACK`` for any label not in the dict.
-        zoom_mb: Half-window (Mb) for the ±zoom shaded band on the violin
+        zoom_mb: half-window (Mb) for the ±zoom shaded band on the violin
             panel; default 1.0.
-        windows_mb: Cumulative window sizes (Mb) for the proximal-fraction
+        windows_mb: cumulative window sizes (Mb) for the proximal-fraction
             curve panel.
 
     Returns:
-        Two-panel ``plt.Figure`` — violin distribution | proximal-fraction
+        two-panel ``plt.Figure`` — violin distribution | proximal-fraction
         curves.
     """
     _set_style()

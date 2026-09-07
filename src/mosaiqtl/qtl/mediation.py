@@ -59,7 +59,7 @@ def select_cis_mediation_pairs(
     egene_table: pd.DataFrame,
     gene_info: pd.DataFrame,
     window_mb: float = 10.0,
-    gene_col: str = "gene_symbol",
+    gene_col: str = "gene_id",
     chr_col: str = "chr",
     peak_mb_col: str = "peak_mb",
     info_gene_col: str = "gene_id",
@@ -83,7 +83,7 @@ def select_cis_mediation_pairs(
     window_mb    : half-window in Mb around the outcome's peak locus; any gene
         whose TSS/start falls within [peak_mb - window_mb, peak_mb + window_mb]
         is a candidate mediator (default 10.0 Mb).
-    gene_col     : egene_table column for gene name
+    gene_col     : egene_table column for gene identifier (default 'gene_id')
     chr_col      : egene_table column for chromosome
     peak_mb_col  : egene_table column for peak locus position in Mb
     info_gene_col: gene_info column for gene identifier
@@ -557,15 +557,17 @@ def mediation_scan_multi_outcome(
     lod_base_min     : float  minimum base LOD to retain (default 1.5)
     lod_drop_min     : float  minimum LOD drop to retain (default 0.5)
     output_path      : Path or None  stream CSV here; None accumulates in RAM
-    gene_meta        : DataFrame keyed by 'gene_symbol' — extra columns joined into each row
+    gene_meta        : DataFrame keyed by 'gene_id' (the identity key; carries
+                       gene_symbol and any other display columns) — extra
+                       columns joined into each row
 
     Returns
     -------
-    pd.DataFrame columns: gene_symbol, chr [+ gene_meta cols], mediator, locus, pos_mb,
+    pd.DataFrame columns: gene_id, chr [+ gene_meta cols], mediator, locus, pos_mb,
         lod_base, lod_mediated, lod_drop, prop_mediated, p_value, h2, n
     """
     _OUT_COLS = [
-        "gene_symbol",
+        "gene_id",
         "chr",
         "mediator",
         "locus",
@@ -579,7 +581,7 @@ def mediation_scan_multi_outcome(
         "n",
     ]
     _gm_idx = _build_gm_idx(gene_meta)
-    _id_cols = ["gene_symbol", "chr"]
+    _id_cols = ["gene_id", "chr"]
     _data_cols = _OUT_COLS[2:]
     _first = True
     _buf: "list[pd.DataFrame]" = []
@@ -623,7 +625,7 @@ def mediation_scan_multi_outcome(
             )
             if not _df.empty:
                 _df = _df.rename(
-                    columns={"outcome_id": "gene_symbol", "mediator_id": "mediator"}
+                    columns={"outcome_id": "gene_id", "mediator_id": "mediator"}
                 )
                 _df = _df[
                     (_df["lod_base"] >= lod_base_min)

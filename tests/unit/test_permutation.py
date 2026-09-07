@@ -191,6 +191,108 @@ class TestRunThresholdScans:
                 phenotype=None,
             )
 
+    # ── local-window (gene_pos_mb/window_mb) wiring ──────────────────────
+
+    def test_default_path_unaffected_by_new_params(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tiny_strain_covariates
+    ):
+        """Explicitly passing gene_pos_mb=None/window_mb=None (the new
+        defaults) must reproduce byte-identical output to the pre-existing
+        call signature that never mentioned them — i.e. adding the local-
+        window option did not alter default (genome-wide) behavior."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+
+        kd = decomp_kinship(tiny_kinship)
+        null = generate_null_outcomes(tiny_strain_phenotype, n_perms=5, seed=42)
+
+        before = run_threshold_scans(
+            null,
+            tiny_cache,
+            phenotype=tiny_strain_phenotype,
+            covariates=tiny_strain_covariates,
+            kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
+            use_rint=False,
+        )
+        after = run_threshold_scans(
+            null,
+            tiny_cache,
+            phenotype=tiny_strain_phenotype,
+            covariates=tiny_strain_covariates,
+            kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
+            use_rint=False,
+            gene_pos_mb=None,
+            window_mb=None,
+        )
+        np.testing.assert_array_equal(before[0], after[0])
+        assert before[1].keys() == after[1].keys()
+        for c in before[1]:
+            np.testing.assert_array_equal(before[1][c], after[1][c])
+
+    def test_gene_pos_mb_without_chrom_raises(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+    ):
+        """gene_pos_mb/window_mb anchor a window to one chromosome — without
+        chrom there is no chromosome to anchor to, so this must fail loudly
+        rather than silently scanning genome-wide."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+
+        kd = decomp_kinship(tiny_kinship)
+        null = generate_null_outcomes(tiny_strain_phenotype, n_perms=2, seed=5)
+        with pytest.raises(ValueError, match="chrom"):
+            run_threshold_scans(
+                null,
+                tiny_cache,
+                phenotype=tiny_strain_phenotype,
+                kinship_decomp=kd,
+                kinship_loco=tiny_kinship,
+                chrom=None,
+                gene_pos_mb=1.0,
+                window_mb=0.1,
+                use_rint=False,
+            )
+
+    def test_local_window_restricts_loci_vs_genome_wide(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+    ):
+        """A local window covering exactly one of tiny_cache's 15 loci on
+        chr '1' must scan strictly fewer loci than the whole-chromosome null
+        — proving loci_mask is actually reaching scan_chromosome_batch, not
+        silently ignored. Positions are np.linspace(1.0, 100.0, 15), so a
+        window of gene_pos_mb=1.0 +/- 0.1 admits only the first locus."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        from unittest.mock import patch
+        from mosaiqtl.qtl import lmm as lmm_module
+
+        kd = decomp_kinship(tiny_kinship)
+        null = generate_null_outcomes(tiny_strain_phenotype, n_perms=3, seed=6)
+
+        seen_masks = []
+        real_scan = lmm_module.scan_chromosome_batch
+
+        def _spy(*args, **kwargs):
+            seen_masks.append(kwargs.get("loci_mask"))
+            return real_scan(*args, **kwargs)
+
+        with patch.object(lmm_module, "scan_chromosome_batch", side_effect=_spy):
+            run_threshold_scans(
+                null,
+                tiny_cache,
+                phenotype=tiny_strain_phenotype,
+                kinship_decomp=kd,
+                kinship_loco=tiny_kinship,
+                chrom="1",
+                gene_pos_mb=1.0,
+                window_mb=0.1,
+                use_rint=False,
+            )
+
+        assert len(seen_masks) >= 1
+        mask = seen_masks[0]
+        assert mask is not None
+        assert mask.sum() == 1  # only the locus at position 1.0
+
 
 # ── run_positional_scans ──────────────────────────────────────────────────────
 
@@ -328,3 +430,120 @@ class TestParametricHelpers:
         )
         assert max_lods.shape == (n_perms,)
         assert np.all(max_lods >= 0)
+
+
+# ── calibrate_gene_pvalue ─────────────────────────────────────────────────────
+
+
+class TestCalibrateGenePvalue:
+    """calibrate_gene_pvalue: per-gene Beta-calibrated p-value (SWE-09)."""
+
+    def test_returns_tuple_of_four(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tiny_strain_covariates
+    ):
+        """Returns (p_adj, a_hat, b_hat, h2) — all finite scalars."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
+
+        kd = decomp_kinship(tiny_kinship)
+        c0 = list(tiny_cache.chromosomes)[0]
+        result = calibrate_gene_pvalue(
+            tiny_strain_phenotype,
+            tiny_cache,
+            chrom=c0,
+            peak_lod=2.0,
+            covariates=tiny_strain_covariates,
+            kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
+            n_perms=20,
+            use_rint=False,
+            seed=7,
+        )
+        assert len(result) == 4
+        p_adj, a_hat, b_hat, h2_g = result
+        for val in (p_adj, a_hat, b_hat, h2_g):
+            assert np.isfinite(val), f"expected finite, got {val}"
+
+    def test_p_adj_in_unit_interval(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+    ):
+        """p_adj must be in [0, 1]."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
+
+        kd = decomp_kinship(tiny_kinship)
+        c0 = list(tiny_cache.chromosomes)[0]
+        p_adj, *_ = calibrate_gene_pvalue(
+            tiny_strain_phenotype,
+            tiny_cache,
+            chrom=c0,
+            peak_lod=1.5,
+            kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
+            n_perms=20,
+            use_rint=False,
+            seed=11,
+        )
+        assert 0.0 <= p_adj <= 1.0
+
+    def test_beta_calibrate_pvalue_monotone(self):
+        """beta_calibrate_pvalue (the inner function) gives smaller p for higher LOD.
+
+        The full calibrate_gene_pvalue monotone property cannot be reliably
+        demonstrated on the 10-strain tiny fixture — with such small n, the
+        parametric null easily produces LODs as high as the observed value by
+        chance, saturating p_adj at 1.0.  Instead we test the Beta-calibration
+        step directly with fabricated null_max_lods drawn from a controlled
+        distribution where the ordering is guaranteed.
+        """
+        from mosaiqtl.qtl.fdr import beta_calibrate_pvalue
+
+        rng = np.random.default_rng(99)
+        # null drawn from a distribution with typical LOD around 1-2
+        null_lods = rng.gamma(shape=2.0, scale=0.8, size=200)
+        p_low, *_ = beta_calibrate_pvalue(0.5, null_lods, df=7)
+        p_high, *_ = beta_calibrate_pvalue(8.0, null_lods, df=7)
+        assert p_high < p_low, (
+            f"higher LOD should give smaller p: p(LOD=8)={p_high:.4f} "
+            f"vs p(LOD=0.5)={p_low:.4f}"
+        )
+
+    def test_raises_without_kinship(self, tiny_cache, tiny_strain_phenotype):
+        """Missing kinship_decomp or kinship_loco raises ValueError."""
+        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
+
+        c0 = list(tiny_cache.chromosomes)[0]
+        with pytest.raises(ValueError, match="kinship_decomp"):
+            calibrate_gene_pvalue(
+                tiny_strain_phenotype,
+                tiny_cache,
+                chrom=c0,
+                peak_lod=1.0,
+                kinship_decomp=None,
+                kinship_loco=None,
+                n_perms=5,
+            )
+
+    def test_reproducible_with_seed(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+    ):
+        """Same seed → identical p_adj."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
+
+        kd = decomp_kinship(tiny_kinship)
+        c0 = list(tiny_cache.chromosomes)[0]
+        kwargs = dict(
+            y_gene=tiny_strain_phenotype,
+            genomecache=tiny_cache,
+            chrom=c0,
+            peak_lod=2.0,
+            kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
+            n_perms=15,
+            use_rint=False,
+            seed=42,
+        )
+        p1, *_ = calibrate_gene_pvalue(**kwargs)
+        p2, *_ = calibrate_gene_pvalue(**kwargs)
+        assert p1 == p2

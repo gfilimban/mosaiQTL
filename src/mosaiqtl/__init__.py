@@ -10,7 +10,12 @@ supports nb glm (primary), gaussian lmm, and cell-level nb via edgepython.
 parametric on J founders — no hardcoded assumptions about population size.
 """
 
-__version__ = "0.5.2"
+try:
+    from importlib.metadata import version as _pkg_version
+
+    __version__ = _pkg_version("mosaiqtl")
+except Exception:  # package not installed (e.g. running from a raw checkout)
+    __version__ = "0.0.0+unknown"
 
 # population configuration — first-class public type
 from .models.config import Population, ScanConfig, PipelineConfig  # noqa: F401

@@ -18,48 +18,48 @@ def load_expression_h5(
     genes_key: str = "genes",
     samples_key: str = "samples",
 ) -> tuple[np.ndarray, list[str], list[str]]:
-    """Load a subset of genes from a row-major expression HDF5 file.
+    """load a subset of genes from an expression HDF5 file, by name.
 
-    Only the requested gene rows are read from disk — no full-matrix
-    materialisation.  The file layout expected is::
+    only the requested genes are read off disk — the whole expression
+    matrix is never loaded into memory at once. the file is expected to
+    contain::
 
         f['genes']   : (n_genes,)   gene identifier strings
         f['samples'] : (n_samples,) sample identifier strings
-        f['counts']  : (n_genes, n_samples)  float or int expression matrix
+        f['counts']  : (n_genes, n_samples)  expression matrix
 
-    Parameters
+    parameters
     ----------
     h5_path :
-        Path to the HDF5 file (opened read-only).
+        path to the HDF5 file (opened read-only).
     genes_wanted :
-        Gene identifiers to fetch.  Order of the returned matrix matches
-        the order in which each gene first appears in the file, not the
-        order of ``genes_wanted``.
+        gene identifiers to fetch. the returned matrix is ordered by each
+        gene's position in the file, not by the order of ``genes_wanted``.
     counts_key :
-        Dataset name for the expression matrix (default ``'counts'``).
+        dataset name for the expression matrix (default ``'counts'``).
     genes_key :
-        Dataset name for gene identifiers (default ``'genes'``).
+        dataset name for gene identifiers (default ``'genes'``).
     samples_key :
-        Dataset name for sample identifiers (default ``'samples'``).
+        dataset name for sample identifiers (default ``'samples'``).
 
-    Returns
+    returns
     -------
     counts : np.ndarray (n_found, n_samples) float32
-        Expression values for the found genes.
+        expression values for the found genes.
     genes : list[str]
-        Gene identifiers in the order they appear in the file.
-        Length equals the number of genes in ``genes_wanted`` that
+        gene identifiers in the order they appear in the file.
+        length equals the number of genes in ``genes_wanted`` that
         were present in the file.
     samples : list[str]
-        Sample identifiers in file order.  Identical for every call on
+        sample identifiers in file order. identical for every call on
         the same file — the sample axis never changes.
     """
-    import h5py  # optional dep — only needed when this function is called
+    import h5py  # optional dependency, only needed if this function is called
 
     with h5py.File(h5_path, "r") as f:
         all_genes = np.array(f[genes_key]).astype(str).tolist()
         all_samples = np.array(f[samples_key]).astype(str).tolist()
-        counts_ds = f[counts_key]  # (n_genes_total, n_samples)
+        counts_ds = f[counts_key]
         wanted_set = set(genes_wanted)
         idx = [i for i, g in enumerate(all_genes) if g in wanted_set]
         if not idx:

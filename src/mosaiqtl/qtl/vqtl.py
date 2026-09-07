@@ -1,25 +1,23 @@
 """
 vqtl — variance/dispersion qtl mapping
 
-maps genetic effects on expression noise (within-subject
-overdispersion) rather than mean expression.
+looks for genetic effects on how noisy a gene's expression is between cells
+of the same subject, rather than effects on its average expression level.
 
-two approaches:
-  1. two-stage: estimate per-subject φ̂ via moments or nebula-ln,
-     then scan log(φ̂) as phenotype through the lmm haplotype scan.
-  2. joint (future): extend nebula to model log(φ_i) = h_i' δ,
-     testing δ = 0 via likelihood ratio.
+two ways to do this:
+  1. two-stage (current): estimate each subject's overdispersion, then scan
+     that as if it were a regular phenotype through the haplotype scan.
+  2. joint (future): model overdispersion directly as a function of founder
+     haplotype and test whether that effect is zero.
 
-the two-stage approach is computationally cheap (reuses the lmm
-scan infrastructure) and provides a good first pass.
+the two-stage approach is cheap to compute, since it reuses the existing
+haplotype scan, and is a reasonable first pass.
 
-biological interpretation:
-  a significant dispersion vqtl at a locus means that founder
-  haplotype controls how *noisy* a gene's expression is — not
-  just how high or low. this could reflect genetic control of:
-    - transcriptional bursting kinetics
-    - sub-type heterogeneity within cell type
-    - stochastic regulatory network stability
+biological interpretation: a significant dispersion qtl at a locus means the
+founder haplotype there controls how noisy a gene's expression is, not just
+how high or low it runs on average. possible explanations include genetic
+control of transcriptional bursting, hidden sub-type heterogeneity within a
+cell type, or stability of the regulatory network driving the gene.
 """
 
 import numpy as np

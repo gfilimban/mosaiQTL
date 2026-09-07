@@ -62,7 +62,7 @@ n_cores  <- if (length(args) >= 2) as.integer(args[2]) else 4L
 step_cM  <- if (length(args) >= 3) as.numeric(args[3]) else 0.2
 
 # ── paths ──────────────────────────────────────────────────────────────────────
-gigamuga_path    <- file.path(base_dir, 'input', 'GM_ccfo_mm39.csv')
+gigamuga_path    <- file.path(base_dir, 'input', 'GM_ccf1fo_mm39.csv')
 gmap_dir         <- file.path(base_dir, 'input', 'GM', 'gmap')
 pmap_dir         <- file.path(base_dir, 'input', 'GM', 'pmap')
 geno_dir         <- file.path(base_dir, 'input', 'geno')

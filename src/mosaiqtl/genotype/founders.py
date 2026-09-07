@@ -5,9 +5,10 @@ single source of truth for all founder order, colors, and strain palettes.
 no other module in mosaiqtl defines hex color strings — import from here.
 
 axis order rule (enforced in all plots):
-    Founders (FOUNDER_ORDER) → F1s (F1_COLORS key order) → CC strains (alphanumeric)
+    founders (FOUNDER_ORDER) then F1s (F1_COLORS key order) then CC strains
+    (alphanumeric)
 
-CCPopulation is the default Population instance for 8-founder CC mice.
+CCPopulation is the default population definition for 8-founder CC mice.
 import it from here rather than constructing it at call sites.
 """
 
@@ -60,18 +61,19 @@ F1_COLORS: dict[str, str] = {
     "B6WSBF1J": "#947DA8",
 }
 
-# canonical plot axis order: founders → F1s → CC strains (caller appends CC alphanumeric)
+# canonical plot axis order: founders, then F1s (callers append CC strains
+# in alphanumeric order after this)
 STRAIN_ORDER: list[str] = FOUNDER_ORDER + list(F1_COLORS.keys())
 
 # neutral greys used in plots — defined here so no module ever hardcodes hex
 COLOR_NEUTRAL_DARK: str = "#444444"  # axis lines, tick labels, reference bars
-COLOR_CC_FALLBACK: str = "#888888"  # CC strains without ancestry probability data
-COLOR_NEUTRAL_LIGHT: str = "#E8E8E8"  # NaN/masked cells in heatmaps
-COLOR_THRESHOLD: str = "#E8870A"  # LOD threshold lines + quadrant annotations
+COLOR_CC_FALLBACK: str = "#888888"  # CC strains with no ancestry data to color by
+COLOR_NEUTRAL_LIGHT: str = "#E8E8E8"  # missing/masked cells in heatmaps
+COLOR_THRESHOLD: str = "#E8870A"  # significance threshold lines + annotations
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
-    """Convert '#RRGGBB' hex string to (r, g, b) floats in [0, 1]."""
+    """convert a '#RRGGBB' hex string to (r, g, b) floats in [0, 1]."""
     h = hex_color.lstrip("#")
     return tuple(  # type: ignore[return-value]
         int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4)  # noqa: E203
@@ -79,12 +81,12 @@ def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
 
 
 def _rgb_to_hex(r: float, g: float, b: float) -> str:
-    """Convert (r, g, b) floats in [0, 1] to '#RRGGBB' hex string."""
+    """convert (r, g, b) floats in [0, 1] to a '#RRGGBB' hex string."""
     return "#{:02X}{:02X}{:02X}".format(round(r * 255), round(g * 255), round(b * 255))
 
 
 def _blend_hex(color_a: str, color_b: str, t: float = 0.5) -> str:
-    """linear RGB blend; t=0 → color_a, t=1 → color_b."""
+    """blend two colors linearly; t=0 gives color_a, t=1 gives color_b."""
     ra, ga, ba = _hex_to_rgb(color_a)
     rb, gb, bb = _hex_to_rgb(color_b)
     return _rgb_to_hex(ra + t * (rb - ra), ga + t * (gb - ga), ba + t * (bb - ba))
@@ -101,10 +103,10 @@ def cc_strain_palette(
     cc_strains : list[str]
         CC strain identifiers (e.g. ['CC001', 'CC002', ...])
     haplotype_probs : dict[str, list[float]], optional
-        per-strain genome-wide mean haplotype probabilities (length 8, FOUNDER_ORDER).
-        when provided, colors are blended between the two dominant founder colors
-        weighted by their relative proportions.
-        when None, a fixed grey (#888888) is returned for all CC strains.
+        per-strain genome-wide mean founder ancestry proportions (one value per
+        founder, in FOUNDER_ORDER). when given, each strain's color is a blend
+        of its two largest-proportion founders' colors, weighted by how much
+        each contributes. when None, every CC strain gets the fallback grey.
 
     returns
     -------
@@ -143,7 +145,7 @@ def cc_strain_palette(
 
 
 # ---------------------------------------------------------------------------
-# CCPopulation — default Population instance for 8-founder CC/DO mice (mm39)
+# CCPopulation — default population definition for 8-founder CC/DO mice (mm39)
 # ---------------------------------------------------------------------------
 CCPopulation: Population = Population(
     name="cc",
@@ -161,7 +163,7 @@ CCPopulation: Population = Population(
 
 
 def display_founders(cache_founders: list[str]) -> list[str]:
-    """Map HAPPY cache founder codes (A–H) to FOUNDER_ORDER display names.
+    """map genome cache founder letter codes (A-H) to full strain names.
 
     Parameters
     ----------

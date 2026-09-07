@@ -1,15 +1,11 @@
-"""Unit tests for io/results_io.py — pos_merge helper.
+"""Unit tests for io/results_io.py.
 
 Covers module: src/mosaiqtl/io/results_io.py
-Function:      pos_merge(left, right, left_val, right_val, ...)
 
-Design goals tested:
-  - Happy-path inner join on (chr, pos_mb)
-  - Deduplication to highest-value row per (chr, pos) before join
-  - Column naming: same-name → _left/_right suffixes; explicit labels win;
-    different names → no suffix
-  - round_dp controls join precision
-  - chr coerced to str regardless of dtype in input
+Functions:
+  pos_merge(left, right, left_val, right_val, ...)
+  build_eqtl_scan_df(scan, genomecache, ...)
+  write_eqtl_scan(scan, genomecache, out_path, ...)
 """
 
 import sys
@@ -154,3 +150,176 @@ class TestChrAsStr:
         assert len(result) == 1
         # _chr column should be string '1'
         assert result["_chr"].iloc[0] == "1"
+
+
+# ── build_eqtl_scan_df / write_eqtl_scan ─────────────────────────────────────
+#
+# These tests use the tiny_cache fixture (2 chromosomes, 15 loci each) and
+# fabricated ScanResult objects to stay self-contained and fast.
+
+
+class TestBuildEqtlScanDf:
+    """build_eqtl_scan_df: EQTL_SCAN_COLS schema, peak_locus flag, NaN policy."""
+
+    @staticmethod
+    def _make_sr(lod, loci, pos_mb, chrom="1"):
+        """Build a minimal ScanResult for tests."""
+        from mosaiqtl.models.records import ScanResult
+
+        return ScanResult(
+            gene_id="g1",
+            lod=np.asarray(lod, dtype=float),
+            loci=loci,
+            pos_mb=np.asarray(pos_mb, dtype=float),
+            chr=chrom,
+        )
+
+    def test_columns_match_schema(self, tiny_cache):
+        """Output columns are exactly EQTL_SCAN_COLS, in schema order."""
+        from mosaiqtl.io.results_io import build_eqtl_scan_df
+        from mosaiqtl.pipeline import EQTL_SCAN_COLS
+
+        lids, pos, _ = tiny_cache.get_chromosome("1")
+        sr = self._make_sr(
+            lod=[1.0] * len(lids),
+            loci=list(lids),
+            pos_mb=list(pos),
+            chrom="1",
+        )
+        df = build_eqtl_scan_df({"g1": sr}, tiny_cache)
+        assert list(df.columns) == EQTL_SCAN_COLS
+
+    def test_row_count(self, tiny_cache):
+        """One row per scanned locus per gene."""
+        from mosaiqtl.io.results_io import build_eqtl_scan_df
+
+        lids, pos, _ = tiny_cache.get_chromosome("1")
+        sr = self._make_sr(
+            lod=[1.0] * len(lids),
+            loci=list(lids),
+            pos_mb=list(pos),
+        )
+        df = build_eqtl_scan_df({"g1": sr}, tiny_cache)
+        assert len(df) == len(lids)
+
+    def test_peak_locus_flag(self, tiny_cache):
+        """Exactly one 'T' per gene at the argmax-LOD locus; all others 'F'."""
+        from mosaiqtl.io.results_io import build_eqtl_scan_df
+
+        lids, pos, _ = tiny_cache.get_chromosome("1")
+        lod_vals = [float(i) for i in range(len(lids))]  # peak at last locus
+        sr = self._make_sr(lod=lod_vals, loci=list(lids), pos_mb=list(pos))
+        df = build_eqtl_scan_df({"g1": sr}, tiny_cache)
+
+        assert (df["peak_locus"] == "T").sum() == 1
+        assert (df["peak_locus"] == "F").sum() == len(lids) - 1
+        # the 'T' row should have the highest lod
+        peak_row = df[df["peak_locus"] == "T"].iloc[0]
+        assert float(peak_row["lod"]) == max(lod_vals)
+
+    def test_sanger_cols_are_nan(self, tiny_cache):
+        """Sanger-blocked columns (variant, ref_founders, …) are all NaN/NA."""
+        from mosaiqtl.io.results_io import build_eqtl_scan_df, _SANGER_COLS
+
+        lids, pos, _ = tiny_cache.get_chromosome("1")
+        sr = self._make_sr(lod=[1.0] * len(lids), loci=list(lids), pos_mb=list(pos))
+        df = build_eqtl_scan_df({"g1": sr}, tiny_cache)
+        for col in _SANGER_COLS:
+            assert df[col].isna().all(), f"Expected all-NA in {col!r}"
+
+    def test_pval_nominal_decreases_with_lod(self, tiny_cache):
+        """pval_nominal is a monotone decreasing function of LOD."""
+        from mosaiqtl.io.results_io import build_eqtl_scan_df
+
+        lids, pos, _ = tiny_cache.get_chromosome("1")
+        # two-row toy with known LOD ordering
+        sr = self._make_sr(
+            lod=[0.5, 2.0],
+            loci=list(lids[:2]),
+            pos_mb=list(pos[:2]),
+        )
+        df = build_eqtl_scan_df({"g1": sr}, tiny_cache)
+        df_sorted = df.sort_values("lod")
+        pvals = df_sorted["pval_nominal"].values
+        assert pvals[0] > pvals[1], "higher LOD should give smaller p-value"
+
+    def test_gene_symbol_map_applied(self, tiny_cache):
+        """gene_symbol_map is used when supplied."""
+        from mosaiqtl.io.results_io import build_eqtl_scan_df
+
+        lids, pos, _ = tiny_cache.get_chromosome("1")
+        sr = self._make_sr(lod=[1.0], loci=[lids[0]], pos_mb=[pos[0]])
+        df = build_eqtl_scan_df(
+            {"g1": sr}, tiny_cache, gene_symbol_map={"g1": "Ankrd39"}
+        )
+        assert (df["gene_symbol"] == "Ankrd39").all()
+
+    def test_empty_scan_returns_schema_columns(self, tiny_cache):
+        """An empty scan dict returns an empty DataFrame with EQTL_SCAN_COLS."""
+        from mosaiqtl.io.results_io import build_eqtl_scan_df
+        from mosaiqtl.pipeline import EQTL_SCAN_COLS
+
+        df = build_eqtl_scan_df({}, tiny_cache)
+        assert list(df.columns) == EQTL_SCAN_COLS
+        assert len(df) == 0
+
+    def test_multi_gene_row_count(self, tiny_cache):
+        """Rows from multiple genes are concatenated (total = sum of per-gene loci)."""
+        from mosaiqtl.io.results_io import build_eqtl_scan_df
+
+        lids, pos, _ = tiny_cache.get_chromosome("1")
+        sr1 = self._make_sr(lod=[1.0] * 3, loci=list(lids[:3]), pos_mb=list(pos[:3]))
+        sr2_obj = self._make_sr(
+            lod=[0.5] * 2, loci=list(lids[:2]), pos_mb=list(pos[:2])
+        )
+        sr2_obj = type(sr1)(
+            gene_id="g2",
+            lod=np.array([0.5, 0.5]),
+            loci=list(lids[:2]),
+            pos_mb=list(pos[:2]),
+            chr="1",
+        )
+        df = build_eqtl_scan_df({"g1": sr1, "g2": sr2_obj}, tiny_cache)
+        assert len(df) == 5
+        assert set(df["gene_id"].unique()) == {"g1", "g2"}
+
+
+class TestWriteEqtlScan:
+    """write_eqtl_scan: atomically writes EQTL_SCAN_COLS CSV."""
+
+    def test_writes_csv_file(self, tmp_path, tiny_cache):
+        """Output file exists and is non-empty after a successful write."""
+        from mosaiqtl.io.results_io import write_eqtl_scan
+        from mosaiqtl.models.records import ScanResult
+
+        lids, pos, _ = tiny_cache.get_chromosome("1")
+        sr = ScanResult(
+            gene_id="g1",
+            lod=np.ones(len(lids)),
+            loci=list(lids),
+            pos_mb=pos,
+            chr="1",
+        )
+        out = tmp_path / "eqtl_scan.csv"
+        write_eqtl_scan({"g1": sr}, tiny_cache, out)
+        assert out.exists()
+        assert out.stat().st_size > 0
+
+    def test_roundtrip_columns(self, tmp_path, tiny_cache):
+        """CSV read back has exactly EQTL_SCAN_COLS columns."""
+        from mosaiqtl.io.results_io import write_eqtl_scan
+        from mosaiqtl.models.records import ScanResult
+        from mosaiqtl.pipeline import EQTL_SCAN_COLS
+
+        lids, pos, _ = tiny_cache.get_chromosome("1")
+        sr = ScanResult(
+            gene_id="g1",
+            lod=np.ones(len(lids)),
+            loci=list(lids),
+            pos_mb=pos,
+            chr="1",
+        )
+        out = tmp_path / "eqtl_scan.csv"
+        write_eqtl_scan({"g1": sr}, tiny_cache, out)
+        reloaded = pd.read_csv(out)
+        assert list(reloaded.columns) == EQTL_SCAN_COLS

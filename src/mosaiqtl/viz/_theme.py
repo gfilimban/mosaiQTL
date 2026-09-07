@@ -1,12 +1,13 @@
-"""_theme — mosaiQTL package visual identity (Layer 1).
+"""Shared plot styling: colors, fonts, and helpers used across every figure.
 
-Layer 1 (this module): colors that mean "mosaiQTL". Used for scan data,
-thresholds, reference lines, info boxes, chromosome bands. NEVER a founder color.
+The colors defined here stand for the package itself — used for scan data,
+significance thresholds, reference lines, info boxes, and chromosome bands.
+They are never used to represent a specific founder strain.
 
-Layer 2 (genotype/founders.py): FOUNDER_COLORS / F1_COLORS / cc_strain_palette.
-Used ONLY when the visual encoding IS founder identity — coef_profile, effect_bars,
-caterpillar, prob_heatmap, pxg, epistasis_grid. Importing FOUNDER_COLORS outside
-viz/effects.py and viz/haplotypes.py is a bug.
+Founder-strain colors are a separate palette (genotype/founders.py) and are
+only used where the plot is specifically about founder identity — coefficient
+profiles, effect bars, caterpillar plots, probability heatmaps, PxG plots,
+and epistasis grids.
 """
 
 from __future__ import annotations
@@ -24,19 +25,20 @@ from ..genotype.founders import (
 # ── 1. identity colors ────────────────────────────────────────────────────
 BRAND_PRIMARY: str = "#3B6EA5"  # single-series lines, KDE fills, primary dots
 BRAND_SECONDARY: str = "#B5423A"  # series B in any A-vs-B comparison
-BRAND_ACCENT: str = COLOR_THRESHOLD  # '#E8870A' — thresholds ONLY
-INK: str = COLOR_NEUTRAL_DARK  # '#444444' — reference/identity/zero lines, borders
-MUTED: str = COLOR_CC_FALLBACK  # '#888888' — de-emphasised series, marginal fills
-WASH: str = COLOR_NEUTRAL_LIGHT  # '#E8E8E8' — below-threshold / low-expr dots
-SURFACE: str = "#FFFFFF"  # figure face, info-box fill
+BRAND_ACCENT: str = COLOR_THRESHOLD  # significance-threshold lines only
+INK: str = COLOR_NEUTRAL_DARK  # reference/identity/zero lines, borders
+MUTED: str = COLOR_CC_FALLBACK  # de-emphasised series, marginal fills
+WASH: str = COLOR_NEUTRAL_LIGHT  # below-threshold / low-expression dots
+SURFACE: str = "#FFFFFF"  # figure background, info-box fill
 
-# Chromosome alternation: two values of one hue so bands never read as categories
+# two shades of the same hue for alternating chromosomes, so the bands read
+# as a visual rhythm rather than as meaningful categories
 CHR_BANDS: tuple[str, str] = (BRAND_PRIMARY, "#8FB0CE")
 
 # ── 2. semantic colormaps ─────────────────────────────────────────────────
-CMAP_MAGNITUDE: str = "crest"  # unsigned magnitude: LOD, PIP, −log₁₀p
-CMAP_SIGNED: str = "coolwarm"  # signed effect (beta) — requires symmetric norm
-CMAP_DENSITY: str = "YlOrRd"  # unsigned density: haplotype prob, |Δβ|
+CMAP_MAGNITUDE: str = "crest"  # unsigned magnitude: LOD score, PIP, −log10(p)
+CMAP_SIGNED: str = "coolwarm"  # signed effect size (beta); needs a symmetric color scale
+CMAP_DENSITY: str = "YlOrRd"  # unsigned density: haplotype probability, |delta-beta|
 
 # ── 3. one style = one meaning ────────────────────────────────────────────
 KW_THRESHOLD: dict = dict(color=BRAND_ACCENT, ls=":", lw=1.4, alpha=0.85, zorder=4)
@@ -62,7 +64,7 @@ FONT_STACK: list[str] = ["Carlito", "Calibri", "DejaVu Sans"]
 
 
 def set_style() -> None:
-    """Package-wide rcParams. Call once at the top of every figure-producing function."""
+    """Apply package-wide plot style. Call once at the start of every plotting function."""
     sns.set_style("ticks")
     plt.rcParams.update(
         {
@@ -81,7 +83,10 @@ def set_style() -> None:
 
 
 def apply_theme(ax: plt.Axes, *, from_zero: bool = True) -> plt.Axes:
-    """Font stack + despine + axes-from-zero. Call at the end of every plot function."""
+    """Apply fonts, remove top/right axis lines, and start the y-axis at zero.
+
+    Call this at the end of every plotting function.
+    """
     for item in (
         [ax.xaxis.label, ax.yaxis.label] + ax.get_xticklabels() + ax.get_yticklabels()
     ):

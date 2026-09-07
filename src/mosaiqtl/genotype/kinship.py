@@ -1,21 +1,27 @@
 """
-kinship — kinship matrix computation
+kinship — genetic relatedness matrix computation
 
-Normalized dot-product kinship, consistent with qtl2::calc_kinship(type='loco').
+a kinship matrix estimates how genetically similar every pair of animals is,
+based on how much of the genome they share the same founder ancestry at:
 
     K_{ij} = Σ_{l} p_{il} · p_{jl}  /  n_loci
 
-where p_{il} is the J-dimensional allele-probability vector for sample i at
-locus l (sums to 1).  This formula gives inbred founders K_ii = 1, F1 hybrids
-K_ii = 0.5, and CC mice K_ii ≈ 0.2–0.35 depending on heterozygosity —
-matching qtl2::calc_kinship output exactly.
+where p_{il} is the founder-probability vector for animal i at marker l
+(the 8 probabilities sum to 1). with this formula, an inbred founder is
+K_ii = 1 (identical to itself), an F1 hybrid is K_ii = 0.5, and a Collaborative
+Cross mouse falls around K_ii ≈ 0.2-0.35 depending on how heterozygous its
+genome still is.
 
-For LOCO: numerators and locus counts are accumulated per chromosome; the
-target chromosome contribution is subtracted before dividing.
+for "leave one chromosome out" (LOCO) kinship, each chromosome's contribution
+is tracked separately and subtracted out when that chromosome is the one being
+scanned for QTL. this avoids the test marker inflating its own relatedness
+estimate (proximal contamination):
 
-    K_loco(c)_{ij} = (Σ_{l ∉ c} p_{il} · p_{jl})  /  (n_loci − n_loci_c)
+    K_loco(c)_{ij} = (Σ_{l not on c} p_{il} · p_{jl})  /  (n_loci - n_loci_c)
 
-supports: overall, loco, and per-chromosome kinship.
+supports three modes: kinship from the whole genome, LOCO kinship (one matrix
+per chromosome, excluding that chromosome), and per-chromosome kinship (using
+only that chromosome).
 """
 
 import time
@@ -31,9 +37,7 @@ __all__ = [
 
 
 def calc_kinship(genomecache, method="loco"):
-    """Compute kinship matrices from haplotype probabilities.
-
-    Consistent with qtl2::calc_kinship(genoprob_to_alleleprob(probs), type=...).
+    """compute kinship matrices from haplotype probabilities.
 
     parameters
     ----------
@@ -60,17 +64,25 @@ def calc_kinship(genomecache, method="loco"):
     chr_num = {}  # {chrom: Σ_l p_l p_l^T}
     chr_nloci = {}  # {chrom: number of loci}
 
-    for chrom in genomecache.chromosomes:
+    for ci, chrom in enumerate(genomecache.chromosomes):
         _, _, probs = genomecache.get_chromosome(chrom)
         # probs: (L, n, J)  allele probabilities summing to 1 per sample per locus
         chr_num[chrom] = np.einsum("lni,lmi->nm", probs, probs, optimize=True)
         chr_nloci[chrom] = probs.shape[0]
+        logger.debug(
+            "calc_kinship: chr%s (%d/%d)  n_loci=%d  elapsed=%.1fs",
+            chrom,
+            ci + 1,
+            n_chr,
+            chr_nloci[chrom],
+            time.perf_counter() - _t0,
+        )
 
     num_tot = sum(chr_num.values())
     nloci_tot = sum(chr_nloci.values())
 
     def _norm(K: np.ndarray) -> np.ndarray:
-        """Normalise K so the mean diagonal entry equals 1."""
+        """normalise K so the mean diagonal entry equals 1."""
         d = np.diag(K).mean()
         return K / d if d > 0 else K
 
@@ -98,7 +110,7 @@ def calc_kinship(genomecache, method="loco"):
 
 
 def decomp_kinship(kinship_dict):
-    """Eigendecompose kinship matrices for fast LMM fitting.
+    """eigendecompose kinship matrices for fast LMM fitting.
 
     K = U D U' enables diagonal V^{-1} in the rotated coordinate system,
     avoiding repeated n×n inversions during the h² grid search and scan.

@@ -129,6 +129,87 @@ class TestDiscoverLmm:
         dr = discover(pheno_mat, ["g1"], tiny_cache, model="lmm")
         assert dr.genomecache is tiny_cache
 
+    # ── windowed scanning (scan_window/gene_chr_map/gene_pos_mb_map) ──────
+    # scan_multi_gene already implements windowed scanning natively (see
+    # qtl/CLAUDE.md); these tests cover discover()'s forwarding of it.
+
+    def test_default_scan_window_forwarded_as_genome(
+        self, tiny_cache, tiny_strain_phenotype
+    ):
+        """Omitting the new windowing kwargs (the pre-existing call shape)
+        must still reach scan_multi_gene as scan_window='genome' with no
+        window args — i.e. adding lmm windowing support did not change
+        default behavior."""
+        from unittest.mock import patch
+        from mosaiqtl import pipeline as pipeline_module
+        from mosaiqtl.qtl.scan import scan_multi_gene as real_scan_multi_gene
+
+        pheno_mat = tiny_strain_phenotype[:, None]
+        with patch.object(
+            pipeline_module,
+            "scan_multi_gene",
+            side_effect=real_scan_multi_gene,
+        ) as mock_scan:
+            discover(pheno_mat, ["g1"], tiny_cache, model="lmm")
+        _, kwargs = mock_scan.call_args
+        assert kwargs["scan_window"] == "genome"
+        assert kwargs["gene_chr_map"] is None
+        assert kwargs["gene_pos_mb_map"] is None
+
+    def test_local_scan_window_forwarded(self, tiny_cache, tiny_strain_phenotype):
+        """scan_window='local' plus gene_chr_map/gene_pos_mb_map/window_mb
+        must reach scan_multi_gene unchanged — this is the forwarding the
+        cli.py `scan` and `permute` local-window flags rely on."""
+        from unittest.mock import patch
+        from mosaiqtl import pipeline as pipeline_module
+        from mosaiqtl.qtl.scan import scan_multi_gene as real_scan_multi_gene
+
+        pheno_mat = tiny_strain_phenotype[:, None]
+        gene_chr_map = {"g1": "1"}
+        gene_pos_mb_map = {"g1": 1.0}
+        with patch.object(
+            pipeline_module,
+            "scan_multi_gene",
+            side_effect=real_scan_multi_gene,
+        ) as mock_scan:
+            discover(
+                pheno_mat,
+                ["g1"],
+                tiny_cache,
+                model="lmm",
+                scan_window="local",
+                gene_chr_map=gene_chr_map,
+                gene_pos_mb_map=gene_pos_mb_map,
+                window_mb=0.1,
+            )
+        _, kwargs = mock_scan.call_args
+        assert kwargs["scan_window"] == "local"
+        assert kwargs["gene_chr_map"] == gene_chr_map
+        assert kwargs["gene_pos_mb_map"] == gene_pos_mb_map
+        assert kwargs["window_mb"] == 0.1
+
+    def test_local_scan_window_restricts_loci(self, tiny_cache, tiny_strain_phenotype):
+        """End-to-end (no mocking): a local window covering exactly one of
+        tiny_cache's 15 loci on chr '1' (positions are
+        np.linspace(1.0, 100.0, 15); gene_pos_mb=1.0 +/- 0.1 admits only the
+        first) must scan strictly fewer loci than the genome-wide default,
+        proving the restriction actually reaches the real lmm scan engine —
+        not just that the kwargs were passed along."""
+        pheno_mat = tiny_strain_phenotype[:, None]
+        dr_genome = discover(pheno_mat, ["g1"], tiny_cache, model="lmm")
+        dr_local = discover(
+            pheno_mat,
+            ["g1"],
+            tiny_cache,
+            model="lmm",
+            scan_window="local",
+            gene_chr_map={"g1": "1"},
+            gene_pos_mb_map={"g1": 1.0},
+            window_mb=0.1,
+        )
+        assert len(dr_local.scan["g1"].lod) == 1
+        assert len(dr_local.scan["g1"].lod) < len(dr_genome.scan["g1"].lod)
+
 
 # ── discover — model='nb' ─────────────────────────────────────────────────────
 
@@ -289,3 +370,166 @@ class TestResolve:
         dr = self._lmm_disc(tiny_cache, tiny_strain_phenotype, tiny_kinship)
         rr = resolve(dr, modules=("conditional_scan",))
         assert isinstance(rr.conditional_scan, dict)
+
+
+# ── calibrate_egenes_storey ───────────────────────────────────────────────────
+
+
+class TestCalibrateEgenesStorey:
+    """calibrate_egenes_storey: Storey q-value significance block (SWE-09)."""
+
+    @staticmethod
+    def _egenes_df(n_genes=8):
+        """Fabricate a minimal egenes DataFrame with gene_id and peak_lod."""
+        import pandas as pd
+
+        return pd.DataFrame(
+            {
+                "gene_id": [f"g{i}" for i in range(n_genes)],
+                "peak_lod": np.linspace(1.0, 5.0, n_genes),
+            }
+        )
+
+    def test_sig_cols_present(self):
+        """Output contains pval_perm, fdr, fdr_method, significance columns."""
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        df = self._egenes_df()
+        pval_perm = {f"g{i}": 0.01 * (i + 1) for i in range(len(df))}
+        out = calibrate_egenes_storey(df, pval_perm)
+        for col in ("pval_perm", "fdr", "fdr_method", "significance"):
+            assert col in out.columns, f"missing {col!r}"
+
+    def test_fdr_method_is_storey(self):
+        """fdr_method column is always the string 'storey'."""
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        df = self._egenes_df()
+        pval_perm = {f"g{i}": 0.05 for i in range(len(df))}
+        out = calibrate_egenes_storey(df, pval_perm)
+        assert (out["fdr_method"] == "storey").all()
+
+    def test_fdr_in_unit_interval(self):
+        """All q-values are in [0, 1]."""
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        df = self._egenes_df(n_genes=20)
+        rng = np.random.default_rng(0)
+        pval_perm = {f"g{i}": float(p) for i, p in enumerate(rng.uniform(0, 1, 20))}
+        out = calibrate_egenes_storey(df, pval_perm)
+        assert out["fdr"].between(0.0, 1.0).all()
+
+    def test_significance_t_f_only(self):
+        """significance column contains only 'T' or 'F'."""
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        df = self._egenes_df()
+        pval_perm = {f"g{i}": 0.01 if i < 3 else 0.8 for i in range(len(df))}
+        out = calibrate_egenes_storey(df, pval_perm)
+        assert set(out["significance"].unique()).issubset({"T", "F"})
+
+    def test_low_pval_becomes_significant(self):
+        """Genes with very small p-values are called significant (fdr ≤ 0.05)."""
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        n = 50
+        df = self._egenes_df(n_genes=n)
+        # first 10 genes have tiny p-values; rest are near-null
+        pval_perm = {f"g{i}": 1e-6 if i < 10 else 0.9 for i in range(n)}
+        out = calibrate_egenes_storey(df, pval_perm, fdr_threshold=0.05)
+        n_sig = (out["significance"] == "T").sum()
+        assert n_sig >= 5, f"expected ≥5 significant genes, got {n_sig}"
+
+    def test_high_pval_not_significant(self):
+        """Genes with p ≈ 1 are not called significant."""
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        df = self._egenes_df(n_genes=10)
+        pval_perm = {f"g{i}": 0.99 for i in range(10)}
+        out = calibrate_egenes_storey(df, pval_perm)
+        assert (out["significance"] == "F").all()
+
+    def test_row_count_preserved(self):
+        """Output has exactly the same number of rows as input."""
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        n = 12
+        df = self._egenes_df(n_genes=n)
+        pval_perm = {f"g{i}": 0.1 for i in range(n)}
+        out = calibrate_egenes_storey(df, pval_perm)
+        assert len(out) == n
+
+
+# ── Storey FDR end-to-end integration (SWE-09) ───────────────────────────────
+
+
+class TestStoreyFdrEndToEnd:
+    """Full chain: calibrate_gene_pvalue → calibrate_egenes_storey (SWE-09).
+
+    Uses tiny_cache + tiny_kinship fixtures so no external data is needed.
+    Runs calibrate_gene_pvalue on a small set of fabricated genes, pools
+    their Beta-calibrated p-values, and feeds them into calibrate_egenes_storey
+    to get final q-value significance calls.
+    """
+
+    def test_full_chain_runs_and_gives_valid_output(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tiny_strain_covariates
+    ):
+        """End-to-end: calibrate_gene_pvalue → calibrate_egenes_storey.
+
+        Two fabricated genes: one with a genuinely high peak LOD (signal),
+        one with a near-zero LOD (noise).  After going through the full
+        chain the chain must at minimum produce finite q-values in [0,1]
+        and not crash.
+        """
+        import pandas as pd
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        kd = decomp_kinship(tiny_kinship)
+        c0 = list(tiny_cache.chromosomes)[0]
+
+        # two genes: strong signal (LOD=8) and near-null (LOD=0.1)
+        genes = [
+            ("gene_signal", 8.0),
+            ("gene_null", 0.1),
+        ]
+
+        pval_perm = {}
+        for gid, peak_lod in genes:
+            p_adj, *_ = calibrate_gene_pvalue(
+                tiny_strain_phenotype,
+                tiny_cache,
+                chrom=c0,
+                peak_lod=peak_lod,
+                covariates=tiny_strain_covariates,
+                kinship_decomp=kd,
+                kinship_loco=tiny_kinship,
+                n_perms=25,
+                use_rint=False,
+                seed=17,
+            )
+            pval_perm[gid] = p_adj
+
+        # assemble a minimal egenes_df (both genes cleared the Stage-1 gate)
+        egenes_df = pd.DataFrame(
+            {
+                "gene_id": [g for g, _ in genes],
+                "peak_lod": [lod for _, lod in genes],
+            }
+        )
+
+        out = calibrate_egenes_storey(egenes_df, pval_perm)
+
+        # structural checks
+        assert len(out) == len(genes)
+        assert out["fdr"].between(0.0, 1.0).all()
+        assert set(out["significance"].unique()).issubset({"T", "F"})
+        # the near-null gene should have a larger q-value than the signal gene
+        fdr_signal = float(out.loc[out["gene_id"] == "gene_signal", "fdr"].iloc[0])
+        fdr_null = float(out.loc[out["gene_id"] == "gene_null", "fdr"].iloc[0])
+        assert fdr_signal <= fdr_null, (
+            f"signal gene q-value ({fdr_signal:.3f}) should be ≤ "
+            f"null gene q-value ({fdr_null:.3f})"
+        )

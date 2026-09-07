@@ -330,16 +330,16 @@ class GenomeCache:
 
     @staticmethod
     def from_qtl2_probs(probs_dict, map_dict, sample_ids, founders=None):
-        """construct genome cache from qtl2-style probability arrays.
+        """construct genome cache from probability arrays in the alternate axis order.
 
-        this is the bridge for data already processed through qtl2
-        in R and exported as numpy arrays (via rpy2 or saved as .npz).
+        this is the bridge for haplotype probabilities already computed
+        elsewhere and exported as numpy arrays.
 
         parameters
         ----------
         probs_dict : dict
             {chrom: np.ndarray (n_subjects, n_loci, n_founders)}
-            note: qtl2 convention is subjects × loci × founders
+            note: subjects-loci-founders axis order, not this package's own
         map_dict : dict
             {chrom: {'locus_ids': array, 'positions': array}}
         sample_ids : array-like of str
@@ -355,8 +355,7 @@ class GenomeCache:
 
         data = {}
         for chrom, probs_3d in probs_dict.items():
-            # transpose from qtl2 (subjects, loci, founders)
-            # to our convention (loci, subjects, founders)
+            # reorder axes to this package's convention (loci, subjects, founders)
             probs_transposed = np.transpose(probs_3d, (1, 0, 2))
 
             data[chrom] = {
@@ -444,38 +443,34 @@ class GenomeCache:
 
         logger.info("building genome cache from raw GigaMUGA...")
 
-        # load per-strain crossinfo if provided
-        # columns A-H = funnel position (1-8) per founder per CC strain
-        # used to: (1) confirm cc_inbred=True for each strain (homozygous prior)
-        #          (2) store x-chr donor per strain for downstream analysis
+        # crossinfo columns give each founder's position in the breeding
+        # funnel per strain (for CC, columns A-H map to funnel positions
+        # 1-8); used to confirm each strain is fully inbred and to identify
+        # which founder donated the X chromosome
         _crossinfo = None
         _x_donor = {}  # strain_id -> founder_col of x-chr donor (funnel pos 8)
         if crossinfo_path is not None and os.path.exists(crossinfo_path):
             _crossinfo = pd.read_csv(crossinfo_path, index_col=0)
             for sid, row in _crossinfo.iterrows():
-                # founder with funnel position 8 = last dam = X-chr donor
+                # the founder at the last funnel position donated the X chromosome
                 x_donor_code = row[row == 8].index[0]
                 _x_donor[sid] = x_donor_code
             logger.info(
                 f"crossinfo: loaded {len(_crossinfo)} strains; "
                 f"{len(_x_donor)} x-chr donors identified"
             )
-        # cc_inbred flag: True for all CC strains (homozygous-only HMM prior);
-        # founders and F1s use uniform_init via the deterministic path (no HMM)
+        # CC strains are treated as fully inbred (homozygous prior in the HMM);
+        # founders and F1s are assigned directly without running the HMM at all
 
-        # ── read GigaMUGA matrix ───────────────────────────────────────────────
         gm_raw = pd.read_csv(gigamuga_path, low_memory=False)
         if "marker" in gm_raw.columns:
             gm_raw = gm_raw.set_index("marker")
-        # drop chr/pos if present — use the dedicated map files instead
+        # drop chr/pos columns if present; the dedicated map files are used instead
         gm_raw = gm_raw.drop(columns=[c for c in ("chr", "pos") if c in gm_raw.columns])
         gm_raw = gm_raw.replace("N", "-")  # missing call code
 
-        # ── load genetic + physical maps ──────────────────────────────────────
-        # supports two layouts:
-        #   (a) flat files: gmap_dir/gmap.csv + pmap_dir/pmap.csv
-        #       written by build_genomecache.R from final_markers — preferred
-        #   (b) per-chr files: gmap_dir/GM_gmap{chr}.csv (legacy layout)
+        # accepts either one combined file (gmap.csv / pmap.csv, preferred) or
+        # one file per chromosome (GM_gmap{chr}.csv, older layout)
         def _load_maps(map_dir, prefix, flat_name):
             """Load flat or per-chr map CSV; prefer flat_name, fall back to prefix*.csv."""
             flat = os.path.join(map_dir, flat_name)
@@ -490,7 +485,6 @@ class GenomeCache:
 
         gmap = _load_maps(gmap_dir, "GM_gmap", "gmap.csv")
         pmap = _load_maps(pmap_dir, "GM_pmap", "pmap.csv")
-        # normalise column names — flat maps use 'marker'/'pos'; per-chr use same
         gmap.rename(
             columns={"marker": "locus", "pos": "pos_cM"}, inplace=True, errors="ignore"
         )
@@ -498,42 +492,37 @@ class GenomeCache:
             columns={"marker": "locus", "pos": "pos_mb"}, inplace=True, errors="ignore"
         )
 
-        # cast chr to str immediately — mixed int/str types cause == comparisons
-        # to silently fail (e.g. integer 1 != string '1')
+        # chromosome must always be a string — comparing int 1 to string '1'
+        # silently fails and would drop that chromosome's markers
         gmap["chr"] = gmap["chr"].astype(str)
         pmap["chr"] = pmap["chr"].astype(str)
         logger.info(f"gmap: {len(gmap)} loci | pmap: {len(pmap)} loci")
 
-        # ── intersect markers and sort by position ────────────────────────────
-        # CRITICAL: Python set() is unordered. If we use list(set(...)) the
-        # marker order is random, meaning the HMM receives positions out of
-        # genomic order and computes wrong inter-marker recombination fractions.
-        # This scrambles haplotype blocks: wrong kinship, inflated/random LOD.
-        # Fix: sort shared markers by (chr, pos_cM) after intersecting.
+        # markers must end up in genomic order, not arbitrary set order: the
+        # HMM computes recombination between adjacent markers, so if they're
+        # out of order it scrambles haplotype blocks and corrupts every
+        # downstream result (kinship, LOD)
         shared_set = set(gm_raw.index) & set(gmap["locus"]) & set(pmap["locus"])
-        gmap_idx = gmap.set_index("locus")  # index by locus name
+        gmap_idx = gmap.set_index("locus")
         gmap_shared = gmap_idx.loc[list(shared_set)].copy()
-        # sort key: integer chrs by value, X=20, others=99
 
         gmap_shared["_k"] = gmap_shared["chr"].map(chr_sort_key)
         gmap_shared = gmap_shared.sort_values(["_k", "pos_cM"]).drop(columns=["_k"])
-        shared = gmap_shared.index.tolist()  # position-sorted locus names
+        shared = gmap_shared.index.tolist()
 
         gm = gm_raw.loc[shared]
-        gmap = gmap_shared  # already indexed and sorted
+        gmap = gmap_shared
         pmap_idx = pmap.set_index("locus").loc[shared]
         logger.info(f"shared markers: {len(shared)}")
 
-        # ── just_these_loci allowlist ─────────────────────────────────────────────
         if just_these_loci is not None:
             allow = set(just_these_loci)
             shared = [m for m in shared if m in allow]
             logger.info(f"just_these_loci filter: {len(shared)} markers retained")
 
-        # ── additional user QC filters (optional) ────────────────────────────────
-        # note: gmap/pmap written by build_genomecache.R from final_markers (post
-        # find_unique_geno on founders), so gm∩gmap∩pmap already excludes markers
-        # monomorphic across the 8 founders. no additional filter needed here.
+        # markers that are identical across all founders (uninformative for
+        # haplotype reconstruction) are already excluded upstream, so no
+        # extra filtering is needed here unless the caller passes qc options
         if qc:
             keep = pd.Series(True, index=shared)
             if "max_missing" in qc:
@@ -556,7 +545,6 @@ class GenomeCache:
         pmap_idx = pmap_idx.loc[shared]
         logger.info(f"post-filter markers: {len(shared)}")
 
-        # chr column already str — build sorted chromosome list
         chrs = sorted(
             [c for c in gmap["chr"].unique() if c not in ("Y", "M", "MT", "nan")],
             key=chr_sort_key,
@@ -565,25 +553,21 @@ class GenomeCache:
         if f1_crosses is None:
             f1_crosses = []
 
-        # ── vectorised encoding (all chromosomes at once) ─────────────────────
-        # find_unique_geno + encode_geno over the full sorted marker set,
-        # replacing the per-marker Python loop with J-pass numpy broadcasting.
-        # a1/a2 derived from founder columns; sample columns encoded identically.
-        # Canonical qtl2convert workflow (kbroman.org/qtl2/pages/prep_do_data.html):
-        #   allele_codes  <- find_unique_geno(geno = geno_founders_clean)
-        #   geno_founders_encoded <- encode_geno(geno_founders_clean, allele_codes)
-        #   geno_samples_encoded  <- encode_geno(geno_samples_clean,  allele_codes)
-        # axis order: Founders → F1s → CC strains (alphanumeric) — inviolable
+        # encode every marker's genotype calls as A/B/H relative to the two
+        # founder alleles, for founders and CC strains at once (J passes over
+        # all markers instead of looping marker-by-marker)
+        # axis order: founders → F1s → CC strains (alphanumeric) — inviolable
         all_48 = list(founder_cols) + [f[0] for f in f1_crosses] + cc_cols
 
         MISS_CODES = {"N", "-", "nan", ""}
         MISS_LIST = list(MISS_CODES | {"H"})  # excluded when finding a1/a2
 
-        f_str = gm[list(founder_cols)].values.astype(str)  # (n_total, J)
-        cc_str = gm[cc_cols].values.astype(str)  # (n_total, n_cc)
+        f_str = gm[list(founder_cols)].values.astype(str)
+        cc_str = gm[cc_cols].values.astype(str)
 
-        # J passes over all markers — O(J · n_total) vs O(n_total · J · n_cc) per-marker loop
-        valid_f = ~np.isin(f_str, MISS_LIST)  # (n_total, J)
+        # loop once per founder rather than once per marker, so this scales
+        # with founder count instead of with the (much larger) marker count
+        valid_f = ~np.isin(f_str, MISS_LIST)
         a1_all = np.full(len(shared), "", dtype=object)
         a2_all = np.full(len(shared), "", dtype=object)
         for fi in range(n_founders):
@@ -598,7 +582,6 @@ class GenomeCache:
         geno_f_all = _encode_abh_vec(f_str, a1_all, a2_all, poly_all, miss_list)
         geno_cc_all = _encode_abh_vec(cc_str, a1_all, a2_all, poly_all, miss_list)
 
-        # ── build per-chromosome task dicts ───────────────────────────────────
         gmap_chr_col = gmap["chr"]
         gmap_pos_all = gmap["pos_cM"].values.astype(float)
         gmap_index_arr = np.array(gmap.index.tolist())
@@ -629,7 +612,7 @@ class GenomeCache:
                 }
             )
 
-        # ── parallel per-chromosome HMM (one worker per chr) ──────────────────
+        # run the HMM for each chromosome in its own process, in parallel
         from concurrent.futures import ProcessPoolExecutor
 
         n_proc = min(len(tasks), os.cpu_count() or 4)
@@ -654,26 +637,22 @@ class GenomeCache:
     def from_rds(
         probs_cc_path, probs_founder_path, probs_f1_path, pmap_path, founders=None
     ):
-        """build genome cache from raw qtl2 rds prob files.
+        """build genome cache from raw HMM probability files (.rds format).
 
-        reads probs_cc.rds, probs_founder.rds, probs_f1.rds and the
-        pmap.csv produced by founders_f1_genomecache.ipynb, merges
-        all 48 genotypes (33 CC + 8 founders + 7 F1s), and returns a
-        GenomeCache — exactly replicating what R does inside
-        convert.qtl2.to.HAPPY() but in Python.
+        reads probs_cc.rds, probs_founder.rds, probs_f1.rds and pmap.csv,
+        merges all 48 genotypes (33 CC + 8 founders + 7 F1s), and returns a
+        GenomeCache with the same haplotype probabilities as the standard
+        conversion pipeline, computed here directly rather than read from
+        an already-converted file.
 
-        this is the "from scratch" path: Python builds its own cache
-        from the raw prob arrays without reading any R-produced files
-        other than the original rds outputs of calc_genoprob().
+        input shapes:
+          - probs_cc:      HMM output, shape (n_cc, n_diplotype_states, n_loci)
+          - probs_founder: deterministic single-sample arrays, one per founder
+          - probs_f1:      deterministic single-sample arrays, one per F1
 
-        the merging logic mirrors founders_f1_genomecache.ipynb steps 5-7:
-          - probs_cc:      qtl2 HMM output, shape (n_cc, n_diplotypes, n_loci)
-          - probs_founder: deterministic 1-sample arrays per founder
-          - probs_f1:      deterministic 1-sample arrays per F1
-
-        genoprob_to_alleleprob() is applied to collapse 36 diplotype
-        states to 8 additive founder probs, matching what R does before
-        calc_kinship() and convert.qtl2.to.HAPPY().
+        the 36 possible diplotype states (pairs of 8 founder haplotypes) are
+        collapsed down to 8 additive founder probabilities per sample, the
+        same reduction used before computing kinship.
 
         parameters
         ----------
@@ -693,28 +672,24 @@ class GenomeCache:
         if founders is None:
             founders = CC_FOUNDERS
 
-        logger.info("loading raw qtl2 prob arrays via rpy2...")
+        logger.info("loading raw HMM probability arrays...")
 
-        # load all three rds files into R namespace
         ro.r(f'probs_cc      <- readRDS("{probs_cc_path}")')
         ro.r(f'probs_founder <- readRDS("{probs_founder_path}")')
         ro.r(f'probs_f1      <- readRDS("{probs_f1_path}")')
 
-        # step 1: merge CC + founders + F1s as diplotype arrays (36 states)
-        #         mirrors notebook step 5: abind along sample dim, copy attrs
-        # step 2: apply genoprob_to_alleleprob() to the combined diplotype array
-        #         mirrors notebook step 6: collapses 36 → 8 additive probs
-        # important: merge first, then collapse — not the other way around.
-        # founders/F1s are stored as lists-of-chr-arrays (diplotype 36 states);
-        # applying genoprob_to_alleleprob to probs_cc alone before merging
-        # causes a dimension mismatch (8 additive vs 36 diplotype).
+        # samples must be merged into one combined array before collapsing
+        # diplotype states to additive founder probabilities — doing it the
+        # other way around (collapsing CC samples alone first) leaves a
+        # shape mismatch (8 additive columns vs 36 diplotype states) between
+        # the CC array and the founder/F1 arrays
         ro.r("library(qtl2)")
         ro.r("library(abind)")
         ro.r("""
             chrs <- names(probs_cc)
 
-            # merge all 48 genotypes per chromosome in diplotype space (36 states)
-            # same as notebook step 5: abind(cc_arr, founder_arr, f1_arr, along=1)
+            # combine all 48 samples per chromosome while still in diplotype
+            # form (36 possible founder pairs)
             probs_combined_list <- lapply(chrs, function(chr) {
                 cc_arr      <- probs_cc[[chr]]
                 founder_arr <- do.call(abind, c(
@@ -725,24 +700,19 @@ class GenomeCache:
             })
             names(probs_combined_list) <- chrs
 
-            # copy qtl2 genoprob attributes from probs_cc so that
-            # genoprob_to_alleleprob() recognises the object correctly
             attributes(probs_combined_list) <- attributes(probs_cc)
             names(probs_combined_list)      <- chrs
 
-            # collapse 36 diplotype → 8 additive founder probs
-            # mirrors notebook step 6 (used for kinship and HAPPY cache)
+            # collapse the 36 diplotype states down to 8 additive founder
+            # probabilities per sample
             probs_merged <- genoprob_to_alleleprob(probs_combined_list)
         """)
 
-        # read physical map
         pmap = pd.read_csv(pmap_path)
         if "marker" in pmap.columns:
             pmap = pmap.rename(columns={"marker": "locus", "pos": "pos_mb"})
         pmap["chr"] = pmap["chr"].astype(str)
 
-        # extract chromosomes and sample ids
-        # use ro.r() calls (not ro.r[]) for R expressions with [[ ]] indexing
         chrs_r = list(ro.r("names(probs_merged)"))
         sample_ids = list(ro.r("rownames(probs_merged[[1]])"))
 
@@ -752,21 +722,20 @@ class GenomeCache:
             locus_ids = np.array(chr_pmap["locus"].tolist())
             positions = np.array(chr_pmap["pos_mb"].tolist(), dtype=float)
 
-            # extract array from R — qtl2 stores as (n_strains, n_founders, n_loci)
+            # source array axis order is (n_strains, n_founders, n_loci);
+            # reorder to this package's convention (n_loci, n_strains, n_founders)
             arr_r = np.array(ro.r(f'probs_merged[["{chrom}"]]'))
             if arr_r.ndim == 3:
-                # transpose to mosaiqtl convention: (n_loci, n_strains, n_founders)
                 arr = np.transpose(arr_r, (2, 0, 1))
             else:
                 logger.warning(f"chr{chrom}: unexpected array shape {arr_r.shape}")
                 continue
 
-            # get locus ids from R dimnames (dim 3 = markers)
             r_loci = list(ro.r(f'dimnames(probs_merged[["{chrom}"]])[[3]]'))
             if len(r_loci) == len(locus_ids):
-                pass  # assume aligned
+                pass  # marker sets already match, nothing to subset
             else:
-                # subset to pmap loci that appear in the prob array
+                # keep only markers present in both the map and the prob array
                 locus_set = set(r_loci)
                 mask = np.array([lid in locus_set for lid in locus_ids])
                 locus_ids = locus_ids[mask]
@@ -813,13 +782,12 @@ class GenomeCache:
                 "install with: pip install rpy2"
             )
 
-        # real cache structure: cache_dir/additive/chr{c}/data/*.RData
+        # expected layout: cache_dir/additive/chr{c}/data/*.RData
         model_dir = os.path.join(cache_dir, model)
         if not os.path.isdir(model_dir):
-            # fallback: cache_dir might already be the model directory
+            # cache_dir may already point at the model directory itself
             model_dir = cache_dir
 
-        # discover chromosome directories
         chr_dirs = sorted(
             glob.glob(os.path.join(model_dir, "chr*")),
             key=lambda p: chr_sort_key(os.path.basename(p).replace("chr", "")),
@@ -834,13 +802,11 @@ class GenomeCache:
         for chr_dir in chr_dirs:
             chrom = os.path.basename(chr_dir).replace("chr", "")
 
-            # data subdirectory contains the .rdata files
             data_dir = os.path.join(chr_dir, "data")
             if not os.path.isdir(data_dir):
-                # fallback: .rdata files directly in chr dir
+                # files may sit directly in the chromosome directory instead
                 data_dir = chr_dir
 
-            # find .rdata files (case-insensitive)
             rdata_files = sorted(
                 glob.glob(os.path.join(data_dir, "*.RData"))
                 + glob.glob(os.path.join(data_dir, "*.rdata"))
@@ -855,11 +821,10 @@ class GenomeCache:
             prob_list = []
 
             for rdata_path in rdata_files:
-                # extract locus name from filename
                 locus_name = os.path.splitext(os.path.basename(rdata_path))[0]
                 locus_ids.append(locus_name)
-                # object saved via save() in r. load() returns the
-                # object names; we extract the matrix from the env.
+                # load into its own namespace so object names don't collide
+                # across files, then pull out whatever was saved there
                 env = ro.r["new.env"]()
                 ro.r["load"](rdata_path, envir=env)
                 obj_names = list(ro.r["ls"](envir=env))
@@ -868,10 +833,9 @@ class GenomeCache:
                     logger.warning(f"empty .rdata file: {rdata_path}")
                     continue
 
-                # first object should be the haplotype prob matrix
+                # each file holds one object: the haplotype probability matrix
                 mat = np.array(ro.r["get"](obj_names[0], envir=env))
 
-                # extract sample ids and founder names from first file
                 if sample_ids is None:
                     r_obj = ro.r["get"](obj_names[0], envir=env)
                     rn = ro.r["rownames"](r_obj)
@@ -887,7 +851,6 @@ class GenomeCache:
             if not prob_list:
                 continue
 
-            # stack into 3d array: (n_loci, n_subjects, n_founders)
             probs_3d = np.stack(prob_list, axis=0)
 
             data[chrom] = {
@@ -976,44 +939,41 @@ class GenomeCache:
         total_before = total_after = 0
 
         for chrom in self.chromosomes:
-            lids, pos, probs = self.get_chromosome(chrom)  # (L, n, J)
+            lids, pos, probs = self.get_chromosome(chrom)
             n_loci = len(lids)
             total_before += n_loci
 
             keep_lids, keep_pos, keep_probs = [], [], []
-            run_probs = [probs[0]]  # accumulate a run of similar loci
+            run_probs = [probs[0]]  # loci accumulated so far in the current run
             run_lid = lids[0]
             run_pos = pos[0]
 
             n_founders = probs.shape[2]
             for i in range(1, n_loci):
                 if criterion in ("l2.norm", "euclidean"):
-                    # l2-norm criterion:
-                    #   l2_i = ||h_i,l - h_i,l-1||_2 / sqrt(J)  per strain
-                    #   merge if max_i(l2_i) <= tol  (any > tol → keep separate)
-                    diff = probs[i] - run_probs[-1]  # (n, J)
-                    l2 = np.linalg.norm(diff, axis=1) / np.sqrt(n_founders)  # (n,)
+                    # per-strain distance between this locus and the last one
+                    # kept in the run; merge only if every strain is close
+                    diff = probs[i] - run_probs[-1]
+                    l2 = np.linalg.norm(diff, axis=1) / np.sqrt(n_founders)
                     d = float(l2.max())
                 else:
-                    # fraction of strains where argmax differs
+                    # fraction of strains whose most likely founder changed
                     d = float(
                         np.mean(probs[i].argmax(axis=1) != run_probs[-1].argmax(axis=1))
                     )
 
                 if d <= tol:
-                    # extend current run
                     run_probs.append(probs[i])
                 else:
-                    # flush run: average probs, keep first locus id/pos
+                    # close out the run: average its loci into one representative
+                    # locus, keeping the first locus's id and position
                     keep_lids.append(run_lid)
                     keep_pos.append(run_pos)
                     keep_probs.append(np.mean(run_probs, axis=0))
-                    # start new run
                     run_probs = [probs[i]]
                     run_lid = lids[i]
                     run_pos = pos[i]
 
-            # flush final run
             keep_lids.append(run_lid)
             keep_pos.append(run_pos)
             keep_probs.append(np.mean(run_probs, axis=0))
@@ -1028,7 +988,7 @@ class GenomeCache:
             new_data[chrom] = {
                 "locus_ids": np.array(keep_lids),
                 "positions": np.array(keep_pos, dtype=float),
-                "probs": np.stack(keep_probs),  # (n_kept, n_s, J)
+                "probs": np.stack(keep_probs),
             }
 
         logger.info(
@@ -1038,9 +998,7 @@ class GenomeCache:
         return GenomeCache(list(self.sample_ids), list(self.founders), new_data)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# pheno_df — pseudobulk → per-strain phenotype matrix
-# ──────────────────────────────────────────────────────────────────────────────
+# pheno_df — pseudobulk to per-strain phenotype matrix
 
 
 def pheno_df(
@@ -1098,7 +1056,7 @@ def pheno_df(
             f"Available: {list(adata.obs.columns)[:10]}"
         )
 
-    # extract expression matrix as dense numpy — raw.X for NB correctness
+    # use raw (unnormalized) counts — normalized values bias the NB model
     if layer is not None:
         X = adata.layers[layer]
     elif adata.raw is not None:
@@ -1130,7 +1088,7 @@ def pheno_df(
         else:
             rows[s] = X[mask].mean(axis=0)
 
-    df = pd.DataFrame(rows, index=gene_names).T  # (n_strains, n_genes)
+    df = pd.DataFrame(rows, index=gene_names).T
     df.index.name = "strain"
 
     n_valid = int((~df.isnull().all(axis=1)).sum())
@@ -1146,23 +1104,21 @@ def pheno_df(
     return df
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # module-level helpers for CLI build
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 def _save_group_probs(cache, sample_list, filepath):
-    """Save per-group haplotype probabilities to HDF5 in qtl2 convention.
+    """Save one group's haplotype probabilities (e.g. just the CC strains) to HDF5.
 
-    Output format mirrors R's probs_cc.rds / probs_founder.rds / probs_f1.rds
-    produced by qtl2::calc_genoprob().  This enables direct numerical comparison
-    between Python and R outputs.
+    The axis order and file layout match the standard .rds output format so
+    results can be compared directly against an independently computed
+    reference cache.
 
     HDF5 layout
     -----------
     /founders           str array  8 founder names
     /sample_ids         str array  sample names in this group
-    /chr{c}/probs       float32    (n_strains, n_founders, n_loci) — qtl2 dim order
+    /chr{c}/probs       float32    (n_strains, n_founders, n_loci)
     /chr{c}/locus_ids   str array  marker names
     /chr{c}/positions   float64    physical positions (Mb)
 
@@ -1188,12 +1144,10 @@ def _save_group_probs(cache, sample_list, filepath):
 
         for chrom in cache.chromosomes:
             lids, pos, probs = cache.get_chromosome(chrom)
-            # probs: (n_loci, n_all_samples, n_founders)
-            # → subset group → transpose to qtl2: (n_grp, n_founders, n_loci)
-            grp_probs = probs[:, grp_idx, :]  # (n_loci, n_grp, J)
-            grp_probs = np.transpose(grp_probs, (1, 2, 0)).astype(
-                np.float32
-            )  # (n_grp, J, n_loci)
+            # keep only this group's samples, then reorder axes to
+            # (n_grp, n_founders, n_loci) for the output file
+            grp_probs = probs[:, grp_idx, :]
+            grp_probs = np.transpose(grp_probs, (1, 2, 0)).astype(np.float32)
 
             grp = f.create_group(f"chr{chrom}")
             grp.create_dataset("locus_ids", data=np.array(lids, dtype="S"))
@@ -1357,7 +1311,6 @@ def build(args=None):
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # ── build genome cache (Python-native: no R) ──────────────────────────────
     logger.info("=== build-cache ===")
     logger.info(f"  gigamuga : {args.gigamuga}")
     logger.info(f"  gmap_dir : {args.gmap_dir}")

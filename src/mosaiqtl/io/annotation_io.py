@@ -1,4 +1,4 @@
-"""GTF annotation I/O — exon/CDS interval loading for gene-track visualisation."""
+"""gene annotation loading — exon/CDS intervals for drawing gene tracks in plots."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ _ATTR_RE = re.compile(r'(\w+)\s+"([^"]+)"')
 
 
 def _parse_attrs(attr_str: str) -> dict[str, str]:
-    """Parse GTF attribute string into a dict."""
+    """parse a GTF attribute string (key "value" pairs) into a dict."""
     return dict(_ATTR_RE.findall(attr_str))
 
 
@@ -28,39 +28,39 @@ def load_exons_from_gtf(
     *,
     canonical_only: bool = True,
 ) -> pd.DataFrame:
-    """Load exon and CDS intervals for all genes overlapping a genomic window.
+    """load exon and CDS intervals for all genes overlapping a genomic window.
 
-    Streams the GTF without loading it fully into memory.  When
-    *canonical_only* is True (default), only exon records tagged
-    ``Ensembl_canonical`` are kept — one transcript per gene.
+    reads the annotation file line by line rather than loading it fully into
+    memory. when *canonical_only* is True (default), only the one canonical
+    transcript per gene is kept, rather than every alternative transcript.
 
-    ``chrom`` is normalised internally so callers may pass either ``'8'`` or
-    ``'chr8'`` regardless of the current internal chromosome convention.
+    ``chrom`` accepts either ``'8'`` or ``'chr8'`` regardless of which
+    convention the caller uses elsewhere.
 
-    Parameters
+    parameters
     ----------
     gtf_path : str or Path
-        Path to ``.gtf`` or ``.gtf.gz`` annotation file.
+        path to ``.gtf`` or ``.gtf.gz`` annotation file.
     chrom : str
-        Chromosome identifier, with or without ``'chr'`` prefix.
+        chromosome identifier, with or without ``'chr'`` prefix.
     start_mb : float
-        Window start in Mb (inclusive).
+        window start in Mb (inclusive).
     end_mb : float
-        Window end in Mb (inclusive).
+        window end in Mb (inclusive).
     canonical_only : bool
-        Keep only records tagged ``Ensembl_canonical`` (default True).
+        keep only the canonical transcript per gene (default True).
 
-    Returns
+    returns
     -------
     pd.DataFrame
-        Columns: ``gene_symbol``, ``gene_id``, ``feature``, ``start_mb``,
-        ``end_mb``, ``strand``.  ``feature`` is one of ``'transcript'``,
-        ``'exon'``, ``'CDS'``, or ``'UTR'``.  ``transcript`` rows give the
-        authoritative full-transcript backbone extent; ``exon`` rows span the
-        full exon (UTR + CDS); ``CDS`` rows mark the coding portion; ``UTR``
-        rows mark the non-coding flanks.  Rows are not clipped to the window —
-        full intervals are returned so callers can render partial overlaps
-        correctly.
+        columns: ``gene_symbol``, ``gene_id``, ``feature``, ``start_mb``,
+        ``end_mb``, ``strand``. ``feature`` is one of ``'transcript'``,
+        ``'exon'``, ``'CDS'``, or ``'UTR'``. ``transcript`` rows give each
+        gene's full-length backbone; ``exon`` rows span the full exon
+        (coding + untranslated); ``CDS`` rows mark just the coding portion;
+        ``UTR`` rows mark the non-coding flanks. rows are not clipped to the
+        window — full intervals are returned so callers can render partial
+        overlaps correctly.
     """
     gtf_chrom = chrom if str(chrom).startswith("chr") else f"chr{chrom}"
     start_bp = int(start_mb * 1e6)
@@ -70,9 +70,8 @@ def load_exons_from_gtf(
     path = Path(gtf_path)
     opener = gzip.open if path.suffix == ".gz" else open
 
-    # transcript records are collected regardless of canonical_only so we
-    # always have the authoritative backbone extent; they are filtered to
-    # canonical at the gene level after collection.
+    # collect transcript records regardless of canonical_only, so the full
+    # gene backbone extent is always available; filtering happens afterward
     _transcript_rows: list[dict] = []
 
     with opener(path, "rt") as fh:
@@ -97,7 +96,11 @@ def load_exons_from_gtf(
                 continue
             attrs = _parse_attrs(fields[8])
             row = {
-                "gene_symbol": attrs.get("gene_symbol", ""),
+                # GTF stores the display symbol under the 'gene_name' attribute key
+                # (GENCODE convention); 'gene_symbol' is not a GTF attribute at all
+                # and always parsed as empty, silently disabling every downstream
+                # per-gene exon lookup.
+                "gene_symbol": attrs.get("gene_name", ""),
                 "gene_id": attrs.get("gene_id", ""),
                 "feature": feature,
                 "start_mb": feat_start / 1e6,
@@ -109,9 +112,9 @@ def load_exons_from_gtf(
             else:
                 rows.append(row)
 
-    # For genes that have exon/CDS/UTR rows, inject their transcript backbone.
-    # This gives the renderer an authoritative full-transcript extent even when
-    # the outermost exons don't reach the annotated transcript start/end.
+    # add the transcript backbone row for any gene that has exon/CDS/UTR
+    # rows, so plots can show the full transcript extent even where the
+    # outermost exons fall short of the annotated start/end
     if rows and _transcript_rows:
         genes_with_data = {r["gene_symbol"] for r in rows}
         for tr in _transcript_rows:
