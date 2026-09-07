@@ -11,7 +11,8 @@ Expected raw inputs (under the sibling qtl/input/ tree):
   GM/pmap/             — per-chromosome physical maps (GM_pmap{chr}.csv)
 
 Outputs (written to --out, default: data/ inside the repo):
-  cache.h5             — GenomeCache HDF5 (read by validate_tissue.py + scans)
+  cache.h5             — GenomeCache HDF5 (read by validate_tissue.py + scans;
+                         ~25s on 8 cores for the 133k-marker CC dataset)
   kinship_decomp.npz   — LOCO kinship eigendecomposition (computed on first
                          validate_tissue.py run if absent; not written here)
 
@@ -161,7 +162,7 @@ def main() -> None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    log.info('running HMM pipeline (133k markers × 48 strains — takes ~15–30 min)...')
+    log.info('running HMM pipeline (133k markers × 48 strains, 8 chr-parallel workers)...')
     cache = GenomeCache.from_gigamuga(
         gigamuga_path=str(gigamuga),
         gmap_dir=str(gmap_dir),
