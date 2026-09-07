@@ -3769,6 +3769,10 @@ def main() -> None:
     ap.add_argument('--celltype', type=str, default=None,
                     help='cell type label (e.g. myonuclei); runs scan in '
                          'celltypes/{ct}/ instead of whole-tissue {data}/')
+    ap.add_argument('--all-celltypes', action='store_true',
+                    help='discover all cell types under {data}/celltypes/, skip '
+                         'low-quality variants, and run the scan for each in '
+                         'natsorted order; mutually exclusive with --celltype')
     ap.add_argument('--compare-celltypes', action='store_true',
                     help='cross-cell-type comparison: reads per-CT scan outputs and '
                          'produces comparison plots; exits after completion')
@@ -3945,33 +3949,82 @@ def main() -> None:
     else:
         scan_chr = [c.strip() for c in args.chr.split(',')]
 
-    # ── cell-type mode: redirect data and output dirs ─────────────────────────
-    _ct_label = args.celltype
-    if _ct_label is not None:
-        _ct = re.sub(r'[^a-z0-9]+', '_', _ct_label.lower()).strip('_')
+    # ── mutual-exclusion guard ────────────────────────────────────────────────
+    if args.all_celltypes and args.celltype:
+        ap.error('--all-celltypes and --celltype are mutually exclusive')
+
+    scan_desc = scan_type if scan_type != 'L' else f'L ±{window_mb:.1f} Mb'
+
+    # ── helper: validate and return (run_data_dir, run_out_dir) for one CT ───
+    def _ct_dirs(ct_label: str) -> 'tuple[Path, Path] | None':
+        """Return (data_dir, out_dir) for *ct_label*, or None to skip."""
+        _ct = re.sub(r'[^a-z0-9]+', '_', ct_label.lower()).strip('_')
         if 'low' in _ct and 'qual' in _ct:
-            log.warning('skipping low-quality cell type %r — excluded by default', _ct_label)
-            sys.exit(0)
-        _ct_dir     = data_dir / 'celltypes' / _ct
-        _ct_exp_gi  = _ct_dir / f'exp_gene_info_{_ct}.csv'
+            log.warning('skipping low-quality cell type %r', ct_label)
+            return None
+        _ct_dir    = data_dir / 'celltypes' / _ct
+        _ct_exp_gi = _ct_dir / f'exp_gene_info_{_ct}.csv'
         if not _ct_dir.exists():
             log.error('cell-type directory not found: %s\n'
-                      'Run first: conda run -n bioinfo python validation/convert_h5ad.py'
-                      ' --tissue %s --celltype %s', _ct_dir, tissue, _ct_label)
-            sys.exit(1)
+                      'Run first: conda run -n bioinfo python validation/tools/convert_h5ad.py'
+                      ' --tissue %s --celltype %s', _ct_dir, tissue, ct_label)
+            return None
         if not _ct_exp_gi.exists():
             log.error('exp_gene_info_%s.csv not found — rerun convert_h5ad.py --celltype %s',
-                      _ct, _ct_label)
+                      _ct, ct_label)
+            return None
+        return _ct_dir, _ct_dir
+
+    # ── all-celltypes mode ────────────────────────────────────────────────────
+    if args.all_celltypes:
+        from natsort import natsorted  # already a dep; import locally to keep top-level clean
+        _cts_root = data_dir / 'celltypes'
+        if not _cts_root.is_dir():
+            log.error('celltypes/ directory not found under %s — run convert_h5ad.py first',
+                      data_dir)
             sys.exit(1)
-        _run_data_dir = _ct_dir
-        _run_out_dir  = _ct_dir
+        _all_cts = natsorted(d.name for d in _cts_root.iterdir() if d.is_dir())
+        log.info('--all-celltypes: discovered %d cell types under %s', len(_all_cts), _cts_root)
+        log.info('  py_ref    = %s', PY_REF)
+        _n_ok = _n_skip = _n_err = 0
+        for _ct_label in _all_cts:
+            _dirs = _ct_dirs(_ct_label)
+            if _dirs is None:
+                _n_skip += 1
+                continue
+            _run_data_dir, _run_out_dir = _dirs
+            log.info('=== cell type %r ===', _ct_label)
+            log.info('  data_dir  = %s', _run_data_dir)
+            log.info('  out_dir   = %s', _run_out_dir)
+            log.info('  scan_tag  = %s', _stag)
+            try:
+                run(_run_data_dir, _run_out_dir, sections, args.force, args.n_genes,
+                    scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,
+                    celltype=_ct_label, tissue=tissue, gtf_path=args.gtf)
+                _n_ok += 1
+            except Exception:
+                log.exception('cell type %r failed — continuing with remaining CTs', _ct_label)
+                _n_err += 1
+        log.info('--all-celltypes done: %d ok  %d skipped  %d errors',
+                 _n_ok, _n_skip, _n_err)
+        if _n_err:
+            sys.exit(1)
+        return
+
+    # ── single cell-type mode ─────────────────────────────────────────────────
+    _ct_label = args.celltype
+    if _ct_label is not None:
+        _dirs = _ct_dirs(_ct_label)
+        if _dirs is None:
+            sys.exit(0)
+        _run_data_dir, _run_out_dir = _dirs
     else:
+        _ct_label = None
         _run_data_dir = data_dir
         # whole-tissue output nests under its own 'whole/' dir, sibling to 'celltypes/'
         # (an explicit --out always wins — e.g. HPC merge redirects)
         _run_out_dir  = Path(args.out) if args.out else (data_dir / 'whole')
 
-    scan_desc = scan_type if scan_type != 'L' else f'L ±{window_mb:.1f} Mb'
     log.info('validate_tissue.py  tissue=%s  sections=%s  force=%s  n_genes=%s  '
              'scan_type=%s  chr=%s  celltype=%s',
              tissue, sorted(sections), args.force, args.n_genes, scan_desc, args.chr,

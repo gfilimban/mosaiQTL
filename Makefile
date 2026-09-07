@@ -8,6 +8,7 @@
         validate-phase4 \
         validate-tissue validate-tissue-scan validate-tissue-full \
         validate-tissue-plots validate-tissue-compare \
+        validate-tissue-all-cts \
         clean clean-phase3
 
 # ── lint ──────────────────────────────────────────────────────────────────────
@@ -81,6 +82,9 @@ validate-tissue-plots:
 
 validate-tissue-compare:
 	python validation/validate_tissue.py --compare
+
+validate-tissue-all-cts:
+	python validation/validate_tissue.py --all-celltypes
 
 # ── clean ─────────────────────────────────────────────────────────────────────
 clean:
