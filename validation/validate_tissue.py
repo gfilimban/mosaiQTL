@@ -3015,6 +3015,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _perms_per_hr = round(perm_n / _perm_scan_elapsed * 3600, 1)
 
                     _gw_thr, _ = get_gev_thresholds(_gw_max, percentile=0.95)
+                    if _gw_thr is not None and _gw_thr == 0.0:
+                        log.error(
+                            '  permutation null is all-zeros — kinship singular on every '
+                            'chromosome; threshold=0.0 is invalid.  Re-run with a wider '
+                            'scan window or check kinship_decomp for this cell type.')
+                        _gw_thr = None
                     log.info('  genome-wide GEV threshold=%s  (n_perms=%d)',
                              f'{_gw_thr:.3f}' if _gw_thr is not None else 'n/a', perm_n)
                     log.info('  scan loop: %.0fs for %d perms  (%.1f perms/hr)',

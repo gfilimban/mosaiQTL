@@ -369,9 +369,7 @@ def run_threshold_scans(
         _r_counts = _z_red.sum(axis=0)
         x_scan = (_z_red.T @ x) / _r_counts[:, None]
 
-    # z_mat path: expand kinship from strain level to sample level per chromosome
-    # (K_n = z_mat @ K_m @ z_mat.T) so the null LOD scale matches a sample-level
-    # scan (LOD = (n/2)·log10(rss0/rss1)) instead of a strain-mean scan.
+    # z_mat path: expand kinship to sample level (K_n = Z K_m Z^T)
     _n_kd: "dict | None" = None
     if z_mat is not None:
         _n_kd = {}
@@ -381,6 +379,8 @@ def run_threshold_scans(
             K_m = (evc_m * ev_m) @ evc_m.T
             K_n = z_mat @ K_m @ z_mat.T
             ev_n, evc_n = np.linalg.eigh(K_n)
+            ev_n = np.maximum(ev_n, 0.0)      # project onto PSD cone
+            K_n = (evc_n * ev_n) @ evc_n.T
             _n_kd[c] = {"values": ev_n, "vectors": evc_n, "K_n": K_n}
 
     def _ev_evc(c: str) -> "tuple[np.ndarray, np.ndarray]":

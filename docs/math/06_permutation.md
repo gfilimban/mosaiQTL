@@ -142,3 +142,67 @@ uncertainty and is the preferred method for publication.
 
 Default $\alpha = 0.05$ → 95% CI. P2-S10 gate: CI contains planted locus in
 $\geq 80\%$ of bootstrap replicates at moderate effect size.
+
+---
+
+## 7. PSD projection of the sample-level LOCO kinship
+
+**Context.** The parametric null draw in `run_threshold_scans` requires a
+positive semi-definite (PSD) kinship matrix $K_n$ at sample level.  When a
+$Z$-matrix is supplied (replicate design), $K_n$ is constructed as
+
+$$
+K_n = Z \, K_m \, Z^\top
+$$
+
+where $K_m$ is the $m \times m$ strain-level LOCO kinship reconstructed from
+its eigendecomposition `(evc_m * ev_m) @ evc_m.T`.
+
+**The problem.** $K_n$ is theoretically PSD — it is a Gram form of a PSD
+matrix.  In practice, $K_n$ is highly rank-deficient:
+$\operatorname{rank}(K_n) = \operatorname{rank}(K_m) = m$ while $K_n$ has
+shape $n \times n$ with $n \gg m$ (e.g. $416 \times 416$, rank 48 for the
+full-tissue ctxhipp dataset).  The triple-product accumulates floating-point
+error of $\mathcal{O}(10^{-7})$ in the $n - m$ theoretically-zero
+eigenvalues, producing a small negative minimum eigenvalue (observed:
+$-3.09 \times 10^{-7}$).  This triggers a false `KinshipSingularError`,
+exhausting all available chromosomes for the null draw and causing
+`run_threshold_scans` to return an all-zero null distribution — which
+collapses the GEV threshold to 0.0 and calls every gene as an eGene.
+
+**The fix.** Project $K_n$ onto the PSD cone immediately after construction
+by clamping negative eigenvalues to zero and reconstructing:
+
+$$
+K_n \leftarrow V \, \max(\Lambda, 0) \, V^\top
+$$
+
+where $V \Lambda V^\top = K_n$ (eigen-decomposition, already computed for
+kinship_decomp storage).  This is the nearest PSD matrix to $K_n$ in
+Frobenius norm [1].  The correction touches only the $n - m$ numerically-zero
+eigenvalues; the $m$ positive eigenvalues are unchanged.
+
+**Implementation** (`permutation.py::run_threshold_scans`, `_n_kd` block):
+
+```python
+ev_n, evc_n = np.linalg.eigh(K_n)
+ev_n = np.maximum(ev_n, 0.0)      # project: clamp numerical negatives to 0
+K_n  = (evc_n * ev_n) @ evc_n.T  # reconstruct truly-PSD K_n
+```
+
+**Why not Tikhonov regularisation?** Adding $\varepsilon I$ shifts *all*
+eigenvalues uniformly and changes the kinship structure for the $m$ positive
+eigenvalues that are correct.  Clamping only corrects the $n - m$ eigenvalues
+that are theoretically zero — the kinship signal is preserved exactly.
+
+---
+
+## References
+
+[1] Higham, N.J. (1988). Computing a nearest symmetric positive semidefinite
+matrix. *Linear Algebra and its Applications*, 103, 103–118.
+<https://doi.org/10.1016/0024-3795(88)90223-6>
+
+[2] Manichaikul, A. et al. (2006). Poor performance of bootstrap confidence
+intervals for the location of a quantitative trait locus. *Genetics*, 174(1),
+481–489. <https://doi.org/10.1534/genetics.106.061549>
