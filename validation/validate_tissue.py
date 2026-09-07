@@ -3709,9 +3709,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
 def main() -> None:
     ap = argparse.ArgumentParser(
         description='validate mosaiqtl on real pseudobulk data for any tissue')
-    ap.add_argument('--tissue', default='gastroc',
-                    help='tissue identifier used for file naming, e.g. gastroc, ctxhipp '
-                         '(default: gastroc)')
+    ap.add_argument('--tissue', required=True,
+                    help='tissue identifier used for file naming, e.g. gastroc, ctxhipp')
     ap.add_argument('--data', default=None,
                     help='tissue data root directory containing metadata.csv, '
                          'exp_gene_info_{tissue}.csv, counts_lognorm.h5 (or celltypes/); '
