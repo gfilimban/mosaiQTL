@@ -230,8 +230,10 @@ _MIQTL_HPC   = Path('/share/crsp/lab/seyedam/gfilimba/projects'
 _MIQTL_DIR   = _MIQTL_LOCAL if _MIQTL_LOCAL.exists() else _MIQTL_HPC
 GENOMECACHE  = _MIQTL_DIR / 'output' / 'genomecache'   # default for --build-cache
 
-# shared genomecache + kinship — tissue-agnostic (same CC mice, same mm39 genome)
-PY_REF = Path('validation/py_ref')
+# shared genomecache + kinship — tissue-agnostic (same CC mice, same mm39 genome).
+# built by: conda run -n bioinfo python validation/tools/build_cache.py
+_DATA_DIR = Path(__file__).resolve().parent.parent / 'data'
+PY_REF = _DATA_DIR if _DATA_DIR.is_dir() else Path('validation/py_ref')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3947,6 +3949,9 @@ def main() -> None:
     _ct_label = args.celltype
     if _ct_label is not None:
         _ct = re.sub(r'[^a-z0-9]+', '_', _ct_label.lower()).strip('_')
+        if 'low' in _ct and 'qual' in _ct:
+            log.warning('skipping low-quality cell type %r — excluded by default', _ct_label)
+            sys.exit(0)
         _ct_dir     = data_dir / 'celltypes' / _ct
         _ct_exp_gi  = _ct_dir / f'exp_gene_info_{_ct}.csv'
         if not _ct_dir.exists():
