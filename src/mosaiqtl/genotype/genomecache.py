@@ -201,6 +201,40 @@ class GenomeCache:
         """
         return np.asarray(self._data[chrom]["probs"][locus_idx])
 
+    def get_locus_metadata(self, chrom: str) -> tuple:
+        """Return locus_ids and positions without loading haplotype probabilities.
+
+        Cheaper than :meth:`get_chromosome` when only marker positions are needed
+        (e.g. building a locus-id → chromosome lookup).  ``locus_ids`` and
+        ``positions`` are already numpy arrays in RAM from the HDF5 load; only
+        ``probs`` is a lazy h5py Dataset that requires a disk read.
+
+        Parameters
+        ----------
+        chrom : str
+            Chromosome identifier (must be in :attr:`chromosomes`).
+
+        Returns
+        -------
+        locus_ids : np.ndarray of str
+        positions : np.ndarray of float
+            Both guaranteed sorted ascending (same guarantee as
+            :meth:`get_chromosome`).
+        """
+        d = self._data[chrom]
+        lids = d["locus_ids"]
+        pos = d["positions"]
+        if "_sort_ord" in d:
+            return lids[d["_sort_ord"]], pos[d["_sort_ord"]]
+        if len(pos) > 1 and not np.all(pos[:-1] <= pos[1:]):
+            ord_ = np.argsort(pos)
+            lids = lids[ord_]
+            pos = pos[ord_]
+            d["locus_ids"] = lids
+            d["positions"] = pos
+            d["_sort_ord"] = ord_
+        return lids, pos
+
     def get_chromosome(self, chrom):
         """retrieve all loci for a chromosome.
 

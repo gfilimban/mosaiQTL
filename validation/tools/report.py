@@ -472,7 +472,7 @@ def generate(out_path: Path, phase: 'int | None' = None) -> None:
             '| P2-S5 | sparcc_cache is pre-collapsed — second-pass has different loci set | '
             'Requires uncollapsed cache from GigaMUGA raw |',
             '| P2-S8 | allele_dir (founder SNP DB) not built | '
-            'PORT-08: `build_founder_allele_db(gm_csv)` → `founder_alleles.h5` |',
+            'PORT-08: `build_founder_allele_gm(gm_csv)` → `founder_alleles.h5` |',
         ]
 
     if phase is None:

@@ -115,7 +115,7 @@ src/mosaiqtl/
 │   ├── covariates.py       # build_covariate_matrix(); encode_sex()
 │   ├── anndata_io.py       # AnnData read helpers — backed=True, adata.raw.X  (planned)
 │   ├── qtl2_io.py          # R/qtl2 format I/O (rpy2, optional extra)            (planned)
-│   ├── results_io.py       # result serialisation with provenance header          (planned)
+│   ├── results_io.py       # build_eqtl_peak_df/write_eqtl_peak, build_eqtl_stats_df/write_eqtl_stats (SWE-11)
 │   └── offsets.py          # compute_offsets() — from_libsize / from_file / none (planned)
 ├── viz/                    # all visualisation
 │   ├── CLAUDE.md
@@ -125,7 +125,7 @@ src/mosaiqtl/
 │   ├── validation.py       # Phase 2 QC plots only (S1–S11, not shipped)
 │   └── celltypes.py        # cell-type dotplots, per-gene summaries               (planned)
 ├── pipeline.py             # discover, characterize, resolve
-├── cli.py                  # Click CLI: fit-null / scan / permute / effects / report (planned)
+├── cli.py                  # Click CLI: fit-null / scan / permute / effects / report
 └── utils.py                # rint(), build_z_matrix(), align_samples()
 ```
 
@@ -720,7 +720,7 @@ numpy >= 1.26        # array ops, memmap
 pandas >= 2.2        # result tables, covariate matrices
 scipy >= 1.13        # stats, sparse
 h5py >= 3.11         # HDF5 genome cache
-anndata >= 0.10      # AnnData input format
+anndata >= 0.11      # AnnData input format
 seaborn >= 0.13      # all plotting
 matplotlib >= 3.9    # figure backend
 pydantic >= 2.7      # config and parameter validation

@@ -2299,8 +2299,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _chr_data_ch = precompute_chromosome(
                         cache, ch, _evals_ch, _evecs_ch, z_mat=_z_sub_ch)
                     _chr_precomputed = True
-                    log.info('    chr%s: H precomputed (%d loci  %d samples)',
-                             ch, len(_chr_data_ch['locus_ids']), _z_sub_ch.shape[0])
+                    log.info('    chr%s: H precomputed (%d loci)',
+                             ch, len(_chr_data_ch['locus_ids']))
 
                 log.info('  running LMM scan on chr%s ...', ch)
                 t_chr = time.perf_counter()
@@ -3043,7 +3043,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             log.info('\nSNP scan: marginal LMM fine-mapping of imputed biallelic SNPs at eGene peak loci...')
             if not ALLELE_H5.exists():
                 log.info('  %s founder_alleles.h5 not found at %s — '
-                         'build with build_founder_allele_db()', SKIP, ALLELE_H5)
+                         'build with build_founder_allele_gm()', SKIP, ALLELE_H5)
                 results['snp_lod_r'] = None
             elif egenes_df is None or len(egenes_df) == 0:
                 log.info('  %s no eGenes — run S4+S5 first', SKIP)

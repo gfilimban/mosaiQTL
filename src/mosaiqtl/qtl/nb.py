@@ -75,8 +75,10 @@ def _tmm_norm_factors(counts_mat, ref_col=None, trim_m=0.3, trim_a=0.05):
     ref_col    : int or None  reference sample's column index; if None, picks
                  the sample whose 75th-percentile count is closest to the
                  dataset-wide median (a standard default choice)
-    trim_m     : float  fraction of extreme fold-change genes to drop from each tail (default 0.3)
-    trim_a     : float  fraction of extreme expression-level genes to drop from each tail (default 0.05)
+    trim_m     : float  fraction of extreme fold-change genes to drop from
+        each tail (default 0.3)
+    trim_a     : float  fraction of extreme expression-level genes to drop from
+        each tail (default 0.05)
     returns    : (n_samples,) log-scale normalization factors
     """
     counts_mat = np.asarray(counts_mat, dtype=np.float64)

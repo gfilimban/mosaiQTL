@@ -32,7 +32,11 @@ quick start:
 import numpy as np
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from .genotype.genomecache import GenomeCache
 
 import pandas as pd
 from scipy import stats as _sp_stats
@@ -183,9 +187,46 @@ _RUN_COLS: list[str] = [
 # Haplotype scan — all cis loci × all scanned genes (intermediate, per-chromosome)
 EQTL_SCAN_COLS: list[str] = _LOCUS_COLS + ["peak_locus"]
 
-# Haplotype peak — filtered to peak_locus == 'T', peak_locus dropped,
-# per-founder effects + significance + run metadata appended.
-EQTL_PEAK_COLS: list[str] = _LOCUS_COLS + _FOUNDER_EFFECT_COLS + _SIG_COLS + _RUN_COLS
+# Haplotype peak — one row per eGene; gene-first column order so the file is
+# immediately readable before Sanger fine-mapping populates the allele block.
+# _LOCUS_COLS retains locus-first order for EQTL_SCAN_COLS (per-locus intermediate).
+EQTL_PEAK_COLS: list[str] = [
+    # ── gene identity ─────────────────────────────────────────────────────────
+    "gene_id",
+    "gene_symbol",
+    # ── peak location ─────────────────────────────────────────────────────────
+    "chr",
+    "pos",  # integer bp (GRCm39); from peak_mb × 1e6
+    # ── association stats ─────────────────────────────────────────────────────
+    "lod",
+    "pval_nominal",
+    "log10p_nominal",
+    "cis_dist_mb",
+    # ── model diagnostics ─────────────────────────────────────────────────────
+    "h2_null_chr",
+    "sd_phenotype",
+    "n_sample",
+    # ── per-founder haplotype effects ─────────────────────────────────────────
+    *_FOUNDER_EFFECT_COLS,
+    # ── significance (Storey FDR; NaN until S6.5 per-gene calibration runs) ──
+    *_SIG_COLS,
+    # ── allele annotation (GM locus ID now; SPDI once Sanger fine-mapping runs)
+    "variant",  # GM: peak_locus ID; Sanger: SPDI {acc}:{pos-1}:{ref}:{alt}
+    "ref",  # B6J allele = GRCm39 reference (NaN until Sanger)
+    "effect_allele",  # non-ref allele for this haplotype contrast (NaN until Sanger)
+    "other_allele",
+    "hard_call_dosage",  # constant 'F' — scan uses haplotype probs, not hard calls
+    "ref_founders",  # comma-joined founders carrying ref (NaN until Sanger)
+    "alt_founders",
+    "af",
+    "maf",
+    "mac",
+    "ma_sample",
+    "effect_size",  # haplotype contrast c_k^T β (NaN until Sanger)
+    "se_effect_size",
+    # ── run metadata ──────────────────────────────────────────────────────────
+    *_RUN_COLS,
+]
 
 # Sanger fine-mapping checkpoint — CS members + lead SNP per eGene.
 # hard_call_dosage excluded (N/A at Sanger resolution).
@@ -254,6 +295,8 @@ __all__ = [
     "call_egenes",
     "calibrate_egenes_storey",
     "finalize_egene_summary",
+    "finemap_egene",
+    "finemap_egenes",
     "discover",
     "characterize",
     "resolve",
@@ -838,3 +881,250 @@ def _run_sqtl(
             psi_j, cache, covariates, kinship_decomp=kd, phenotype_id=jid
         )
     return results
+
+
+# ── Layer 4 — Sanger fine-mapping ────────────────────────────────────────────
+
+
+def finemap_egene(
+    gene_id: str,
+    chr_: str,
+    phenotype: np.ndarray,
+    genomecache: "GenomeCache",
+    alleles_df: pd.DataFrame,
+    hap_peak_pos: int,
+    hap_peak_variant: str,
+    hap_peak_lod: float,
+    ci_lo_bp: int,
+    ci_hi_bp: int,
+    covariates: Optional[np.ndarray] = None,
+    kinship_decomp: Optional[dict] = None,
+    founder_order: Optional[list] = None,
+    ref_founder: str = "B6J",
+    gene_symbol: str = "",
+    prior_var: float = 0.04,
+    coverage: float = 0.95,
+    n_founders: int = 7,
+) -> Optional[pd.DataFrame]:
+    """Fine-map one eGene within its LOD-drop CI using Wakefield ABF.
+
+    Filters alleles_df to the CI window, builds per-founder dosages via
+    make_alt_mask, runs imputed_snp_scan_h2lmm, and returns a credible-set
+    DataFrame in EQTL_FINEMAPPING_COLS layout.
+
+    Parameters
+    ----------
+    gene_id : str  Ensembl ID.
+    chr_ : str  Chromosome key matching genomecache.
+    phenotype : np.ndarray (n,)  Sample-level expression vector.
+    genomecache : GenomeCache  Already loaded; probs loaded lazily per chr.
+    alleles_df : pd.DataFrame  Output of load_founder_alleles for chr_.
+    hap_peak_pos : int  Peak position (bp) from the haplotype scan.
+    hap_peak_variant : str  Locus ID of the haplotype peak.
+    hap_peak_lod : float  LOD at the haplotype peak.
+    ci_lo_bp : int  LOD-drop CI lower bound (bp).
+    ci_hi_bp : int  LOD-drop CI upper bound (bp).
+    covariates : np.ndarray (n, p) or None
+    kinship_decomp : dict or None  LOCO kinship decomposition.
+    founder_order : list[str] or None  Canonical founder names; inferred from
+        genomecache when None.
+    ref_founder : str  REF founder for biallelic collapse (default 'B6J').
+    gene_symbol : str  Display name written into output columns.
+    prior_var : float  Wakefield prior variance (default 0.04).
+    coverage : float  Credible-set coverage (default 0.95).
+    n_founders : int  Number of founders for chi2 df (default 7).
+
+    Returns
+    -------
+    pd.DataFrame in EQTL_FINEMAPPING_COLS layout, or None when no Sanger SNPs
+    fall within the CI window.
+    """
+    from .genotype.snp_db import make_alt_mask
+    from .qtl.snp_scan import imputed_snp_scan_h2lmm
+    from .qtl.imputation import fine_map_region
+    from .io.results_io import build_eqtl_finemapping_df
+
+    window = alleles_df[
+        (alleles_df["pos_bp"] >= ci_lo_bp) & (alleles_df["pos_bp"] <= ci_hi_bp)
+    ].reset_index(drop=True)
+    if window.empty:
+        logger.debug(
+            "finemap_egene: %s — no SNPs in CI window [%d, %d]",
+            gene_id,
+            ci_lo_bp,
+            ci_hi_bp,
+        )
+        return None
+
+    f_order = founder_order if founder_order is not None else list(genomecache.founders)
+    alt_mask = make_alt_mask(window, f_order, ref_founder=ref_founder)
+    snp_genos = pd.DataFrame(alt_mask, index=window["marker"].values, columns=f_order)
+    snp_genos["chr"] = window["chr"].values
+    snp_genos["pos_mb"] = window["pos_mb"].values
+
+    snp_df = imputed_snp_scan_h2lmm(
+        phenotype,
+        genomecache,
+        snp_genos,
+        covariates,
+        kinship_decomp,
+        phenotype_id=gene_id,
+    )
+    if snp_df is None or snp_df.empty:
+        return None
+
+    fm_df = fine_map_region(
+        lod=snp_df["lod"].to_numpy(),
+        beta_dosage=snp_df["beta_dosage"].to_numpy(),
+        n=int(snp_df["n"].iloc[0]),
+        snp_ids=snp_df["snp"].to_numpy(),
+        pos_mb=snp_df["pos_mb"].to_numpy(),
+        prior_var=prior_var,
+        coverage=coverage,
+    )
+
+    return build_eqtl_finemapping_df(
+        fm_df,
+        gene_id,
+        chr_,
+        hap_peak_pos,
+        hap_peak_variant,
+        hap_peak_lod,
+        ci_lo_bp=ci_lo_bp,
+        ci_hi_bp=ci_hi_bp,
+        gene_symbol=gene_symbol,
+        alleles_df=window,
+        n_founders=n_founders,
+    )
+
+
+def finemap_egenes(
+    egene_df: pd.DataFrame,
+    phenotype_matrix: np.ndarray,
+    gene_ids: list,
+    genomecache: "GenomeCache",
+    alleles_h5: "Path | str",
+    out_dir: "Path | str",
+    covariates: Optional[np.ndarray] = None,
+    kinship_decomp: Optional[dict] = None,
+    founder_order: Optional[list] = None,
+    ref_founder: str = "B6J",
+    prior_var: float = 0.04,
+    coverage: float = 0.95,
+    n_founders: int = 7,
+    tag: str = "",
+) -> tuple:
+    """Fine-map all eGenes in egene_df using Wakefield ABF.
+
+    Loads Sanger alleles once per chromosome, runs finemap_egene per eGene
+    within its LOD-drop CI, then writes eqtl_finemapping_{tag}.csv and
+    eqtl_finemapping_peak_{tag}.csv into out_dir.
+
+    Parameters
+    ----------
+    egene_df : pd.DataFrame  eqtl_peak.csv rows (EQTL_PEAK_COLS layout);
+        must contain gene_id, chr, pos, lod, variant, ci_lo_bp, ci_hi_bp.
+    phenotype_matrix : np.ndarray (n_genes, n_samples)
+    gene_ids : list[str]  Ordered list matching axis-0 of phenotype_matrix.
+    genomecache : GenomeCache
+    alleles_h5 : Path  Allele database built by build_founder_allele_gm.
+    out_dir : Path  Directory for output files.
+    covariates : np.ndarray (n, p) or None
+    kinship_decomp : dict or None  LOCO kinship decomposition (recommended).
+    founder_order : list[str] or None  Inferred from genomecache when None.
+    ref_founder : str  REF founder (default 'B6J').
+    prior_var : float  Wakefield prior variance (default 0.04).
+    coverage : float  Credible-set coverage (default 0.95).
+    n_founders : int  Founder count for chi2 df (default 7).
+    tag : str  Appended to output filenames; e.g. 'gastroc_Lw1'.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.DataFrame]  (finemapping_df, finemapping_peak_df).
+    """
+    from pathlib import Path as _Path
+    from .genotype.snp_db import load_founder_alleles
+    from .io.results_io import (
+        build_eqtl_finemapping_peak_df,
+        write_eqtl_finemapping,
+        write_eqtl_finemapping_peak,
+    )
+
+    out_dir = _Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    _required = {"gene_id", "chr", "pos", "lod", "variant", "ci_lo_bp", "ci_hi_bp"}
+    _missing = _required - set(egene_df.columns)
+    if _missing:
+        raise ValueError(f"egene_df missing required columns: {sorted(_missing)}")
+
+    gene_idx = {g: i for i, g in enumerate(gene_ids)}
+    f_order = founder_order if founder_order is not None else list(genomecache.founders)
+
+    fm_frames: list = []
+    fp_frames: list = []
+
+    for chrom, chrom_df in egene_df.groupby("chr"):
+        chrom = str(chrom)
+        logger.info(
+            "finemap_egenes: loading alleles for %s (%d eGenes)", chrom, len(chrom_df)
+        )
+        try:
+            alleles_chr = load_founder_alleles(alleles_h5, chrom=chrom)
+        except KeyError:
+            logger.warning("finemap_egenes: %s not in alleles file — skipping", chrom)
+            continue
+
+        for _, row in chrom_df.iterrows():
+            gid = str(row["gene_id"])
+            if gid not in gene_idx:
+                logger.warning("finemap_egenes: %s not in gene_ids — skipping", gid)
+                continue
+            result = finemap_egene(
+                gene_id=gid,
+                chr_=chrom,
+                phenotype=phenotype_matrix[gene_idx[gid]],
+                genomecache=genomecache,
+                alleles_df=alleles_chr,
+                hap_peak_pos=int(row["pos"]),
+                hap_peak_variant=str(row["variant"]),
+                hap_peak_lod=float(row["lod"]),
+                ci_lo_bp=int(row["ci_lo_bp"]),
+                ci_hi_bp=int(row["ci_hi_bp"]),
+                covariates=covariates,
+                kinship_decomp=kinship_decomp,
+                founder_order=f_order,
+                ref_founder=ref_founder,
+                gene_symbol=str(row.get("gene_symbol", "")),
+                prior_var=prior_var,
+                coverage=coverage,
+                n_founders=n_founders,
+            )
+            if result is None or result.empty:
+                continue
+            fm_frames.append(result)
+            peak_row = build_eqtl_finemapping_peak_df(result)
+            if not peak_row.empty:
+                fp_frames.append(peak_row)
+
+    suffix = f"_{tag}" if tag else ""
+    if fm_frames:
+        fm_out = pd.concat(fm_frames, ignore_index=True)
+        fp_out = (
+            pd.concat(fp_frames, ignore_index=True)
+            if fp_frames
+            else pd.DataFrame(columns=EQTL_FINEMAPPING_PEAK_COLS)
+        )
+    else:
+        fm_out = pd.DataFrame(columns=EQTL_FINEMAPPING_COLS)
+        fp_out = pd.DataFrame(columns=EQTL_FINEMAPPING_PEAK_COLS)
+
+    write_eqtl_finemapping(fm_out, out_dir / f"eqtl_finemapping{suffix}.csv")
+    write_eqtl_finemapping_peak(fp_out, out_dir / f"eqtl_finemapping_peak{suffix}.csv")
+    logger.info(
+        "finemap_egenes: %d CS SNPs across %d eGenes written to %s",
+        len(fm_out),
+        len(fp_out),
+        out_dir,
+    )
+    return fm_out, fp_out

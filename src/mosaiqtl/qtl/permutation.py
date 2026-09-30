@@ -132,20 +132,21 @@ def _draw_kinship_re(
     sigma2_g: float,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """draw a random effect u ~ N(0, K·sigma2_g), checking K is positive semi-definite first.
+    """draw a random effect u ~ N(0, K·sigma2_g) via eigendecomposition.
 
-    raises KinshipSingularError when K's smallest eigenvalue is more negative
-    than the largest eigenvalue × n² × machine epsilon (see KinshipSingularError).
+    projects K onto the PSD cone before drawing (clamps near-zero negative
+    eigenvalues that arise from floating-point error in rank-deficient LOCO
+    kinship matrices).  raises KinshipSingularError only when min_eig < -1e-4,
+    which indicates a genuine singularity rather than numerical noise.
     """
-    eigs = np.linalg.eigvalsh(K)
-    min_eig = float(eigs.min())
-    psd_tol = float(eigs.max()) * len(K) ** 2 * float(np.finfo(float).eps)
-    if min_eig < -psd_tol:
+    ev, evc = np.linalg.eigh(K)
+    if float(ev.min()) < -1e-4:
         raise KinshipSingularError(
-            f"LOCO kinship not PSD (min_eig={min_eig:.2e}); "
-            "skipping chromosome — mirrors R behaviour on singular K"
+            f"LOCO kinship genuinely singular (min_eig={float(ev.min()):.2e})"
         )
-    return rng.multivariate_normal(np.zeros(len(K)), K * sigma2_g)
+    # project onto PSD cone; draw u = evc @ diag(sqrt(ev_+ * sigma2_g)) @ z
+    sqrt_ev = np.sqrt(np.maximum(ev, 0.0) * sigma2_g)
+    return evc @ (sqrt_ev * rng.standard_normal(len(ev)))
 
 
 def _draw_parametric_batch(
@@ -160,11 +161,11 @@ def _draw_parametric_batch(
 ) -> np.ndarray:
     """draw n_perms parametric null phenotypes at once.
 
-    draws all the random-effect and residual-noise vectors together, then
-    rank-permutes y by each null column's order — one positive-semi-definite
-    check up front instead of one per permutation.
+    uses the eigendecomposition (ev, evc) already in hand to project K onto the
+    PSD cone, draw all random-effect vectors in one matrix multiply, then
+    rank-permute y by each null column's order.
 
-    raises KinshipSingularError if K is not positive semi-definite.
+    raises KinshipSingularError only when min(ev) < -1e-4 (genuine singularity).
 
     returns
     -------
@@ -174,17 +175,13 @@ def _draw_parametric_batch(
     x_rot = evc.T @ x
     beta, sigma2_g, sigma2_e = _null_fit_params(y_rot, x_rot, ev, h2)
 
-    eigs = np.linalg.eigvalsh(K)
-    min_eig = float(eigs.min())
-    psd_tol = float(eigs.max()) * len(K) ** 2 * float(np.finfo(float).eps)
-    if min_eig < -psd_tol:
+    if float(ev.min()) < -1e-4:
         raise KinshipSingularError(
-            f"LOCO kinship not PSD (min_eig={min_eig:.2e}); "
-            "skipping chromosome — mirrors R behaviour on singular K"
+            f"LOCO kinship genuinely singular (min_eig={float(ev.min()):.2e})"
         )
-
-    # draw every random effect at once rather than looping over permutations
-    U_mat = rng.multivariate_normal(np.zeros(len(y)), K * sigma2_g, size=n_perms).T
+    # project onto PSD cone; draw U = evc @ diag(sqrt(ev_+ * sigma2_g)) @ Z
+    sqrt_ev = np.sqrt(np.maximum(ev, 0.0) * sigma2_g)
+    U_mat = evc @ (sqrt_ev[:, None] * rng.standard_normal((len(ev), n_perms)))
     E_mat = rng.normal(0.0, np.sqrt(max(sigma2_e, 0.0)), size=(len(y), n_perms))
     Y_null = (x @ beta)[:, None] + U_mat + E_mat
 
@@ -214,6 +211,7 @@ def run_threshold_scans(
     batch_size=500,
     gene_pos_mb=None,
     window_mb=None,
+    h2=None,
 ):
     """scan null phenotype columns to build the peak-LOD null distribution.
 
@@ -283,6 +281,13 @@ def run_threshold_scans(
         requires `chrom` to be given (the window anchors to one chromosome) —
         raises ValueError if `chrom` is None.
     window_mb      : float or None  half-window in Mb around gene_pos_mb.
+    h2             : float or None  fixed h² to use for all chromosomes.
+        when provided, skips the internal ML re-estimation of h² from the
+        phenotype (which uses the null model and can differ substantially from
+        the scan h² when there is a strong QTL on the ref chromosome).  pass
+        the scan-estimated h² (e.g. median h² across genes from allele_effects)
+        to ensure the null draw is calibrated at the same heritability as the
+        real scans.
 
     returns
     -------
@@ -369,9 +374,7 @@ def run_threshold_scans(
         _r_counts = _z_red.sum(axis=0)
         x_scan = (_z_red.T @ x) / _r_counts[:, None]
 
-    # z_mat path: expand kinship from strain level to sample level per chromosome
-    # (K_n = z_mat @ K_m @ z_mat.T) so the null LOD scale matches a sample-level
-    # scan (LOD = (n/2)·log10(rss0/rss1)) instead of a strain-mean scan.
+    # z_mat path: expand kinship to sample level (K_n = Z K_m Z^T)
     _n_kd: "dict | None" = None
     if z_mat is not None:
         _n_kd = {}
@@ -381,6 +384,8 @@ def run_threshold_scans(
             K_m = (evc_m * ev_m) @ evc_m.T
             K_n = z_mat @ K_m @ z_mat.T
             ev_n, evc_n = np.linalg.eigh(K_n)
+            ev_n = np.maximum(ev_n, 0.0)  # project onto PSD cone
+            K_n = (evc_n * ev_n) @ evc_n.T
             _n_kd[c] = {"values": ev_n, "vectors": evc_n, "K_n": K_n}
 
     def _ev_evc(c: str) -> "tuple[np.ndarray, np.ndarray]":
@@ -403,10 +408,13 @@ def run_threshold_scans(
         y0 = (_z_red.T @ y0) / _r_counts
     h2_fixed = {}
     for c in chrs:
-        ev, evc = _ev_evc(c)
-        h2_fixed[c], _ = lmm_module.estimate_h2_null(
-            evc.T @ y0, evc.T @ x_scan, ev, method="ml"
-        )
+        if h2 is not None:
+            h2_fixed[c] = float(h2)
+        else:
+            ev, evc = _ev_evc(c)
+            h2_fixed[c], _ = lmm_module.estimate_h2_null(
+                evc.T @ y0, evc.T @ x_scan, ev, method="ml"
+            )
 
     _ref_chr_used = next(iter(h2_fixed)) if h2_fixed else "none"
     _ref_h2 = h2_fixed.get(_ref_chr_used, float("nan"))

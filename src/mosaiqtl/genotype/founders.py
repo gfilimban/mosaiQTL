@@ -179,12 +179,37 @@ def display_founders(cache_founders: list[str]) -> list[str]:
     return [_inv.get(f, _inv.get(f.upper(), f)) for f in cache_founders]
 
 
+def strip_j(name: str) -> str:
+    """Return the human-readable display name for a founder or F1 strain.
+
+    Strips the trailing ``J`` colony suffix from all strains except ``AJ``
+    (where the J is part of the strain identity, not a suffix).
+
+    Examples
+    --------
+    >>> strip_j('PWKJ')
+    'PWK'
+    >>> strip_j('B6J')
+    'B6'
+    >>> strip_j('AJ')
+    'AJ'
+    >>> strip_j('B6PWKF1J')
+    'B6PWKF1'
+    """
+    if name == "AJ":
+        return "AJ"
+    if name.endswith("J"):
+        return name[:-1]
+    return name
+
+
 __all__ = [
     "FOUNDER_ORDER",
     "FOUNDER_CODE",
     "FOUNDER_COLORS",
     "F1_COLORS",
     "STRAIN_ORDER",
+    "strip_j",
     "COLOR_NEUTRAL_DARK",
     "COLOR_CC_FALLBACK",
     "COLOR_NEUTRAL_LIGHT",

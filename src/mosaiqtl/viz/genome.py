@@ -17,6 +17,7 @@ from ._theme import (
     INK,
     MUTED,
     CHR_BANDS,
+    COLOR_UTR,
     CMAP_MAGNITUDE,
     CMAP_SIGNED as _CMAP_EFFECT,
     KW_THRESHOLD,
@@ -130,9 +131,8 @@ def lod_profile(
     ax.set_xlabel(
         f"Chr {chrom} position (Mb)" if chrom else "Position (Mb)",
         fontsize=13,
-        fontweight="bold",
     )
-    ax.set_ylabel("LOD Score", fontsize=13, fontweight="bold")
+    ax.set_ylabel("LOD Score", fontsize=13)
     ax.tick_params(labelsize=11)
     if threshold is not None:
         ax.axhline(threshold, **KW_THRESHOLD)
@@ -141,28 +141,29 @@ def lod_profile(
     if peak_pos is not None:
         ax.axvline(
             peak_pos,
-            color=BRAND_ACCENT,
-            linewidth=0.8,
-            linestyle=":",
-            zorder=1,
+            color=BRAND_SECONDARY,
+            linewidth=1.3,
+            linestyle="-",
+            zorder=3,
+            label="peak",
         )
-        if annotate_peak:
-            peak_idx = int(np.argmin(np.abs(positions - peak_pos)))
-            peak_lod = float(lod[peak_idx])
-            _ann = f"LOD={peak_lod:.1f}"
-            if locus_id:
-                _ann = f"{locus_id}\n{_ann}"
-            # switch text alignment so the label doesn't run off the plot edge
-            _x_mid = float(positions[0] + positions[-1]) / 2.0
-            _peak_ha = "right" if float(peak_pos) > _x_mid else "left"
-            ax.text(
-                peak_pos,
-                peak_lod,
-                _ann,
-                fontsize=10,
-                color=BRAND_ACCENT,
-                va="bottom",
-                ha=_peak_ha,
+        if annotate_peak and locus_id:
+            # place label beside (not on) the line: anchor at the line in
+            # data-x / axes-y coords, then shift 9 pts right in display space.
+            # ha/va="center" keeps the rotated text block centered on that
+            # offset point so it doesn't overlap the line.
+            ax.annotate(
+                locus_id,
+                xy=(peak_pos, 0.5),
+                xycoords=ax.get_xaxis_transform(),
+                xytext=(9, 0),
+                textcoords="offset points",
+                fontsize=9,
+                color=BRAND_SECONDARY,
+                va="center",
+                ha="center",
+                rotation=-90,
+                annotation_clip=False,
             )
     # gene name in the upper-left corner
     if gene:
@@ -2915,6 +2916,7 @@ def locus_panels_per_chr(
     thr_by_chr: Optional[dict[str, Optional[float]]] = None,
     *,
     priority_genes: Optional[dict[str, str]] = None,
+    gene_list: Optional[list[str]] = None,
     tss_mb_map: Optional[dict[str, float]] = None,
     near_tss_mb_map: Optional[dict[str, float]] = None,
     genes_df: Optional[pd.DataFrame] = None,
@@ -2939,7 +2941,14 @@ def locus_panels_per_chr(
     thr_by_chr : dict, optional
         Per-chromosome GEV threshold.
     priority_genes : dict, optional
-        {chr: gene_symbol}.
+        {chr: gene_symbol}.  Used only when *gene_list* is ``None``; overrides
+        the automatic top-per-chromosome selection for specified chromosomes.
+    gene_list : list[str], optional
+        Explicit list of gene symbols to produce panels for.  When provided,
+        one figure is generated per gene and the returned dict is keyed by
+        gene_symbol.  When ``None`` (default), one figure is generated per
+        chromosome showing the highest-LOD eGene (or the *priority_genes*
+        override) and the dict is keyed by chromosome string.
     tss_mb_map : dict, optional
         {gene_symbol: tss_mb}. When provided, adds a zoomed LOD panel per figure.
     near_tss_mb_map : dict, optional
@@ -2959,79 +2968,95 @@ def locus_panels_per_chr(
     Returns
     -------
     dict[str, plt.Figure]
+        Keyed by chromosome string when *gene_list* is ``None``, or by
+        gene_symbol when *gene_list* is provided.
     """
     thr = thr_by_chr or {}
-    prio = priority_genes or {}
     chr_vals = lod_df["chr"].astype(str)
-    chrs = _ordered_chrs(chr_vals)
 
-    out: dict[str, plt.Figure] = {}
-    for c in chrs:
-        lod_c = lod_df[chr_vals == c]
-        if lod_c.empty:
-            continue
-
-        if eff_df is not None:
-            eff_c = eff_df[eff_df["chr"].astype(str) == c]
-            top_gene = (
-                str(eff_c.loc[eff_c["peak_lod"].idxmax(), "gene_symbol"])
-                if not eff_c.empty
-                else ""
-            )
-        else:
-            gene_max = lod_c.groupby("gene_symbol")["lod"].max()
-            top_gene = str(gene_max.idxmax()) if len(gene_max) > 0 else ""
-
-        if prio.get(c):
-            candidates = (
-                eff_df[eff_df["chr"].astype(str) == c]["gene_symbol"].values
-                if eff_df is not None
-                else lod_c["gene_symbol"].unique()
-            )
-            if prio[c] in candidates:
-                top_gene = prio[c]
-
-        if not top_gene:
-            continue
-        lod_top = lod_c[lod_c["gene_symbol"] == top_gene].sort_values("pos_mb")
-        if lod_top.empty:
-            continue
+    def _build_one(gene: str, chrom: str) -> Optional[plt.Figure]:
+        lod_g = lod_df[(chr_vals == chrom) & (lod_df["gene_symbol"] == gene)]
+        lod_g = lod_g.sort_values("pos_mb")
+        if lod_g.empty:
+            return None
 
         peak_betas: Optional[np.ndarray] = None
         peak_pos: Optional[float] = None
         peak_locus_id: Optional[str] = None
         if eff_df is not None and founders is not None:
             eff_row_df = eff_df[
-                (eff_df["chr"].astype(str) == c) & (eff_df["gene_symbol"] == top_gene)
+                (eff_df["chr"].astype(str) == chrom) & (eff_df["gene_symbol"] == gene)
             ]
             if not eff_row_df.empty:
                 beta_cols = [b for b in eff_row_df.columns if b.startswith("beta_")]
                 row0 = eff_row_df.iloc[0]
                 peak_betas = np.array([float(row0[b]) for b in beta_cols])
-                peak_pos = float(row0.get("peak_mb", lod_top["pos_mb"].iloc[0]))
+                peak_pos = float(row0.get("peak_mb", lod_g["pos_mb"].iloc[-1]))
                 if "peak_locus" in eff_row_df.columns:
                     peak_locus_id = str(row0["peak_locus"])
 
-        thr_val: Optional[float] = thr.get(c)
-        tss = (tss_mb_map or {}).get(top_gene)
-        near_tss = (near_tss_mb_map or {}).get(top_gene)
-        fig = locus_panel(
-            lod_top["pos_mb"].values,
-            lod_top["lod"].values,
+        return locus_panel(
+            lod_g["pos_mb"].values,
+            lod_g["lod"].values,
             founders or [],
             peak_betas=peak_betas,
             peak_pos=peak_pos,
-            tss_mb=tss,
-            near_tss_mb=near_tss,
+            tss_mb=(tss_mb_map or {}).get(gene),
+            near_tss_mb=(near_tss_mb_map or {}).get(gene),
             genes_df=genes_df,
             zoom_window_mb=zoom_window_mb,
-            threshold=thr_val,
-            chrom=c,
-            highlight_gene=top_gene,
+            threshold=thr.get(chrom),
+            chrom=chrom,
+            highlight_gene=gene,
             gtf_path=gtf_path,
             peak_locus=peak_locus_id,
         )
-        out[c] = fig
+
+    out: dict[str, plt.Figure] = {}
+
+    if gene_list is not None:
+        # ── user-specified gene list: one figure per gene, keyed by gene_symbol ──
+        for gene in gene_list:
+            rows = lod_df[lod_df["gene_symbol"] == gene]
+            if rows.empty:
+                continue
+            chrom = str(rows["chr"].iloc[0])
+            fig = _build_one(gene, chrom)
+            if fig is not None:
+                out[gene] = fig
+    else:
+        # ── automatic: one figure per chromosome, highest-LOD eGene ─────────────
+        prio = priority_genes or {}
+        for c in _ordered_chrs(chr_vals):
+            lod_c = lod_df[chr_vals == c]
+            if lod_c.empty:
+                continue
+
+            if eff_df is not None:
+                eff_c = eff_df[eff_df["chr"].astype(str) == c]
+                top_gene = (
+                    str(eff_c.loc[eff_c["peak_lod"].idxmax(), "gene_symbol"])
+                    if not eff_c.empty
+                    else ""
+                )
+            else:
+                gene_max = lod_c.groupby("gene_symbol")["lod"].max()
+                top_gene = str(gene_max.idxmax()) if len(gene_max) > 0 else ""
+
+            if prio.get(c):
+                candidates = (
+                    eff_df[eff_df["chr"].astype(str) == c]["gene_symbol"].values
+                    if eff_df is not None
+                    else lod_c["gene_symbol"].unique()
+                )
+                if prio[c] in candidates:
+                    top_gene = prio[c]
+
+            if not top_gene:
+                continue
+            fig = _build_one(top_gene, c)
+            if fig is not None:
+                out[c] = fig
 
     return out
 
@@ -3048,6 +3073,7 @@ def _gene_track(
     *,
     highlight_gene: Optional[str] = None,
     peak_pos: Optional[float] = None,
+    peak_locus: Optional[str] = None,
     near_tss_mb: Optional[float] = None,
     exon_df: Optional[pd.DataFrame] = None,
 ) -> None:
@@ -3145,9 +3171,9 @@ def _gene_track(
         _HUTR = 0.38  # UTR blocks (GTF feature 'UTR')
         _HCDS = 0.62  # coding exon blocks (GTF feature 'CDS'; legend label: 'exon')
 
-        # feature colors: CDS=NODJ blue, UTR=muted slate, intron/arrow=neutral
-        _CLR_CDS = BRAND_PRIMARY  # #4A90C4 blue — coding exons
-        _CLR_UTR = MUTED  # neutral grey — untranslated regions
+        # feature colors: CDS=dark blue, UTR=sky blue, intron/arrow=neutral
+        _CLR_CDS = BRAND_PRIMARY  # dark blue — coding exons
+        _CLR_UTR = COLOR_UTR  # sky blue — UTRs: transcribed but not translated
         _CLR_BB = INK  # thin intron backbone
         _CLR_ARROW = MUTED  # chevron direction markers
 
@@ -3321,11 +3347,12 @@ def _gene_track(
             )
 
         # 5. gene label above gene body
+        _gene_label_fs = 14 if _gn == highlight_gene else 9
         ax.text(
             (_glo + _ghi) / 2,
             _y + _HCDS / 2 + 0.05,
             _gn,
-            fontsize=9,
+            fontsize=_gene_label_fs,
             ha="center",
             va="bottom",
             color=_clr,
@@ -3347,10 +3374,11 @@ def _gene_track(
                 alpha=0.9,
             )
             if _xleft <= peak_pos <= _xright:
+                _peak_label = peak_locus if peak_locus else "peak"
                 ax.text(
                     peak_pos,
-                    -_HCDS / 2 - 0.10,
-                    "peak",
+                    -_HCDS / 2 - 0.08,
+                    _peak_label,
                     fontsize=7,
                     ha="center",
                     va="top",
@@ -3596,13 +3624,14 @@ def _gene_track(
     y_top = n_rows - 0.5
     if peak_pos is not None and lo <= peak_pos <= hi:
         ax.axvline(peak_pos, color=BRAND_SECONDARY, lw=1.3, ls="-", zorder=8, alpha=0.9)
+        _mg_peak_label = peak_locus if peak_locus else "peak"
         ax.text(
-            peak_pos + span * 0.008,
+            peak_pos,
             y_top,
-            "peak",
+            _mg_peak_label,
             fontsize=6,
             color=BRAND_SECONDARY,
-            ha="left",
+            ha="center",
             va="top",
             fontweight="bold",
             clip_on=True,
@@ -3656,6 +3685,7 @@ def locus_panel(
     highlight_gene: Optional[str] = None,
     gtf_path: Optional[str] = None,
     peak_locus: Optional[str] = None,
+    show_zoom: bool = True,
 ) -> plt.Figure:
     """Locus view: founder effect bars + full LOD profile + zoom + gene track.
 
@@ -3706,32 +3736,16 @@ def locus_panel(
     peak_locus : str, optional
         Variant/locus ID at the peak position (e.g. ``'UNC20195694'``).
         Annotated as rotated text beside the peak vertical line in the zoom panel.
-
     Returns
     -------
     plt.Figure
     """
     has_betas = peak_betas is not None
-    has_zoom = tss_mb is not None
-    has_track = genes_df is not None and has_zoom
+    has_zoom = tss_mb is not None and show_zoom
+    # gene track needs tss_mb for the cis-scale x-axis; zoom panel is optional
+    has_track = genes_df is not None and tss_mb is not None
 
-    # strand of the scanned gene — drives the TSS arrow direction on the
-    # full-chromosome panel below; independent of has_track since that panel
-    # is drawn whenever tss_mb is given, GTF or no GTF
-    _gene_strand = "+"
-    if (
-        genes_df is not None
-        and highlight_gene is not None
-        and "strand" in genes_df.columns
-    ):
-        _gn_col_strand = (
-            "gene_symbol" if "gene_symbol" in genes_df.columns else "gene_id"
-        )
-        _strand_rows = genes_df[genes_df[_gn_col_strand] == highlight_gene]
-        if not _strand_rows.empty:
-            _gene_strand = str(_strand_rows.iloc[0]["strand"])
-
-    # ── pre-compute zoom bounds (needed before panel layout) ──────────────────
+    # ── pre-compute zoom bounds (zoom panel only) ─────────────────────────────
     zoom_lo: Optional[float] = None
     zoom_hi: Optional[float] = None
     if has_zoom:
@@ -3739,13 +3753,34 @@ def locus_panel(
         zoom_lo = min(tss_mb, anchor) - zoom_window_mb  # type: ignore[arg-type]
         zoom_hi = max(tss_mb, anchor) + zoom_window_mb  # type: ignore[arg-type]
 
+    # ── gene-track bounds (independent of zoom panel) ─────────────────────────
+    # When the zoom panel is shown, the gene track shares its x-axis (same
+    # window).  When show_zoom=False (e.g. Lw scans where the scan IS the cis
+    # window), the gene track spans the actual scan positions instead — it does
+    # not need or use the zoom-panel bounds.
+    track_lo: Optional[float] = None
+    track_hi: Optional[float] = None
+    if has_track:
+        if has_zoom and zoom_lo is not None and zoom_hi is not None:
+            track_lo, track_hi = zoom_lo, zoom_hi
+        else:
+            # scan positions define the relevant region
+            track_lo = float(positions.min())
+            track_hi = float(positions.max())
+
     # ── load exon/CDS/UTR annotation (needed before panel layout for height) ──
     _exon_df: Optional[pd.DataFrame] = None
-    if has_track and zoom_lo is not None and zoom_hi is not None and gtf_path and chrom:
+    if (
+        has_track
+        and track_lo is not None
+        and track_hi is not None
+        and gtf_path
+        and chrom
+    ):
         try:
             from ..io.annotation_io import load_exons_from_gtf
 
-            _exon_df = load_exons_from_gtf(gtf_path, chrom, zoom_lo, zoom_hi)
+            _exon_df = load_exons_from_gtf(gtf_path, chrom, track_lo, track_hi)
         except Exception as _exc:  # noqa: BLE001
             import logging as _logging
 
@@ -3754,7 +3789,7 @@ def locus_panel(
                 _exc,
             )
 
-    # ── build panel layout: gene track | zoom | full chr | founder effects ────
+    # ── build panel layout: gene track | zoom | full chr | founder effects ──
     ratios: list[float] = (
         ([0.8] if has_track else [])
         + ([1.0] if has_zoom else [])
@@ -3778,8 +3813,8 @@ def locus_panel(
     if chrom:
         title = f"{title}  chr{chrom}" if title else f"chr{chrom}"
 
-    # ── panel 1: gene body track (top) — highlight gene only ────────────────
-    if has_track and zoom_lo is not None and zoom_hi is not None:
+    # ── panel 1: gene body track (top) ───────────────────────────────────────
+    if has_track and track_lo is not None and track_hi is not None:
         ax_track = axes_flat[ax_idx]
         ax_idx += 1
         # restrict to the scanned gene only — it serves as the x-axis reference
@@ -3795,14 +3830,13 @@ def locus_panel(
         _gene_track(
             ax_track,
             _track_genes,
-            (zoom_lo, zoom_hi),
+            (track_lo, track_hi),
             highlight_gene=highlight_gene,
             peak_pos=peak_pos,
+            peak_locus=peak_locus,
             near_tss_mb=near_tss_mb,
             exon_df=_exon_df,
         )
-        if title:
-            ax_track.set_title(title, fontsize=9)
         ax_track.set_xlabel("")
         # capture gene-body xlim so the zoom panel can shade it as a reference span
         _gene_body_xlim: tuple[float, float] = ax_track.get_xlim()
@@ -3915,34 +3949,15 @@ def locus_panel(
         peak_pos=peak_pos,
         fill=True,
         tss_mb=tss_mb,
+        annotate_peak=peak_pos is not None,
+        locus_id=peak_locus or "",
     )
     ax_full.set_title("")
 
-    # shade the zoom window so the viewer can see which region was drilled into
-    if zoom_lo is not None and zoom_hi is not None:
+    # shade the zoom window only when a zoom panel exists (has_zoom)
+    if has_zoom and zoom_lo is not None and zoom_hi is not None:
         ax_full.axvspan(zoom_lo, zoom_hi, alpha=0.10, color=INK, zorder=0)
 
-    if tss_mb is not None:
-        _ylim2 = ax_full.get_ylim()
-        _arrow_y = _ylim2[1] * 0.06
-        _chr_adx = 0.3 if _gene_strand == "+" else -0.3
-        ax_full.annotate(
-            "",
-            xy=(tss_mb + _chr_adx, _arrow_y),
-            xytext=(tss_mb, _arrow_y),
-            arrowprops=dict(arrowstyle="->", color=MUTED, lw=1.0),
-        )
-        _gene_label = highlight_gene or ""
-        if _gene_label:
-            ax_full.text(
-                tss_mb,
-                _arrow_y + _ylim2[1] * 0.04,
-                _gene_label,
-                fontsize=7,
-                ha="left",
-                color=MUTED,
-                va="bottom",
-            )
     if not has_betas and not has_zoom and not has_track and title:
         ax_full.text(
             0.02,
@@ -3956,9 +3971,10 @@ def locus_panel(
         )
     sns.despine(ax=ax_full)
 
-    # ── panel 4: founder effect bars (bottom) ────────────────────────────────
+    # ── panel 4: founder effect bars ─────────────────────────────────────────
     if has_betas:
         ax_eff = axes_flat[ax_idx]
+        ax_idx += 1
         _effect_bars(peak_betas, founders, ax=ax_eff)
         ax_eff.set_xlabel("")
         sns.despine(ax=ax_eff)
@@ -4626,17 +4642,17 @@ def nb_scan_recovery_summary(
 def sample_identity_cube(
     metadata: pd.DataFrame,
     *,
-    tissue_col: str = 'tissue',
-    replicate_col: str = 'replicate',
-    strain_col: str = 'strain',
-    hap_bins: 'dict[str, str] | None' = None,
-    tissue_order: 'list[str] | None' = None,
-    replicate_order: 'list[str] | None' = None,
-    figsize: 'tuple[float, float]' = (11, 11),
+    tissue_col: str = "tissue",
+    replicate_col: str = "replicate",
+    strain_col: str = "strain",
+    hap_bins: "dict[str, str] | None" = None,
+    tissue_order: "list[str] | None" = None,
+    replicate_order: "list[str] | None" = None,
+    figsize: "tuple[float, float]" = (11, 11),
     elev: float = 20.0,
     azim: float = -55.0,
     voxel_alpha: float = 0.88,
-    edge_color: str = 'white',
+    edge_color: str = "white",
 ) -> plt.Figure:
     """8×8×8 voxel cube: sample identity across tissues, replicates, and founder haplotypes.
 
@@ -4704,7 +4720,7 @@ def sample_identity_cube(
 
     import natsort
 
-    from ..genotype.founders import COLOR_CC_FALLBACK, FOUNDER_COLORS, FOUNDER_ORDER
+    from ..genotype.founders import FOUNDER_COLORS, FOUNDER_ORDER
 
     # ── resolve axis orders (up to 8 each) ───────────────────────────────────
     def _nat8(series: pd.Series) -> list[str]:
@@ -4743,8 +4759,8 @@ def sample_identity_cube(
         filled[tissue_idx[t], rep_idx[r], fi] = True
 
     # ── face color array (n_t, n_r, n_f, 4) ─────────────────────────────────
-    def _hex_rgba(hex_str: str, alpha: float) -> 'tuple[float, float, float, float]':
-        h = hex_str.lstrip('#')
+    def _hex_rgba(hex_str: str, alpha: float) -> "tuple[float, float, float, float]":
+        h = hex_str.lstrip("#")
         r, g, b = (int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
         return (r, g, b, alpha)
 
@@ -4754,7 +4770,7 @@ def sample_identity_cube(
 
     # ── plot ──────────────────────────────────────────────────────────────────
     fig = plt.figure(figsize=figsize, dpi=300)
-    ax = fig.add_subplot(111, projection='3d')
+    ax = fig.add_subplot(111, projection="3d")
 
     ax.voxels(filled, facecolors=fc, edgecolors=edge_color)
 
@@ -4763,13 +4779,13 @@ def sample_identity_cube(
     ax.set_yticks(np.arange(n_r) + 0.5)
     ax.set_zticks(np.arange(n_f) + 0.5)
 
-    ax.set_xticklabels(tissues, fontsize=7, rotation=30, ha='right')
+    ax.set_xticklabels(tissues, fontsize=7, rotation=30, ha="right")
     ax.set_yticklabels(replicates, fontsize=7)
-    ax.set_zticklabels(founders, fontsize=8, fontweight='bold')
+    ax.set_zticklabels(founders, fontsize=8, fontweight="bold")
 
-    ax.set_xlabel('Tissue', labelpad=10, fontsize=9)
-    ax.set_ylabel('Replicate', labelpad=10, fontsize=9)
-    ax.set_zlabel('Founder haplotype', labelpad=10, fontsize=9)
+    ax.set_xlabel("Tissue", labelpad=10, fontsize=9)
+    ax.set_ylabel("Replicate", labelpad=10, fontsize=9)
+    ax.set_zlabel("Founder haplotype", labelpad=10, fontsize=9)
 
     ax.view_init(elev=elev, azim=azim)
 

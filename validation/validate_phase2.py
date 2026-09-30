@@ -1530,7 +1530,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
             results['P2-S8'] = None
         else:
             try:
-                from mosaiqtl.genotype.snp_db import build_founder_allele_db
+                from mosaiqtl.genotype.snp_db import build_founder_allele_gm
                 from mosaiqtl.qtl.snp_scan import imputed_snp_scan_from_db
 
                 # build allele HDF5 once (or reuse if present and not --force)
@@ -1538,7 +1538,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     log.info('  building founder allele HDF5 from %s...', gm_csv_path)
                     _gm_fcols = ['AJ', 'B6J', '129S1J', 'NODJ',
                                  'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ']
-                    _summary = build_founder_allele_db(
+                    _summary = build_founder_allele_gm(
                         gm_csv_path, cache, alleles_h5,
                         founder_cols=_gm_fcols,
                         max_dist_mb=0.5,

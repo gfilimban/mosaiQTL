@@ -60,7 +60,27 @@ validation/py_ref/
 
 # ── validation — tissue data dirs (large data + regenerated outputs) ──────────
 validation/gastroc_data/
-validation/ctxhipp_data/
+# ctxhipp_data: large data and regenerated output dirs — ignored.
+validation/ctxhipp_data/nova/
+validation/ctxhipp_data/next/
+validation/ctxhipp_data/bioground/
+validation/ctxhipp_data/cistrans_comp/
+validation/ctxhipp_data/compare_generations/
+validation/ctxhipp_data/dose_response/
+validation/ctxhipp_data/egene_effects/
+# submission/: only glutamatergic_neuron and microglial_cell tracked.
+validation/ctxhipp_data/submission/arachnoid_barrier_cell_*/
+validation/ctxhipp_data/submission/astrocyte_*/
+validation/ctxhipp_data/submission/choroid_plexus_epithelial_cell_*/
+validation/ctxhipp_data/submission/dentate_gyrus_granule_cell_*/
+validation/ctxhipp_data/submission/endothelial_cell_*/
+validation/ctxhipp_data/submission/ependymal_cell_*/
+validation/ctxhipp_data/submission/gabaergic_interneuron_*/
+validation/ctxhipp_data/submission/medium_spiny_neuron_*/
+validation/ctxhipp_data/submission/neuroblast_*/
+validation/ctxhipp_data/submission/oligodendrocyte_*/
+validation/ctxhipp_data/submission/pericyte_*/
+validation/ctxhipp_data/submission/vascular_leptomeningeal_cell_*/
 
 # ── validation — sim outputs (regenerated from R scripts) ─────────────────────
 validation/sparcc_cache/
@@ -69,6 +89,10 @@ validation/phase*/
 
 # ── validation — internal-only scripts ────────────────────────────────────────
 validation/validate_phase4.py
+
+# ── local analysis notes (not for repo) ──────────────────────────────────────
+docs/ANALYSIS_NOTES.md
+validation/mpd/
 
 # ── generated docs ────────────────────────────────────────────────────────────
 docs/phase2_status.md
@@ -80,6 +104,7 @@ docs/DOMAIN.md
 docs/HPC.md
 docs/MIQTL_FUNCTION_MAP.md
 docs/NEXT_STEPS.md
+docs/OMNIGENIC_ANALYSIS_PLAN.md
 docs/POC_REPORT.md
 docs/PORT_VALIDATION_REPORT.md
 docs/WIKI.md
@@ -92,3 +117,4 @@ goals/
 
 # ── misc local artifacts ──────────────────────────────────────────────────────
 graphify-out/
+data/

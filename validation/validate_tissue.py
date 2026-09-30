@@ -86,7 +86,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from mosaiqtl.genotype.founders import (
     COLOR_CC_FALLBACK, COLOR_NEUTRAL_DARK, COLOR_NEUTRAL_LIGHT,
-    F1_COLORS, FOUNDER_CODE, FOUNDER_COLORS, FOUNDER_ORDER,
+    F1_COLORS, FOUNDER_CODE, FOUNDER_COLORS, FOUNDER_ORDER, STRAIN_ORDER,
 )
 from mosaiqtl.utils import chr_sort_key as _chr_sort_key
 
@@ -194,16 +194,16 @@ from mosaiqtl.qtl.mediation import (
     select_cis_mediation_pairs,
     mediation_scan_multi_outcome,
 )
-from mosaiqtl.qtl.snp_scan import imputed_snp_scan_from_db, snp_scan_multi_gene
 from mosaiqtl.io.covariates import encode_sex
 from mosaiqtl.io.results_io import pos_merge as _pos_merge, scan_result_to_df as _scan_to_df
 from mosaiqtl.io.anndata_io import load_expression_h5 as _load_expression_h5
 from mosaiqtl.qtl.scan import scan_multi_gene_lmm as _scan_multi_gene_lmm
 from mosaiqtl.pipeline import (
-    call_egenes, finalize_egene_summary,
+    call_egenes, finalize_egene_summary, finemap_egenes,
     LOD_COLS, ALLELE_EFFECTS_BASE_COLS, PEAK_LOD_COLS, EGENE_SUMMARY_COLS,
 )
 from mosaiqtl.utils import build_z_matrix, rint
+from natsort import natsorted
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 log = logging.getLogger('validate_tissue')
@@ -230,8 +230,10 @@ _MIQTL_HPC   = Path('/share/crsp/lab/seyedam/gfilimba/projects'
 _MIQTL_DIR   = _MIQTL_LOCAL if _MIQTL_LOCAL.exists() else _MIQTL_HPC
 GENOMECACHE  = _MIQTL_DIR / 'output' / 'genomecache'   # default for --build-cache
 
-# shared genomecache + kinship — tissue-agnostic (same CC mice, same mm39 genome)
-PY_REF = Path('validation/py_ref')
+# shared genomecache + kinship — tissue-agnostic (same CC mice, same mm39 genome).
+# built by: conda run -n bioinfo python validation/tools/build_cache.py
+_DATA_DIR = Path(__file__).resolve().parent.parent / 'data'
+PY_REF = _DATA_DIR if _DATA_DIR.is_dir() else Path('validation/py_ref')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -394,10 +396,10 @@ _SECTION_LABELS: dict[str, str] = {
     'lmm_scan':        'LMM scan',
     'permutation':     'Permutation threshold',
     'egene_calling':   'eGene calling',
-    'mi_scan':         'Multiple imputation',
-    'snp_scan':        'SNP fine-mapping scan',
-    'mediation':       'Mediation scan',
     'bootstrap_ci':    'Bootstrap CI',
+    'sanger_finemap':  'Sanger fine-mapping',
+    'mi_scan':         'Multiple imputation',
+    'mediation':       'Mediation scan',
     'instability':     'Instability scan',
 }
 _SECTION_ORDER: list[str] = list(_SECTION_LABELS)
@@ -1436,7 +1438,7 @@ def _make_descriptive_plots(
     # Peak heap (tracemalloc) is used instead of RSS delta: ru_maxrss is a
     # process-lifetime high-water mark — once S4 allocates peak memory it stays
     # flat for all subsequent sections regardless of their actual footprint.
-    _PLOT_SECTIONS = ['lmm_scan', 'permutation', 'mi_scan', 'snp_scan', 'mediation', 'bootstrap_ci', 'instability']
+    _PLOT_SECTIONS = ['lmm_scan', 'permutation', 'mi_scan', 'mediation', 'bootstrap_ci', 'sanger_finemap', 'instability']
     scan_stats_path = py_dir / 'scan_stats.csv'
     if scan_stats_path.exists():
         try:
@@ -1934,7 +1936,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         celltype: str | None = None,
         tissue: str = 'gastroc',
         priority_gene: dict[str, str] | None = None,
-        gtf_path: str | None = None) -> dict:
+        gtf_path: str | None = None,
+        sanger_alleles: str | None = None) -> dict:
     """run tissue characterization sections; return gate results dict.
 
     Parameters
@@ -2351,8 +2354,73 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             log.info('\nLMM scan: FWL-vectorized score test with LOCO kinship  scan_type=%s  chrs=%s...',
                      scan_type, chrs_to_scan)
 
+            # ── sample breakdown — printed once before scan so users can
+            # assess per-strain replicate depth before committing to a long run
+            _n_total = len(meta)
+            _n_strains = meta['genotype'].nunique()
+            _rep_counts = (meta.groupby('genotype', sort=False)
+                               .size()
+                               .sort_values(ascending=False))
+            _min_rep = int(_rep_counts.min())
+            _max_rep = int(_rep_counts.max())
+            _med_rep = float(_rep_counts.median())
+            log.info('  samples: %d total  %d strains  replicates/strain '
+                     'min=%d  median=%.1f  max=%d',
+                     _n_total, _n_strains, _min_rep, _med_rep, _max_rep)
+            if _min_rep == 1:
+                _singles = sorted(_rep_counts[_rep_counts == 1].index.tolist())
+                log.warning('  %d strain(s) with n=1 replicate (low-power): %s',
+                            len(_singles), ', '.join(_singles))
+            # canonical sort: founders (FOUNDER_ORDER) → F1s (F1_COLORS order)
+            # → CC strains (natsorted); unknown strains append natsorted at end
+            _strain_rank: dict[str, int] = {s: i for i, s in enumerate(STRAIN_ORDER)}
+            _ns_keys = natsorted(_rep_counts.index.tolist())
+            _ns_rank: dict[str, int] = {s: i for i, s in enumerate(_ns_keys)}
+
+            def _canonical_key(strain: str) -> tuple:
+                known = _strain_rank.get(strain)
+                if known is not None:
+                    return (0, known, 0)        # founders + F1s first
+                return (1, 0, _ns_rank.get(strain, 0))  # CC strains natsorted
+
+            _sorted_strains: list[tuple] = sorted(
+                _rep_counts.items(), key=lambda x: _canonical_key(x[0]))
+
+            # one line per strain: strain  n_samples  [dataset breakdown if >1 dataset]
+            _multi_dataset = meta['dataset'].nunique() > 1 if 'dataset' in meta.columns else False
+            for _strain, _n in _sorted_strains:
+                if _multi_dataset:
+                    _ds_counts = (meta[meta['genotype'] == _strain]
+                                  .groupby('dataset').size()
+                                  .to_dict())
+                    _ds_str = '  ' + '  '.join(f'{d}:{n}' for d, n in sorted(_ds_counts.items()))
+                else:
+                    _ds_str = ''
+                log.info('    %-20s  n=%d%s', _strain, _n, _ds_str)
+
             import json as _json
             from importlib.metadata import version as _pkg_version
+
+            # ── sample_breakdown.csv — written alongside scan_info.json ──────
+            # tidy per-strain replicate table; one row per sample so downstream
+            # scripts can filter / pivot without re-parsing metadata.csv
+            _breakdown_cols = ['strain', 'n_samples']
+            if _multi_dataset:
+                _breakdown_cols.append('dataset_breakdown')
+            _breakdown_rows = []
+            for _strain, _n in _sorted_strains:
+                _row: dict = {'strain': _strain, 'n_samples': int(_n)}
+                if _multi_dataset:
+                    _ds_counts = (meta[meta['genotype'] == _strain]
+                                  .groupby('dataset').size().to_dict())
+                    _row['dataset_breakdown'] = ';'.join(
+                        f'{d}:{n}' for d, n in sorted(_ds_counts.items()))
+                _breakdown_rows.append(_row)
+            _breakdown_df = pd.DataFrame(_breakdown_rows, columns=_breakdown_cols)
+            _breakdown_df.to_csv(py_dir / 'sample_breakdown.csv', index=False)
+            log.info('  sample_breakdown.csv written → %s', py_dir / 'sample_breakdown.csv')
+
+            # ── scan_info.json — provenance + sample summary ──────────────────
             (py_dir / 'scan_info.json').write_text(_json.dumps({
                 'mosaiqtl_version': _pkg_version('mosaiqtl'),
                 'git_hash':         _git_hash(),
@@ -2361,6 +2429,13 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 'scan_type':        scan_type,
                 'chr':              ','.join(chrs_to_scan) if chrs_to_scan else 'all',
                 'n_genes':          n_genes,
+                'samples': {
+                    'n_total':   _n_total,
+                    'n_strains': _n_strains,
+                    'min_reps':  _min_rep,
+                    'max_reps':  _max_rep,
+                    'per_strain': {str(s): int(n) for s, n in _sorted_strains},
+                },
             }, indent=2))
 
             h5_path = data_dir / 'counts_lognorm.h5'
@@ -2447,8 +2522,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _chr_data_ch = precompute_chromosome(
                         cache, ch, _evals_ch, _evecs_ch, z_mat=_z_sub_ch)
                     _chr_precomputed = True
-                    log.info('    chr%s: H precomputed (%d loci  %d samples)',
-                             ch, len(_chr_data_ch['locus_ids']), _z_sub_ch.shape[0])
+                    log.info('    chr%s: H precomputed (%d loci)',
+                             ch, len(_chr_data_ch['locus_ids']))
 
                 log.info('  running LMM scan on chr%s ...', ch)
                 t_chr = time.perf_counter()
@@ -2940,6 +3015,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _perms_per_hr = round(perm_n / _perm_scan_elapsed * 3600, 1)
 
                     _gw_thr, _ = get_gev_thresholds(_gw_max, percentile=0.95)
+                    if _gw_thr is not None and _gw_thr == 0.0:
+                        log.error(
+                            '  permutation null is all-zeros — kinship singular on every '
+                            'chromosome; threshold=0.0 is invalid.  Re-run with a wider '
+                            'scan window or check kinship_decomp for this cell type.')
+                        _gw_thr = None
                     log.info('  genome-wide GEV threshold=%s  (n_perms=%d)',
                              f'{_gw_thr:.3f}' if _gw_thr is not None else 'n/a', perm_n)
                     log.info('  scan loop: %.0fs for %d perms  (%.1f perms/hr)',
@@ -3233,94 +3314,6 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             _mark_done(py_dir, str(sec))
 
     # SNP scan
-    sec = 8
-    r_snp_path = r_data / 'snp_lod_genome.csv'
-    if sec in sections:
-        if not _checkpoint(py_dir, str(sec), force):
-            _rss_snp = _get_rss_mb()
-            tracemalloc.start()
-            _t_snp = time.perf_counter()
-            log.info('\nSNP scan: marginal LMM fine-mapping of imputed biallelic SNPs at eGene peak loci...')
-            if not _allele_h5.exists():
-                log.info('  %s founder_alleles.h5 not found at %s — '
-                         'build with build_founder_allele_db()', SKIP, _allele_h5)
-                results['snp_lod_r'] = None
-            elif egenes_df is None or len(egenes_df) == 0:
-                log.info('  %s no eGenes — run S4+S5 first', SKIP)
-                results['snp_lod_r'] = None
-            else:
-                h5_path = data_dir / 'counts_lognorm.h5'
-                _snp_ids = [r['gene_id']
-                            for _, r in egenes_df.iterrows()]
-                _snp_counts, _snp_loaded, _snp_sids = _load_expression(h5_path, _snp_ids)
-                _snp_expr = {gid: _snp_counts[i].astype(float)
-                             for i, gid in enumerate(_snp_loaded)}
-                _snp_chr_map = {}
-                for _, erow in egenes_df.iterrows():
-                    gid = erow['gene_id']
-                    _snp_chr_map[gid] = str(erow.get('chr', peak_chr))
-                geno_ids_snp = [meta_geno_map.get(s, s) for s in _snp_sids]
-                cov_snp = _build_covariates(meta, _snp_sids)
-                _snp_out_path = ext_dir / 'snp_lod.csv'
-                log.info('  scanning %d eGenes via SNP (streaming)...', len(_snp_expr))
-                snp_df = snp_scan_multi_gene(
-                    _snp_expr, _snp_chr_map, cache,
-                    alleles_h5=str(_allele_h5),
-                    covariates=cov_snp,
-                    kinship_decomp=kinship_decomp,
-                    sample_ids=geno_ids_snp,
-                    founder_col_map=FOUNDER_CODE,
-                    output_path=_snp_out_path,
-                    gene_meta=_gene_meta,
-                )
-                del _snp_expr, _snp_counts
-                if not snp_df.empty:
-                    if r_snp_path.exists():
-                        r_snp = pd.read_csv(r_snp_path)
-                        if 'gene' in r_snp.columns:
-                            r_snp = r_snp.rename(columns={'gene': 'gene_symbol'})
-                        # peak_only=True → one row per gene; compare peak SNP LOD per gene
-                        r_snp_peak = (r_snp.groupby('gene_symbol')['lod'].max()
-                                      .reset_index().rename(columns={'lod': 'r'}))
-                        merged_snp = (snp_df[['gene_symbol', 'peak_lod']]
-                                      .rename(columns={'peak_lod': 'py'})
-                                      .merge(r_snp_peak, on='gene_symbol', how='inner'))
-                        if len(merged_snp) >= 10:
-                            r_snp_r, _ = sp_stats.pearsonr(merged_snp['py'],
-                                                            merged_snp['r'])
-                            slope_snp, *_ = sp_stats.linregress(
-                                merged_snp['r'], merged_snp['py'])
-                            merged_snp.to_csv(cmp_dir / 'snp_comparison.csv',
-                                              index=False)
-                            log.info('  r=%.4f  slope=%.3f  n=%d/%d',
-                                     r_snp_r, slope_snp,
-                                     len(merged_snp), len(r_snp))
-                            fig, _ax = _cmp_scatter(
-                                merged_snp, 'r', 'py',
-                                'SNP LOD (R)', 'SNP LOD (Python)',
-                                save_path=plt_dir / f'snp_scatter_{_run_sfx}.png',
-                            )
-                            plt.close(fig)
-                            results['snp_lod_r'] = (abs(r_snp_r) >= 0.75 and
-                                                        abs(slope_snp - 1.0) < 0.20)
-                        else:
-                            log.info('  %s too few matched SNPs', SKIP)
-                            results['snp_lod_r'] = None
-                    else:
-                        log.info('  Python SNP scan complete (%d genes) '
-                                 '— no R reference yet (run gastroc_miqtl_scan.R S8)',
-                                 snp_df['gene_symbol'].nunique())
-                        results['snp_lod_r'] = None
-                else:
-                    log.info('  %s SNP scan produced no results', SKIP)
-                    results['snp_lod_r'] = None
-            _, _snp_heap_peak = tracemalloc.get_traced_memory()
-            tracemalloc.stop()
-            _record_stats('snp_scan', 'marginal_lmm', len(egenes_df) if egenes_df is not None else 0,
-                          time.perf_counter() - _t_snp, _snp_heap_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_snp))
-            _mark_done(py_dir, str(sec))
-
     # mediation scan
     sec = 9
     r_med_path = r_data / 'mediation_genome.csv'
@@ -3493,6 +3486,66 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                           max(0.0, _get_rss_mb() - _rss_ci))
             _mark_done(py_dir, str(sec))
 
+    # Sanger fine-mapping (requires bootstrap CI outputs + --sanger-alleles HDF5)
+    sec = 12
+    if sec in sections:
+        if not _checkpoint(py_dir, str(sec), force):
+            _rss_fm = _get_rss_mb()
+            tracemalloc.start()
+            _t_fm = time.perf_counter()
+            log.info('\nSanger fine-mapping: ABF credible sets on CI-window SNPs...')
+            _eqtl_peak_csv = py_dir / f'eqtl_peak_{_run_sfx}.csv'
+            _sanger_h5 = Path(sanger_alleles) if sanger_alleles else None
+            if _sanger_h5 is None or not _sanger_h5.exists():
+                log.info('  %s --sanger-alleles not set or file missing', SKIP)
+                results['sanger_finemap'] = None
+            elif not _eqtl_peak_csv.exists():
+                log.info('  %s eqtl_peak_%s.csv not found — run report first', SKIP, _run_sfx)
+                results['sanger_finemap'] = None
+            elif egenes_df is None or len(egenes_df) == 0:
+                log.info('  %s no eGenes', SKIP)
+                results['sanger_finemap'] = None
+            else:
+                egene_peak_df = pd.read_csv(_eqtl_peak_csv, dtype={'chr': str})
+                _required = {'gene_id', 'chr', 'pos', 'lod', 'variant', 'ci_lo_bp', 'ci_hi_bp'}
+                if not _required.issubset(egene_peak_df.columns):
+                    log.warning('  %s eqtl_peak CSV missing columns: %s', SKIP,
+                                _required - set(egene_peak_df.columns))
+                    results['sanger_finemap'] = None
+                else:
+                    h5_path = data_dir / 'counts_lognorm.h5'
+                    _fm_ids = list(egene_peak_df['gene_id'])
+                    _fm_counts, _fm_loaded, _fm_sids = _load_expression(h5_path, _fm_ids)
+                    geno_ids_fm = [meta_geno_map.get(s, s) for s in _fm_sids]
+                    cov_fm = _build_covariates(meta, _fm_sids)
+                    fm_dir = py_dir / 'finemap'
+                    fm_df, fm_peak_df = finemap_egenes(
+                        egene_df=egene_peak_df,
+                        phenotype_matrix=_fm_counts,
+                        gene_ids=list(_fm_loaded),
+                        genomecache=cache,
+                        alleles_h5=str(_sanger_h5),
+                        out_dir=fm_dir,
+                        covariates=cov_fm,
+                        kinship_decomp=kinship_decomp,
+                        tag=_run_sfx,
+                    )
+                    del _fm_counts
+                    results['sanger_finemap'] = (
+                        fm_df is not None and len(fm_df) > 0
+                    )
+                    if results['sanger_finemap']:
+                        log.info('  fine-mapped %d eGenes → %s',
+                                 fm_peak_df['gene_id'].nunique() if fm_peak_df is not None else 0,
+                                 fm_dir)
+            _, _fm_heap_peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            _record_stats('sanger_finemap', 'abf_credible_sets',
+                          len(egenes_df) if egenes_df is not None else 0,
+                          time.perf_counter() - _t_fm, _fm_heap_peak / 1e6,
+                          max(0.0, _get_rss_mb() - _rss_fm))
+            _mark_done(py_dir, str(sec))
+
     # instability scan
     sec = 11
     r_inst_path = r_data / 'instability_genome.csv'
@@ -3585,7 +3638,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         'lmm_lod_r2':         f'{scan_type} peak LOD r²  (PRIMARY GATE)',
         'perm_threshold': 'permutation threshold',
         'mi_scan':        'MI scan',
-        'snp_lod_r':      'SNP scan',
+        'sanger_finemap':  'Sanger fine-mapping',
         'mediation_r':      'mediation scan',
         'bootstrap_ci':            'bootstrap CI',
         'instability':   'instability scan',
@@ -3707,9 +3760,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
 def main() -> None:
     ap = argparse.ArgumentParser(
         description='validate mosaiqtl on real pseudobulk data for any tissue')
-    ap.add_argument('--tissue', default='gastroc',
-                    help='tissue identifier used for file naming, e.g. gastroc, ctxhipp '
-                         '(default: gastroc)')
+    ap.add_argument('--tissue', required=True,
+                    help='tissue identifier used for file naming, e.g. gastroc, ctxhipp')
     ap.add_argument('--data', default=None,
                     help='tissue data root directory containing metadata.csv, '
                          'exp_gene_info_{tissue}.csv, counts_lognorm.h5 (or celltypes/); '
@@ -3735,20 +3787,23 @@ def main() -> None:
                     help='path to HAPPY genomecache dir for --build-cache '
                          f'(default: {GENOMECACHE})')
     ap.add_argument('--full', action='store_true',
-                    help='run all sections S1–S11')
+                    help='run all sections (cache, haplotypes, kinship, scan, permutation, '
+                         'eGene calling, bootstrap CI, Sanger fine-mapping, MI, mediation, instability)')
     ap.add_argument('--scan', action='store_true',
-                    help='run core scan sections S1–S6 (cache, haplotypes, kinship, '
-                         'LMM scan, permutation, eGene calling; default when no flag given)')
+                    help='run core scan sections (cache, haplotypes, kinship, LMM scan, '
+                         'permutation, eGene calling; default when no flag given)')
     ap.add_argument('--mi', action='store_true',
-                    help='run S7 multiple-imputation scan (requires S4+S6 outputs)')
-    ap.add_argument('--snp', action='store_true',
-                    help='run S8 SNP fine-mapping scan (requires S4+S6 outputs)')
+                    help='run multiple-imputation scan (requires scan outputs)')
     ap.add_argument('--mediation', action='store_true',
-                    help='run S9 mediation scan (requires S4+S6 outputs)')
+                    help='run mediation scan (requires scan outputs)')
     ap.add_argument('--ci', action='store_true',
-                    help='run S10 bootstrap confidence intervals (requires S4+S6 outputs)')
+                    help='run bootstrap confidence intervals (requires scan outputs)')
+    ap.add_argument('--finemap', action='store_true',
+                    help='run Sanger fine-mapping (requires CI outputs + --sanger-alleles)')
+    ap.add_argument('--sanger-alleles', default=None, metavar='PATH',
+                    help='path to Sanger alleles HDF5 built by build_founder_allele_mgp()')
     ap.add_argument('--instability', action='store_true',
-                    help='run S11 instability scan (requires S4+S6 outputs)')
+                    help='run instability scan (requires scan outputs)')
     ap.add_argument('--plots-only', action='store_true',
                     help='skip all scans, regenerate descriptive plots from existing scan output')
     ap.add_argument('--force',    action='store_true',
@@ -3767,6 +3822,10 @@ def main() -> None:
     ap.add_argument('--celltype', type=str, default=None,
                     help='cell type label (e.g. myonuclei); runs scan in '
                          'celltypes/{ct}/ instead of whole-tissue {data}/')
+    ap.add_argument('--all-celltypes', action='store_true',
+                    help='discover all cell types under {data}/celltypes/, skip '
+                         'low-quality variants, and run the scan for each in '
+                         'natsorted order; mutually exclusive with --celltype')
     ap.add_argument('--compare-celltypes', action='store_true',
                     help='cross-cell-type comparison: reads per-CT scan outputs and '
                          'produces comparison plots; exits after completion')
@@ -3914,24 +3973,24 @@ def main() -> None:
 
     if args.plots_only:
         sections: set[int] = set()
-    elif not any([args.full, args.scan, args.mi, args.snp,
-                  args.mediation, args.ci, args.instability]):
-        sections = set(range(1, 7))    # default: --scan equivalent (S1–S6, scan_type=L)
+    elif not any([args.full, args.scan, args.mi,
+                  args.mediation, args.ci, args.finemap, args.instability]):
+        sections = set(range(1, 7))    # default: --scan (cache → egene calling)
     else:
         sections = set()
         if args.full:
-            sections = set(range(1, 12))
+            sections = set(range(1, 13))
         else:
             if args.scan:
                 sections.update(range(1, 7))
             if args.mi:
                 sections.add(7)
-            if args.snp:
-                sections.add(8)
             if args.mediation:
                 sections.add(9)
             if args.ci:
                 sections.add(10)
+            if args.finemap:
+                sections.add(12)
             if args.instability:
                 sections.add(11)
 
@@ -3943,30 +4002,82 @@ def main() -> None:
     else:
         scan_chr = [c.strip() for c in args.chr.split(',')]
 
-    # ── cell-type mode: redirect data and output dirs ─────────────────────────
-    _ct_label = args.celltype
-    if _ct_label is not None:
-        _ct = re.sub(r'[^a-z0-9]+', '_', _ct_label.lower()).strip('_')
-        _ct_dir     = data_dir / 'celltypes' / _ct
-        _ct_exp_gi  = _ct_dir / f'exp_gene_info_{_ct}.csv'
+    # ── mutual-exclusion guard ────────────────────────────────────────────────
+    if args.all_celltypes and args.celltype:
+        ap.error('--all-celltypes and --celltype are mutually exclusive')
+
+    scan_desc = scan_type if scan_type != 'L' else f'L ±{window_mb:.1f} Mb'
+
+    # ── helper: validate and return (run_data_dir, run_out_dir) for one CT ───
+    def _ct_dirs(ct_label: str) -> 'tuple[Path, Path] | None':
+        """Return (data_dir, out_dir) for *ct_label*, or None to skip."""
+        _ct = re.sub(r'[^a-z0-9]+', '_', ct_label.lower()).strip('_')
+        if 'low' in _ct and 'qual' in _ct:
+            log.warning('skipping low-quality cell type %r', ct_label)
+            return None
+        _ct_dir    = data_dir / 'celltypes' / _ct
+        _ct_exp_gi = _ct_dir / f'exp_gene_info_{_ct}.csv'
         if not _ct_dir.exists():
             log.error('cell-type directory not found: %s\n'
-                      'Run first: conda run -n bioinfo python validation/convert_h5ad.py'
-                      ' --tissue %s --celltype %s', _ct_dir, tissue, _ct_label)
-            sys.exit(1)
+                      'Run first: conda run -n bioinfo python validation/tools/convert_h5ad.py'
+                      ' --tissue %s --celltype %s', _ct_dir, tissue, ct_label)
+            return None
         if not _ct_exp_gi.exists():
             log.error('exp_gene_info_%s.csv not found — rerun convert_h5ad.py --celltype %s',
-                      _ct, _ct_label)
+                      _ct, ct_label)
+            return None
+        return _ct_dir, _ct_dir
+
+    # ── all-celltypes mode ────────────────────────────────────────────────────
+    if args.all_celltypes:
+        _cts_root = data_dir / 'celltypes'
+        if not _cts_root.is_dir():
+            log.error('celltypes/ directory not found under %s — run convert_h5ad.py first',
+                      data_dir)
             sys.exit(1)
-        _run_data_dir = _ct_dir
-        _run_out_dir  = _ct_dir
+        _all_cts = natsorted(d.name for d in _cts_root.iterdir() if d.is_dir())
+        log.info('--all-celltypes: discovered %d cell types under %s', len(_all_cts), _cts_root)
+        log.info('  py_ref    = %s', PY_REF)
+        _n_ok = _n_skip = _n_err = 0
+        for _ct_label in _all_cts:
+            _dirs = _ct_dirs(_ct_label)
+            if _dirs is None:
+                _n_skip += 1
+                continue
+            _run_data_dir, _run_out_dir = _dirs
+            log.info('=== cell type %r ===', _ct_label)
+            log.info('  data_dir  = %s', _run_data_dir)
+            log.info('  out_dir   = %s', _run_out_dir)
+            log.info('  scan_tag  = %s', _stag)
+            try:
+                run(_run_data_dir, _run_out_dir, sections, args.force, args.n_genes,
+                    scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,
+                    celltype=_ct_label, tissue=tissue, gtf_path=args.gtf,
+                    sanger_alleles=args.sanger_alleles)
+                _n_ok += 1
+            except Exception:
+                log.exception('cell type %r failed — continuing with remaining CTs', _ct_label)
+                _n_err += 1
+        log.info('--all-celltypes done: %d ok  %d skipped  %d errors',
+                 _n_ok, _n_skip, _n_err)
+        if _n_err:
+            sys.exit(1)
+        return
+
+    # ── single cell-type mode ─────────────────────────────────────────────────
+    _ct_label = args.celltype
+    if _ct_label is not None:
+        _dirs = _ct_dirs(_ct_label)
+        if _dirs is None:
+            sys.exit(0)
+        _run_data_dir, _run_out_dir = _dirs
     else:
+        _ct_label = None
         _run_data_dir = data_dir
         # whole-tissue output nests under its own 'whole/' dir, sibling to 'celltypes/'
         # (an explicit --out always wins — e.g. HPC merge redirects)
         _run_out_dir  = Path(args.out) if args.out else (data_dir / 'whole')
 
-    scan_desc = scan_type if scan_type != 'L' else f'L ±{window_mb:.1f} Mb'
     log.info('validate_tissue.py  tissue=%s  sections=%s  force=%s  n_genes=%s  '
              'scan_type=%s  chr=%s  celltype=%s',
              tissue, sorted(sections), args.force, args.n_genes, scan_desc, args.chr,
@@ -3979,7 +4090,8 @@ def main() -> None:
     run(_run_data_dir, _run_out_dir, sections, args.force, args.n_genes,
         scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,
         celltype=_ct_label,
-        tissue=tissue, gtf_path=args.gtf)
+        tissue=tissue, gtf_path=args.gtf,
+        sanger_alleles=args.sanger_alleles)
 
 
 if __name__ == '__main__':

@@ -142,3 +142,68 @@ uncertainty and is the preferred method for publication.
 
 Default $\alpha = 0.05$ → 95% CI. P2-S10 gate: CI contains planted locus in
 $\geq 80\%$ of bootstrap replicates at moderate effect size.
+
+---
+
+## 7. PSD projection of the sample-level LOCO kinship
+
+**Context.** The parametric null draw in `run_threshold_scans` requires a
+positive semi-definite (PSD) kinship matrix $K_n$ at sample level.  When a
+$Z$-matrix is supplied (replicate design), $K_n$ is constructed as
+
+$$
+K_n = Z \, K_m \, Z^\top
+$$
+
+where $K_m$ is the $m \times m$ strain-level LOCO kinship reconstructed from
+its eigendecomposition `(evc_m * ev_m) @ evc_m.T`.
+
+**The problem.** The strain-level LOCO kinship $K_m$ is theoretically PSD but
+accumulates floating-point error of $\mathcal{O}(10^{-7})$ in its near-zero
+eigenvalues (observed: $-3.09 \times 10^{-7}$).  The previous PSD check in
+`_draw_parametric_batch` recomputed `eigvalsh(K)` with a machine-epsilon
+tolerance that is orders of magnitude tighter than this noise, triggering a
+false `KinshipSingularError` and skipping every chromosome — exhausting the
+null draw and collapsing the GEV threshold to 0.0 so every gene is called
+as an eGene.
+
+**The fix.** `_draw_parametric_batch` already receives `ev` (the
+eigenvalues of $K$) and `evc` (its eigenvectors).  Rather than recomputing
+`eigvalsh(K)`, we use `ev` directly, clamp near-zero negatives to zero, and
+draw $U$ from the eigendecomposition:
+
+$$
+U \;=\; V \,\operatorname{diag}\!\bigl(\sqrt{\max(\lambda_i,0)\,\sigma^2_g}\bigr)\, Z,
+\quad Z \sim \mathcal{N}(0, I)
+$$
+
+This is mathematically equivalent to $U \sim \mathcal{N}(0,\,K\sigma^2_g)$
+when $K$ is exactly PSD, and draws from the nearest PSD projection otherwise.
+`KinshipSingularError` is raised only when $\min(\lambda_i) < -10^{-4}$, which
+signals a genuine defect rather than float noise.
+
+**Implementation** (`permutation.py::_draw_parametric_batch`):
+
+```python
+if float(ev.min()) < -1e-4:
+    raise KinshipSingularError(...)
+sqrt_ev = np.sqrt(np.maximum(ev, 0.0) * sigma2_g)
+U_mat = evc @ (sqrt_ev[:, None] * rng.standard_normal((len(ev), n_perms)))
+```
+
+**Why not Tikhonov regularisation?** Adding $\varepsilon I$ shifts *all*
+eigenvalues uniformly and changes the kinship structure for the $m$ positive
+eigenvalues that are correct.  Clamping only corrects the $n - m$ eigenvalues
+that are theoretically zero — the kinship signal is preserved exactly.
+
+---
+
+## References
+
+[1] Higham, N.J. (1988). Computing a nearest symmetric positive semidefinite
+matrix. *Linear Algebra and its Applications*, 103, 103–118.
+<https://doi.org/10.1016/0024-3795(88)90223-6>
+
+[2] Manichaikul, A. et al. (2006). Poor performance of bootstrap confidence
+intervals for the location of a quantitative trait locus. *Genetics*, 174(1),
+481–489. <https://doi.org/10.1534/genetics.106.061549>

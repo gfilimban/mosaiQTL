@@ -8,6 +8,7 @@
         validate-phase4 \
         validate-tissue validate-tissue-scan validate-tissue-full \
         validate-tissue-plots validate-tissue-compare \
+        validate-tissue-all-cts \
         clean clean-phase3
 
 # ── lint ──────────────────────────────────────────────────────────────────────
@@ -64,23 +65,33 @@ validate-phase3-force:
 validate-phase4:
 	python validation/validate_phase4.py --cell_type type2x --n_genes 500
 
-# ── Tissue validation (default: gastroc) ─────────────────────────────────────
+# ── Tissue validation ─────────────────────────────────────────────────────────
 # Prereq: python validation/tools/convert_h5ad.py
 # Then R: Rscript validation/r_reference/gastroc_miqtl_scan.R all 8 C
+# Usage:  make validate-tissue TISSUE=gastroc
+#         make validate-tissue TISSUE=ctxhipp DATASET=nova
+TISSUE  ?= $(error TISSUE is required — e.g. make validate-tissue TISSUE=gastroc)
+DATASET ?=
+
+_TISSUE_ARGS = --tissue $(TISSUE) $(if $(DATASET),--dataset $(DATASET),)
+
 validate-tissue:
-	python validation/validate_tissue.py
+	python validation/validate_tissue.py $(_TISSUE_ARGS)
 
 validate-tissue-scan:
-	python validation/validate_tissue.py --scan
+	python validation/validate_tissue.py $(_TISSUE_ARGS) --scan
 
 validate-tissue-full:
-	python validation/validate_tissue.py --full
+	python validation/validate_tissue.py $(_TISSUE_ARGS) --full
 
 validate-tissue-plots:
-	python validation/validate_tissue.py --plots-only
+	python validation/validate_tissue.py $(_TISSUE_ARGS) --plots-only
 
 validate-tissue-compare:
-	python validation/validate_tissue.py --compare
+	python validation/validate_tissue.py $(_TISSUE_ARGS) --compare
+
+validate-tissue-all-cts:
+	python validation/validate_tissue.py $(_TISSUE_ARGS) --all-celltypes
 
 # ── clean ─────────────────────────────────────────────────────────────────────
 clean:

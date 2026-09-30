@@ -1,4 +1,4 @@
-"""Unit tests for genotype/snp_db.py — build_founder_allele_db and load_founder_alleles."""
+"""Unit tests for genotype/snp_db.py — build_founder_allele_gm and load_founder_alleles."""
 
 import sys
 from pathlib import Path
@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
 from mosaiqtl.genotype.genomecache import GenomeCache
-from mosaiqtl.genotype.snp_db import build_founder_allele_db, load_founder_alleles
+from mosaiqtl.genotype.snp_db import build_founder_allele_gm, load_founder_alleles
 from mosaiqtl.models.config import Population
 
 # ── minimal test fixtures ─────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ class TestBuildFounderAlleleDb:
             ],
         )
         out = tmp_path / "alleles.h5"
-        build_founder_allele_db(csv, cache, out)
+        build_founder_allele_gm(csv, cache, out)
         assert out.exists()
 
     def test_metadata_founders_stored(self, tmp_path):
@@ -83,7 +83,7 @@ class TestBuildFounderAlleleDb:
             ],
         )
         out = tmp_path / "alleles.h5"
-        build_founder_allele_db(csv, cache, out)
+        build_founder_allele_gm(csv, cache, out)
         with h5py.File(out, "r") as hf:
             stored = [
                 f.decode() if isinstance(f, bytes) else f
@@ -101,7 +101,7 @@ class TestBuildFounderAlleleDb:
             ],
         )
         out = tmp_path / "alleles.h5"
-        build_founder_allele_db(csv, cache, out)
+        build_founder_allele_gm(csv, cache, out)
         with h5py.File(out, "r") as hf:
             assert "1" in hf
 
@@ -116,7 +116,7 @@ class TestBuildFounderAlleleDb:
             ],
         )
         out = tmp_path / "alleles.h5"
-        build_founder_allele_db(csv, cache, out)
+        build_founder_allele_gm(csv, cache, out)
         with h5py.File(out, "r") as hf:
             shape = np.array(hf["1"]["alleles"]).shape
         assert shape == (2, 4)
@@ -131,7 +131,7 @@ class TestBuildFounderAlleleDb:
             ],
         )
         out = tmp_path / "alleles.h5"
-        summary = build_founder_allele_db(csv, cache, out)
+        summary = build_founder_allele_gm(csv, cache, out)
         assert set(summary.keys()) >= {
             "n_raw",
             "n_monomorphic",
@@ -151,7 +151,7 @@ class TestBuildFounderAlleleDb:
             ],
         )
         out = tmp_path / "alleles.h5"
-        summary = build_founder_allele_db(csv, cache, out)
+        summary = build_founder_allele_gm(csv, cache, out)
         assert summary["n_monomorphic"] == 1
         assert summary["n_written"] == 1
 
@@ -174,7 +174,7 @@ class TestBuildFounderAlleleDb:
             ],
         )
         out = tmp_path / "alleles.h5"
-        summary = build_founder_allele_db(csv, cache, out)
+        summary = build_founder_allele_gm(csv, cache, out)
         assert summary["n_multiallelic"] == 1
         assert summary["n_written"] == 1
 
@@ -205,7 +205,7 @@ class TestBuildFounderAlleleDb:
             ],
         )
         out = tmp_path / "alleles.h5"
-        summary = build_founder_allele_db(csv, cache, out, max_dist_mb=0.5)
+        summary = build_founder_allele_gm(csv, cache, out, max_dist_mb=0.5)
         assert summary["n_too_far"] == 1
         assert summary["n_written"] == 1
 
@@ -219,7 +219,7 @@ class TestBuildFounderAlleleDb:
             ],
         )
         out = tmp_path / "alleles.h5"
-        build_founder_allele_db(csv, cache, out, population=_POP4)
+        build_founder_allele_gm(csv, cache, out, population=_POP4)
         with h5py.File(out, "r") as hf:
             stored = [
                 f.decode() if isinstance(f, bytes) else f
@@ -239,7 +239,7 @@ class TestBuildFounderAlleleDb:
             ],
         )
         out = tmp_path / "alleles.h5"
-        build_founder_allele_db(csv, cache, out, founder_cols=founders_alt)
+        build_founder_allele_gm(csv, cache, out, founder_cols=founders_alt)
         with h5py.File(out, "r") as hf:
             stored = [
                 f.decode() if isinstance(f, bytes) else f
@@ -257,8 +257,8 @@ class TestBuildFounderAlleleDb:
             ],
         )
         out = tmp_path / "alleles.h5"
-        s1 = build_founder_allele_db(csv, cache, out)
-        s2 = build_founder_allele_db(csv, cache, out)
+        s1 = build_founder_allele_gm(csv, cache, out)
+        s2 = build_founder_allele_gm(csv, cache, out)
         assert s1["n_written"] == s2["n_written"]
 
     def test_two_chromosomes(self, tmp_path):
@@ -272,7 +272,7 @@ class TestBuildFounderAlleleDb:
             ],
         )
         out = tmp_path / "alleles.h5"
-        summary = build_founder_allele_db(csv, cache, out)
+        summary = build_founder_allele_gm(csv, cache, out)
         assert summary["n_written"] == 2
         assert set(summary["per_chr"].keys()) == {"1", "2"}
 
@@ -290,7 +290,7 @@ class TestLoadFounderAlleles:
             ]
         csv = _make_gm_csv(tmp_path, _FOUNDERS_4, rows)
         out = tmp_path / "alleles.h5"
-        build_founder_allele_db(csv, cache, out)
+        build_founder_allele_gm(csv, cache, out)
         return out
 
     def test_returns_dataframe(self, tmp_path):
@@ -326,7 +326,7 @@ class TestLoadFounderAlleles:
             ],
         )
         out = tmp_path / "alleles.h5"
-        build_founder_allele_db(csv, cache, out)
+        build_founder_allele_gm(csv, cache, out)
         df = load_founder_alleles(out, chrom="1")
         assert len(df) == 1
         assert df["chr"].iloc[0] == "1"
@@ -360,7 +360,7 @@ class TestLoadFounderAlleles:
         rows = [("snp1", "1", 50_000_000, "A", "A", "T", "T")]
         csv = _make_gm_csv(tmp_path, _FOUNDERS_4, rows)
         out = tmp_path / "alleles.h5"
-        build_founder_allele_db(csv, cache, out)
+        build_founder_allele_gm(csv, cache, out)
         df = load_founder_alleles(out)
         assert df["FA"].iloc[0] == "A"
         assert df["FB"].iloc[0] == "A"
@@ -372,7 +372,7 @@ class TestLoadFounderAlleles:
         rows = [("snp1", "1", 50_000_000, "A", "T", "A", "T")]
         csv = _make_gm_csv(tmp_path, _FOUNDERS_4, rows)
         out = tmp_path / "alleles.h5"
-        build_founder_allele_db(csv, cache, out)
+        build_founder_allele_gm(csv, cache, out)
         df = load_founder_alleles(out)
         # locus_id must be a non-empty string matching a cache locus pattern
         lid = df["locus_id"].iloc[0]
