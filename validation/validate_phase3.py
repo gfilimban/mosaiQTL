@@ -453,7 +453,7 @@ def run(r_data: Path, out_dir: Path,
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nS8: SNP scan (gated)...')
-            from mosaiqtl.genotype.snp_db import build_founder_allele_db
+            from mosaiqtl.genotype.snp_db import build_founder_allele_gm
             from mosaiqtl.qtl.snp_scan import imputed_snp_scan_from_db
             gm_csv_path = Path('../input/GM_fo_mm39.csv')
             alleles_h5  = py_dir / 'founder_alleles.h5'
@@ -461,7 +461,7 @@ def run(r_data: Path, out_dir: Path,
                 if not alleles_h5.exists() or force:
                     _gm_fcols = ['AJ', 'B6J', '129S1J', 'NODJ',
                                  'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ']
-                    build_founder_allele_db(
+                    build_founder_allele_gm(
                         gm_csv_path, cache, alleles_h5,
                         founder_cols=_gm_fcols, max_dist_mb=0.5)
                 _fcol_map = {

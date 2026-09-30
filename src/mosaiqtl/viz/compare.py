@@ -27,6 +27,7 @@ from ..genotype.founders import (
     COLOR_NEUTRAL_LIGHT,
     COLOR_THRESHOLD,
     FOUNDER_COLORS,
+    strip_j,
 )
 from ._theme import WASH
 
@@ -869,7 +870,7 @@ def founder_effects_comparison(
 
     ax.axhline(0, color=COLOR_NEUTRAL_DARK, lw=0.5)
     ax.set_xticks(x)
-    ax.set_xticklabels(founders, rotation=45, ha="right", fontsize=10)
+    ax.set_xticklabels([strip_j(f) for f in founders], rotation=45, ha="right", fontsize=10)
     ax.tick_params(labelsize=11)
     ax.set_ylabel("Allele effect (RINT)", fontsize=13, fontweight="bold")
     ax.legend(fontsize=9, frameon=False, loc="upper right")

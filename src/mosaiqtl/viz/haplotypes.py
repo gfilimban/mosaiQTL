@@ -14,6 +14,7 @@ from ..genotype.founders import (
     COLOR_CC_FALLBACK,
     FOUNDER_COLORS,
     FOUNDER_ORDER,
+    strip_j,
 )
 
 
@@ -95,7 +96,7 @@ def prob_heatmap(
     plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label="Haplotype Dose")
 
     ax.set_yticks(np.arange(J))
-    ax.set_yticklabels(founders, fontsize=7)
+    ax.set_yticklabels([strip_j(f) for f in founders], fontsize=7)
 
     ax.set_xticks([])
     ax.set_xlabel("Strains (sorted by haplotype probability)", fontsize=8)
@@ -138,87 +139,194 @@ def pxg(
     founders: list[str] = FOUNDER_ORDER,
     *,
     ax: Optional[plt.Axes] = None,
-    phenotype_label: str = "Phenotype",
+    strain_groups: Optional[dict[str, str]] = None,
+    phenotype_label: str = "mean log-norm expression",
+    gene_symbol: str = "",
     chrom: str = "",
     position_mb: Optional[float] = None,
     jitter: float = 0.15,
     point_size: float = 18.0,
     alpha: float = 0.7,
 ) -> plt.Axes:
-    """Phenotype-by-genotype plot: each sample assigned to its most-probable founder.
+    """Phenotype-by-genotype plot: each strain assigned to its most-probable founder.
 
-    Samples are grouped by the founder with highest haplotype probability. Points
-    are jittered within each founder group and colored by founder.
+    Strains are placed on the x-axis at the column of their argmax founder and
+    jittered horizontally.  Points are colored by founder.
+
+    When *strain_groups* is provided, marker shape encodes the strain class:
+    ● Founder (large, opaque), ◆ F1 (medium), ▲ CC (small, transparent).
+    Without it every point uses the same marker and size.
 
     Parameters
     ----------
     phenotype : np.ndarray
-        Shape (n_strains,) trait values.
+        Shape ``(n_strains,)`` — strain-level trait values.  ``NaN`` skipped.
     hap_probs : np.ndarray
-        Shape (n_strains, J) founder probabilities at one locus.
+        Shape ``(n_strains, n_founders)`` — posteriors at one locus.
     founders : list[str]
-        Founder names; length must equal hap_probs.shape[1].
+        Canonical founder names aligned to *hap_probs* columns.
     ax : plt.Axes, optional
-        Axes to draw on; created at dpi=300 if None.
+        Target axes; created at dpi=300 when ``None``.
+    strain_groups : dict[str, str], optional
+        ``{strain_name: 'founder' | 'f1' | 'cc'}`` ordered identically to the
+        first axis of *phenotype* / *hap_probs*.  Enables per-group markers.
     phenotype_label : str
         Y-axis label.
+    gene_symbol : str
+        Gene name for the figure title.
     chrom : str
-        Chromosome label for title.
+        Chromosome string for the figure title.
     position_mb : float, optional
-        Locus position in Mb for title annotation.
+        Peak locus position in Mb for the figure title.
     jitter : float
-        Horizontal jitter spread (in x-unit fractions).
+        Horizontal jitter spread.
     point_size : float
-        Scatter point size.
+        Scatter point size (used when *strain_groups* is ``None``).
     alpha : float
-        Point opacity.
+        Point opacity (used when *strain_groups* is ``None``).
 
     Returns
     -------
     plt.Axes
     """
+    import matplotlib.lines as _mlines
+
     if ax is None:
-        _, ax = plt.subplots(figsize=(6, 3.5), dpi=300)
+        _, ax = plt.subplots(figsize=(6, 3.8), dpi=300)
 
     mat = np.asarray(hap_probs, dtype=float)
+    phen = np.asarray(phenotype, dtype=float)
     assigned = np.argmax(mat, axis=1)
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(42)
+
+    _use_groups = strain_groups is not None
+    _strain_list = list(strain_groups.keys()) if _use_groups else []
+    _MARKER: dict[str, str]  = {"founder": "o", "f1": "D", "cc": "^"}
+    _SIZE:   dict[str, float] = {"founder": 70.0, "f1": 45.0, "cc": 22.0}
+    _ALPHA:  dict[str, float] = {"founder": 0.95, "f1": 0.85, "cc": 0.50}
+    _ZORDER: dict[str, int]   = {"founder": 5,    "f1": 4,    "cc": 2}
 
     for fi, fname in enumerate(founders):
-        mask = assigned == fi
+        color = FOUNDER_COLORS.get(fname, COLOR_CC_FALLBACK)
+        mask = (assigned == fi) & ~np.isnan(phen)
         if not mask.any():
             continue
-        color = FOUNDER_COLORS.get(fname, COLOR_CC_FALLBACK)
-        x_vals = fi + rng.uniform(-jitter, jitter, size=mask.sum())
-        sns.scatterplot(
-            x=x_vals,
-            y=phenotype[mask],
-            color=color,
-            s=point_size,
-            alpha=alpha,
-            zorder=3,
-            edgecolors="white",
-            linewidths=0.4,
-            label=fname,
-            ax=ax,
-        )
+        x_jit = fi + rng.uniform(-jitter, jitter, size=int(mask.sum()))
+        if _use_groups:
+            for j, si in enumerate(np.where(mask)[0]):
+                sname = _strain_list[si] if si < len(_strain_list) else ""
+                grp = strain_groups.get(sname, "cc")  # type: ignore[union-attr]
+                sns.scatterplot(
+                    x=[x_jit[j]], y=[float(phen[si])],
+                    color=color, s=_SIZE[grp], marker=_MARKER[grp],
+                    alpha=_ALPHA[grp], zorder=_ZORDER[grp],
+                    legend=False, ax=ax,
+                )
+        else:
+            sns.scatterplot(
+                x=x_jit, y=phen[mask],
+                color=color, s=point_size, alpha=alpha,
+                zorder=3, edgecolors="white", linewidths=0.4,
+                legend=False, ax=ax,
+            )
 
     ax.set_xticks(np.arange(len(founders)))
-    ax.set_xticklabels(founders, rotation=45, ha="right", fontsize=8)
-    ax.set_ylabel(phenotype_label)
+    ax.set_xticklabels([strip_j(f) for f in founders], rotation=40, ha="right", fontsize=8)
     ax.set_xlim(-0.6, len(founders) - 0.4)
+    ax.set_ylabel(phenotype_label, fontsize=9)
+    ax.set_xlabel("founder haplotype at peak locus", fontsize=9)
 
-    title_parts = []
-    if chrom:
-        title_parts.append(f"Chr {chrom}")
-    if position_mb is not None:
-        title_parts.append(f"{position_mb:.2f} Mb")
+    title_parts = [p for p in [
+        gene_symbol,
+        f"chr{chrom}" if chrom else "",
+        f"{position_mb:.2f} Mb" if position_mb is not None else "",
+    ] if p]
     if title_parts:
-        ax.set_title(" · ".join(title_parts), fontsize=8, pad=4)
+        ax.set_title("  ·  ".join(title_parts), fontsize=9, pad=5)
+
+    if _use_groups:
+        _leg = [
+            _mlines.Line2D([], [], color="grey", marker="o", linestyle="None",
+                           markersize=7, label="Founder"),
+            _mlines.Line2D([], [], color="grey", marker="D", linestyle="None",
+                           markersize=5, label="F1"),
+            _mlines.Line2D([], [], color="grey", marker="^", linestyle="None",
+                           markersize=5, label="CC"),
+        ]
+        ax.legend(handles=_leg, fontsize=7, frameon=False, loc="upper right", ncol=3)
 
     sns.despine(ax=ax)
     _set_font(ax)
     return ax
+
+
+def pxg_figure(
+    phenotype: np.ndarray,
+    hap_probs: np.ndarray,
+    founders: list[str] = FOUNDER_ORDER,
+    *,
+    strain_groups: Optional[dict[str, str]] = None,
+    phenotype_label: str = "mean log-norm expression",
+    gene_symbol: str = "",
+    chrom: str = "",
+    position_mb: Optional[float] = None,
+    jitter: float = 0.15,
+    point_size: float = 18.0,
+    alpha: float = 0.7,
+) -> plt.Figure:
+    """Standalone phenotype-by-genotype figure.
+
+    Creates a new :class:`~matplotlib.figure.Figure` (7 × 4.5 in, 300 dpi),
+    delegates all drawing to :func:`pxg`, and returns the figure ready to
+    save.  For embedding in a subplot grid, use :func:`pxg` directly with
+    an explicit *ax*.
+
+    Parameters
+    ----------
+    phenotype : np.ndarray
+        Shape ``(n_strains,)`` — strain-level trait values.  ``NaN`` skipped.
+    hap_probs : np.ndarray
+        Shape ``(n_strains, n_founders)`` — posteriors at one locus.
+    founders : list[str]
+        Canonical founder names aligned to *hap_probs* columns.
+    strain_groups : dict[str, str], optional
+        ``{strain_name: 'founder' | 'f1' | 'cc'}``; enables per-group markers.
+    phenotype_label : str
+        Y-axis label.
+    gene_symbol : str
+        Gene name for the figure title.
+    chrom : str
+        Chromosome string for the figure title.
+    position_mb : float, optional
+        Peak locus position in Mb for the figure title.
+    jitter : float
+        Horizontal jitter spread.
+    point_size : float
+        Scatter point size (used when *strain_groups* is ``None``).
+    alpha : float
+        Point opacity (used when *strain_groups* is ``None``).
+
+    Returns
+    -------
+    plt.Figure
+    """
+    fig, ax = plt.subplots(figsize=(7, 4.5), dpi=300)
+    pxg(
+        phenotype,
+        hap_probs,
+        founders,
+        ax=ax,
+        strain_groups=strain_groups,
+        phenotype_label=phenotype_label,
+        gene_symbol=gene_symbol,
+        chrom=chrom,
+        position_mb=position_mb,
+        jitter=jitter,
+        point_size=point_size,
+        alpha=alpha,
+    )
+    fig.tight_layout()
+    return fig
 
 
 def pxg_sex_facet(
@@ -449,9 +557,9 @@ def epistasis_heatmap(
     plt.colorbar(im, ax=ax, fraction=0.04, pad=0.02, label="Interaction LOD")
 
     ax.set_xticks(np.arange(J))
-    ax.set_xticklabels(founders, rotation=45, ha="right", fontsize=7)
+    ax.set_xticklabels([strip_j(f) for f in founders], rotation=45, ha="right", fontsize=7)
     ax.set_yticks(np.arange(J))
-    ax.set_yticklabels(founders, fontsize=7)
+    ax.set_yticklabels([strip_j(f) for f in founders], fontsize=7)
     ax.set_xlabel("Founder (locus 2)")
     ax.set_ylabel("Founder (locus 1)")
 

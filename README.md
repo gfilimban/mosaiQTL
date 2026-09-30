@@ -8,12 +8,12 @@ Gaussian LMM (normalized phenotypes). Designed for CC/DO mice (mm39); extensible
 
 - [Introduction](#introduction)
 - [Installation](#installation)
+- [Quickstart](#quickstart)
 - [Before You Start](#before-you-start)
 - [Usage](#usage)
 - [Inputs](#inputs)
 - [Outputs](#outputs)
 - [Models](#models)
-- [Examples (in preparation)](#examples-in-preparation)
 - [Documentation](#documentation)
 - [License](#license)
 
@@ -48,6 +48,56 @@ pip install -e '.[dev]'
 Core deps (scan engine): `numpy scipy pandas h5py anndata`  
 Required for CLI and plots: `pydantic click seaborn matplotlib`  
 Optional: `rpy2` (convert existing R-format genome caches to HDF5)
+
+---
+
+## Quickstart
+
+The fastest path to a result is a provided expression HDF5 + genome cache — no external
+data download required if a collaborator shares these files with you.
+
+### Whole-tissue or single-cell-type scan
+
+Given `counts_lognorm.h5` (pseudobulk expression, samples × genes), `exp_gene_info.csv`,
+`sample_meta.csv`, and `cache.h5`:
+
+```bash
+conda activate mosaiqtl
+
+# S1–S6: genome cache → haplotypes → kinship → LMM scan → permutation → eGene calling
+python validation/validate_tissue.py \
+    --tissue <label> \
+    --data   <directory-containing-the-four-files> \
+    --scan
+
+# S7: multiple-imputation scan on the called eGenes (runs on top of a completed S1–S6)
+python validation/validate_tissue.py \
+    --tissue <label> \
+    --data   <directory> \
+    --mi
+```
+
+Outputs land in `<data>/<label>/core/`:
+
+| File | Description |
+|---|---|
+| `peak_lod_<label>.csv` | Per-gene peak LOD |
+| `allele_effects_<label>.csv` | Founder haplotype effects at each gene's peak locus |
+| `threshold_<label>.csv` | GEV-fitted genome-wide LOD threshold |
+| `eqtl_summary.csv` | eGene table — all genes exceeding the LOD threshold |
+
+### Cell-type scan
+
+```bash
+python validation/validate_tissue.py \
+    --tissue ctxhipp \
+    --data   validation/ctxhipp_data \
+    --celltype 'glutamatergic neuron' \
+    --scan
+```
+
+All sections are checkpointed — interrupted runs resume from the last completed section.
+Pass `--force` to ignore checkpoints and rerun from scratch.
 
 ---
 

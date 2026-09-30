@@ -194,13 +194,12 @@ from mosaiqtl.qtl.mediation import (
     select_cis_mediation_pairs,
     mediation_scan_multi_outcome,
 )
-from mosaiqtl.qtl.snp_scan import imputed_snp_scan_from_db, snp_scan_multi_gene
 from mosaiqtl.io.covariates import encode_sex
 from mosaiqtl.io.results_io import pos_merge as _pos_merge, scan_result_to_df as _scan_to_df
 from mosaiqtl.io.anndata_io import load_expression_h5 as _load_expression_h5
 from mosaiqtl.qtl.scan import scan_multi_gene_lmm as _scan_multi_gene_lmm
 from mosaiqtl.pipeline import (
-    call_egenes, finalize_egene_summary,
+    call_egenes, finalize_egene_summary, finemap_egenes,
     LOD_COLS, ALLELE_EFFECTS_BASE_COLS, PEAK_LOD_COLS, EGENE_SUMMARY_COLS,
 )
 from mosaiqtl.utils import build_z_matrix, rint
@@ -397,10 +396,10 @@ _SECTION_LABELS: dict[str, str] = {
     'lmm_scan':        'LMM scan',
     'permutation':     'Permutation threshold',
     'egene_calling':   'eGene calling',
-    'mi_scan':         'Multiple imputation',
-    'snp_scan':        'SNP fine-mapping scan',
-    'mediation':       'Mediation scan',
     'bootstrap_ci':    'Bootstrap CI',
+    'sanger_finemap':  'Sanger fine-mapping',
+    'mi_scan':         'Multiple imputation',
+    'mediation':       'Mediation scan',
     'instability':     'Instability scan',
 }
 _SECTION_ORDER: list[str] = list(_SECTION_LABELS)
@@ -1439,7 +1438,7 @@ def _make_descriptive_plots(
     # Peak heap (tracemalloc) is used instead of RSS delta: ru_maxrss is a
     # process-lifetime high-water mark — once S4 allocates peak memory it stays
     # flat for all subsequent sections regardless of their actual footprint.
-    _PLOT_SECTIONS = ['lmm_scan', 'permutation', 'mi_scan', 'snp_scan', 'mediation', 'bootstrap_ci', 'instability']
+    _PLOT_SECTIONS = ['lmm_scan', 'permutation', 'mi_scan', 'mediation', 'bootstrap_ci', 'sanger_finemap', 'instability']
     scan_stats_path = py_dir / 'scan_stats.csv'
     if scan_stats_path.exists():
         try:
@@ -1937,7 +1936,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         celltype: str | None = None,
         tissue: str = 'gastroc',
         priority_gene: dict[str, str] | None = None,
-        gtf_path: str | None = None) -> dict:
+        gtf_path: str | None = None,
+        sanger_alleles: str | None = None) -> dict:
     """run tissue characterization sections; return gate results dict.
 
     Parameters
@@ -3314,94 +3314,6 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             _mark_done(py_dir, str(sec))
 
     # SNP scan
-    sec = 8
-    r_snp_path = r_data / 'snp_lod_genome.csv'
-    if sec in sections:
-        if not _checkpoint(py_dir, str(sec), force):
-            _rss_snp = _get_rss_mb()
-            tracemalloc.start()
-            _t_snp = time.perf_counter()
-            log.info('\nSNP scan: marginal LMM fine-mapping of imputed biallelic SNPs at eGene peak loci...')
-            if not _allele_h5.exists():
-                log.info('  %s founder_alleles.h5 not found at %s — '
-                         'build with build_founder_allele_db()', SKIP, _allele_h5)
-                results['snp_lod_r'] = None
-            elif egenes_df is None or len(egenes_df) == 0:
-                log.info('  %s no eGenes — run S4+S5 first', SKIP)
-                results['snp_lod_r'] = None
-            else:
-                h5_path = data_dir / 'counts_lognorm.h5'
-                _snp_ids = [r['gene_id']
-                            for _, r in egenes_df.iterrows()]
-                _snp_counts, _snp_loaded, _snp_sids = _load_expression(h5_path, _snp_ids)
-                _snp_expr = {gid: _snp_counts[i].astype(float)
-                             for i, gid in enumerate(_snp_loaded)}
-                _snp_chr_map = {}
-                for _, erow in egenes_df.iterrows():
-                    gid = erow['gene_id']
-                    _snp_chr_map[gid] = str(erow.get('chr', peak_chr))
-                geno_ids_snp = [meta_geno_map.get(s, s) for s in _snp_sids]
-                cov_snp = _build_covariates(meta, _snp_sids)
-                _snp_out_path = ext_dir / 'snp_lod.csv'
-                log.info('  scanning %d eGenes via SNP (streaming)...', len(_snp_expr))
-                snp_df = snp_scan_multi_gene(
-                    _snp_expr, _snp_chr_map, cache,
-                    alleles_h5=str(_allele_h5),
-                    covariates=cov_snp,
-                    kinship_decomp=kinship_decomp,
-                    sample_ids=geno_ids_snp,
-                    founder_col_map=FOUNDER_CODE,
-                    output_path=_snp_out_path,
-                    gene_meta=_gene_meta,
-                )
-                del _snp_expr, _snp_counts
-                if not snp_df.empty:
-                    if r_snp_path.exists():
-                        r_snp = pd.read_csv(r_snp_path)
-                        if 'gene' in r_snp.columns:
-                            r_snp = r_snp.rename(columns={'gene': 'gene_symbol'})
-                        # peak_only=True → one row per gene; compare peak SNP LOD per gene
-                        r_snp_peak = (r_snp.groupby('gene_symbol')['lod'].max()
-                                      .reset_index().rename(columns={'lod': 'r'}))
-                        merged_snp = (snp_df[['gene_symbol', 'peak_lod']]
-                                      .rename(columns={'peak_lod': 'py'})
-                                      .merge(r_snp_peak, on='gene_symbol', how='inner'))
-                        if len(merged_snp) >= 10:
-                            r_snp_r, _ = sp_stats.pearsonr(merged_snp['py'],
-                                                            merged_snp['r'])
-                            slope_snp, *_ = sp_stats.linregress(
-                                merged_snp['r'], merged_snp['py'])
-                            merged_snp.to_csv(cmp_dir / 'snp_comparison.csv',
-                                              index=False)
-                            log.info('  r=%.4f  slope=%.3f  n=%d/%d',
-                                     r_snp_r, slope_snp,
-                                     len(merged_snp), len(r_snp))
-                            fig, _ax = _cmp_scatter(
-                                merged_snp, 'r', 'py',
-                                'SNP LOD (R)', 'SNP LOD (Python)',
-                                save_path=plt_dir / f'snp_scatter_{_run_sfx}.png',
-                            )
-                            plt.close(fig)
-                            results['snp_lod_r'] = (abs(r_snp_r) >= 0.75 and
-                                                        abs(slope_snp - 1.0) < 0.20)
-                        else:
-                            log.info('  %s too few matched SNPs', SKIP)
-                            results['snp_lod_r'] = None
-                    else:
-                        log.info('  Python SNP scan complete (%d genes) '
-                                 '— no R reference yet (run gastroc_miqtl_scan.R S8)',
-                                 snp_df['gene_symbol'].nunique())
-                        results['snp_lod_r'] = None
-                else:
-                    log.info('  %s SNP scan produced no results', SKIP)
-                    results['snp_lod_r'] = None
-            _, _snp_heap_peak = tracemalloc.get_traced_memory()
-            tracemalloc.stop()
-            _record_stats('snp_scan', 'marginal_lmm', len(egenes_df) if egenes_df is not None else 0,
-                          time.perf_counter() - _t_snp, _snp_heap_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_snp))
-            _mark_done(py_dir, str(sec))
-
     # mediation scan
     sec = 9
     r_med_path = r_data / 'mediation_genome.csv'
@@ -3574,6 +3486,66 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                           max(0.0, _get_rss_mb() - _rss_ci))
             _mark_done(py_dir, str(sec))
 
+    # Sanger fine-mapping (requires bootstrap CI outputs + --sanger-alleles HDF5)
+    sec = 12
+    if sec in sections:
+        if not _checkpoint(py_dir, str(sec), force):
+            _rss_fm = _get_rss_mb()
+            tracemalloc.start()
+            _t_fm = time.perf_counter()
+            log.info('\nSanger fine-mapping: ABF credible sets on CI-window SNPs...')
+            _eqtl_peak_csv = py_dir / f'eqtl_peak_{_run_sfx}.csv'
+            _sanger_h5 = Path(sanger_alleles) if sanger_alleles else None
+            if _sanger_h5 is None or not _sanger_h5.exists():
+                log.info('  %s --sanger-alleles not set or file missing', SKIP)
+                results['sanger_finemap'] = None
+            elif not _eqtl_peak_csv.exists():
+                log.info('  %s eqtl_peak_%s.csv not found — run report first', SKIP, _run_sfx)
+                results['sanger_finemap'] = None
+            elif egenes_df is None or len(egenes_df) == 0:
+                log.info('  %s no eGenes', SKIP)
+                results['sanger_finemap'] = None
+            else:
+                egene_peak_df = pd.read_csv(_eqtl_peak_csv, dtype={'chr': str})
+                _required = {'gene_id', 'chr', 'pos', 'lod', 'variant', 'ci_lo_bp', 'ci_hi_bp'}
+                if not _required.issubset(egene_peak_df.columns):
+                    log.warning('  %s eqtl_peak CSV missing columns: %s', SKIP,
+                                _required - set(egene_peak_df.columns))
+                    results['sanger_finemap'] = None
+                else:
+                    h5_path = data_dir / 'counts_lognorm.h5'
+                    _fm_ids = list(egene_peak_df['gene_id'])
+                    _fm_counts, _fm_loaded, _fm_sids = _load_expression(h5_path, _fm_ids)
+                    geno_ids_fm = [meta_geno_map.get(s, s) for s in _fm_sids]
+                    cov_fm = _build_covariates(meta, _fm_sids)
+                    fm_dir = py_dir / 'finemap'
+                    fm_df, fm_peak_df = finemap_egenes(
+                        egene_df=egene_peak_df,
+                        phenotype_matrix=_fm_counts,
+                        gene_ids=list(_fm_loaded),
+                        genomecache=cache,
+                        alleles_h5=str(_sanger_h5),
+                        out_dir=fm_dir,
+                        covariates=cov_fm,
+                        kinship_decomp=kinship_decomp,
+                        tag=_run_sfx,
+                    )
+                    del _fm_counts
+                    results['sanger_finemap'] = (
+                        fm_df is not None and len(fm_df) > 0
+                    )
+                    if results['sanger_finemap']:
+                        log.info('  fine-mapped %d eGenes → %s',
+                                 fm_peak_df['gene_id'].nunique() if fm_peak_df is not None else 0,
+                                 fm_dir)
+            _, _fm_heap_peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            _record_stats('sanger_finemap', 'abf_credible_sets',
+                          len(egenes_df) if egenes_df is not None else 0,
+                          time.perf_counter() - _t_fm, _fm_heap_peak / 1e6,
+                          max(0.0, _get_rss_mb() - _rss_fm))
+            _mark_done(py_dir, str(sec))
+
     # instability scan
     sec = 11
     r_inst_path = r_data / 'instability_genome.csv'
@@ -3666,7 +3638,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         'lmm_lod_r2':         f'{scan_type} peak LOD r²  (PRIMARY GATE)',
         'perm_threshold': 'permutation threshold',
         'mi_scan':        'MI scan',
-        'snp_lod_r':      'SNP scan',
+        'sanger_finemap':  'Sanger fine-mapping',
         'mediation_r':      'mediation scan',
         'bootstrap_ci':            'bootstrap CI',
         'instability':   'instability scan',
@@ -3815,20 +3787,23 @@ def main() -> None:
                     help='path to HAPPY genomecache dir for --build-cache '
                          f'(default: {GENOMECACHE})')
     ap.add_argument('--full', action='store_true',
-                    help='run all sections S1–S11')
+                    help='run all sections (cache, haplotypes, kinship, scan, permutation, '
+                         'eGene calling, bootstrap CI, Sanger fine-mapping, MI, mediation, instability)')
     ap.add_argument('--scan', action='store_true',
-                    help='run core scan sections S1–S6 (cache, haplotypes, kinship, '
-                         'LMM scan, permutation, eGene calling; default when no flag given)')
+                    help='run core scan sections (cache, haplotypes, kinship, LMM scan, '
+                         'permutation, eGene calling; default when no flag given)')
     ap.add_argument('--mi', action='store_true',
-                    help='run S7 multiple-imputation scan (requires S4+S6 outputs)')
-    ap.add_argument('--snp', action='store_true',
-                    help='run S8 SNP fine-mapping scan (requires S4+S6 outputs)')
+                    help='run multiple-imputation scan (requires scan outputs)')
     ap.add_argument('--mediation', action='store_true',
-                    help='run S9 mediation scan (requires S4+S6 outputs)')
+                    help='run mediation scan (requires scan outputs)')
     ap.add_argument('--ci', action='store_true',
-                    help='run S10 bootstrap confidence intervals (requires S4+S6 outputs)')
+                    help='run bootstrap confidence intervals (requires scan outputs)')
+    ap.add_argument('--finemap', action='store_true',
+                    help='run Sanger fine-mapping (requires CI outputs + --sanger-alleles)')
+    ap.add_argument('--sanger-alleles', default=None, metavar='PATH',
+                    help='path to Sanger alleles HDF5 built by build_founder_allele_mgp()')
     ap.add_argument('--instability', action='store_true',
-                    help='run S11 instability scan (requires S4+S6 outputs)')
+                    help='run instability scan (requires scan outputs)')
     ap.add_argument('--plots-only', action='store_true',
                     help='skip all scans, regenerate descriptive plots from existing scan output')
     ap.add_argument('--force',    action='store_true',
@@ -3998,24 +3973,24 @@ def main() -> None:
 
     if args.plots_only:
         sections: set[int] = set()
-    elif not any([args.full, args.scan, args.mi, args.snp,
-                  args.mediation, args.ci, args.instability]):
-        sections = set(range(1, 7))    # default: --scan equivalent (S1–S6, scan_type=L)
+    elif not any([args.full, args.scan, args.mi,
+                  args.mediation, args.ci, args.finemap, args.instability]):
+        sections = set(range(1, 7))    # default: --scan (cache → egene calling)
     else:
         sections = set()
         if args.full:
-            sections = set(range(1, 12))
+            sections = set(range(1, 13))
         else:
             if args.scan:
                 sections.update(range(1, 7))
             if args.mi:
                 sections.add(7)
-            if args.snp:
-                sections.add(8)
             if args.mediation:
                 sections.add(9)
             if args.ci:
                 sections.add(10)
+            if args.finemap:
+                sections.add(12)
             if args.instability:
                 sections.add(11)
 
@@ -4077,7 +4052,8 @@ def main() -> None:
             try:
                 run(_run_data_dir, _run_out_dir, sections, args.force, args.n_genes,
                     scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,
-                    celltype=_ct_label, tissue=tissue, gtf_path=args.gtf)
+                    celltype=_ct_label, tissue=tissue, gtf_path=args.gtf,
+                    sanger_alleles=args.sanger_alleles)
                 _n_ok += 1
             except Exception:
                 log.exception('cell type %r failed — continuing with remaining CTs', _ct_label)
@@ -4114,7 +4090,8 @@ def main() -> None:
     run(_run_data_dir, _run_out_dir, sections, args.force, args.n_genes,
         scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,
         celltype=_ct_label,
-        tissue=tissue, gtf_path=args.gtf)
+        tissue=tissue, gtf_path=args.gtf,
+        sanger_alleles=args.sanger_alleles)
 
 
 if __name__ == '__main__':

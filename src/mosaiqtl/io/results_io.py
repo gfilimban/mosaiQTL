@@ -12,8 +12,12 @@ import pandas as pd
 from scipy import stats as _sp_stats
 
 from mosaiqtl.pipeline import (
+    _FOUNDER_EFFECT_COLS,
     _LOCUS_COLS,
+    _RUN_COLS,
     _SIG_COLS,
+    EQTL_FINEMAPPING_COLS,
+    EQTL_FINEMAPPING_PEAK_COLS,
     EQTL_PEAK_COLS,
     EQTL_SCAN_COLS,
     EQTL_STATS_COLS,
@@ -205,9 +209,10 @@ def build_eqtl_peak_df(
             out["log10p_nominal"] = -np.log10(out["pval_nominal"])
     out["cis_dist_mb"] = src.get("cis_dist_mb", pd.NA)
 
-    # not yet computable — see docstring
+    # GM locus ID as variant identifier; biallelic contrast fields remain unbuilt until
+    # the Sanger fine-mapping subsystem supplies REF/ALT calls — see docstring
+    out["variant"] = src.get("peak_locus", pd.NA)
     for col in (
-        "variant",
         "ref",
         "effect_allele",
         "other_allele",
@@ -396,63 +401,49 @@ def build_eqtl_scan_df(
     -------
     DataFrame with columns given by ``pipeline.EQTL_SCAN_COLS``, in order.
     """
-    # Build locus-id → chromosome lookup from the cache.  Accessing lids and
-    # positions per chromosome is lightweight — no haplotype-probability loads.
+    # build locus-id → chromosome lookup — get_locus_metadata() reads lids/pos
+    # already in RAM; probs (h5py Dataset) are never touched
     locus_chr: dict[str, str] = {}
     for chrom in genomecache.chromosomes:
-        lids, _pos, _probs = genomecache.get_chromosome(chrom)
+        lids, _pos = genomecache.get_locus_metadata(chrom)
         for lid in lids:
             locus_chr[lid] = chrom
 
     sym_map = gene_symbol_map or {}
-    chi2_scale = 2.0 * np.log(10)  # convert LOD to chi2 statistic
+    chi2_scale = 2.0 * np.log(10)
 
-    rows: list[dict] = []
+    # per-gene vectorized ops: one chi2.sf call per gene over all loci,
+    # one DataFrame construction per gene, then a single pd.concat
+    gene_frames: list[pd.DataFrame] = []
     for gene_id, sr in scan.items():
         if len(sr.lod) == 0:
             continue
-        gene_symbol = sym_map.get(gene_id, "")
-        peak_idx = int(np.argmax(sr.lod))
+        n = len(sr.lod)
+        lod_arr = np.asarray(sr.lod, dtype=np.float64)
+        pos_bp = (np.asarray(sr.pos_mb, dtype=np.float64) * 1e6).round().astype(np.int64)
 
-        for i, (lid, pos_mb_val, lod_val) in enumerate(zip(sr.loci, sr.pos_mb, sr.lod)):
-            chrom = locus_chr.get(lid, str(sr.chr))
-            pos_bp = int(round(float(pos_mb_val) * 1e6))
+        chi2 = chi2_scale * np.maximum(lod_arr, 0.0)
+        pval = _sp_stats.chi2.sf(chi2, df=n_founders)
+        with np.errstate(divide="ignore"):
+            log10p = -np.log10(np.maximum(pval, 1e-300))
 
-            chi2_val = chi2_scale * float(lod_val)
-            if chi2_val >= 0.0:
-                pval = float(_sp_stats.chi2.sf(chi2_val, df=n_founders))
-                with np.errstate(divide="ignore"):
-                    log10p = float(-np.log10(pval)) if pval > 0.0 else np.inf
-            else:
-                pval = np.nan
-                log10p = np.nan
+        peak_flag = np.full(n, "F", dtype=object)
+        peak_flag[int(np.argmax(lod_arr))] = "T"
 
-            rows.append(
-                {
-                    "chr": chrom,
-                    "pos": pos_bp,
-                    "hard_call_dosage": "F",
-                    "gene_id": gene_id,
-                    "gene_symbol": gene_symbol,
-                    "lod": float(lod_val),
-                    "pval_nominal": pval,
-                    "log10p_nominal": log10p,
-                    "peak_locus": "T" if i == peak_idx else "F",
-                }
-            )
+        gene_frames.append(pd.DataFrame({
+            "chr": [locus_chr.get(lid, str(sr.chr)) for lid in sr.loci],
+            "pos": pos_bp,
+            "hard_call_dosage": "F",
+            "gene_id": gene_id,
+            "gene_symbol": sym_map.get(gene_id, ""),
+            "lod": lod_arr,
+            "pval_nominal": pval,
+            "log10p_nominal": log10p,
+            "peak_locus": peak_flag,
+        }))
 
-    out = pd.DataFrame(rows) if rows else pd.DataFrame(columns=EQTL_SCAN_COLS)
-
-    # NaN-fill all columns the haplotype scan cannot populate.
-    for col in _SANGER_COLS + _NULL_MODEL_COLS:
-        if col not in out.columns:
-            out[col] = pd.NA
-
-    # Remaining EQTL_SCAN_COLS not yet present also get NaN.
-    for col in EQTL_SCAN_COLS:
-        if col not in out.columns:
-            out[col] = pd.NA
-
+    out = pd.concat(gene_frames, ignore_index=True) if gene_frames else pd.DataFrame(columns=EQTL_SCAN_COLS)
+    # reindex fills all missing EQTL_SCAN_COLS (Sanger + null-model) with NaN
     return out.reindex(columns=EQTL_SCAN_COLS).reset_index(drop=True)
 
 
@@ -472,5 +463,206 @@ def write_eqtl_scan(
     The DataFrame that was written (``pipeline.EQTL_SCAN_COLS`` schema).
     """
     df = build_eqtl_scan_df(scan, genomecache, gene_symbol_map, n_founders)
+    _atomic_write_csv(df, out_path)
+    return df
+
+
+def build_eqtl_finemapping_df(
+    fm_df: pd.DataFrame,
+    gene_id: str,
+    chr_: str,
+    hap_peak_pos: int,
+    hap_peak_variant: str,
+    hap_peak_lod: float,
+    ci_lo_bp: "int | None" = None,
+    ci_hi_bp: "int | None" = None,
+    gene_symbol: str = "",
+    alleles_df: "pd.DataFrame | None" = None,
+    n_founders: int = 7,
+) -> pd.DataFrame:
+    """Build the ``EQTL_FINEMAPPING_COLS`` DataFrame for one gene's credible set.
+
+    Consumes the output of :func:`qtl.imputation.fine_map_region` filtered to
+    credible-set members (``in_cs == True``).  Sanger allele annotations (``ref``,
+    ``effect_allele``, ``ref_founders``, etc.) are merged from ``alleles_df``
+    when supplied; they remain NaN otherwise.
+
+    Parameters
+    ----------
+    fm_df:
+        Subset of :func:`~qtl.imputation.fine_map_region` output with
+        ``in_cs == True``, sorted by PIP descending (the first row is the lead
+        SNP).  Must contain ``snp``, ``lod``, ``pip``; optionally ``pos_mb``.
+    gene_id:
+        ENSMUSG ID (version-stripped) — stable join key.
+    chr_:
+        Chromosome string (e.g. ``'8'``).
+    hap_peak_pos:
+        Integer bp position of the GigaMUGA haplotype peak — back-link to
+        ``_eqtl_peak.csv``.
+    hap_peak_variant:
+        GigaMUGA locus ID of the haplotype peak.
+    hap_peak_lod:
+        LOD score at the haplotype peak.
+    ci_lo_bp, ci_hi_bp:
+        LOD-drop CI bounds (bp).  ``None`` writes NaN.
+    gene_symbol:
+        Display gene name.
+    alleles_df:
+        Optional per-SNP Sanger allele annotations with a ``snp`` column
+        matching ``fm_df["snp"]`` and any subset of ``_SANGER_COLS``.
+    n_founders:
+        Chi-squared degrees of freedom for ``pval_nominal`` (default 7).
+
+    Returns
+    -------
+    DataFrame with columns given by ``pipeline.EQTL_FINEMAPPING_COLS``, in
+    order.
+    """
+    # restrict to CS members; fm_df is already sorted by PIP desc from fine_map_region
+    cs = fm_df[fm_df["in_cs"]].reset_index(drop=True)
+    n = len(cs)
+
+    lod_arr = np.asarray(cs["lod"], dtype=np.float64)
+    chi2_scale = 2.0 * np.log(10)
+    pval = _sp_stats.chi2.sf(chi2_scale * np.maximum(lod_arr, 0.0), df=n_founders)
+    with np.errstate(divide="ignore"):
+        log10p = -np.log10(np.maximum(pval, 1e-300))
+
+    pos_col: "np.ndarray | object"
+    if "pos_mb" in cs.columns:
+        pos_col = (np.asarray(cs["pos_mb"], dtype=np.float64) * 1e6).round().astype(np.int64)
+    else:
+        pos_col = pd.NA
+
+    lead_flag = np.full(n, "F", dtype=object)
+    lead_flag[0] = "T"   # first row is highest-PIP SNP (fine_map_region sorts desc)
+
+    out = pd.DataFrame({
+        "variant": cs["snp"].to_numpy(),
+        "chr": chr_,
+        "pos": pos_col,
+        "gene_id": gene_id,
+        "gene_symbol": gene_symbol,
+        "lod": lod_arr,
+        "pval_nominal": pval,
+        "log10p_nominal": log10p,
+        "PIP": np.asarray(cs["pip"], dtype=np.float64),
+        "PIP_method": "ABF",
+        "CS": "T",
+        "lead_snp": lead_flag,
+        "ci_lo_bp": ci_lo_bp if ci_lo_bp is not None else pd.NA,
+        "ci_hi_bp": ci_hi_bp if ci_hi_bp is not None else pd.NA,
+        "hap_peak_pos": hap_peak_pos,
+        "hap_peak_variant": hap_peak_variant,
+        "hap_peak_lod": hap_peak_lod,
+    })
+
+    if alleles_df is not None and "snp" in alleles_df.columns:
+        avail = [c for c in _SANGER_COLS if c in alleles_df.columns]
+        if avail:
+            out = out.merge(
+                alleles_df[["snp"] + avail],
+                left_on="variant", right_on="snp",
+                how="left",
+            ).drop(columns="snp")
+
+    return out.reindex(columns=EQTL_FINEMAPPING_COLS).reset_index(drop=True)
+
+
+def write_eqtl_finemapping(
+    fm_df: pd.DataFrame,
+    gene_id: str,
+    chr_: str,
+    hap_peak_pos: int,
+    hap_peak_variant: str,
+    hap_peak_lod: float,
+    out_path: "Path | str",
+    ci_lo_bp: "int | None" = None,
+    ci_hi_bp: "int | None" = None,
+    gene_symbol: str = "",
+    alleles_df: "pd.DataFrame | None" = None,
+    n_founders: int = 7,
+) -> pd.DataFrame:
+    """Build the ``_eqtl_finemapping.csv`` table and write it atomically.
+
+    See ``build_eqtl_finemapping_df`` for field-population rules.
+
+    Returns
+    -------
+    The DataFrame that was written (``pipeline.EQTL_FINEMAPPING_COLS`` schema).
+    """
+    df = build_eqtl_finemapping_df(
+        fm_df, gene_id, chr_, hap_peak_pos, hap_peak_variant, hap_peak_lod,
+        ci_lo_bp=ci_lo_bp, ci_hi_bp=ci_hi_bp, gene_symbol=gene_symbol,
+        alleles_df=alleles_df, n_founders=n_founders,
+    )
+    _atomic_write_csv(df, out_path)
+    return df
+
+
+def build_eqtl_finemapping_peak_df(
+    fm_df: pd.DataFrame,
+    founder_effects: "dict[str, float] | None" = None,
+    sig_values: "dict[str, object] | None" = None,
+) -> pd.DataFrame:
+    """Filter the finemapping CS table to the lead SNP and append significance.
+
+    Takes the output of :func:`build_eqtl_finemapping_df` (one CS per gene),
+    keeps the single ``lead_snp == 'T'`` row, drops ``lead_snp``, then appends
+    per-founder effects (``_FOUNDER_EFFECT_COLS``), significance
+    (``_SIG_COLS``), and run metadata (``_RUN_COLS``).
+
+    Parameters
+    ----------
+    fm_df:
+        Output of :func:`build_eqtl_finemapping_df` for one gene — multiple
+        rows (one per CS member), sorted by PIP descending.
+    founder_effects:
+        Per-founder effect estimates keyed by ``effect_{founder}`` column
+        names (e.g. ``{"effect_AJ": 0.31, ...}``).  ``None`` leaves all
+        ``_FOUNDER_EFFECT_COLS`` as NaN.
+    sig_values:
+        Significance block keyed by ``_SIG_COLS`` names
+        (``pval_perm``, ``fdr``, ``fdr_method``, ``significance``).
+        ``None`` leaves all as NaN.
+
+    Returns
+    -------
+    DataFrame with columns given by ``pipeline.EQTL_FINEMAPPING_PEAK_COLS``,
+    in order (one row).
+    """
+    lead = fm_df[fm_df["lead_snp"] == "T"].drop(columns="lead_snp").reset_index(drop=True)
+
+    eff = founder_effects or {}
+    sig = sig_values or {}
+    for col in _FOUNDER_EFFECT_COLS:
+        lead[col] = eff.get(col, pd.NA)
+    for col in _SIG_COLS:
+        lead[col] = sig.get(col, pd.NA)
+    lead["interaction"] = "F"
+    lead["interaction_context"] = ""
+    lead["conditional"] = ""
+    lead["conditional_method"] = ""
+
+    return lead.reindex(columns=EQTL_FINEMAPPING_PEAK_COLS).reset_index(drop=True)
+
+
+def write_eqtl_finemapping_peak(
+    fm_df: pd.DataFrame,
+    out_path: "Path | str",
+    founder_effects: "dict[str, float] | None" = None,
+    sig_values: "dict[str, object] | None" = None,
+) -> pd.DataFrame:
+    """Build the ``_eqtl_finemapping_peak.csv`` table and write it atomically.
+
+    See ``build_eqtl_finemapping_peak_df`` for field-population rules.
+
+    Returns
+    -------
+    The DataFrame that was written
+    (``pipeline.EQTL_FINEMAPPING_PEAK_COLS`` schema).
+    """
+    df = build_eqtl_finemapping_peak_df(fm_df, founder_effects, sig_values)
     _atomic_write_csv(df, out_path)
     return df

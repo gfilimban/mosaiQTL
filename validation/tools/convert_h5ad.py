@@ -311,6 +311,22 @@ _CPM_STATS_COLS = ['gene_id', 'total_counts', 'mean_counts', 'n_cells_by_counts'
                    'n_samples_count_ge_min', 'frac_samples_count_ge_min',
                    'mean_cpm', 'median_cpm', 'n_samples_zero', 'frac_samples_zero']
 
+# canonical leading columns for every exp_gene_info_*.csv; stats columns follow.
+_EXP_GENE_INFO_BASE_COLS = ['gene_id', 'gene_symbol', 'chr', 'start', 'end', 'strand', 'tss_bp']
+
+
+def _order_exp_gene_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """Return df with canonical leading columns; remaining columns appended as-is.
+
+    Drops 'gene_name' unconditionally — it leaks in as the adata.var index name
+    for cohorts whose var_names were originally the gene_name column.  gene_symbol
+    is the canonical display column; gene_name is never written to exp_gene_info_*.csv.
+    """
+    df = df.drop(columns=['gene_name'], errors='ignore')
+    base = [c for c in _EXP_GENE_INFO_BASE_COLS if c in df.columns]
+    rest = [c for c in df.columns if c not in set(base)]
+    return df[base + rest]
+
 
 def _write_counts_h5(adata: anndata.AnnData, sorted_idx: 'pd.Index',
                      out_path: pathlib.Path) -> None:
@@ -427,7 +443,7 @@ def init_celltypes(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str,
     exp_gene_info = _add_tss_bp(exp_gene_info)
     exp_path = out_dir / f'exp_gene_info_{tissue}_universe.csv'
     log.info('writing %s  (%d genes — full universe, no CPM filter)', exp_path, len(exp_gene_info))
-    exp_gene_info.to_csv(exp_path, index=False)
+    _order_exp_gene_cols(exp_gene_info).to_csv(exp_path, index=False)
 
     log.info('init done — %d samples  %d gene universe', len(obs_unique), adata.n_vars)
     log.info('  per-CT gene sets determined by per-CT CPM filter in convert_celltype()')
@@ -487,7 +503,7 @@ def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str,
     exp_gene_info = _add_tss_bp(exp_gene_info)
     exp_path = out_dir / f'exp_gene_info_{tissue}.csv'
     log.info('writing %s  (%d genes)', exp_path, len(exp_gene_info))
-    exp_gene_info.to_csv(exp_path, index=False)
+    _order_exp_gene_cols(exp_gene_info).to_csv(exp_path, index=False)
 
     log.info('done — %d samples, %d genes', adata.n_obs, adata.n_vars)
     for ds, grp in obs.groupby('dataset', sort=True, observed=True):
@@ -622,7 +638,7 @@ def convert_celltype(h5ad_path: pathlib.Path, celltype: str,
     exp_gene_info_ct = _fill_missing_coords(exp_gene_info_ct)
     exp_gene_info_ct = _add_tss_bp(exp_gene_info_ct)
     exp_path = ct_dir / f'exp_gene_info_{ct}.csv'
-    exp_gene_info_ct.to_csv(exp_path, index=False)
+    _order_exp_gene_cols(exp_gene_info_ct).to_csv(exp_path, index=False)
     log.info('writing %s  (%d genes)', exp_path, len(exp_gene_info_ct))
 
     # ── counts_lognorm.h5: valid samples × CT-passing genes ──────────────────
@@ -693,7 +709,7 @@ def main() -> None:
         out = repo_root / 'validation' / f'{args.tissue}_data'
         if args.dataset is not None:
             out = out / args.dataset
-    exclude = {c.strip() for c in args.exclude_celltypes.split(',') if c.strip()}
+    exclude = {c.strip().lower() for c in args.exclude_celltypes.split(',') if c.strip()}
 
     if args.list_celltypes:
         adata = anndata.read_h5ad(args.h5ad)
@@ -701,7 +717,7 @@ def main() -> None:
         log.info('cell type column: %r', ct_col)
         for ct in sorted(adata.obs[ct_col].unique()):
             n = (adata.obs[ct_col] == ct).sum()
-            flag = '  [excluded]' if ct in exclude else ''
+            flag = '  [excluded]' if ct.lower() in exclude else ''
             print(f'  {ct!r:50s}  {n} obs{flag}')
         return
 
@@ -715,7 +731,7 @@ def main() -> None:
         # do NOT call convert() here — that expects one obs per sample (bulk h5ad)
         init_celltypes(args.h5ad, out, args.tissue, celltype_col=args.celltype_col)
         for ct in all_cts:
-            if ct in exclude:
+            if ct.lower() in exclude:
                 log.info('skipping excluded cell type %r', ct)
                 continue
             convert_celltype(args.h5ad, ct, ct_root, args.tissue,

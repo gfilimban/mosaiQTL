@@ -206,7 +206,7 @@ def imputed_snp_scan_from_db(
     """SNP scan loading founder allele calls from an HDF5 database.
 
     Wraps imputed_snp_scan_h2lmm: loads the founder allele HDF5 built by
-    build_founder_allele_db(), converts nucleotide calls (A/T/C/G) to
+    build_founder_allele_gm(), converts nucleotide calls (A/T/C/G) to
     binary 0/1 dosage (alphabetically later allele = alt = 1), then passes
     the numeric snp_genos DataFrame to imputed_snp_scan_h2lmm.
 
@@ -214,7 +214,7 @@ def imputed_snp_scan_from_db(
     ----------
     phenotype   : np.ndarray (n,) — sample-level if sample_ids provided, else strain-level
     genomecache : GenomeCache
-    alleles_h5  : path to HDF5 built by build_founder_allele_db()
+    alleles_h5  : path to HDF5 built by build_founder_allele_gm()
     covariates  : np.ndarray (n, p) or None
     kinship_decomp : dict or None
     chrom       : restrict scan to this chromosome (e.g. 'chr10')

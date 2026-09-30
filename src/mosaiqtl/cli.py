@@ -31,7 +31,7 @@ def _setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
-        format="%(asctime)s,%(msecs)03d %(levelname)-5s [%(module)s] %(message)s",
+        format="%(asctime)s,%(msecs)03d %(levelname)-5s %(message)s",
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
@@ -855,6 +855,13 @@ def estimate(
     "Storey q-value significance call written into eqtl_peak.csv. Omit to "
     "leave pval_perm/fdr/significance blank there.",
 )
+@click.option(
+    "--suffix",
+    default=None,
+    help="Optional tag appended to output filenames: eqtl_peak_<suffix>.csv, "
+    "eqtl_stats_<suffix>.csv, eqtl_summary_<suffix>.csv. Convention: "
+    "<tissue>_<celltype>_<scan-tag>, e.g. ctxhipp_glutamatergic_neuron_Lw1.",
+)
 @click.option("--verbose", is_flag=True, default=False)
 def report(
     scan_result: Path,
@@ -863,6 +870,7 @@ def report(
     fdr: float,
     allele_effects: Optional[Path],
     pval_perm: Optional[Path],
+    suffix: Optional[str],
     verbose: bool,
 ) -> None:
     """Summary tables + QC plots from a completed scan.
@@ -897,6 +905,9 @@ def report(
         logger.info("GEV 95th-pct threshold: %.3f LOD", gw_thr)
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    # derive tag from scan-result stem when not supplied:
+    # peak_lod_glutamatergic_neuron_Lw1.csv  →  glutamatergic_neuron_Lw1
+    _tag = suffix or scan_result.stem.removeprefix("peak_lod_")
     egenes_df = call_egenes(peaks, threshold=gw_thr)
     is_egene = (
         peaks["peak_lod"] >= gw_thr
@@ -904,7 +915,7 @@ def report(
         else (peaks.index.isin(egenes_df.index))
     )
     summary = finalize_egene_summary(egenes_df)
-    summary.to_csv(output_dir / "eqtl_summary.csv", index=False)
+    summary.to_csv(output_dir / f"eqtl_summary_{_tag}.csv", index=False)
     logger.info("eQTL summary written: %d eGenes", len(egenes_df))
 
     # genome summary Manhattan
@@ -944,7 +955,15 @@ def report(
         logger.info("--allele-effects not given; effect_* columns left blank")
 
     if pval_perm is not None:
-        pv_series = pd.read_csv(pval_perm).set_index("gene_id")["pval_perm"]
+        _pv_df = pd.read_csv(pval_perm)
+        if "gene_id" not in _pv_df.columns or "pval_perm" not in _pv_df.columns:
+            raise click.ClickException(
+                f"--pval-perm expects a CSV with columns 'gene_id' and 'pval_perm' "
+                f"(produced by S6.5 per-gene calibration in validate_tissue.py). "
+                f"Got columns: {list(_pv_df.columns)}. "
+                f"Did you accidentally pass the GEV threshold file?"
+            )
+        pv_series = _pv_df.set_index("gene_id")["pval_perm"]
         effects_egenes = calibrate_egenes_storey(
             effects_egenes, pv_series, fdr_threshold=fdr
         )
@@ -953,8 +972,8 @@ def report(
             "--pval-perm not given; pval_perm/fdr/significance left blank in eqtl_peak.csv"
         )
 
-    write_eqtl_peak(effects_egenes, founder_names, output_dir / "eqtl_peak.csv")
-    logger.info("eqtl_peak.csv written: %d rows", len(effects_egenes))
+    write_eqtl_peak(effects_egenes, founder_names, output_dir / f"eqtl_peak_{_tag}.csv")
+    logger.info("eqtl_peak_%s.csv written: %d rows", _tag, len(effects_egenes))
 
     # eqtl_stats.csv — IGVF EQTL_STATS_COLS, per-chromosome + genome-wide rows
     chrom_stats = []
@@ -995,8 +1014,197 @@ def report(
         "fdr_threshold": fdr,
         "git_hash": git_hash(),
     }
-    write_eqtl_stats(chrom_stats, genome_stats, output_dir / "eqtl_stats.csv")
-    logger.info("eqtl_stats.csv written: %d rows", len(chrom_stats) + 1)
+    write_eqtl_stats(chrom_stats, genome_stats, output_dir / f"eqtl_stats_{_tag}.csv")
+    logger.info("eqtl_stats_%s.csv written: %d rows", _tag, len(chrom_stats) + 1)
+
+
+# ── finemap ───────────────────────────────────────────────────────────────
+
+
+@main.command("finemap")
+@click.option(
+    "--egenes",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="eqtl_peak.csv from `report` — must have ci_lo_bp and ci_hi_bp columns.",
+)
+@click.option(
+    "--counts",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="AnnData H5AD file with raw counts in .raw.X.",
+)
+@click.option(
+    "--metadata",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Sample metadata CSV (must contain sample_id column).",
+)
+@click.option(
+    "--cache",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="GenomeCache HDF5 file.",
+)
+@click.option(
+    "--alleles",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Founder allele HDF5 built by build_founder_allele_gm.",
+)
+@click.option(
+    "--output-dir",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Directory for eqtl_finemapping*.csv output files.",
+)
+@click.option(
+    "--cell-type", default=None, help="Cell type label to subset from AnnData obs."
+)
+@click.option(
+    "--counts-layer",
+    default=None,
+    help="AnnData layer name for counts (e.g. 'decontXcounts').  "
+    "Falls back to adata.raw.X when omitted.",
+)
+@click.option(
+    "--coverage",
+    default=0.95,
+    show_default=True,
+    help="Credible-set coverage for Wakefield ABF (default 0.95).",
+)
+@click.option(
+    "--ref-founder",
+    default="B6J",
+    show_default=True,
+    help="REF founder for biallelic allele collapse.",
+)
+@click.option(
+    "--prior-var",
+    default=0.04,
+    show_default=True,
+    help="Wakefield prior variance.",
+)
+@click.option(
+    "--suffix",
+    default=None,
+    help="Tag appended to output filenames, e.g. gastroc_Lw1.  "
+    "Inferred from --egenes stem when omitted.",
+)
+@click.option("--verbose", is_flag=True, default=False)
+def finemap(
+    egenes: Path,
+    counts: Path,
+    metadata: Path,
+    cache: Path,
+    alleles: Path,
+    output_dir: Path,
+    cell_type: Optional[str],
+    counts_layer: Optional[str],
+    coverage: float,
+    ref_founder: str,
+    prior_var: float,
+    suffix: Optional[str],
+    verbose: bool,
+) -> None:
+    """Sanger fine-mapping of eGenes using Wakefield ABF within LOD-drop CIs.
+
+    Reads eqtl_peak.csv (ci_lo_bp and ci_hi_bp columns required; added by the
+    characterise step when bootstrap CIs are computed). For each eGene, loads
+    Sanger alleles once per chromosome, imputes biallelic dosages via
+    make_alt_mask, runs the LMM SNP scan within the CI window, and computes
+    Wakefield ABF posterior inclusion probabilities.
+
+    Writes eqtl_finemapping_{suffix}.csv (EQTL_FINEMAPPING_COLS, one row per
+    credible-set SNP) and eqtl_finemapping_peak_{suffix}.csv
+    (EQTL_FINEMAPPING_PEAK_COLS, one row per eGene lead SNP).
+    """
+    _setup_logging(verbose)
+    import numpy as np
+    import pandas as pd
+    import anndata
+    import scipy.sparse as _sp
+    from .genotype.genomecache import GenomeCache
+    from .genotype import kinship as kin_module
+    from .pipeline import finemap_egenes as _finemap_egenes
+
+    egene_df = pd.read_csv(egenes)
+    _req = {"gene_id", "chr", "ci_lo_bp", "ci_hi_bp"}
+    _missing = _req - set(egene_df.columns)
+    if _missing:
+        raise click.ClickException(
+            f"--egenes file missing required columns: {sorted(_missing)}.  "
+            "Run `report` first, then the characterise step to compute ci_lo_bp/ci_hi_bp."
+        )
+
+    logger.info("Loading genome cache: %s", cache)
+    gc = GenomeCache.from_hdf5(cache)
+
+    logger.info("Loading counts: %s", counts)
+    adata = anndata.read_h5ad(counts, backed="r")
+    if cell_type is not None:
+        ct_col = _detect_ct_col(list(adata.obs.columns))
+        if ct_col is None:
+            raise click.ClickException(
+                f"No cell-type column found in {counts}.obs; "
+                'expected a column whose name contains both "cell" and "type".'
+            )
+        adata = adata[adata.obs[ct_col] == cell_type]
+        logger.info("Subset to cell type %r: %d cells", cell_type, adata.n_obs)
+
+    if counts_layer is not None:
+        if counts_layer not in adata.layers:
+            raise click.ClickException(
+                f"--counts-layer {counts_layer!r} not found in {counts}.layers.  "
+                f"Available layers: {list(adata.layers.keys())}"
+            )
+        raw_x = adata.layers[counts_layer]
+        gene_ids = list(adata.var.index)
+        logger.info("Using counts from layer %r", counts_layer)
+    else:
+        if adata.raw is None:
+            raise click.ClickException(
+                "adata.raw is None — pass --counts-layer or store raw counts in .raw"
+            )
+        raw_x = adata.raw.X
+        gene_ids = list(adata.raw.var.index)
+    if _sp.issparse(raw_x):
+        raw_x = raw_x.toarray()
+    counts_mat = np.asarray(raw_x, dtype=np.float64)  # (n_cells, n_genes)
+    sample_ids = list(adata.obs.index)
+
+    meta = pd.read_csv(metadata)
+    covariates: Optional[np.ndarray] = None
+    if "sample_id" in meta.columns:
+        from .io.covariates import build_covariate_matrix
+
+        cov_df = build_covariate_matrix(meta)
+        sid_series = pd.Series(sample_ids, name="sample_id")
+        cov_aligned = sid_series.map(
+            cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
+        )
+        if not cov_aligned.isna().any():
+            covariates = np.vstack(cov_aligned.values)
+
+    logger.info("Computing LOCO kinship...")
+    kd_raw = kin_module.calc_kinship(gc, method="loco")
+    kinship_decomp = kin_module.decomp_kinship(kd_raw)
+
+    _tag = suffix or egenes.stem.removeprefix("eqtl_peak_")
+    _finemap_egenes(
+        egene_df=egene_df,
+        phenotype_matrix=counts_mat.T,  # (n_genes, n_cells)
+        gene_ids=gene_ids,
+        genomecache=gc,
+        alleles_h5=alleles,
+        out_dir=output_dir,
+        covariates=covariates,
+        kinship_decomp=kinship_decomp,
+        tag=_tag,
+        coverage=coverage,
+        ref_founder=ref_founder,
+        prior_var=prior_var,
+    )
 
 
 if __name__ == "__main__":

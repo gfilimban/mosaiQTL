@@ -95,6 +95,7 @@ See `docs/DATA_SOURCES.md` for the complete derivation chain from these files to
 | Keele GR et al. Determinants of QTL mapping power in the realized Collaborative Cross. *G3* 2019 | 10.1534/g3.119.400194 | `imputed.snp.scan.h2lmm()` — miQTL reference for PORT-08 haplotype-imputed SNP scan |
 | Broman KW et al. R/qtl2: Software for Mapping QTL with High-Dimensional Data. *Genetics* 2019 | 10.1534/genetics.119.302463 | `scan1snps()` + `index_snps()` — direct-join SNP↔locus design used in snp_db.py; `find_peaks()` API design |
 | Churchill GA et al. The Collaborative Cross, a community resource for genetic analysis. *Nat Genet* 2004 | 10.1038/ng1104-1133 | Founder probability weighting formula: d[strain]=Σ_f H[strain,f]×geno[f]; theoretical basis of PORT-08 imputation |
+| Wakefield J. Bayes factors for genome-wide association studies: comparison with P-values. *Genet Epidemiol* 2009 **33**:79–86 | 10.1002/gepi.20359 | `qtl/imputation.py::wakefield_abf` — log-space ABF formula; `prior_var=0.04` default for cis-eQTL on standardized phenotypes |
 
 ---
 
