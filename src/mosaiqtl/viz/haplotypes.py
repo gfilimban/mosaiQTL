@@ -201,10 +201,10 @@ def pxg(
 
     _use_groups = strain_groups is not None
     _strain_list = list(strain_groups.keys()) if _use_groups else []
-    _MARKER: dict[str, str]  = {"founder": "o", "f1": "D", "cc": "^"}
-    _SIZE:   dict[str, float] = {"founder": 70.0, "f1": 45.0, "cc": 22.0}
-    _ALPHA:  dict[str, float] = {"founder": 0.95, "f1": 0.85, "cc": 0.50}
-    _ZORDER: dict[str, int]   = {"founder": 5,    "f1": 4,    "cc": 2}
+    _MARKER: dict[str, str] = {"founder": "o", "f1": "D", "cc": "^"}
+    _SIZE: dict[str, float] = {"founder": 70.0, "f1": 45.0, "cc": 22.0}
+    _ALPHA: dict[str, float] = {"founder": 0.95, "f1": 0.85, "cc": 0.50}
+    _ZORDER: dict[str, int] = {"founder": 5, "f1": 4, "cc": 2}
 
     for fi, fname in enumerate(founders):
         color = FOUNDER_COLORS.get(fname, COLOR_CC_FALLBACK)
@@ -217,41 +217,79 @@ def pxg(
                 sname = _strain_list[si] if si < len(_strain_list) else ""
                 grp = strain_groups.get(sname, "cc")  # type: ignore[union-attr]
                 sns.scatterplot(
-                    x=[x_jit[j]], y=[float(phen[si])],
-                    color=color, s=_SIZE[grp], marker=_MARKER[grp],
-                    alpha=_ALPHA[grp], zorder=_ZORDER[grp],
-                    legend=False, ax=ax,
+                    x=[x_jit[j]],
+                    y=[float(phen[si])],
+                    color=color,
+                    s=_SIZE[grp],
+                    marker=_MARKER[grp],
+                    alpha=_ALPHA[grp],
+                    zorder=_ZORDER[grp],
+                    legend=False,
+                    ax=ax,
                 )
         else:
             sns.scatterplot(
-                x=x_jit, y=phen[mask],
-                color=color, s=point_size, alpha=alpha,
-                zorder=3, edgecolors="white", linewidths=0.4,
-                legend=False, ax=ax,
+                x=x_jit,
+                y=phen[mask],
+                color=color,
+                s=point_size,
+                alpha=alpha,
+                zorder=3,
+                edgecolors="white",
+                linewidths=0.4,
+                legend=False,
+                ax=ax,
             )
 
     ax.set_xticks(np.arange(len(founders)))
-    ax.set_xticklabels([strip_j(f) for f in founders], rotation=40, ha="right", fontsize=8)
+    ax.set_xticklabels(
+        [strip_j(f) for f in founders], rotation=40, ha="right", fontsize=8
+    )
     ax.set_xlim(-0.6, len(founders) - 0.4)
     ax.set_ylabel(phenotype_label, fontsize=9)
     ax.set_xlabel("founder haplotype at peak locus", fontsize=9)
 
-    title_parts = [p for p in [
-        gene_symbol,
-        f"chr{chrom}" if chrom else "",
-        f"{position_mb:.2f} Mb" if position_mb is not None else "",
-    ] if p]
+    title_parts = [
+        p
+        for p in [
+            gene_symbol,
+            f"chr{chrom}" if chrom else "",
+            f"{position_mb:.2f} Mb" if position_mb is not None else "",
+        ]
+        if p
+    ]
     if title_parts:
         ax.set_title("  ·  ".join(title_parts), fontsize=9, pad=5)
 
     if _use_groups:
         _leg = [
-            _mlines.Line2D([], [], color="grey", marker="o", linestyle="None",
-                           markersize=7, label="Founder"),
-            _mlines.Line2D([], [], color="grey", marker="D", linestyle="None",
-                           markersize=5, label="F1"),
-            _mlines.Line2D([], [], color="grey", marker="^", linestyle="None",
-                           markersize=5, label="CC"),
+            _mlines.Line2D(
+                [],
+                [],
+                color="grey",
+                marker="o",
+                linestyle="None",
+                markersize=7,
+                label="Founder",
+            ),
+            _mlines.Line2D(
+                [],
+                [],
+                color="grey",
+                marker="D",
+                linestyle="None",
+                markersize=5,
+                label="F1",
+            ),
+            _mlines.Line2D(
+                [],
+                [],
+                color="grey",
+                marker="^",
+                linestyle="None",
+                markersize=5,
+                label="CC",
+            ),
         ]
         ax.legend(handles=_leg, fontsize=7, frameon=False, loc="upper right", ncol=3)
 
@@ -557,7 +595,9 @@ def epistasis_heatmap(
     plt.colorbar(im, ax=ax, fraction=0.04, pad=0.02, label="Interaction LOD")
 
     ax.set_xticks(np.arange(J))
-    ax.set_xticklabels([strip_j(f) for f in founders], rotation=45, ha="right", fontsize=7)
+    ax.set_xticklabels(
+        [strip_j(f) for f in founders], rotation=45, ha="right", fontsize=7
+    )
     ax.set_yticks(np.arange(J))
     ax.set_yticklabels([strip_j(f) for f in founders], fontsize=7)
     ax.set_xlabel("Founder (locus 2)")

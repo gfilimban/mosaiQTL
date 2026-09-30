@@ -21,17 +21,17 @@ import logging
 import numpy as np
 import pandas as pd
 
-logger = logging.getLogger('mosaiqtl')
+logger = logging.getLogger("mosaiqtl")
 
 __all__ = [
-    'wakefield_abf',
-    'abf_pip',
-    'credible_set',
-    'lod_beta_to_z',
-    'fine_map_region',
+    "wakefield_abf",
+    "abf_pip",
+    "credible_set",
+    "lod_beta_to_z",
+    "fine_map_region",
 ]
 
-_LOG10_TO_LN: float = np.log(10.0)   # 2×this × LOD = LRT chi²
+_LOG10_TO_LN: float = np.log(10.0)  # 2×this × LOD = LRT chi²
 
 
 def wakefield_abf(
@@ -62,10 +62,10 @@ def wakefield_abf(
     ``V = SE²``, ``W = prior_var``.  Computed in log-space.
     """
     z = np.asarray(z, dtype=np.float64)
-    se = np.asarray(se, dtype=np.float64)   # broadcasts naturally in arithmetic
-    V = se ** 2
+    se = np.asarray(se, dtype=np.float64)  # broadcasts naturally in arithmetic
+    V = se**2
     r = prior_var / (V + prior_var)
-    log_abf = 0.5 * np.log1p(-r) + 0.5 * z ** 2 * r
+    log_abf = 0.5 * np.log1p(-r) + 0.5 * z**2 * r
     return np.exp(log_abf)
 
 
@@ -118,10 +118,10 @@ def credible_set(
         ≥ *coverage*.
     """
     pip = np.asarray(pip, dtype=np.float64)
-    order = np.argsort(-pip)               # descending; avoids [::-1] copy
+    order = np.argsort(-pip)  # descending; avoids [::-1] copy
     cumsum = np.cumsum(pip[order])
-    n_in = int(np.searchsorted(cumsum, coverage, side='left')) + 1
-    return np.sort(order[:min(n_in, len(pip))])
+    n_in = int(np.searchsorted(cumsum, coverage, side="left")) + 1
+    return np.sort(order[: min(n_in, len(pip))])
 
 
 def lod_beta_to_z(
@@ -199,21 +199,32 @@ def fine_map_region(
     in_cs[cs_idx] = True
 
     data: dict = {
-        'snp': snp_ids if snp_ids is not None else np.arange(n_snps),
-        'lod': lod,
-        'z': z,
-        'abf': abf,
-        'pip': pip,
-        'in_cs': in_cs,
+        "snp": snp_ids if snp_ids is not None else np.arange(n_snps),
+        "lod": lod,
+        "z": z,
+        "abf": abf,
+        "pip": pip,
+        "in_cs": in_cs,
     }
     if pos_mb is not None:
-        data['pos_mb'] = np.asarray(pos_mb, dtype=np.float64)
+        data["pos_mb"] = np.asarray(pos_mb, dtype=np.float64)
 
-    cols = ['snp'] + (['pos_mb'] if pos_mb is not None else []) + ['lod', 'z', 'abf', 'pip', 'in_cs']
-    df = pd.DataFrame(data)[cols].sort_values('pip', ascending=False).reset_index(drop=True)
+    cols = (
+        ["snp"]
+        + (["pos_mb"] if pos_mb is not None else [])
+        + ["lod", "z", "abf", "pip", "in_cs"]
+    )
+    df = (
+        pd.DataFrame(data)[cols]
+        .sort_values("pip", ascending=False)
+        .reset_index(drop=True)
+    )
 
     logger.debug(
-        'fine_map_region: %d SNPs, %d in %d%% CS, top PIP=%.3f',
-        n_snps, int(in_cs.sum()), int(coverage * 100), float(pip.max()),
+        "fine_map_region: %d SNPs, %d in %d%% CS, top PIP=%.3f",
+        n_snps,
+        int(in_cs.sum()),
+        int(coverage * 100),
+        float(pip.max()),
     )
     return df

@@ -41,7 +41,9 @@ COLOR_UTR: str = "#6BAED6"  # sky blue — transcribed but not translated
 
 # ── 2. semantic colormaps ─────────────────────────────────────────────────
 CMAP_MAGNITUDE: str = "crest"  # unsigned magnitude: LOD score, PIP, −log10(p)
-CMAP_SIGNED: str = "coolwarm"  # signed effect size (beta); needs a symmetric color scale
+CMAP_SIGNED: str = (
+    "coolwarm"  # signed effect size (beta); needs a symmetric color scale
+)
 CMAP_DENSITY: str = "YlOrRd"  # unsigned density: haplotype probability, |delta-beta|
 
 # ── 3. one style = one meaning ────────────────────────────────────────────

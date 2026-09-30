@@ -42,13 +42,13 @@ __all__ = [
 
 # maps MGP VCF sample names → canonical CC founder names in mosaiQTL
 CC_VCF_SAMPLE_MAP: dict[str, str] = {
-    'A_J': 'AJ',
-    '129S1_SvImJ': '129S1J',
-    'NOD_ShiLtJ': 'NODJ',
-    'NZO_HlLtJ': 'NZOJ',
-    'CAST_EiJ': 'CASTJ',
-    'PWK_PhJ': 'PWKJ',
-    'WSB_EiJ': 'WSBJ',
+    "A_J": "AJ",
+    "129S1_SvImJ": "129S1J",
+    "NOD_ShiLtJ": "NODJ",
+    "NZO_HlLtJ": "NZOJ",
+    "CAST_EiJ": "CASTJ",
+    "PWK_PhJ": "PWKJ",
+    "WSB_EiJ": "WSBJ",
 }
 
 
@@ -74,7 +74,7 @@ def _resolve_founders(
     return list(genomecache.founders)
 
 
-_MISSING_BUILD: list[str] = ['N', 'H', '']
+_MISSING_BUILD: list[str] = ["N", "H", ""]
 
 
 def _count_alleles_vectorised(founder_calls: np.ndarray) -> np.ndarray:
@@ -90,15 +90,15 @@ def _count_alleles_vectorised(founder_calls: np.ndarray) -> np.ndarray:
     """
     calls = founder_calls.astype(str)
     # blank out missing codes so they sort together at the front
-    calls = np.where(np.isin(calls, _MISSING_BUILD), '', calls)
+    calls = np.where(np.isin(calls, _MISSING_BUILD), "", calls)
     # sort row-wise so identical alleles are adjacent
-    sorted_calls = np.sort(calls, axis=1)        # (n_snps, n_founders)
+    sorted_calls = np.sort(calls, axis=1)  # (n_snps, n_founders)
     # count transitions between adjacent non-empty values only
     left = sorted_calls[:, :-1]
     right = sorted_calls[:, 1:]
-    both_nonempty = (left != '') & (right != '')
+    both_nonempty = (left != "") & (right != "")
     transitions = ((left != right) & both_nonempty).sum(axis=1)
-    has_data = (sorted_calls != '').any(axis=1)
+    has_data = (sorted_calls != "").any(axis=1)
     return np.where(has_data, transitions + 1, 0)
 
 
@@ -466,16 +466,16 @@ def build_founder_allele_mgp(
                 data=np.array(markers_arr, dtype=object),
                 dtype=str_dt,
             )
-            grp.create_dataset(
-                "pos_mb", data=pos_mb_arr.astype(np.float32)
-            )
+            grp.create_dataset("pos_mb", data=pos_mb_arr.astype(np.float32))
             grp.create_dataset("pos_bp", data=pos_bp_arr)
             grp.create_dataset(
                 "locus_id",
                 data=np.array(lids_cache[best].tolist(), dtype=object),
                 dtype=str_dt,
             )
-            grp.create_dataset("alleles", data=founder_calls.astype(object), dtype=str_dt)
+            grp.create_dataset(
+                "alleles", data=founder_calls.astype(object), dtype=str_dt
+            )
 
             n_chr = len(markers_arr)
             per_chr[chrom] = n_chr
@@ -576,7 +576,7 @@ def load_founder_alleles(
 def make_alt_mask(
     alleles_df: pd.DataFrame,
     founder_order: list[str],
-    ref_founder: str = 'B6J',
+    ref_founder: str = "B6J",
 ) -> np.ndarray:
     """Build a binary ALT-allele mask from founder nucleotide calls.
 
@@ -619,42 +619,37 @@ def make_alt_mask(
     """
     missing_cols = [f for f in founder_order if f not in alleles_df.columns]
     if missing_cols:
-        raise ValueError(
-            f'founders not found in alleles_df columns: {missing_cols}'
-        )
+        raise ValueError(f"founders not found in alleles_df columns: {missing_cols}")
     if ref_founder not in founder_order:
-        raise ValueError(
-            f'ref_founder {ref_founder!r} not in founder_order'
-        )
+        raise ValueError(f"ref_founder {ref_founder!r} not in founder_order")
     if ref_founder not in alleles_df.columns:
-        raise ValueError(
-            f'ref_founder {ref_founder!r} not in alleles_df columns'
-        )
+        raise ValueError(f"ref_founder {ref_founder!r} not in alleles_df columns")
 
-    _MISSING_VALS: list[str] = ['N', 'H', '', 'nan', '-']
+    _MISSING_VALS: list[str] = ["N", "H", "", "nan", "-"]
     n_snps = len(alleles_df)
     ref_idx = founder_order.index(ref_founder)
 
     # extract all founder columns in one pass → (n_snps, n_founders)
     all_calls = alleles_df[founder_order].to_numpy(dtype=str)
-    ref_calls = all_calls[:, ref_idx]            # (n_snps,)
+    ref_calls = all_calls[:, ref_idx]  # (n_snps,)
 
     # missing and diff masks computed over the full matrix in single calls
-    is_missing = np.isin(all_calls, _MISSING_VALS)          # (n_snps, n_founders)
-    ref_missing = is_missing[:, ref_idx]                     # (n_snps,)
-    is_diff = all_calls != ref_calls[:, np.newaxis]          # (n_snps, n_founders)
+    is_missing = np.isin(all_calls, _MISSING_VALS)  # (n_snps, n_founders)
+    ref_missing = is_missing[:, ref_idx]  # (n_snps,)
+    is_diff = all_calls != ref_calls[:, np.newaxis]  # (n_snps, n_founders)
 
     alt_mask = np.where(
         ref_missing[:, np.newaxis] | is_missing,
         0.0,
         is_diff.astype(np.float64),
     )
-    alt_mask[:, ref_idx] = 0.0                  # ref founder is always 0
+    alt_mask[:, ref_idx] = 0.0  # ref founder is always 0
 
     if ref_missing.any():
         logger.debug(
-            'make_alt_mask: %d/%d SNPs have missing ref call — row set to 0',
-            int(ref_missing.sum()), n_snps,
+            "make_alt_mask: %d/%d SNPs have missing ref call — row set to 0",
+            int(ref_missing.sum()),
+            n_snps,
         )
 
     return alt_mask

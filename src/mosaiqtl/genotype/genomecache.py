@@ -222,17 +222,17 @@ class GenomeCache:
             :meth:`get_chromosome`).
         """
         d = self._data[chrom]
-        lids = d['locus_ids']
-        pos = d['positions']
-        if '_sort_ord' in d:
-            return lids[d['_sort_ord']], pos[d['_sort_ord']]
+        lids = d["locus_ids"]
+        pos = d["positions"]
+        if "_sort_ord" in d:
+            return lids[d["_sort_ord"]], pos[d["_sort_ord"]]
         if len(pos) > 1 and not np.all(pos[:-1] <= pos[1:]):
             ord_ = np.argsort(pos)
             lids = lids[ord_]
             pos = pos[ord_]
-            d['locus_ids'] = lids
-            d['positions'] = pos
-            d['_sort_ord'] = ord_
+            d["locus_ids"] = lids
+            d["positions"] = pos
+            d["_sort_ord"] = ord_
         return lids, pos
 
     def get_chromosome(self, chrom):

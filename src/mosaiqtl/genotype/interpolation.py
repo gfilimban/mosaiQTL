@@ -26,7 +26,7 @@ import numpy as np
 
 from .genomecache import GenomeCache
 
-logger = logging.getLogger('mosaiqtl')
+logger = logging.getLogger("mosaiqtl")
 
 
 def interpolate_haplotype_probs(
@@ -82,8 +82,8 @@ def interpolate_haplotype_probs(
     """
     if chrom not in cache.chromosomes:
         raise ValueError(
-            f'chromosome {chrom!r} not found in cache '
-            f'(available: {cache.chromosomes})'
+            f"chromosome {chrom!r} not found in cache "
+            f"(available: {cache.chromosomes})"
         )
 
     _lids, marker_mb, probs = cache.get_chromosome(chrom)
@@ -95,8 +95,8 @@ def interpolate_haplotype_probs(
         gmap = np.asarray(gmap, dtype=np.float64)
         if gmap.shape != (2, len(marker_mb)):
             raise ValueError(
-                f'gmap shape {gmap.shape} does not match '
-                f'(2, {len(marker_mb)}) expected for {chrom!r}'
+                f"gmap shape {gmap.shape} does not match "
+                f"(2, {len(marker_mb)}) expected for {chrom!r}"
             )
         gmap_phys_mb, gmap_cm = gmap[0], gmap[1]
         # interpolate SNP bp → cM via genetic map
@@ -111,13 +111,13 @@ def interpolate_haplotype_probs(
     # ── find bracket markers for each SNP ────────────────────────────────
     # idx: index of the right-hand marker; clamp so left = idx-1 is valid
     n_loci = len(grid)
-    idx = np.searchsorted(grid, query, side='right')
+    idx = np.searchsorted(grid, query, side="right")
     idx = np.clip(idx, 1, n_loci - 1)
 
     left = idx - 1
 
-    dx = grid[idx] - grid[left]             # (n_snps,)
-    with np.errstate(invalid='ignore', divide='ignore'):
+    dx = grid[idx] - grid[left]  # (n_snps,)
+    with np.errstate(invalid="ignore", divide="ignore"):
         t = np.where(dx > 0, (query - grid[left]) / dx, 0.0)  # (n_snps,)
     t = np.clip(t, 0.0, 1.0)
 
@@ -128,21 +128,23 @@ def interpolate_haplotype_probs(
     n_snps = len(query)
     n_strains, n_founders = probs.shape[1], probs.shape[2]
     interp = np.empty((n_snps, n_strains, n_founders), dtype=np.float64)
-    p_left = probs[0]                       # (n_strains, n_founders); reused across loop
+    p_left = probs[0]  # (n_strains, n_founders); reused across loop
     for seg in range(1, n_loci):
         p_right = probs[seg]
         mask = left == seg - 1
         if not mask.any():
             p_left = p_right
             continue
-        t_seg = t[mask, np.newaxis, np.newaxis]   # (k, 1, 1)
+        t_seg = t[mask, np.newaxis, np.newaxis]  # (k, 1, 1)
         interp[mask] = (1.0 - t_seg) * p_left + t_seg * p_right
         p_left = p_right
 
     logger.debug(
-        'interpolated %d SNPs on chr%s using %d markers (space: %s)',
-        len(snp_mb), chrom, n_loci,
-        'genetic-map (cM)' if gmap is not None else 'physical (Mb)',
+        "interpolated %d SNPs on chr%s using %d markers (space: %s)",
+        len(snp_mb),
+        chrom,
+        n_loci,
+        "genetic-map (cM)" if gmap is not None else "physical (Mb)",
     )
     return interp
 
@@ -186,8 +188,8 @@ def collapse_to_dosage(
     n_snps, n_strains, n_founders = probs.shape
     if alt_mask.shape != (n_snps, n_founders):
         raise ValueError(
-            f'alt_mask shape {alt_mask.shape} does not match '
-            f'(n_snps={n_snps}, n_founders={n_founders})'
+            f"alt_mask shape {alt_mask.shape} does not match "
+            f"(n_snps={n_snps}, n_founders={n_founders})"
         )
     dosage = np.zeros((n_snps, n_strains), dtype=np.float64)
     for f in range(n_founders):
@@ -229,7 +231,7 @@ def snp_allele_stats(
         rounded to the nearest integer.
     """
     n_eff = n_samples if n_samples is not None else dosage.shape[1]
-    af = dosage.mean(axis=1)                  # (n_snps,)
+    af = dosage.mean(axis=1)  # (n_snps,)
     maf = np.minimum(af, 1.0 - af)
     mac = np.round(maf * n_eff).astype(np.int64)
     return af, maf, mac
@@ -258,11 +260,11 @@ def _linear_interp_1d(
         Interpolated values at each query position; same shape as *x_query*.
     """
     n = len(x_grid)
-    idx = np.searchsorted(x_grid, x_query, side='right')
+    idx = np.searchsorted(x_grid, x_query, side="right")
     idx = np.clip(idx, 1, n - 1)
     left, right = idx - 1, idx
     dx = x_grid[right] - x_grid[left]
-    with np.errstate(invalid='ignore', divide='ignore'):
+    with np.errstate(invalid="ignore", divide="ignore"):
         t = np.where(dx > 0, (x_query - x_grid[left]) / dx, 0.0)
     t = np.clip(t, 0.0, 1.0)
     return (1.0 - t) * y_grid[left] + t * y_grid[right]

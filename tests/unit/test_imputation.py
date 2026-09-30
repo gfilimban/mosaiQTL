@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
+sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
 from mosaiqtl.qtl.imputation import (
     wakefield_abf,
@@ -146,7 +146,7 @@ class TestCredibleSet:
     def test_output_dtype_int(self):
         pip = np.array([0.7, 0.2, 0.1])
         cs = credible_set(pip)
-        assert cs.dtype.kind == 'i'
+        assert cs.dtype.kind == "i"
 
 
 # ── lod_beta_to_z ─────────────────────────────────────────────────────────────
@@ -199,40 +199,40 @@ class TestFineMapRegion:
     def test_output_columns_default(self, region):
         lod, beta = region
         df = fine_map_region(lod, beta, n=50)
-        assert list(df.columns) == ['snp', 'lod', 'z', 'abf', 'pip', 'in_cs']
+        assert list(df.columns) == ["snp", "lod", "z", "abf", "pip", "in_cs"]
 
     def test_output_columns_with_pos_mb(self, region):
         lod, beta = region
         pos = np.linspace(1.0, 5.0, len(lod))
         df = fine_map_region(lod, beta, n=50, pos_mb=pos)
-        assert 'pos_mb' in df.columns
-        assert df.columns.tolist().index('pos_mb') == 1
+        assert "pos_mb" in df.columns
+        assert df.columns.tolist().index("pos_mb") == 1
 
     def test_sorted_by_pip_descending(self, region):
         lod, beta = region
         df = fine_map_region(lod, beta, n=50)
-        assert list(df['pip']) == sorted(df['pip'], reverse=True)
+        assert list(df["pip"]) == sorted(df["pip"], reverse=True)
 
     def test_in_cs_count_matches_credible_set(self, region):
         lod, beta = region
         df = fine_map_region(lod, beta, n=50, coverage=0.95)
-        cs_size = int(df['in_cs'].sum())
-        pip = df['pip'].to_numpy()
+        cs_size = int(df["in_cs"].sum())
+        pip = df["pip"].to_numpy()
         pip_sorted = np.sort(pip)[::-1]
         cumsum = np.cumsum(pip_sorted)
-        expected = int(np.searchsorted(cumsum, 0.95, side='left')) + 1
+        expected = int(np.searchsorted(cumsum, 0.95, side="left")) + 1
         assert cs_size == expected
 
     def test_pip_sums_to_one(self, region):
         lod, beta = region
         df = fine_map_region(lod, beta, n=50)
-        assert float(df['pip'].sum()) == pytest.approx(1.0, abs=1e-10)
+        assert float(df["pip"].sum()) == pytest.approx(1.0, abs=1e-10)
 
     def test_snp_ids_used_when_provided(self, region):
         lod, beta = region
-        ids = np.array([f'rs{i}' for i in range(len(lod))])
+        ids = np.array([f"rs{i}" for i in range(len(lod))])
         df = fine_map_region(lod, beta, n=50, snp_ids=ids)
-        assert set(df['snp']) == set(ids)
+        assert set(df["snp"]) == set(ids)
 
     def test_n_row_count(self, region):
         lod, beta = region

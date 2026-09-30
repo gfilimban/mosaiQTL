@@ -2985,8 +2985,7 @@ def locus_panels_per_chr(
         peak_locus_id: Optional[str] = None
         if eff_df is not None and founders is not None:
             eff_row_df = eff_df[
-                (eff_df["chr"].astype(str) == chrom)
-                & (eff_df["gene_symbol"] == gene)
+                (eff_df["chr"].astype(str) == chrom) & (eff_df["gene_symbol"] == gene)
             ]
             if not eff_row_df.empty:
                 beta_cols = [b for b in eff_row_df.columns if b.startswith("beta_")]
@@ -3746,22 +3745,6 @@ def locus_panel(
     # gene track needs tss_mb for the cis-scale x-axis; zoom panel is optional
     has_track = genes_df is not None and tss_mb is not None
 
-    # strand of the scanned gene — drives the TSS arrow direction on the
-    # full-chromosome panel below; independent of has_track since that panel
-    # is drawn whenever tss_mb is given, GTF or no GTF
-    _gene_strand = "+"
-    if (
-        genes_df is not None
-        and highlight_gene is not None
-        and "strand" in genes_df.columns
-    ):
-        _gn_col_strand = (
-            "gene_symbol" if "gene_symbol" in genes_df.columns else "gene_id"
-        )
-        _strand_rows = genes_df[genes_df[_gn_col_strand] == highlight_gene]
-        if not _strand_rows.empty:
-            _gene_strand = str(_strand_rows.iloc[0]["strand"])
-
     # ── pre-compute zoom bounds (zoom panel only) ─────────────────────────────
     zoom_lo: Optional[float] = None
     zoom_hi: Optional[float] = None
@@ -3787,7 +3770,13 @@ def locus_panel(
 
     # ── load exon/CDS/UTR annotation (needed before panel layout for height) ──
     _exon_df: Optional[pd.DataFrame] = None
-    if has_track and track_lo is not None and track_hi is not None and gtf_path and chrom:
+    if (
+        has_track
+        and track_lo is not None
+        and track_hi is not None
+        and gtf_path
+        and chrom
+    ):
         try:
             from ..io.annotation_io import load_exons_from_gtf
 
@@ -4653,17 +4642,17 @@ def nb_scan_recovery_summary(
 def sample_identity_cube(
     metadata: pd.DataFrame,
     *,
-    tissue_col: str = 'tissue',
-    replicate_col: str = 'replicate',
-    strain_col: str = 'strain',
-    hap_bins: 'dict[str, str] | None' = None,
-    tissue_order: 'list[str] | None' = None,
-    replicate_order: 'list[str] | None' = None,
-    figsize: 'tuple[float, float]' = (11, 11),
+    tissue_col: str = "tissue",
+    replicate_col: str = "replicate",
+    strain_col: str = "strain",
+    hap_bins: "dict[str, str] | None" = None,
+    tissue_order: "list[str] | None" = None,
+    replicate_order: "list[str] | None" = None,
+    figsize: "tuple[float, float]" = (11, 11),
     elev: float = 20.0,
     azim: float = -55.0,
     voxel_alpha: float = 0.88,
-    edge_color: str = 'white',
+    edge_color: str = "white",
 ) -> plt.Figure:
     """8×8×8 voxel cube: sample identity across tissues, replicates, and founder haplotypes.
 
@@ -4731,7 +4720,7 @@ def sample_identity_cube(
 
     import natsort
 
-    from ..genotype.founders import COLOR_CC_FALLBACK, FOUNDER_COLORS, FOUNDER_ORDER
+    from ..genotype.founders import FOUNDER_COLORS, FOUNDER_ORDER
 
     # ── resolve axis orders (up to 8 each) ───────────────────────────────────
     def _nat8(series: pd.Series) -> list[str]:
@@ -4770,8 +4759,8 @@ def sample_identity_cube(
         filled[tissue_idx[t], rep_idx[r], fi] = True
 
     # ── face color array (n_t, n_r, n_f, 4) ─────────────────────────────────
-    def _hex_rgba(hex_str: str, alpha: float) -> 'tuple[float, float, float, float]':
-        h = hex_str.lstrip('#')
+    def _hex_rgba(hex_str: str, alpha: float) -> "tuple[float, float, float, float]":
+        h = hex_str.lstrip("#")
         r, g, b = (int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
         return (r, g, b, alpha)
 
@@ -4781,7 +4770,7 @@ def sample_identity_cube(
 
     # ── plot ──────────────────────────────────────────────────────────────────
     fig = plt.figure(figsize=figsize, dpi=300)
-    ax = fig.add_subplot(111, projection='3d')
+    ax = fig.add_subplot(111, projection="3d")
 
     ax.voxels(filled, facecolors=fc, edgecolors=edge_color)
 
@@ -4790,13 +4779,13 @@ def sample_identity_cube(
     ax.set_yticks(np.arange(n_r) + 0.5)
     ax.set_zticks(np.arange(n_f) + 0.5)
 
-    ax.set_xticklabels(tissues, fontsize=7, rotation=30, ha='right')
+    ax.set_xticklabels(tissues, fontsize=7, rotation=30, ha="right")
     ax.set_yticklabels(replicates, fontsize=7)
-    ax.set_zticklabels(founders, fontsize=8, fontweight='bold')
+    ax.set_zticklabels(founders, fontsize=8, fontweight="bold")
 
-    ax.set_xlabel('Tissue', labelpad=10, fontsize=9)
-    ax.set_ylabel('Replicate', labelpad=10, fontsize=9)
-    ax.set_zlabel('Founder haplotype', labelpad=10, fontsize=9)
+    ax.set_xlabel("Tissue", labelpad=10, fontsize=9)
+    ax.set_ylabel("Replicate", labelpad=10, fontsize=9)
+    ax.set_zlabel("Founder haplotype", labelpad=10, fontsize=9)
 
     ax.view_init(elev=elev, azim=azim)
 

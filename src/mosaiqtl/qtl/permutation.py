@@ -142,7 +142,7 @@ def _draw_kinship_re(
     ev, evc = np.linalg.eigh(K)
     if float(ev.min()) < -1e-4:
         raise KinshipSingularError(
-            f'LOCO kinship genuinely singular (min_eig={float(ev.min()):.2e})'
+            f"LOCO kinship genuinely singular (min_eig={float(ev.min()):.2e})"
         )
     # project onto PSD cone; draw u = evc @ diag(sqrt(ev_+ * sigma2_g)) @ z
     sqrt_ev = np.sqrt(np.maximum(ev, 0.0) * sigma2_g)
@@ -177,7 +177,7 @@ def _draw_parametric_batch(
 
     if float(ev.min()) < -1e-4:
         raise KinshipSingularError(
-            f'LOCO kinship genuinely singular (min_eig={float(ev.min()):.2e})'
+            f"LOCO kinship genuinely singular (min_eig={float(ev.min()):.2e})"
         )
     # project onto PSD cone; draw U = evc @ diag(sqrt(ev_+ * sigma2_g)) @ Z
     sqrt_ev = np.sqrt(np.maximum(ev, 0.0) * sigma2_g)
@@ -384,7 +384,7 @@ def run_threshold_scans(
             K_m = (evc_m * ev_m) @ evc_m.T
             K_n = z_mat @ K_m @ z_mat.T
             ev_n, evc_n = np.linalg.eigh(K_n)
-            ev_n = np.maximum(ev_n, 0.0)      # project onto PSD cone
+            ev_n = np.maximum(ev_n, 0.0)  # project onto PSD cone
             K_n = (evc_n * ev_n) @ evc_n.T
             _n_kd[c] = {"values": ev_n, "vectors": evc_n, "K_n": K_n}
 

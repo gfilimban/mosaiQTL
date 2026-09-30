@@ -340,7 +340,9 @@ class TestWriteEqtlScan:
 # ── finemapping writer fixtures ───────────────────────────────────────────────
 
 
-def _fm_df(n_cs: int = 4, n_non_cs: int = 2, include_pos_mb: bool = True) -> pd.DataFrame:
+def _fm_df(
+    n_cs: int = 4, n_non_cs: int = 2, include_pos_mb: bool = True
+) -> pd.DataFrame:
     """Minimal fine_map_region-style DataFrame with in_cs column."""
     rng = np.random.default_rng(42)
     n = n_cs + n_non_cs
@@ -388,8 +390,14 @@ class TestBuildEqtlFinemappingDf:
 
     def test_hap_peak_fields_populated(self):
         df = build_eqtl_finemapping_df(
-            _fm_df(), "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2,
-            ci_lo_bp=99_000_000, ci_hi_bp=101_000_000,
+            _fm_df(),
+            "ENSMUSG0001",
+            "8",
+            100_200_000,
+            "UNC1234",
+            5.2,
+            ci_lo_bp=99_000_000,
+            ci_hi_bp=101_000_000,
         )
         assert int(df["hap_peak_pos"].iloc[0]) == 100_200_000
         assert df["hap_peak_variant"].iloc[0] == "UNC1234"
@@ -412,18 +420,25 @@ class TestBuildEqtlFinemappingDf:
 
     def test_pos_column_nan_when_pos_mb_absent(self):
         df = build_eqtl_finemapping_df(
-            _fm_df(include_pos_mb=False), "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2
+            _fm_df(include_pos_mb=False),
+            "ENSMUSG0001",
+            "8",
+            100_200_000,
+            "UNC1234",
+            5.2,
         )
         assert df["pos"].isna().all()
 
     def test_alleles_df_populates_sanger_cols(self):
         fm = _fm_df(n_cs=2)
         snps = fm.loc[fm["in_cs"], "snp"].tolist()
-        alleles = pd.DataFrame({
-            "snp": snps,
-            "ref": ["A", "C"],
-            "effect_allele": ["T", "G"],
-        })
+        alleles = pd.DataFrame(
+            {
+                "snp": snps,
+                "ref": ["A", "C"],
+                "effect_allele": ["T", "G"],
+            }
+        )
         df = build_eqtl_finemapping_df(
             fm, "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2, alleles_df=alleles
         )
@@ -439,7 +454,12 @@ class TestBuildEqtlFinemappingDf:
 
     def test_gene_id_and_symbol_populated(self):
         df = build_eqtl_finemapping_df(
-            _fm_df(), "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2,
+            _fm_df(),
+            "ENSMUSG0001",
+            "8",
+            100_200_000,
+            "UNC1234",
+            5.2,
             gene_symbol="Piezo1",
         )
         assert (df["gene_id"] == "ENSMUSG0001").all()
@@ -466,7 +486,12 @@ class TestBuildEqtlFinemappingPeakDf:
     @pytest.fixture
     def fm_built(self):
         return build_eqtl_finemapping_df(
-            _fm_df(n_cs=3), "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2,
+            _fm_df(n_cs=3),
+            "ENSMUSG0001",
+            "8",
+            100_200_000,
+            "UNC1234",
+            5.2,
             gene_symbol="Piezo1",
         )
 
@@ -483,9 +508,12 @@ class TestBuildEqtlFinemappingPeakDf:
         assert "lead_snp" not in df.columns
 
     def test_founder_effects_populated(self, fm_built):
-        effects = {f"effect_{f}": float(i) for i, f in enumerate(
-            ["AJ", "B6J", "129S1J", "NODJ", "NZOJ", "CASTJ", "PWKJ", "WSBJ"]
-        )}
+        effects = {
+            f"effect_{f}": float(i)
+            for i, f in enumerate(
+                ["AJ", "B6J", "129S1J", "NODJ", "NZOJ", "CASTJ", "PWKJ", "WSBJ"]
+            )
+        }
         df = build_eqtl_finemapping_peak_df(fm_built, founder_effects=effects)
         assert float(df["effect_AJ"].iloc[0]) == pytest.approx(0.0)
         assert float(df["effect_B6J"].iloc[0]) == pytest.approx(1.0)
@@ -495,7 +523,12 @@ class TestBuildEqtlFinemappingPeakDf:
         assert df["effect_AJ"].isna().all()
 
     def test_sig_values_populated(self, fm_built):
-        sig = {"pval_perm": 0.01, "fdr": 0.03, "fdr_method": "storey", "significance": "T"}
+        sig = {
+            "pval_perm": 0.01,
+            "fdr": 0.03,
+            "fdr_method": "storey",
+            "significance": "T",
+        }
         df = build_eqtl_finemapping_peak_df(fm_built, sig_values=sig)
         assert float(df["fdr"].iloc[0]) == pytest.approx(0.03)
         assert df["fdr_method"].iloc[0] == "storey"

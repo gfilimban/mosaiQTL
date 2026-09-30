@@ -14,7 +14,6 @@ from scipy import stats as _sp_stats
 from mosaiqtl.pipeline import (
     _FOUNDER_EFFECT_COLS,
     _LOCUS_COLS,
-    _RUN_COLS,
     _SIG_COLS,
     EQTL_FINEMAPPING_COLS,
     EQTL_FINEMAPPING_PEAK_COLS,
@@ -611,7 +610,7 @@ def build_eqtl_finemapping_peak_df(
     Takes the output of :func:`build_eqtl_finemapping_df` (one CS per gene),
     keeps the single ``lead_snp == 'T'`` row, drops ``lead_snp``, then appends
     per-founder effects (``_FOUNDER_EFFECT_COLS``), significance
-    (``_SIG_COLS``), and run metadata (``_RUN_COLS``).
+    (``_SIG_COLS``).
 
     Parameters
     ----------

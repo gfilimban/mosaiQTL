@@ -35,7 +35,7 @@ def _set_font(ax: plt.Axes) -> None:
 def founder_legend(
     founders: list[str] = FOUNDER_ORDER,
     *,
-    title: str = 'Founder',
+    title: str = "Founder",
     ncol: Optional[int] = None,
     figsize: tuple[float, float] = (2.5, 2.2),
 ) -> plt.Figure:
@@ -84,14 +84,14 @@ def founder_legend(
         handles,
         founders,
         title=title,
-        loc='upper left',
+        loc="upper left",
         ncol=_ncol,
         fontsize=9,
         title_fontsize=9,
         frameon=False,
     )
-    legend.get_title().set_fontweight('bold')
-    ax.axis('off')
+    legend.get_title().set_fontweight("bold")
+    ax.axis("off")
     return fig
 
 
@@ -192,7 +192,7 @@ def coef_profile(
             fontsize=6,
             ncol=max(1, math.ceil(len(founders) / 8)),
             frameon=False,
-            loc='upper right',
+            loc="upper right",
             handlelength=1.2,
         )
     sns.despine(ax=ax)
@@ -416,7 +416,11 @@ def effect_bars(
 
     ax.set_xticks(x)
     ax.set_xticklabels(
-        [strip_j(f) for f in founders], rotation=40, ha="right", fontsize=11, fontweight="bold"
+        [strip_j(f) for f in founders],
+        rotation=40,
+        ha="right",
+        fontsize=11,
+        fontweight="bold",
     )
     ax.set_ylabel(ylabel, fontsize=13)
     ax.tick_params(labelsize=11)
@@ -681,7 +685,9 @@ def haplotype_sex_profile(
         ax.axvspan(fi - 0.4, fi + 0.4, alpha=0.08, color=color, zorder=0)
 
     ax.set_xticks(np.arange(len(founders)))
-    ax.set_xticklabels([strip_j(f) for f in founders], rotation=45, ha="right", fontsize=8)
+    ax.set_xticklabels(
+        [strip_j(f) for f in founders], rotation=45, ha="right", fontsize=8
+    )
     ax.set_xlim(-0.6, len(founders) - 0.4)
     ax.set_ylim(bottom=0)
     ax.set_ylabel(phenotype_label)
@@ -844,7 +850,9 @@ def genome_effects_grid(
         effect_bars(betas, founders, ax=ax)
         ax.set_xlabel("")
         ax.tick_params(labelsize=5)
-        ax.set_xticklabels([strip_j(f) for f in founders], rotation=60, ha="right", fontsize=5)
+        ax.set_xticklabels(
+            [strip_j(f) for f in founders], rotation=60, ha="right", fontsize=5
+        )
         ax.set_title(f"chr{c}  {gene[:12]}", fontsize=7)
         sns.despine(ax=ax)
 

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[2] / 'src'))
+sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
 from mosaiqtl.genotype.interpolation import (
     interpolate_haplotype_probs,
@@ -15,11 +15,10 @@ from mosaiqtl.genotype.interpolation import (
     _linear_interp_1d,
 )
 
-
 # ── minimal fake cache ─────────────────────────────────────────────────────
 
 
-def _make_cache(markers_mb: np.ndarray, probs: np.ndarray, chrom: str = '1'):
+def _make_cache(markers_mb: np.ndarray, probs: np.ndarray, chrom: str = "1"):
     """Return a minimal GenomeCache-like object for testing."""
 
     class FakeCache:
@@ -90,34 +89,34 @@ class TestInterpolateHaplotypeProbsBoundary:
 
     def test_at_left_marker(self, three_marker_cache):
         cache, _, probs = three_marker_cache
-        out = interpolate_haplotype_probs(cache, np.array([1_000_000]), '1')
+        out = interpolate_haplotype_probs(cache, np.array([1_000_000]), "1")
         np.testing.assert_allclose(out[0], probs[0], atol=1e-12)
 
     def test_at_right_marker(self, three_marker_cache):
         cache, _, probs = three_marker_cache
-        out = interpolate_haplotype_probs(cache, np.array([3_000_000]), '1')
+        out = interpolate_haplotype_probs(cache, np.array([3_000_000]), "1")
         np.testing.assert_allclose(out[0], probs[2], atol=1e-12)
 
     def test_before_grid_clamped_to_first(self, three_marker_cache):
         cache, _, probs = three_marker_cache
-        out = interpolate_haplotype_probs(cache, np.array([500_000]), '1')
+        out = interpolate_haplotype_probs(cache, np.array([500_000]), "1")
         np.testing.assert_allclose(out[0], probs[0], atol=1e-12)
 
     def test_after_grid_clamped_to_last(self, three_marker_cache):
         cache, _, probs = three_marker_cache
-        out = interpolate_haplotype_probs(cache, np.array([4_000_000]), '1')
+        out = interpolate_haplotype_probs(cache, np.array([4_000_000]), "1")
         np.testing.assert_allclose(out[0], probs[2], atol=1e-12)
 
     def test_midpoint_is_mean(self, three_marker_cache):
         cache, _, probs = three_marker_cache
-        out = interpolate_haplotype_probs(cache, np.array([1_500_000]), '1')
+        out = interpolate_haplotype_probs(cache, np.array([1_500_000]), "1")
         expected = 0.5 * probs[0] + 0.5 * probs[1]
         np.testing.assert_allclose(out[0], expected, atol=1e-12)
 
     def test_quarter_point(self, three_marker_cache):
         cache, _, probs = three_marker_cache
         # 1.25 Mb → t = 0.25
-        out = interpolate_haplotype_probs(cache, np.array([1_250_000]), '1')
+        out = interpolate_haplotype_probs(cache, np.array([1_250_000]), "1")
         expected = 0.75 * probs[0] + 0.25 * probs[1]
         np.testing.assert_allclose(out[0], expected, atol=1e-12)
 
@@ -129,14 +128,14 @@ class TestInterpolateOutputShape:
         probs = _ramp_probs(n_loci, n_strains, n_founders)
         cache = _make_cache(mb, probs)
         snp_bp = np.random.default_rng(0).integers(1_000_000, 10_000_000, n_snps)
-        out = interpolate_haplotype_probs(cache, snp_bp, '1')
+        out = interpolate_haplotype_probs(cache, snp_bp, "1")
         assert out.shape == (n_snps, n_strains, n_founders)
 
     def test_dtype_float64(self):
         mb = np.array([1.0, 2.0])
         probs = np.ones((2, 2, 2)) * 0.5
         cache = _make_cache(mb, probs)
-        out = interpolate_haplotype_probs(cache, np.array([1_500_000]), '1')
+        out = interpolate_haplotype_probs(cache, np.array([1_500_000]), "1")
         assert out.dtype == np.float64
 
 
@@ -150,7 +149,7 @@ class TestInterpolateSimplexPreserved:
         cache = _make_cache(mb, probs)
         rng = np.random.default_rng(7)
         snp_bp = rng.integers(500_000, 20_000_000, 200)
-        out = interpolate_haplotype_probs(cache, snp_bp, '1')
+        out = interpolate_haplotype_probs(cache, snp_bp, "1")
         np.testing.assert_allclose(out.sum(axis=2), 1.0, atol=1e-10)
 
     def test_simplex_non_negative(self):
@@ -160,7 +159,7 @@ class TestInterpolateSimplexPreserved:
         cache = _make_cache(mb, probs)
         rng = np.random.default_rng(13)
         snp_bp = rng.integers(500_000, 20_000_000, 200)
-        out = interpolate_haplotype_probs(cache, snp_bp, '1')
+        out = interpolate_haplotype_probs(cache, snp_bp, "1")
         assert np.all(out >= -1e-14)
 
 
@@ -172,8 +171,10 @@ class TestInterpolateGeneticMap:
         probs = np.ones((3, 2, 2)) * 0.5
         cache = _make_cache(mb, probs)
         bad_gmap = np.array([[1.0, 2.0], [0.0, 5.0]])  # only 2 columns, need 3
-        with pytest.raises(ValueError, match='gmap shape'):
-            interpolate_haplotype_probs(cache, np.array([1_500_000]), '1', gmap=bad_gmap)
+        with pytest.raises(ValueError, match="gmap shape"):
+            interpolate_haplotype_probs(
+                cache, np.array([1_500_000]), "1", gmap=bad_gmap
+            )
 
     def test_gmap_midpoint_matches_physical_for_uniform_map(self):
         # uniform genetic map (equal spacing) → gmap result equals physical
@@ -185,8 +186,10 @@ class TestInterpolateGeneticMap:
         cache = _make_cache(mb, probs)
         # genetic map with same relative spacing as physical
         gmap = np.array([mb, np.array([0.0, 1.0, 2.0])])  # (2, 3)
-        out_phys = interpolate_haplotype_probs(cache, np.array([1_500_000]), '1')
-        out_gmap = interpolate_haplotype_probs(cache, np.array([1_500_000]), '1', gmap=gmap)
+        out_phys = interpolate_haplotype_probs(cache, np.array([1_500_000]), "1")
+        out_gmap = interpolate_haplotype_probs(
+            cache, np.array([1_500_000]), "1", gmap=gmap
+        )
         np.testing.assert_allclose(out_phys, out_gmap, atol=1e-10)
 
 
@@ -194,9 +197,9 @@ class TestInterpolateErrors:
     def test_unknown_chrom_raises(self):
         mb = np.array([1.0, 2.0])
         probs = np.ones((2, 2, 2)) * 0.5
-        cache = _make_cache(mb, probs, chrom='1')
-        with pytest.raises(ValueError, match='not found in cache'):
-            interpolate_haplotype_probs(cache, np.array([1_500_000]), 'X')
+        cache = _make_cache(mb, probs, chrom="1")
+        with pytest.raises(ValueError, match="not found in cache"):
+            interpolate_haplotype_probs(cache, np.array([1_500_000]), "X")
 
 
 # ── collapse_to_dosage ────────────────────────────────────────────────────────
@@ -244,13 +247,13 @@ class TestCollapseToDosage:
     def test_shape_mismatch_raises(self):
         probs = _simplex_probs(5, 4, 3)
         bad_mask = np.zeros((5, 4))  # wrong n_founders
-        with pytest.raises(ValueError, match='alt_mask shape'):
+        with pytest.raises(ValueError, match="alt_mask shape"):
             collapse_to_dosage(probs, bad_mask)
 
     def test_snp_mismatch_raises(self):
         probs = _simplex_probs(5, 4, 3)
         bad_mask = np.zeros((6, 3))  # wrong n_snps
-        with pytest.raises(ValueError, match='alt_mask shape'):
+        with pytest.raises(ValueError, match="alt_mask shape"):
             collapse_to_dosage(probs, bad_mask)
 
 
@@ -273,7 +276,7 @@ class TestSnpAlleleStats:
 
     def test_n_samples_default_is_n_strains(self):
         dosage = np.full((2, 10), 0.5)
-        _, _, mac = snp_allele_stats(dosage)   # n_samples defaults to 10
+        _, _, mac = snp_allele_stats(dosage)  # n_samples defaults to 10
         assert mac[0] == 5
 
     def test_output_shapes(self):
