@@ -181,6 +181,7 @@ from mosaiqtl.qtl.scan import (
 )
 from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome
 from mosaiqtl.qtl.permutation import (
+    calibrate_gene_pvalue,
     generate_null_outcomes,
     get_gev_thresholds,
     load_per_chr_thresholds,
@@ -199,6 +200,7 @@ from mosaiqtl.io.results_io import pos_merge as _pos_merge, scan_result_to_df as
 from mosaiqtl.io.anndata_io import load_expression_h5 as _load_expression_h5
 from mosaiqtl.qtl.scan import scan_multi_gene_lmm as _scan_multi_gene_lmm
 from mosaiqtl.pipeline import (
+    calibrate_egenes_storey,
     call_egenes, finalize_egene_summary, finemap_egenes,
     LOD_COLS, ALLELE_EFFECTS_BASE_COLS, PEAK_LOD_COLS, EGENE_SUMMARY_COLS,
 )
@@ -3132,17 +3134,53 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     if not chr_null_lods:
                         chr_null_lods = {peak_chr: perm_max_lods}
 
-            # ── genome-wide FWER calling only (Storey q-value disabled) ─────────
-            # Storey q-value requires each gene's p-value to be valid under its
-            # own null. S5 derives the permutation null (and every per-chromosome
-            # null) from ONE representative gene's variance components, shared
-            # across all 43k genes — a fine simplification for a single global
-            # FWER threshold, but invalid as a per-gene null for FDR: pi0_hat(λ)
-            # climbed past 1.0 monotonically to 2.58 at λ=0.95 instead of
-            # plateauing, and 12.9% of genes had p>0.95 vs the 5% a true uniform
-            # null implies. Disabled until S5 produces a per-gene-calibrated null.
-            # eGene calling above already uses the genome-wide GEV threshold
-            # (`thr` from threshold.csv) — that FWER gate is unaffected.
+            # ── Storey q-value: per-gene Beta calibration ─────────────────────
+            # Each eGene that cleared the Stage-1 FWER gate gets its own
+            # parametric null drawn at its own h² (calibrate_gene_pvalue),
+            # then Storey's method estimates pi0 and q-values across all eGenes.
+            # kinship_loco is recomputed here because only the decomposed form is
+            # persisted to the .npz checkpoint; calc_kinship is fast.
+            if egenes_df is not None and len(egenes_df) > 0 and 'gene_id' in egenes_df.columns:
+                log.info('[Storey] calibrating per-gene p-values for %d eGenes...', len(egenes_df))
+                _kin_raw = calc_kinship(cache, method='loco')
+                _h5_path_st = data_dir / 'counts_lognorm.h5'
+                _pval_perm: dict = {}
+                for _, _eg in egenes_df.iterrows():
+                    _gid     = str(_eg['gene_id'])
+                    _chrom   = str(_eg['chr'])
+                    _plod    = float(_eg['peak_lod'])
+                    _pos_mb  = float(_eg['peak_mb']) if pd.notna(_eg.get('peak_mb')) else None
+                    _cts, _lds, _sids = _load_expression(_h5_path_st, [_gid])
+                    if not _lds:
+                        log.debug('[Storey] skip %s — not in h5', _gid)
+                        continue
+                    _y   = _cts[0].astype(float)
+                    _gds = [meta_geno_map.get(s, s) for s in _sids]
+                    _cov = _build_covariates(meta, _sids)
+                    _p, _, _, _ = calibrate_gene_pvalue(
+                        y_gene=_y,
+                        genomecache=cache,
+                        chrom=_chrom,
+                        peak_lod=_plod,
+                        covariates=_cov,
+                        kinship_decomp=kinship_decomp,
+                        kinship_loco=_kin_raw,
+                        n_perms=200,
+                        gene_pos_mb=_pos_mb,
+                        window_mb=window_mb if scan_type == 'L' else None,
+                        use_rint=True,
+                        sample_ids=_gds,
+                    )
+                    _pval_perm[_gid] = _p
+                    log.debug('[Storey] %s  chr%s  peak_lod=%.3f  p_adj=%.4g',
+                              _gid, _chrom, _plod, _p)
+                del _kin_raw
+                import gc as _gc; _gc.collect()
+                if _pval_perm:
+                    egenes_df = calibrate_egenes_storey(egenes_df, _pval_perm, fdr_threshold=0.05)
+                    log.info('[Storey] done  significant(q<=0.05)=%d / %d',
+                             int((egenes_df['significance'] == 'T').sum()), len(egenes_df))
+
             if perm_max_lods is not None:
                 egenes_df['perm_n']   = perm_n
                 egenes_df['perm_chr'] = peak_chr
