@@ -103,8 +103,6 @@ from mosaiqtl.viz.genome import (
     ci_strip as _viz_ci_strip,
     lod_profiles_per_chr as _viz_lod_profiles_per_chr,
     lod_panel_grid as _viz_lod_panel_grid,
-    locus_panels_per_chr as _viz_locus_panels_per_chr,
-    locus_panel_grid as _viz_locus_panel_grid,
     perm_distributions_per_chr as _viz_perm_distributions_per_chr,
     perm_panel_grid as _viz_perm_panel_grid,
     snp_profiles_per_chr as _viz_snp_profiles_per_chr,
@@ -122,6 +120,10 @@ from mosaiqtl.viz.genome import (
     cis_distance_panel as _viz_cis_distance_panel,
     _MI_COLOR,
     _INST_COLOR,
+)
+from mosaiqtl.viz.locus import (
+    locus_panels_per_chr as _viz_locus_panels_per_chr,
+    locus_panel_grid as _viz_locus_panel_grid,
 )
 from mosaiqtl.viz.haplotypes import (
     kinship_distribution as _viz_kinship_distribution,
@@ -154,23 +156,14 @@ from mosaiqtl.viz.celltypes import (
     ct_cis_distance_comparison as _ct_cis_distance,
 )
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
-from mosaiqtl.qtl.scan import (
-    grab_locus_from_scan,
-    instability_lm_scan,
-    scan_h2lmm,
-    scan_h2lmm_mi,
-    scan_multi_gene_mi,
-    instability_scan_multi_gene,
-    ScanResult,
-)
+from mosaiqtl.qtl.scan import scan_h2lmm, ScanResult
+from mosaiqtl.qtl.peaks import grab_locus_from_scan
+from mosaiqtl.qtl.mi import scan_h2lmm_mi, scan_multi_gene_mi
+from mosaiqtl.qtl.instability import instability_lm_scan, instability_scan_multi_gene
 from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome
-from mosaiqtl.qtl.permutation import (
-    generate_null_outcomes,
-    get_gev_thresholds,
-    run_positional_scans,
-    run_threshold_scans,
-    ci_scan_multi_gene,
-)
+from mosaiqtl.qtl.ci import ci_scan_multi_gene
+from mosaiqtl.qtl.permutation import generate_null_outcomes, run_threshold_scans
+from mosaiqtl.qtl.thresholds import get_gev_thresholds
 from mosaiqtl.qtl.mediation import (
     mediation_scan_qr,
     mediation_scan_qr,
@@ -3258,7 +3251,6 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     covariates=cov_ci,
                     kinship_decomp=kinship_decomp,
                     sample_ids=geno_ids_ci,
-                    n_boot=200, seed=1,
                     output_path=_ci_out_path,
                     gene_meta=_gene_meta,
                 )

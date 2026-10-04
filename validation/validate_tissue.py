@@ -118,8 +118,6 @@ from mosaiqtl.viz.genome import (
     ci_strip as _viz_ci_strip,
     lod_profiles_per_chr as _viz_lod_profiles_per_chr,
     lod_panel_grid as _viz_lod_panel_grid,
-    locus_panels_per_chr as _viz_locus_panels_per_chr,
-    locus_panel_grid as _viz_locus_panel_grid,
     perm_distributions_per_chr as _viz_perm_distributions_per_chr,
     perm_panel_grid as _viz_perm_panel_grid,
     snp_profiles_per_chr as _viz_snp_profiles_per_chr,
@@ -137,6 +135,10 @@ from mosaiqtl.viz.genome import (
     cis_distance_panel as _viz_cis_distance_panel,
     _MI_COLOR,
     _INST_COLOR,
+)
+from mosaiqtl.viz.locus import (
+    locus_panels_per_chr as _viz_locus_panels_per_chr,
+    locus_panel_grid as _viz_locus_panel_grid,
 )
 from mosaiqtl.viz.haplotypes import (
     kinship_distribution as _viz_kinship_distribution,
@@ -170,25 +172,15 @@ from mosaiqtl.viz.celltypes import (
     compare_scan_types as _compare_scan_types,
 )
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
-from mosaiqtl.qtl.scan import (
-    grab_locus_from_scan,
-    instability_lm_scan,
-    scan_h2lmm,
-    scan_h2lmm_mi,
-    scan_multi_gene_mi,
-    instability_scan_multi_gene,
-    ScanResult,
-)
+from mosaiqtl.qtl.scan import scan_h2lmm, ScanResult
+from mosaiqtl.qtl.peaks import grab_locus_from_scan
+from mosaiqtl.qtl.mi import scan_h2lmm_mi, scan_multi_gene_mi
+from mosaiqtl.qtl.instability import instability_lm_scan, instability_scan_multi_gene
 from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome
-from mosaiqtl.qtl.permutation import (
-    calibrate_gene_pvalue,
-    generate_null_outcomes,
-    get_gev_thresholds,
-    load_per_chr_thresholds,
-    run_positional_scans,
-    run_threshold_scans,
-    ci_scan_multi_gene,
-)
+from mosaiqtl.qtl.ci import ci_scan_multi_gene
+from mosaiqtl.qtl.fdr import calibrate_gene_pvalue
+from mosaiqtl.qtl.permutation import generate_null_outcomes, run_threshold_scans
+from mosaiqtl.qtl.thresholds import get_gev_thresholds, load_per_chr_thresholds
 from mosaiqtl.qtl.mediation import (
     mediation_scan_qr,
     mediation_scan_qr,
@@ -3157,19 +3149,22 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _y   = _cts[0].astype(float)
                     _gds = [meta_geno_map.get(s, s) for s in _sids]
                     _cov = _build_covariates(meta, _sids)
+                    _z, _ = build_z_matrix(_gds, list(cache.sample_ids))
+                    _r = _z.sum(axis=0)
+                    _y_g = (_z.T @ _y) / _r
+                    _cov_g = (_z.T @ _cov) / _r[:, None]
                     _p, _, _, _ = calibrate_gene_pvalue(
-                        y_gene=_y,
+                        y_gene=_y_g,
                         genomecache=cache,
                         chrom=_chrom,
                         peak_lod=_plod,
-                        covariates=_cov,
+                        covariates=_cov_g,
                         kinship_decomp=kinship_decomp,
                         kinship_loco=_kin_raw,
                         n_perms=200,
                         gene_pos_mb=_pos_mb,
                         window_mb=window_mb if scan_type == 'L' else None,
                         use_rint=True,
-                        sample_ids=_gds,
                     )
                     _pval_perm[_gid] = _p
                     log.debug('[Storey] %s  chr%s  peak_lod=%.3f  p_adj=%.4g',
@@ -3483,13 +3478,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 geno_ids_ci = [meta_geno_map.get(s, s) for s in _ci_sids]
                 cov_ci = _build_covariates(meta, _ci_sids)
                 _ci_out_path = ext_dir / 'ci.csv'
-                log.info('  bootstrap CI for %d eGenes (streaming)...', len(_ci_expr))
+                log.info('  1.5-LOD support CI for %d eGenes (streaming)...', len(_ci_expr))
                 ci_df = ci_scan_multi_gene(
                     _ci_expr, _ci_chr_map, _ci_peak_map, cache,
                     covariates=cov_ci,
                     kinship_decomp=kinship_decomp,
                     sample_ids=geno_ids_ci,
-                    n_boot=200, seed=1,
                     output_path=_ci_out_path,
                     gene_meta=_gene_meta,
                 )
@@ -3820,13 +3814,13 @@ def main() -> None:
                          'lives under --data/celltypes/<ct>.')
     ap.add_argument('--build-cache', action='store_true',
                     help='one-time: read HAPPY genomecache via rpy2 → save '
-                         'validation/py_ref/cache.h5, then exit (requires rpy2 + miqtl R package)')
+                         'validation/py_ref/cache.h5, then exit (requires rpy2)')
     ap.add_argument('--genomecache', default=None,
                     help='path to HAPPY genomecache dir for --build-cache '
                          f'(default: {GENOMECACHE})')
     ap.add_argument('--full', action='store_true',
                     help='run all sections (cache, haplotypes, kinship, scan, permutation, '
-                         'eGene calling, bootstrap CI, Sanger fine-mapping, MI, mediation, instability)')
+                         'eGene calling, LOD support CI, Sanger fine-mapping, MI, mediation, instability)')
     ap.add_argument('--scan', action='store_true',
                     help='run core scan sections (cache, haplotypes, kinship, LMM scan, '
                          'permutation, eGene calling; default when no flag given)')
@@ -3835,7 +3829,7 @@ def main() -> None:
     ap.add_argument('--mediation', action='store_true',
                     help='run mediation scan (requires scan outputs)')
     ap.add_argument('--ci', action='store_true',
-                    help='run bootstrap confidence intervals (requires scan outputs)')
+                    help='compute 1.5-LOD support intervals for all eGenes (requires scan outputs)')
     ap.add_argument('--finemap', action='store_true',
                     help='run Sanger fine-mapping (requires CI outputs + --sanger-alleles)')
     ap.add_argument('--sanger-alleles', default=None, metavar='PATH',
@@ -3885,8 +3879,7 @@ def main() -> None:
                          'compare_scan_types/ directory')
     ap.add_argument('--scan-tags', default=None, metavar='TAG1,TAG2[,...]',
                     help='comma-separated scan tags to compare with --compare-scan-types '
-                         '(e.g. "C,Lw1" — see run()::_scan_tag for the naming scheme); '
-                         'required by --compare-scan-types')
+                         '(e.g. "C,Lw1"); required by --compare-scan-types')
     ap.add_argument('--gtf', default=None, metavar='PATH',
                     help='path to .gtf or .gtf.gz annotation file (e.g. GENCODE vM36); '
                          'when provided, locus panel gene tracks show real '

@@ -43,7 +43,7 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method="ml"):
     Uses ML (not REML) by default. The LOD score is a likelihood ratio test between
     null (no QTL) and alternative (+ haplotype H) — models with different fixed effects.
     REML likelihoods are not comparable across different fixed-effect structures, so
-    the LRT is only valid under ML. This matches R miQTL's use.par='h2' (ML) default.
+    the LRT is only valid under ML.
     REML is available as method='reml' for variance component estimation outside LRT.
 
     algorithm: 1. evaluate profile ML on a 20-point h² grid [0.01, 0.99]

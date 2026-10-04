@@ -1,4 +1,4 @@
-"""Unit tests for qtl/fdr.py — storey_qvalue."""
+"""Unit tests for qtl/fdr.py — storey_qvalue + calibrate_gene_pvalue."""
 
 import sys
 from pathlib import Path
@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
-from mosaiqtl.qtl.fdr import storey_qvalue
+from mosaiqtl.qtl.fdr import storey_qvalue, calibrate_gene_pvalue
 
 _FIXTURE = Path(__file__).parents[1] / "fixtures" / "data" / "qvalue_reference.csv"
 
@@ -132,3 +132,92 @@ class TestAgainstRFixture:
         q_r = df["q_value"].to_numpy()
         corr = float(np.corrcoef(q_py, q_r)[0, 1])
         assert corr >= 0.99
+
+
+# ── calibrate_gene_pvalue ─────────────────────────────────────────────────────
+
+
+def _make_tiny_cache():
+    """10-strain, 2-chromosome, 15-locus cache for calibrate_gene_pvalue tests."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
+    from mosaiqtl.genotype.genomecache import GenomeCache
+    from mosaiqtl.genotype.founders import FOUNDER_ORDER
+    from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
+
+    N_STRAINS, N_FOUNDERS, N_LOCI = 10, 8, 15
+    rng = np.random.default_rng(0)
+    strain_ids = [f"CC00{i+1}" for i in range(N_STRAINS)]
+    data = {}
+    for c in ["1", "2"]:
+        p = rng.dirichlet(np.ones(N_FOUNDERS), size=(N_STRAINS, N_LOCI)).transpose(
+            1, 0, 2
+        )
+        data[c] = {
+            "locus_ids": np.array([f"{c}:{i}" for i in range(N_LOCI)]),
+            "positions": np.linspace(1.0, 100.0, N_LOCI),
+            "probs": p,
+        }
+    cache = GenomeCache(strain_ids, FOUNDER_ORDER, data)
+    kl = calc_kinship(cache, method="loco")
+    kd = decomp_kinship(kl)
+    return cache, kd, kl, strain_ids
+
+
+class TestCalibrateGenePvalue:
+    def test_output_ranges(self):
+        cache, kd, kl, _ = _make_tiny_cache()
+        y = np.random.default_rng(1).standard_normal(10)
+        cov = np.ones((10, 1))
+        p_adj, a_hat, b_hat, h2_g = calibrate_gene_pvalue(
+            y, cache, "1", 5.0, cov, kd, kl, n_perms=50, seed=42
+        )
+        assert 0.0 <= p_adj <= 1.0
+        assert a_hat > 0.0
+        assert b_hat > 0.0
+        assert 0.0 <= h2_g <= 1.0
+
+    def test_deterministic(self):
+        cache, kd, kl, _ = _make_tiny_cache()
+        y = np.random.default_rng(1).standard_normal(10)
+        cov = np.ones((10, 1))
+        r1 = calibrate_gene_pvalue(y, cache, "1", 5.0, cov, kd, kl, n_perms=50, seed=7)
+        r2 = calibrate_gene_pvalue(y, cache, "1", 5.0, cov, kd, kl, n_perms=50, seed=7)
+        assert r1 == r2
+
+    def test_different_seeds_differ(self):
+        cache, kd, kl, _ = _make_tiny_cache()
+        y = np.random.default_rng(1).standard_normal(10)
+        cov = np.ones((10, 1))
+        r1 = calibrate_gene_pvalue(y, cache, "1", 5.0, cov, kd, kl, n_perms=50, seed=0)
+        r2 = calibrate_gene_pvalue(y, cache, "1", 5.0, cov, kd, kl, n_perms=50, seed=1)
+        assert r1[0] != r2[0]
+
+    def test_regression(self):
+        """Exact-match regression against frozen expected values (seed=42)."""
+        cache, kd, kl, _ = _make_tiny_cache()
+        y = np.random.default_rng(1).standard_normal(10)
+        cov = np.ones((10, 1))
+
+        from mosaiqtl.qtl import lmm as lmm_module
+        from mosaiqtl.utils import rint
+
+        chrom = "1"
+        ev, evc = kd[chrom]["values"], kd[chrom]["vectors"]
+        h2, _ = lmm_module.estimate_h2_null(
+            evc.T @ rint(y), evc.T @ cov, ev, method="ml"
+        )
+        cd = lmm_module.precompute_chromosome(cache, chrom, ev, evc)
+        res = lmm_module.scan_chromosome(rint(y), cd, cov, ev, evc, h2)
+        peak_lod = float(res["lod"].max())
+
+        p_adj, a_hat, b_hat, h2_g = calibrate_gene_pvalue(
+            y, cache, chrom, peak_lod, cov, kd, kl, n_perms=50, seed=42
+        )
+        assert peak_lod == pytest.approx(9.612248697250159, rel=1e-9)
+        assert p_adj == pytest.approx(0.4182766707369369, rel=1e-9)
+        assert a_hat == pytest.approx(0.19591891452920132, rel=1e-9)
+        assert b_hat == pytest.approx(40342.827788641735, rel=1e-3)
+        assert h2_g == pytest.approx(1e-6, rel=1e-6)

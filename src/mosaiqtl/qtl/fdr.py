@@ -18,7 +18,7 @@ from scipy.optimize import minimize
 
 logger = logging.getLogger("mosaiqtl")
 
-__all__ = ["beta_calibrate_pvalue", "storey_qvalue"]
+__all__ = ["beta_calibrate_pvalue", "storey_qvalue", "calibrate_gene_pvalue"]
 
 # Grid of tuning values used to estimate pi0, as recommended in Storey (2002).
 _LAMBDA_DEFAULT = np.arange(0.05, 1.00, 0.05)
@@ -190,3 +190,108 @@ def storey_qvalue(
     q_out = np.full_like(pv, np.nan)
     q_out[finite_mask] = q_fin
     return q_out, pi0
+
+
+def calibrate_gene_pvalue(
+    y_gene: np.ndarray,
+    genomecache,
+    chrom: str,
+    peak_lod: float,
+    covariates: np.ndarray,
+    kinship_decomp: dict,
+    kinship_loco: dict,
+    n_founders: "int | None" = None,
+    n_perms: int = 200,
+    gene_pos_mb: "float | None" = None,
+    window_mb: "float | None" = None,
+    use_rint: bool = True,
+    z_mat: "np.ndarray | None" = None,
+    seed: int = 1,
+) -> "tuple[float, float, float, float]":
+    """calibrate one gene's peak LOD into a Beta-adjusted, genome-comparable p-value.
+
+    a genome-wide threshold treats every gene as though it shares one null
+    distribution, but each gene has its own fixed nuisance parameter (h²) and
+    therefore its own null LOD distribution. this draws a small parametric null
+    specific to this gene — same h² and same cis window used for its real scan —
+    then calls beta_calibrate_pvalue() for the Beta-smoothed adjustment. the
+    returned p-value is Uniform(0, 1) under the null for this gene specifically,
+    so p-values from many genes can be pooled and fed to storey_qvalue() for a
+    genome-wide q-value.
+
+    parameters
+    ----------
+    y_gene         : np.ndarray (n,)  this gene's phenotype vector, already at
+                     scan level (strain means if replicate-aware, sample level
+                     otherwise).  RINT is applied inside if use_rint=True.
+    genomecache    : GenomeCache
+    chrom          : str  chromosome to scan (the gene's cis chromosome)
+    peak_lod       : float  this gene's real observed peak LOD on chrom
+    covariates     : np.ndarray (n, p)  covariate matrix at scan level, with
+                     intercept as first column.
+    kinship_decomp : dict  {chrom: {'values':, 'vectors':}}  build once
+                     genome-wide and reuse across genes.
+    kinship_loco   : dict  {chrom: np.ndarray (m, m)}  raw LOCO kinship,
+                     required for the parametric null draw.
+    n_founders     : int or None  df for the chi² LRT (n_founders - 1); when
+                     None, taken from genomecache.n_founders.
+    n_perms        : int  permutations for this gene's null (default 200).
+    gene_pos_mb    : float or None  gene TSS position in Mb; with window_mb,
+                     restricts the null scan to the cis window used for the real scan.
+    window_mb      : float or None  half-window in Mb around gene_pos_mb.
+    use_rint       : bool  rank-inverse normal transform y_gene before scanning.
+    z_mat          : np.ndarray (n, m) or None  sample-to-strain design matrix
+                     for n-level scanning; when provided, kinship_decomp must
+                     hold eigdecomp of K_n = Z K_m Z^T.
+    seed           : int  rng seed for the null draw.
+
+    returns
+    -------
+    p_adj : float  Beta-calibrated p-value for this gene's peak_lod
+    a_hat : float  fitted Beta shape parameter
+    b_hat : float  fitted Beta shape parameter
+    h2_g  : float  this gene's own fixed h² used for the null draw
+    """
+    from . import lmm as lmm_module
+    from .permutation import draw_parametric_null_batch
+    from ..utils import rint as _rint
+
+    y0 = _rint(y_gene) if use_rint else np.asarray(y_gene, dtype=float).copy()
+
+    ev = kinship_decomp[chrom]["values"]
+    evc = kinship_decomp[chrom]["vectors"]
+    K = kinship_loco[chrom]
+
+    h2_g, _ = lmm_module.estimate_h2_null(evc.T @ y0, evc.T @ covariates, ev, method="ml")
+
+    rng = np.random.default_rng(seed)
+    null_mat = draw_parametric_null_batch(y0, covariates, K, evc, ev, h2_g, n_perms, rng)
+
+    loci_mask = None
+    if gene_pos_mb is not None and window_mb is not None:
+        _, positions_c, _ = genomecache.get_chromosome(chrom)
+        loci_mask = np.abs(positions_c - gene_pos_mb) <= window_mb
+
+    null_max_lods = lmm_module.scan_chromosome_batch(
+        null_mat,
+        genomecache,
+        chrom,
+        covariates,
+        ev,
+        evc,
+        h2_g,
+        z_mat=z_mat,
+        loci_mask=loci_mask,
+    )
+
+    df = (n_founders if n_founders is not None else genomecache.n_founders) - 1
+    p_adj, a_hat, b_hat = beta_calibrate_pvalue(peak_lod, null_max_lods, df)
+    logger.debug(
+        "calibrate_gene_pvalue: chr%s  n_perms=%d  h2=%.4f  peak_lod=%.3f  p_adj=%.3g",
+        chrom,
+        n_perms,
+        h2_g,
+        peak_lod,
+        p_adj,
+    )
+    return p_adj, a_hat, b_hat, h2_g

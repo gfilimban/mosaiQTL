@@ -55,7 +55,7 @@ class Population(BaseModel, frozen=True):
         correct sex-chromosome dosage compensation and QTL handling
     genotyping_error_prob : float
         per-locus genotyping error probability for the HMM forward-backward
-        algorithm; 0.002 is the miQTL default for GigaMUGA CC data
+        algorithm; 0.002 is the standard default for GigaMUGA CC data
     n_gen : int
         inbreeding generations used by the HMM transition matrix;
         CC = 1 (consensus map), DO = animal-specific (varies)
@@ -123,7 +123,7 @@ class ScanConfig(BaseModel):
         cis window half-width in Mb for locus_type assignment
     permutation_method : str
         'plain' (Phase 1 — unconditional shuffle) or 'parametric'
-        (Phase 2+ — kinship-informed rank-permutation matching miQTL)
+        (Phase 2+ — kinship-informed rank-permutation preserving genetic structure)
     """
 
     population: str = "cc"

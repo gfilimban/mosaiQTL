@@ -3,8 +3,7 @@
 # hmm.py
 # pure python CC/DO haplotype reconstruction HMM
 #
-# replaces R's qtl2::calc_genoprob() for CC inbred strains.
-# implements the 8-founder diplotype HMM used by qtl2/DOQTL:
+# 8-founder diplotype HMM for CC inbred strain haplotype reconstruction:
 #
 #   hidden states : 36 unordered diplotypes {f1f2 : f1 <= f2, f1,f2 in 1..J}
 #   observations  : A/H/B genotype calls at GigaMUGA markers
@@ -224,7 +223,7 @@ def forward_backward(obs_seq, E, T_list, init_probs, log_scale=True):
     alpha and beta are returned to allow pseudomarker interpolation via
     interpolate_posteriors() — posteriors at positions with no genotype
     observation are derived from flanking alpha/beta without re-running
-    the full HMM (see qtl2::insert_pseudomarkers equivalence).
+    the full HMM (see interpolate_posteriors for pseudomarker interpolation).
     """
     n_markers, n_states = E.shape[0], E.shape[1]
 
@@ -277,11 +276,11 @@ def forward_backward(obs_seq, E, T_list, init_probs, log_scale=True):
 
 
 def _augmented_positions(gmap_cM, step_cM, tol=0.01):
-    """chromosome-level pseudomarker grid matching qtl2 insert_pseudomarkers(stepwidth='fixed').
+    """chromosome-level pseudomarker grid with fixed step size.
 
     grid: seq(min(gmap), max(gmap), by=step_cM) anchored at the first real marker —
     NOT reset at each interval. pseudomarkers within tol cM of any real marker are
-    dropped. matches R: insert_pseudomarkers_grid(tol=0.01) exactly.
+    dropped.
 
     args:
         gmap_cM  : (n_markers,) sorted genetic positions in cM
@@ -314,10 +313,9 @@ def _augmented_positions(gmap_cM, step_cM, tol=0.01):
 def interpolate_posteriors(
     gamma, alpha, beta, E, obs_seq, gmap_cM, step_cM, n_founders, tol=0.01
 ):
-    """interpolate HMM posteriors at pseudomarker positions, qtl2-consistent grid.
+    """interpolate HMM posteriors at pseudomarker positions on a fixed-step grid.
 
-    positions are computed by _augmented_positions() which matches qtl2
-    insert_pseudomarkers(stepwidth='fixed', tol=0.01): chromosome-level absolute
+    positions are computed by _augmented_positions(): chromosome-level absolute
     grid seq(min(gmap), max(gmap), by=step_cM), dropping points within tol cM of
     any real marker.
 
@@ -337,7 +335,7 @@ def interpolate_posteriors(
         gmap_cM  : (n_markers,) sorted genetic positions in cM
         step_cM  : float  pseudomarker spacing in cM
         n_founders: int
-        tol      : float  qtl2 tol parameter (default 0.01)
+        tol      : float  min cM distance from a real marker to keep a pseudomarker (default 0.01)
 
     returns:
         gamma_all  : (n_total, n_states)
@@ -422,7 +420,6 @@ def calc_genoprob_cc(
 ):
     """compute founder haplotype probabilities for CC inbred strains.
 
-    pure Python replacement for qtl2::calc_genoprob() on CC samples.
     runs the 8-founder diplotype HMM using forward-backward and returns
     either diplotype (36 states) or additive (8 founder) probabilities.
 
@@ -449,7 +446,7 @@ def calc_genoprob_cc(
 
     returns:
         probs : (n_cc, J or n_states, n_markers) float64 array
-                qtl2 dimension convention: samples × states/founders × markers
+                output dimensions: samples × states/founders × markers
     """
     n_markers, n_cc = geno_matrix.shape
     states, _ = build_diplotype_states(n_founders)

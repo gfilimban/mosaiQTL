@@ -32,9 +32,9 @@ import plot_phase2
 from plot_phase2 import (save_csv, save_plot, scatter_qc, ccc,
                           bland_altman, ecdf_plot)
 
-from mosaiqtl.genomecache import GenomeCache
-from mosaiqtl import kinship as kin_module
-from mosaiqtl import lmm as lmm_module
+from mosaiqtl.genotype.genomecache import GenomeCache
+from mosaiqtl.genotype import kinship as kin_module
+from mosaiqtl.qtl import lmm as lmm_module
 from mosaiqtl.utils import rint as _rint, build_z_matrix
 from scipy import stats as sp_stats
 
@@ -896,7 +896,8 @@ if section(6, 'PERMUTATION THRESHOLDS'):
     if r_thresh is None or pheno_strain is None:
         skip('permutation','thresholds_r.csv missing — run port_validation.R s6')
     else:
-        from mosaiqtl import permutation as perm_mod
+        from mosaiqtl.qtl import permutation as perm_mod
+        from mosaiqtl.qtl import thresholds as thr_mod
         from scipy.stats import genextreme as _gev
 
         # after genome-wide merge, r_thresh has one row per chromosome.
@@ -945,7 +946,7 @@ if section(6, 'PERMUTATION THRESHOLDS'):
             _perm_lod_details[_tchr] = _chr_detail
             ml = np.array(ml)
             all_max_lods.extend(ml.tolist())
-            t_py,_ = perm_mod.get_gev_thresholds(ml, 0.95)
+            t_py,_ = thr_mod.get_gev_thresholds(ml, 0.95)
             chr_records.append({'gene_id':_tgene,'chr':_tchr,'n_perms':_np,
                                  'threshold_r':_tr_v,'threshold_py':t_py,
                                  'delta':abs(t_py-_tr_v)})
@@ -957,7 +958,7 @@ if section(6, 'PERMUTATION THRESHOLDS'):
         else:
             all_max_lods = np.array(all_max_lods)
             comp_df = pd.DataFrame(chr_records)
-            thresh_py,gev_p = perm_mod.get_gev_thresholds(all_max_lods, 0.95)
+            thresh_py,gev_p = thr_mod.get_gev_thresholds(all_max_lods, 0.95)
             thresh_r_v = float(comp_df['threshold_r'].mean())
             delta      = float(comp_df['delta'].mean())
             perm_pass  = delta < 0.5
@@ -990,7 +991,7 @@ if section(7, 'MULTIPLE IMPUTATION'):
     if r_mi is None or pheno_strain is None:
         skip('multi_imputation','mi_lod_r.csv missing — run port_validation.R s7')
     else:
-        from mosaiqtl.scan import scan_h2lmm_mi as _mi
+        from mosaiqtl.qtl.mi import scan_h2lmm_mi as _mi
         mi_comparisons=[]
         # S7 cap: MI is a legacy validation section (not mosaiQTL primary model).
         # genome-wide merged data has 1000+ genes/chr × 11 imputations each —
@@ -1048,8 +1049,8 @@ if section(8, 'SNP SCAN'):
     elif pheno_strain is None:
         skip('snp_scan','pheno not loaded')
     else:
-        from mosaiqtl.snp_scan import (imputed_snp_scan_h2lmm as _snp_scan,
-                                        read_alleles_flat as _raf)
+        from mosaiqtl.qtl.snp_scan import imputed_snp_scan_h2lmm as _snp_scan
+        from mosaiqtl.genotype.snp_db import read_alleles_flat as _raf
         # read from flat allele_dir — same source+ids as R, 0/1 alt dosage per founder
         snp_genos = _raf(ALLELE_DIR, FOUNDER_COLS, pmap_dir=GM_PMAP)
         snp_genos['chr'] = snp_genos['chr'].astype(str)
@@ -1119,7 +1120,7 @@ if section(9, 'MEDIATION'):
     if r_med is None or pheno_strain is None:
         skip('mediation','mediation_r.csv missing — run port_validation.R s9')
     else:
-        from mosaiqtl import mediation as med_mod
+        from mosaiqtl.qtl import mediation as med_mod
         med_comparisons = []
         # loop all unique (gene_id, chr, mediator) triples from merged R data
         med_pairs = (r_med[['gene_id','chr','mediator']]
@@ -1171,26 +1172,20 @@ if section(10, 'POSITIONAL CI'):
     if r_ci is None or pheno_strain is None:
         skip('positional_ci','ci_r.csv missing — run port_validation.R s10')
     else:
-        from mosaiqtl.permutation import run_positional_scans as _rps
-        from mosaiqtl.scan import scan_h2lmm as _sh
-        ci_comparisons = []; boot_pos = None; ci_gene = ci_chr = None
+        from mosaiqtl.qtl.ci import lod_support_interval as _lsi
+        from mosaiqtl.qtl.scan import scan_h2lmm as _sh
+        ci_comparisons = []; ci_gene = ci_chr = None
         for cp in r_ci[['gene_id','chr']].drop_duplicates().itertuples(index=False):
             ci_gene = str(cp.gene_id); ci_chr = str(cp.chr)
             rrow    = r_ci[(r_ci['gene_id']==ci_gene) &
                            (r_ci['chr'].astype(str)==ci_chr)].iloc[0]
             ci_lo_r = float(rrow['ci_lo_mb']); ci_hi_r = float(rrow['ci_hi_mb'])
-            n_boot  = int(rrow['n_boot']) if 'n_boot' in rrow.index else 100
             y_ci    = _get_y(ci_gene)
             if y_ci is None or ci_chr not in kinship_py: continue
             kd_ci   = kin_module.decomp_kinship({ci_chr: kinship_py[ci_chr]})
-            rng_ci  = np.random.default_rng(1)
-            valid_ci = ~np.isnan(y_ci)
-            y_ci_v   = _rint(y_ci[valid_ci]); y_ci_v -= y_ci_v.mean()
-            boot_oc  = np.column_stack([rng_ci.choice(y_ci_v, size=len(y_ci_v), replace=True)
-                                        for _ in range(n_boot)])
-            boot_pos, ci_info = _rps(boot_oc, cache_py, y_ci, covar_base, kd_ci,
-                                     peak_chrom=ci_chr)
-            ci_lo_py = ci_info['ci_lo']; ci_hi_py = ci_info['ci_hi']
+            res_ci  = _sh(y_ci, cache_py, covariates=covar_base, kinship_decomp=kd_ci,
+                          scan_window='cis', gene_chr=ci_chr)
+            ci_lo_py, ci_hi_py = _lsi(res_ci.pos_mb, res_ci.lod)
             overlap  = ci_lo_py <= ci_hi_r and ci_lo_r <= ci_hi_py
             ci_comparisons.append({'gene_id': ci_gene, 'chr': ci_chr,
                                    'locus': rrow.get('locus', ''),
@@ -1204,15 +1199,8 @@ if section(10, 'POSITIONAL CI'):
             save_csv(_col(ci_comp[['gene_id','chr','locus','ci_lo_py','ci_hi_py']]
                           .rename(columns={'ci_lo_py':'ci_lo_mb','ci_hi_py':'ci_hi_mb'}),
                           ['gene_id','chr','locus','ci_lo_mb','ci_hi_mb']), 'ci_py.csv')
-            # serialize boot_pos for standalone replot
-            if boot_pos is not None and hasattr(boot_pos, '__len__'):
-                _bp = np.asarray(boot_pos, dtype=float)
-                save_csv(_col(pd.DataFrame({'gene_id': ci_gene, 'chr': ci_chr,
-                                            'boot_pos': _bp[~np.isnan(_bp)]}),
-                              ['gene_id', 'chr', 'boot_pos']),
-                         'boot_pos_py.csv')
             n_overlap = int(ci_comp['overlap'].sum())
-            plot_phase2.plot_s10(ci_comp, boot_pos, r_boot, ci_gene, ci_chr, n_overlap)
+            plot_phase2.plot_s10(ci_comp, None, r_boot, ci_gene, ci_chr, n_overlap)
 
             record('positional_ci', n_overlap > 0,
                    f'n_chr={len(ci_comp)}  overlap={n_overlap}/{len(ci_comp)}')
@@ -1225,7 +1213,7 @@ if section(11, 'INSTABILITY SCAN'):
     if r_fx is None or pheno_strain is None:
         skip('instability','fixef_r.csv missing — run port_validation.R s11')
     else:
-        from mosaiqtl.scan import instability_lm_scan as _inst
+        from mosaiqtl.qtl.instability import instability_lm_scan as _inst
         fx_pairs = r_fx[['gene_id','chr']].drop_duplicates().itertuples(index=False)
         fx_all   = []; inst_pval_rows = []  # accumulate pvals across all genes
         for fp in fx_pairs:

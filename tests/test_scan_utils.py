@@ -5,7 +5,8 @@ import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from mosaiqtl.qtl.scan import ScanResult, grab_locus_from_scan, lod_drop_ci
+from mosaiqtl.qtl.scan import ScanResult
+from mosaiqtl.qtl.peaks import grab_locus_from_scan, lod_drop_ci
 
 
 def _make_result(n=30, J=8, chrom="1", seed=0):

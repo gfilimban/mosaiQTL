@@ -40,7 +40,7 @@ dev = [
 
 [project.scripts]
 mosaiqtl = 'mosaiqtl.cli:main'
-build-cache = 'mosaiqtl.genotype.genomecache:build'
+build-cache = 'mosaiqtl.genotype.cache_builder:build'
 
 [tool.setuptools.packages.find]
 where = ['src']

@@ -12,9 +12,8 @@ from mosaiqtl.genotype.genomecache import (
     GenomeCache,
     CC_FOUNDERS,
     pheno_df,
-    _save_group_probs,
-    _save_kinship,
 )
+from mosaiqtl.genotype.cache_builder import _save_group_probs, _save_kinship
 from mosaiqtl.genotype.founders import FOUNDER_ORDER
 
 N_FOUNDERS = 8

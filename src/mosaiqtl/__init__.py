@@ -43,32 +43,38 @@ from .qtl.nb import (  # noqa: F401
 )
 
 # gaussian lmm scan
-from .qtl.scan import (  # noqa: F401
-    scan_h2lmm,
-    scan_h2lmm_mi,
-    scan_multi_gene,
-    ScanResult,
-    grab_locus_from_scan,
-    lod_drop_ci,
-    find_peaks,
+from .qtl.scan import scan_h2lmm, scan_multi_gene, scan_multi_gene_lmm, ScanResult  # noqa: F401
+from .qtl.mi import scan_h2lmm_mi, scan_multi_gene_mi  # noqa: F401
+from .qtl.instability import (  # noqa: F401
     fixef_eqtl_scan,
     instability_lm_scan,
-    scan_multi_gene_mi,
     instability_scan_multi_gene,
 )
+from .qtl.peaks import grab_locus_from_scan, lod_drop_ci, find_peaks  # noqa: F401
 
-# permutation thresholds
+# permutation engine
 from .qtl.permutation import (  # noqa: F401
     KinshipSingularError,
     generate_null_outcomes,
     run_threshold_scans,
-    get_gev_thresholds,
-    run_positional_scans,
-    ci_scan_multi_gene,
+    draw_parametric_null_batch,
 )
 
-# snp catalogue (Layer 3a)
-from .qtl.snp_scan import build_snp_catalogue, snp_scan_multi_gene  # noqa: F401
+# significance thresholds (GEV fitting + per-chromosome loading)
+from .qtl.thresholds import get_gev_thresholds, load_per_chr_thresholds  # noqa: F401
+
+# positional CI (LOD support interval)
+from .qtl.ci import CI_COLS, lod_support_interval, ci_scan_multi_gene  # noqa: F401
+
+# per-gene FDR calibration
+from .qtl.fdr import (  # noqa: F401
+    beta_calibrate_pvalue,
+    storey_qvalue,
+    calibrate_gene_pvalue,
+)
+
+from .genotype.snp_db import build_snp_catalogue  # noqa: F401
+from .qtl.snp_scan import snp_scan_multi_gene  # noqa: F401
 
 # mediation
 from .qtl.mediation import (  # noqa: F401

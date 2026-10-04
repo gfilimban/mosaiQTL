@@ -1,4 +1,4 @@
-"""Unit tests for qtl/permutation.py — permutation thresholds and bootstrap CI."""
+"""Unit tests for qtl/permutation.py — permutation thresholds."""
 
 import sys
 from pathlib import Path
@@ -11,12 +11,11 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 from mosaiqtl.qtl.permutation import (
     generate_null_outcomes,
     run_threshold_scans,
-    get_gev_thresholds,
-    run_positional_scans,
     KinshipSingularError,
     _draw_kinship_re,
     _null_fit_params,
 )
+from mosaiqtl.qtl.thresholds import get_gev_thresholds
 
 # ── generate_null_outcomes ────────────────────────────────────────────────────
 
@@ -294,47 +293,6 @@ class TestRunThresholdScans:
         assert mask.sum() == 1  # only the locus at position 1.0
 
 
-# ── run_positional_scans ──────────────────────────────────────────────────────
-
-
-class TestRunPositionalScans:
-    def test_returns_array_and_dict(
-        self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tiny_strain_covariates
-    ):
-        from mosaiqtl.genotype.kinship import decomp_kinship
-
-        kd = decomp_kinship(tiny_kinship)
-        boot = generate_null_outcomes(
-            tiny_strain_phenotype, n_perms=10, method="bootstrap", seed=99
-        )
-        peak_pos, ci = run_positional_scans(
-            boot,
-            tiny_cache,
-            phenotype=tiny_strain_phenotype,
-            covariates=tiny_strain_covariates,
-            kinship_decomp=kd,
-            use_rint=False,
-        )
-        assert peak_pos.shape == (10,)
-        assert "ci_lo" in ci and "ci_hi" in ci
-
-    def test_ci_ordered(self, tiny_cache, tiny_kinship, tiny_strain_phenotype):
-        from mosaiqtl.genotype.kinship import decomp_kinship
-
-        kd = decomp_kinship(tiny_kinship)
-        boot = generate_null_outcomes(
-            tiny_strain_phenotype, n_perms=20, method="bootstrap", seed=77
-        )
-        _, ci = run_positional_scans(
-            boot,
-            tiny_cache,
-            phenotype=tiny_strain_phenotype,
-            kinship_decomp=kd,
-            use_rint=False,
-        )
-        assert ci["ci_lo"] <= ci["ci_hi"]
-
-
 # ── parametric permutation helpers ───────────────────────────────────────────
 
 
@@ -443,18 +401,18 @@ class TestCalibrateGenePvalue:
     ):
         """Returns (p_adj, a_hat, b_hat, h2) — all finite scalars."""
         from mosaiqtl.genotype.kinship import decomp_kinship
-        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
+        from mosaiqtl.qtl.fdr import calibrate_gene_pvalue
 
         kd = decomp_kinship(tiny_kinship)
         c0 = list(tiny_cache.chromosomes)[0]
         result = calibrate_gene_pvalue(
             tiny_strain_phenotype,
             tiny_cache,
-            chrom=c0,
-            peak_lod=2.0,
-            covariates=tiny_strain_covariates,
-            kinship_decomp=kd,
-            kinship_loco=tiny_kinship,
+            c0,
+            2.0,
+            tiny_strain_covariates,
+            kd,
+            tiny_kinship,
             n_perms=20,
             use_rint=False,
             seed=7,
@@ -465,21 +423,22 @@ class TestCalibrateGenePvalue:
             assert np.isfinite(val), f"expected finite, got {val}"
 
     def test_p_adj_in_unit_interval(
-        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tiny_strain_covariates
     ):
         """p_adj must be in [0, 1]."""
         from mosaiqtl.genotype.kinship import decomp_kinship
-        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
+        from mosaiqtl.qtl.fdr import calibrate_gene_pvalue
 
         kd = decomp_kinship(tiny_kinship)
         c0 = list(tiny_cache.chromosomes)[0]
         p_adj, *_ = calibrate_gene_pvalue(
             tiny_strain_phenotype,
             tiny_cache,
-            chrom=c0,
-            peak_lod=1.5,
-            kinship_decomp=kd,
-            kinship_loco=tiny_kinship,
+            c0,
+            1.5,
+            tiny_strain_covariates,
+            kd,
+            tiny_kinship,
             n_perms=20,
             use_rint=False,
             seed=11,
@@ -499,7 +458,6 @@ class TestCalibrateGenePvalue:
         from mosaiqtl.qtl.fdr import beta_calibrate_pvalue
 
         rng = np.random.default_rng(99)
-        # null drawn from a distribution with typical LOD around 1-2
         null_lods = rng.gamma(shape=2.0, scale=0.8, size=200)
         p_low, *_ = beta_calibrate_pvalue(0.5, null_lods, df=7)
         p_high, *_ = beta_calibrate_pvalue(8.0, null_lods, df=7)
@@ -508,42 +466,17 @@ class TestCalibrateGenePvalue:
             f"vs p(LOD=0.5)={p_low:.4f}"
         )
 
-    def test_raises_without_kinship(self, tiny_cache, tiny_strain_phenotype):
-        """Missing kinship_decomp or kinship_loco raises ValueError."""
-        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
-
-        c0 = list(tiny_cache.chromosomes)[0]
-        with pytest.raises(ValueError, match="kinship_decomp"):
-            calibrate_gene_pvalue(
-                tiny_strain_phenotype,
-                tiny_cache,
-                chrom=c0,
-                peak_lod=1.0,
-                kinship_decomp=None,
-                kinship_loco=None,
-                n_perms=5,
-            )
-
     def test_reproducible_with_seed(
-        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tiny_strain_covariates
     ):
         """Same seed → identical p_adj."""
         from mosaiqtl.genotype.kinship import decomp_kinship
-        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
+        from mosaiqtl.qtl.fdr import calibrate_gene_pvalue
 
         kd = decomp_kinship(tiny_kinship)
         c0 = list(tiny_cache.chromosomes)[0]
-        kwargs = dict(
-            y_gene=tiny_strain_phenotype,
-            genomecache=tiny_cache,
-            chrom=c0,
-            peak_lod=2.0,
-            kinship_decomp=kd,
-            kinship_loco=tiny_kinship,
-            n_perms=15,
-            use_rint=False,
-            seed=42,
-        )
-        p1, *_ = calibrate_gene_pvalue(**kwargs)
-        p2, *_ = calibrate_gene_pvalue(**kwargs)
+        args = (tiny_strain_phenotype, tiny_cache, c0, 2.0, tiny_strain_covariates, kd, tiny_kinship)
+        kwargs = dict(n_perms=15, use_rint=False, seed=42)
+        p1, *_ = calibrate_gene_pvalue(*args, **kwargs)
+        p2, *_ = calibrate_gene_pvalue(*args, **kwargs)
         assert p1 == p2

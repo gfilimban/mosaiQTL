@@ -506,7 +506,7 @@ def scan(
     default="parametric",
     show_default=True,
     type=click.Choice(["parametric", "plain"]),
-    help="Permutation mode: 'parametric' (miQTL default) or 'plain'.",
+    help="Permutation mode: 'parametric' (draws null from fitted h² distribution) or 'plain' (unconditional shuffle).",
 )
 @click.option(
     "--gene-info",
@@ -560,11 +560,8 @@ def permute(
     import anndata
     from .genotype.genomecache import GenomeCache
     from .genotype import kinship as kin_module
-    from .qtl.permutation import (
-        generate_null_outcomes,
-        run_threshold_scans,
-        get_gev_thresholds,
-    )
+    from .qtl.permutation import generate_null_outcomes, run_threshold_scans
+    from .qtl.thresholds import get_gev_thresholds
 
     gc = GenomeCache.from_hdf5(cache)
     adata = anndata.read_h5ad(counts, backed="r")
@@ -876,12 +873,11 @@ def report(
     """Summary tables + QC plots from a completed scan.
 
     Reads peak_lod.csv + perm directory from prior subcommands.
-    Writes eqtl_summary.csv, genome_summary.png, eqtl_peak.csv, and
-    eqtl_stats.csv into OUTPUT_DIR. eqtl_peak.csv/eqtl_stats.csv populate the
-    IGVF EQTL_PEAK_COLS/EQTL_STATS_COLS schemas from data already produced by
-    this pipeline; the biallelic-contrast fields (variant/ref/ref_founders/
-    alt_founders/af/maf/mac/effect_size/...) stay NaN until the Sanger
-    fine-mapping subsystem supplies real REF/ALT calls.
+    Writes eqtl_summary.csv (eGene table with Storey FDR columns),
+    genome_summary.png, eqtl_peak.csv (one row per eGene, haplotype-level stats),
+    and eqtl_stats.csv (run-level summary) into OUTPUT_DIR. Allele-contrast
+    fields (variant, REF/ALT founders, AF, effect size) remain NaN until
+    Sanger fine-mapping supplies real REF/ALT calls.
     """
     _setup_logging(verbose)
     import numpy as np
@@ -889,7 +885,7 @@ def report(
     from .genotype.founders import FOUNDER_ORDER
     from .io.results_io import write_eqtl_peak, write_eqtl_stats
     from .pipeline import calibrate_egenes_storey, call_egenes, finalize_egene_summary
-    from .qtl.permutation import get_gev_thresholds, load_per_chr_thresholds
+    from .qtl.thresholds import get_gev_thresholds, load_per_chr_thresholds
     from .utils import git_hash
 
     peaks = pd.read_csv(scan_result)
@@ -1109,8 +1105,8 @@ def finemap(
 ) -> None:
     """Sanger fine-mapping of eGenes using Wakefield ABF within LOD-drop CIs.
 
-    Reads eqtl_peak.csv (ci_lo_bp and ci_hi_bp columns required; added by the
-    characterise step when bootstrap CIs are computed). For each eGene, loads
+    Reads eqtl_peak.csv (ci_lo_bp and ci_hi_bp columns required; produced by
+    the `report` subcommand after LOD support CI computation). For each eGene, loads
     Sanger alleles once per chromosome, imputes biallelic dosages via
     make_alt_mask, runs the LMM SNP scan within the CI window, and computes
     Wakefield ABF posterior inclusion probabilities.

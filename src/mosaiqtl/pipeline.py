@@ -44,7 +44,7 @@ from scipy import stats as _sp_stats
 from .qtl.scan import scan_h2lmm, scan_multi_gene
 from .qtl.mediation import MEDIATION_COLS, FIXEF_MEDIATION_COLS
 from .qtl.snp_scan import SNP_SCAN_COLS
-from .qtl.permutation import CI_COLS
+from .qtl.ci import CI_COLS
 
 from .genotype import kinship as kin_module
 
@@ -110,6 +110,10 @@ EGENE_SUMMARY_COLS: list[str] = [
     "perm_chr",
     "chi2_haplotype",
     "p_haplotype",
+    "pval_perm",
+    "fdr",
+    "fdr_method",
+    "significance",
     "in_r_egenes",
 ]
 
@@ -749,7 +753,7 @@ def _run_snp_catalogue(disc, cache, mgp_vcf=None, window_mb=10.0, founders=None)
     if mgp_vcf is None:
         logger.warning("snp_catalogue: mgp_vcf not provided — skipping")
         return {}
-    from .qtl.snp_scan import build_snp_catalogue
+    from .genotype.snp_db import build_snp_catalogue
 
     return build_snp_catalogue(
         disc.scan, cache, mgp_vcf, window_mb=window_mb, founders=founders
