@@ -814,7 +814,7 @@ def plot_permutation_comparison(
 def plot_mi_scan_comparison(py_mi_result, r_mi_csv, save_path=None):
     """compare MI-averaged LOD scores: Python vs R reference (S7).
 
-    mirrors miQTL multi.imput.lmmbygls — R averages LOD over n_imp draws.
+    R reference averages LOD over n_imp imputation draws (multiple-imputation scan).
 
     parameters
     ----------
@@ -882,7 +882,7 @@ def plot_mediation_comparison(
 ):
     """compare mediation LOD scores: Python vs R reference (S9).
 
-    mirrors miQTL mediation.scan.qr / extract.mediation.qr.
+    R reference runs QR-based mediation scan.
 
     parameters
     ----------
@@ -950,7 +950,7 @@ def plot_mediation_comparison(
 def plot_instability_comparison(py_instability, r_instability_csv, save_path=None):
     """compare instability LOD scores: Python vs R reference (S11).
 
-    mirrors miQTL instability.lm.scan — bootstrap mean LOD over subsamples.
+    R reference computes bootstrap mean LOD over subsampled replicates.
 
     parameters
     ----------

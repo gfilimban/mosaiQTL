@@ -61,11 +61,12 @@ import seaborn as sns
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from mosaiqtl.genotype.genomecache import GenomeCache
-from mosaiqtl.qtl.scan import scan_h2lmm, scan_h2lmm_mi, grab_locus_from_scan
-from mosaiqtl.qtl.permutation import (
-    generate_null_outcomes, run_threshold_scans, get_gev_thresholds,
-    run_positional_scans,
-)
+from mosaiqtl.qtl.scan import scan_h2lmm
+from mosaiqtl.qtl.mi import scan_h2lmm_mi
+from mosaiqtl.qtl.peaks import grab_locus_from_scan
+from mosaiqtl.qtl.permutation import generate_null_outcomes, run_threshold_scans
+from mosaiqtl.qtl.thresholds import get_gev_thresholds
+from mosaiqtl.qtl.ci import lod_support_interval
 from mosaiqtl.viz.genome import manhattan, lod_interval
 from mosaiqtl.viz.effects import coef_profile
 from mosaiqtl.viz.haplotypes import prob_heatmap
@@ -562,32 +563,19 @@ def run(sparcc_cache, r_data, out_dir):
         log.info('  %s allele_effects_peak.csv not found — effects comparison skipped', SKIP)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # bootstrap positional CI
-    # R: qtl.locus.bootstraps <- generate.sample.outcomes.matrix(..., method="bootstrap")
-    #    qtl.bootstrap.scans  <- run.positional.scans(...)
-    #    single.chr.plotter.w.ci(...)
+    # LOD support interval CI (1.5-LOD drop; Dupuis & Siegmund 1999)
+    # R: single.chr.plotter.w.ci(...)
     # ─────────────────────────────────────────────────────────────────────────
-    log.info('\nBootstrap positional CI (n=100, seed=1)...')
-    boot_y                = generate_null_outcomes(y, n_perms=100,
-                                                   method='bootstrap', seed=1)
-    boot_positions, ci    = run_positional_scans(
-        boot_y, cache, phenotype=y,
-        kinship_decomp=ols_kd,
-        peak_chrom=peak_chrom,
-        use_rint=False,
-    )
-    log.info('  bootstrap 95%% CI: [%.2f, %.2f] Mb  (peak %.2f Mb)',
-             ci['ci_lo'], ci['ci_hi'], peak_pos_mb)
-
-    pd.DataFrame({'boot_peak_mb': boot_positions}).to_csv(
-        py_dir / 'bootstrap_ci.csv', index=False)
-
     chrom_mask = rop_scan.chromosomes == peak_chrom
+    ci_lo, ci_hi = lod_support_interval(positions_c, rop_scan.lod[chrom_mask])
+    log.info('  LOD support CI: [%.2f, %.2f] Mb  (peak %.2f Mb)',
+             ci_lo, ci_hi, peak_pos_mb)
+
     fig, ax    = plt.subplots(figsize=(7, 3), dpi=300)
     lod_interval(positions_c, rop_scan.lod[chrom_mask], ax=ax, chrom=peak_chrom)
-    ax.axvline(ci['ci_lo'], color='#888888', linewidth=0.8, linestyle='--', zorder=3)
-    ax.axvline(ci['ci_hi'], color='#888888', linewidth=0.8, linestyle='--', zorder=3)
-    ax.set_title(f'Chr {peak_chrom} LOD + 95% bootstrap CI', fontsize=9)
+    ax.axvline(ci_lo, color='#888888', linewidth=0.8, linestyle='--', zorder=3)
+    ax.axvline(ci_hi, color='#888888', linewidth=0.8, linestyle='--', zorder=3)
+    ax.set_title(f'Chr {peak_chrom} LOD + 1.5-LOD support CI', fontsize=9)
     fig.tight_layout()
     fig.savefig(plt_dir / 'p1_chr_lod_with_ci.png', dpi=300, bbox_inches='tight')
     plt.close(fig)

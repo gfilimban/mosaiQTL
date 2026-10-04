@@ -118,8 +118,6 @@ from mosaiqtl.viz.genome import (
     ci_strip as _viz_ci_strip,
     lod_profiles_per_chr as _viz_lod_profiles_per_chr,
     lod_panel_grid as _viz_lod_panel_grid,
-    locus_panels_per_chr as _viz_locus_panels_per_chr,
-    locus_panel_grid as _viz_locus_panel_grid,
     perm_distributions_per_chr as _viz_perm_distributions_per_chr,
     perm_panel_grid as _viz_perm_panel_grid,
     snp_profiles_per_chr as _viz_snp_profiles_per_chr,
@@ -137,6 +135,10 @@ from mosaiqtl.viz.genome import (
     cis_distance_panel as _viz_cis_distance_panel,
     _MI_COLOR,
     _INST_COLOR,
+)
+from mosaiqtl.viz.locus import (
+    locus_panels_per_chr as _viz_locus_panels_per_chr,
+    locus_panel_grid as _viz_locus_panel_grid,
 )
 from mosaiqtl.viz.haplotypes import (
     kinship_distribution as _viz_kinship_distribution,
@@ -170,24 +172,15 @@ from mosaiqtl.viz.celltypes import (
     compare_scan_types as _compare_scan_types,
 )
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
-from mosaiqtl.qtl.scan import (
-    grab_locus_from_scan,
-    instability_lm_scan,
-    scan_h2lmm,
-    scan_h2lmm_mi,
-    scan_multi_gene_mi,
-    instability_scan_multi_gene,
-    ScanResult,
-)
+from mosaiqtl.qtl.scan import scan_h2lmm, ScanResult
+from mosaiqtl.qtl.peaks import grab_locus_from_scan
+from mosaiqtl.qtl.mi import scan_h2lmm_mi, scan_multi_gene_mi
+from mosaiqtl.qtl.instability import instability_lm_scan, instability_scan_multi_gene
 from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome
-from mosaiqtl.qtl.permutation import (
-    generate_null_outcomes,
-    get_gev_thresholds,
-    load_per_chr_thresholds,
-    run_positional_scans,
-    run_threshold_scans,
-    ci_scan_multi_gene,
-)
+from mosaiqtl.qtl.ci import ci_scan_multi_gene
+from mosaiqtl.qtl.fdr import calibrate_gene_pvalue
+from mosaiqtl.qtl.permutation import generate_null_outcomes, run_threshold_scans
+from mosaiqtl.qtl.thresholds import get_gev_thresholds, load_per_chr_thresholds
 from mosaiqtl.qtl.mediation import (
     mediation_scan_qr,
     mediation_scan_qr,
@@ -199,6 +192,7 @@ from mosaiqtl.io.results_io import pos_merge as _pos_merge, scan_result_to_df as
 from mosaiqtl.io.anndata_io import load_expression_h5 as _load_expression_h5
 from mosaiqtl.qtl.scan import scan_multi_gene_lmm as _scan_multi_gene_lmm
 from mosaiqtl.pipeline import (
+    calibrate_egenes_storey,
     call_egenes, finalize_egene_summary, finemap_egenes,
     LOD_COLS, ALLELE_EFFECTS_BASE_COLS, PEAK_LOD_COLS, EGENE_SUMMARY_COLS,
 )
@@ -3132,17 +3126,56 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     if not chr_null_lods:
                         chr_null_lods = {peak_chr: perm_max_lods}
 
-            # ── genome-wide FWER calling only (Storey q-value disabled) ─────────
-            # Storey q-value requires each gene's p-value to be valid under its
-            # own null. S5 derives the permutation null (and every per-chromosome
-            # null) from ONE representative gene's variance components, shared
-            # across all 43k genes — a fine simplification for a single global
-            # FWER threshold, but invalid as a per-gene null for FDR: pi0_hat(λ)
-            # climbed past 1.0 monotonically to 2.58 at λ=0.95 instead of
-            # plateauing, and 12.9% of genes had p>0.95 vs the 5% a true uniform
-            # null implies. Disabled until S5 produces a per-gene-calibrated null.
-            # eGene calling above already uses the genome-wide GEV threshold
-            # (`thr` from threshold.csv) — that FWER gate is unaffected.
+            # ── Storey q-value: per-gene Beta calibration ─────────────────────
+            # Each eGene that cleared the Stage-1 FWER gate gets its own
+            # parametric null drawn at its own h² (calibrate_gene_pvalue),
+            # then Storey's method estimates pi0 and q-values across all eGenes.
+            # kinship_loco is recomputed here because only the decomposed form is
+            # persisted to the .npz checkpoint; calc_kinship is fast.
+            if egenes_df is not None and len(egenes_df) > 0 and 'gene_id' in egenes_df.columns:
+                log.info('[Storey] calibrating per-gene p-values for %d eGenes...', len(egenes_df))
+                _kin_raw = calc_kinship(cache, method='loco')
+                _h5_path_st = data_dir / 'counts_lognorm.h5'
+                _pval_perm: dict = {}
+                for _, _eg in egenes_df.iterrows():
+                    _gid     = str(_eg['gene_id'])
+                    _chrom   = str(_eg['chr'])
+                    _plod    = float(_eg['peak_lod'])
+                    _pos_mb  = float(_eg['peak_mb']) if pd.notna(_eg.get('peak_mb')) else None
+                    _cts, _lds, _sids = _load_expression(_h5_path_st, [_gid])
+                    if not _lds:
+                        log.debug('[Storey] skip %s — not in h5', _gid)
+                        continue
+                    _y   = _cts[0].astype(float)
+                    _gds = [meta_geno_map.get(s, s) for s in _sids]
+                    _cov = _build_covariates(meta, _sids)
+                    _z, _ = build_z_matrix(_gds, list(cache.sample_ids))
+                    _r = _z.sum(axis=0)
+                    _y_g = (_z.T @ _y) / _r
+                    _cov_g = (_z.T @ _cov) / _r[:, None]
+                    _p, _, _, _ = calibrate_gene_pvalue(
+                        y_gene=_y_g,
+                        genomecache=cache,
+                        chrom=_chrom,
+                        peak_lod=_plod,
+                        covariates=_cov_g,
+                        kinship_decomp=kinship_decomp,
+                        kinship_loco=_kin_raw,
+                        n_perms=200,
+                        gene_pos_mb=_pos_mb,
+                        window_mb=window_mb if scan_type == 'L' else None,
+                        use_rint=True,
+                    )
+                    _pval_perm[_gid] = _p
+                    log.debug('[Storey] %s  chr%s  peak_lod=%.3f  p_adj=%.4g',
+                              _gid, _chrom, _plod, _p)
+                del _kin_raw
+                import gc as _gc; _gc.collect()
+                if _pval_perm:
+                    egenes_df = calibrate_egenes_storey(egenes_df, _pval_perm, fdr_threshold=0.05)
+                    log.info('[Storey] done  significant(q<=0.05)=%d / %d',
+                             int((egenes_df['significance'] == 'T').sum()), len(egenes_df))
+
             if perm_max_lods is not None:
                 egenes_df['perm_n']   = perm_n
                 egenes_df['perm_chr'] = peak_chr
@@ -3445,13 +3478,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 geno_ids_ci = [meta_geno_map.get(s, s) for s in _ci_sids]
                 cov_ci = _build_covariates(meta, _ci_sids)
                 _ci_out_path = ext_dir / 'ci.csv'
-                log.info('  bootstrap CI for %d eGenes (streaming)...', len(_ci_expr))
+                log.info('  1.5-LOD support CI for %d eGenes (streaming)...', len(_ci_expr))
                 ci_df = ci_scan_multi_gene(
                     _ci_expr, _ci_chr_map, _ci_peak_map, cache,
                     covariates=cov_ci,
                     kinship_decomp=kinship_decomp,
                     sample_ids=geno_ids_ci,
-                    n_boot=200, seed=1,
                     output_path=_ci_out_path,
                     gene_meta=_gene_meta,
                 )
@@ -3782,13 +3814,13 @@ def main() -> None:
                          'lives under --data/celltypes/<ct>.')
     ap.add_argument('--build-cache', action='store_true',
                     help='one-time: read HAPPY genomecache via rpy2 → save '
-                         'validation/py_ref/cache.h5, then exit (requires rpy2 + miqtl R package)')
+                         'validation/py_ref/cache.h5, then exit (requires rpy2)')
     ap.add_argument('--genomecache', default=None,
                     help='path to HAPPY genomecache dir for --build-cache '
                          f'(default: {GENOMECACHE})')
     ap.add_argument('--full', action='store_true',
                     help='run all sections (cache, haplotypes, kinship, scan, permutation, '
-                         'eGene calling, bootstrap CI, Sanger fine-mapping, MI, mediation, instability)')
+                         'eGene calling, LOD support CI, Sanger fine-mapping, MI, mediation, instability)')
     ap.add_argument('--scan', action='store_true',
                     help='run core scan sections (cache, haplotypes, kinship, LMM scan, '
                          'permutation, eGene calling; default when no flag given)')
@@ -3797,7 +3829,7 @@ def main() -> None:
     ap.add_argument('--mediation', action='store_true',
                     help='run mediation scan (requires scan outputs)')
     ap.add_argument('--ci', action='store_true',
-                    help='run bootstrap confidence intervals (requires scan outputs)')
+                    help='compute 1.5-LOD support intervals for all eGenes (requires scan outputs)')
     ap.add_argument('--finemap', action='store_true',
                     help='run Sanger fine-mapping (requires CI outputs + --sanger-alleles)')
     ap.add_argument('--sanger-alleles', default=None, metavar='PATH',
@@ -3847,8 +3879,7 @@ def main() -> None:
                          'compare_scan_types/ directory')
     ap.add_argument('--scan-tags', default=None, metavar='TAG1,TAG2[,...]',
                     help='comma-separated scan tags to compare with --compare-scan-types '
-                         '(e.g. "C,Lw1" — see run()::_scan_tag for the naming scheme); '
-                         'required by --compare-scan-types')
+                         '(e.g. "C,Lw1"); required by --compare-scan-types')
     ap.add_argument('--gtf', default=None, metavar='PATH',
                     help='path to .gtf or .gtf.gz annotation file (e.g. GENCODE vM36); '
                          'when provided, locus panel gene tracks show real '

@@ -5,7 +5,8 @@ import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from mosaiqtl.qtl.permutation import generate_null_outcomes, get_gev_thresholds
+from mosaiqtl.qtl.permutation import generate_null_outcomes
+from mosaiqtl.qtl.thresholds import get_gev_thresholds
 
 
 class TestGenerateNullOutcomes:

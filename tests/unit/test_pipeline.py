@@ -484,7 +484,7 @@ class TestStoreyFdrEndToEnd:
         """
         import pandas as pd
         from mosaiqtl.genotype.kinship import decomp_kinship
-        from mosaiqtl.qtl.permutation import calibrate_gene_pvalue
+        from mosaiqtl.qtl.fdr import calibrate_gene_pvalue
         from mosaiqtl.pipeline import calibrate_egenes_storey
 
         kd = decomp_kinship(tiny_kinship)

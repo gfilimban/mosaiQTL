@@ -18,12 +18,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
-from mosaiqtl.qtl.scan import ScanResult, scan_h2lmm, scan_h2lmm_mi
-from mosaiqtl.qtl.permutation import (
-    generate_null_outcomes,
-    get_gev_thresholds,
-    run_threshold_scans,
-)
+from mosaiqtl.qtl.scan import ScanResult, scan_h2lmm
+from mosaiqtl.qtl.mi import scan_h2lmm_mi
+from mosaiqtl.qtl.permutation import generate_null_outcomes, run_threshold_scans
+from mosaiqtl.qtl.thresholds import get_gev_thresholds
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

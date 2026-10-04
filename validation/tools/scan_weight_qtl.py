@@ -61,7 +61,7 @@ from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 from mosaiqtl.io.covariates import encode_sex
 from mosaiqtl.qtl.effects import get_allele_effects
 from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome
-from mosaiqtl.qtl.permutation import get_gev_thresholds
+from mosaiqtl.qtl.thresholds import get_gev_thresholds
 from mosaiqtl.utils import build_z_matrix, rint
 from mosaiqtl.viz.effects import effect_bars as _viz_effect_bars
 from mosaiqtl.viz.genome import manhattan as _viz_manhattan

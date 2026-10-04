@@ -13,12 +13,10 @@ from mosaiqtl.qtl.scan import (
     ScanResult,
     scan_h2lmm,
     scan_multi_gene,
-    grab_locus_from_scan,
-    lod_drop_ci,
-    find_peaks,
-    fixef_eqtl_scan,
-    instability_lm_scan,
 )
+from mosaiqtl.qtl.peaks import grab_locus_from_scan, lod_drop_ci, find_peaks
+from mosaiqtl.qtl.ci import lod_support_interval
+from mosaiqtl.qtl.instability import instability_lm_scan, fixef_eqtl_scan
 
 # ── ScanResult ────────────────────────────────────────────────────────────────
 
@@ -277,6 +275,11 @@ class TestGrabLocus:
 # ── lod_drop_ci ───────────────────────────────────────────────────────────────
 
 
+def _chr_ci(sr, chrom, drop=1.5):
+    """helper: return (lo, hi, pk) for one chromosome via lod_drop_ci."""
+    return lod_drop_ci(sr, chrom, drop=drop)
+
+
 class TestLodDropCi:
     def test_returns_three_floats(
         self, tiny_cache, tiny_kinship, tiny_strain_phenotype
@@ -291,7 +294,7 @@ class TestLodDropCi:
             use_rint=False,
             scan_window="genome",
         )
-        lo, hi, pk = lod_drop_ci(sr, chrom="1", drop=1.5)
+        lo, hi, pk = _chr_ci(sr, chrom="1", drop=1.5)
         assert np.isfinite(lo) and np.isfinite(hi) and np.isfinite(pk)
 
     def test_lo_le_peak_le_hi(self, tiny_cache, tiny_kinship, tiny_strain_phenotype):
@@ -305,12 +308,12 @@ class TestLodDropCi:
             use_rint=False,
             scan_window="genome",
         )
-        lo, hi, pk = lod_drop_ci(sr, chrom="1", drop=1.5)
+        lo, hi, pk = _chr_ci(sr, chrom="1", drop=1.5)
         assert lo <= pk <= hi
 
     def test_empty_chrom_returns_nan(self):
         sr = _make_scan_result()
-        lo, hi, pk = lod_drop_ci(sr, chrom="99")
+        lo, hi, pk = _chr_ci(sr, chrom="99")
         assert np.isnan(lo) and np.isnan(hi) and np.isnan(pk)
 
 

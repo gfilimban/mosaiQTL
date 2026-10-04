@@ -51,17 +51,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from mosaiqtl.genotype.genomecache import GenomeCache
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
-from mosaiqtl.qtl.scan import (
-    instability_lm_scan,
-    scan_h2lmm,
-    scan_h2lmm_mi,
-)
-from mosaiqtl.qtl.permutation import (
-    generate_null_outcomes,
-    get_gev_thresholds,
-    run_positional_scans,
-    run_threshold_scans,
-)
+from mosaiqtl.qtl.scan import scan_h2lmm
+from mosaiqtl.qtl.mi import scan_h2lmm_mi
+from mosaiqtl.qtl.instability import instability_lm_scan
+from mosaiqtl.qtl.ci import lod_support_interval
+from mosaiqtl.qtl.permutation import generate_null_outcomes, run_threshold_scans
+from mosaiqtl.qtl.thresholds import get_gev_thresholds
 from mosaiqtl.qtl.mediation import mediation_scan_qr
 from mosaiqtl.viz.validation import joint_lod_scatter, lod_comparison_profile
 
@@ -527,18 +522,10 @@ def run(r_data: Path, out_dir: Path,
             if rop_scan_1 is not None and peak_chrom and 1 in sim_ys:
                 with _Timer() as t:
                     lids_c, pos_c, _ = cache.get_chromosome(peak_chrom)
-                    null_boot = generate_null_outcomes(
-                        sim_ys[1], n_perms=100, method='bootstrap', seed=1)
-                    ci_peaks = run_positional_scans(
-                        null_boot, cache,
-                        phenotype=sim_ys[1],
-                        kinship_decomp=kinship_decomp,
-                        peak_chrom=peak_chrom,
-                        sample_ids=sample_ids,
-                    )
-                log.info('  bootstrap CI done; %d peak positions', len(ci_peaks))
-                del null_boot, ci_peaks; gc.collect()
-                _record(timing_rows, 'S10_bootstrap_ci', t, 'n=100 chr-restricted')
+                    chrom_mask = rop_scan_1.chromosomes == peak_chrom
+                    ci_lo, ci_hi = lod_support_interval(pos_c, rop_scan_1.lod[chrom_mask])
+                log.info('  1.5-LOD support CI: [%.2f, %.2f] Mb', ci_lo, ci_hi)
+                _record(timing_rows, 'S10_lod_support_ci', t, 'chr-restricted')
             else:
                 log.info('  %s rop_scan_1 or peak_chrom unavailable — S10 skipped', SKIP)
             _mark_done(py_dir, str(sec))

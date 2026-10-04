@@ -52,20 +52,16 @@ from scipy.stats import genextreme as _gev
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from mosaiqtl.genotype.genomecache import GenomeCache, collapse_genomecache
+from mosaiqtl.genotype.genomecache import GenomeCache
+from mosaiqtl.genotype.cache_builder import collapse_genomecache
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
-from mosaiqtl.qtl.scan import (
-    find_peaks,
-    instability_lm_scan,
-    scan_h2lmm,
-    scan_h2lmm_mi,
-)
-from mosaiqtl.qtl.permutation import (
-    generate_null_outcomes,
-    get_gev_thresholds,
-    run_positional_scans,
-    run_threshold_scans,
-)
+from mosaiqtl.qtl.scan import scan_h2lmm
+from mosaiqtl.qtl.mi import scan_h2lmm_mi
+from mosaiqtl.qtl.instability import instability_lm_scan
+from mosaiqtl.qtl.peaks import find_peaks
+from mosaiqtl.qtl.permutation import generate_null_outcomes, run_threshold_scans
+from mosaiqtl.qtl.thresholds import get_gev_thresholds
+from mosaiqtl.qtl.ci import lod_support_interval
 from mosaiqtl.qtl.mediation import mediation_scan_qr
 from mosaiqtl.viz.genome import manhattan, lod_interval
 from mosaiqtl.viz.effects import coef_profile
@@ -1712,45 +1708,34 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 y_resid_s10   = sim_ys[1] - y_qtl_s10
                 del probs_c_s10
                 gc.collect()
-                rng_s10 = np.random.default_rng(1)
-                boot_y = np.column_stack([
-                    y_qtl_s10 + rng_s10.choice(y_resid_s10,
-                                                size=len(y_resid_s10), replace=True)
-                    for _ in range(100)
-                ])
-                boot_positions, ci = run_positional_scans(
-                    boot_y, cache,
-                    phenotype=sim_ys[1],
-                    kinship_decomp=kinship_decomp,
-                    peak_chrom=peak_chrom,
-                    use_rint=False,
+                chrom_mask_ci = rop_scan_1.chromosomes == peak_chrom
+                _, positions_ci, _ = cache.get_chromosome(peak_chrom)
+                ci_lo_py, ci_hi_py = lod_support_interval(
+                    positions_ci, rop_scan_1.lod[chrom_mask_ci]
                 )
-                log.info('  bootstrap 95%% CI: [%.2f, %.2f] Mb',
-                         ci['ci_lo'], ci['ci_hi'])
-
-                pd.DataFrame({'boot_peak_mb': boot_positions}).to_csv(
-                    py_dir / 's10_bootstrap_ci.csv', index=False)
+                log.info('  LOD support CI: [%.2f, %.2f] Mb',
+                         ci_lo_py, ci_hi_py)
 
                 ci_r = pd.read_csv(ci_r_path)
-                planted_mb    = float(ci_r['planted_locus_mb'].iloc[0])
-                ci_lo_r       = float(ci_r['ci_lo'].iloc[0])
-                ci_hi_r       = float(ci_r['ci_hi'].iloc[0])
-                planted_in_ci = (ci['ci_lo'] <= planted_mb <= ci['ci_hi'])
+                planted_mb        = float(ci_r['planted_locus_mb'].iloc[0])
+                ci_lo_r           = float(ci_r['ci_lo'].iloc[0])
+                ci_hi_r           = float(ci_r['ci_hi'].iloc[0])
+                planted_in_ci     = (ci_lo_py <= planted_mb <= ci_hi_py)
                 r_planted_in_r_ci = (ci_lo_r <= planted_mb <= ci_hi_r)
-                ci_width_py   = ci['ci_hi'] - ci['ci_lo']
-                ci_width_r    = ci_hi_r - ci_lo_r
-                lo_delta      = abs(ci['ci_lo'] - ci_lo_r)
-                hi_delta      = abs(ci['ci_hi'] - ci_hi_r)
+                ci_width_py       = ci_hi_py - ci_lo_py
+                ci_width_r        = ci_hi_r - ci_lo_r
+                lo_delta          = abs(ci_lo_py - ci_lo_r)
+                hi_delta          = abs(ci_hi_py - ci_hi_r)
                 sym = PASS if planted_in_ci else FAIL
                 log.info('  %s Python CI: [%.2f, %.2f]  width=%.2f Mb  contains planted=%s',
-                         sym, ci['ci_lo'], ci['ci_hi'], ci_width_py, planted_in_ci)
+                         sym, ci_lo_py, ci_hi_py, ci_width_py, planted_in_ci)
                 log.info('       R    CI: [%.2f, %.2f]  width=%.2f Mb  contains planted=%s',
                          ci_lo_r, ci_hi_r, ci_width_r, r_planted_in_r_ci)
                 log.info('       CI bound delta: lo=%.2f Mb  hi=%.2f Mb', lo_delta, hi_delta)
 
                 pd.DataFrame([{
-                    'ci_lo_py':          ci['ci_lo'],
-                    'ci_hi_py':          ci['ci_hi'],
+                    'ci_lo_py':          ci_lo_py,
+                    'ci_hi_py':          ci_hi_py,
                     'width_py':          ci_width_py,
                     'ci_lo_r':           ci_lo_r,
                     'ci_hi_r':           ci_hi_r,
@@ -1765,7 +1750,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
 
                 # overlaid CI interval visualization: Python vs R side by side
                 fig_cmp, ax_cmp = plt.subplots(figsize=(7, 2.2), dpi=300)
-                ax_cmp.barh(['Python'], [ci_width_py], left=[ci['ci_lo']],
+                ax_cmp.barh(['Python'], [ci_width_py], left=[ci_lo_py],
                             height=0.3, color='#52A5DB', alpha=0.75, label='Python CI')
                 ax_cmp.barh(['R'], [ci_width_r], left=[ci_lo_r],
                             height=0.3, color='#F4C245', alpha=0.75, label='R CI')
@@ -1790,9 +1775,9 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     fig, ax = plt.subplots(figsize=(7, 3), dpi=300)
                     lod_interval(positions_c, rop_scan_1.lod[chrom_mask],
                                  ax=ax, chrom=peak_chrom)
-                    ax.axvline(ci['ci_lo'], color='#888888',
+                    ax.axvline(ci_lo_py, color='#888888',
                                linewidth=0.8, linestyle='--', zorder=3)
-                    ax.axvline(ci['ci_hi'], color='#888888',
+                    ax.axvline(ci_hi_py, color='#888888',
                                linewidth=0.8, linestyle='--', zorder=3)
                     ax.axvline(planted_mb, color='#D83026',
                                linewidth=0.8, linestyle=':', zorder=4,
@@ -1804,49 +1789,6 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                                 bbox_inches='tight')
                     plt.close(fig)
 
-                    # bootstrap peaks histogram: R vs Python (both in compare/)
-                    ci_r_peaks_path = r_data / 'ci_r.csv'
-                    if ci_r_peaks_path.exists():
-                        r_peaks_df = pd.read_csv(ci_r_peaks_path)
-                        r_peaks = r_peaks_df['peak_mb'].dropna().values
-                        # side-by-side CSV
-                        n_cmp = min(len(boot_positions), len(r_peaks))
-                        pd.DataFrame({
-                            'py_peak_mb': np.sort(boot_positions[np.isfinite(
-                                boot_positions)])[:n_cmp],
-                            'r_peak_mb':  np.sort(r_peaks)[:n_cmp],
-                        }).to_csv(cmp_dir / 's10_boot_peaks_compare.csv', index=False)
-
-                        all_peaks = np.concatenate([
-                            boot_positions[np.isfinite(boot_positions)],
-                            r_peaks[np.isfinite(r_peaks)]])
-                        bins_b = np.linspace(all_peaks.min() - 1, all_peaks.max() + 1, 30)
-                        fig_bp, ax_bp = plt.subplots(figsize=(5, 3), dpi=300)
-                        ax_bp.hist(boot_positions[np.isfinite(boot_positions)],
-                                   bins=bins_b, color='#52A5DB', alpha=0.55,
-                                   edgecolor='white', linewidth=0.4, density=True,
-                                   label='Python peaks')
-                        ax_bp.hist(r_peaks[np.isfinite(r_peaks)],
-                                   bins=bins_b, color='#F4C245', alpha=0.55,
-                                   edgecolor='white', linewidth=0.4, density=True,
-                                   label='R peaks')
-                        ax_bp.axvline(planted_mb, color='#D83026', linewidth=1.2,
-                                      label=f'planted {planted_mb:.1f} Mb')
-                        ax_bp.axvline(ci['ci_lo'], color='#52A5DB',
-                                      linewidth=0.8, linestyle='--')
-                        ax_bp.axvline(ci['ci_hi'], color='#52A5DB',
-                                      linewidth=0.8, linestyle='--')
-                        ax_bp.set_xlabel('Bootstrap peak position (Mb)', fontsize=8)
-                        ax_bp.set_ylabel('Density', fontsize=8)
-                        ax_bp.set_title(
-                            f'Bootstrap peaks chr{peak_chrom}', fontsize=9)
-                        ax_bp.legend(fontsize=7)
-                        sns.despine(ax=ax_bp)
-                        fig_bp.tight_layout()
-                        fig_bp.savefig(plt_dir / 's10_boot_peaks_hist.png', dpi=300,
-                                       bbox_inches='tight')
-                        plt.close(fig_bp)
-                        log.info('  saved plots/s10_boot_peaks_hist.png')
 
                     # allele (founder) effects on peak chromosome
                     chrom_mask = rop_scan_1.chromosomes == peak_chrom
