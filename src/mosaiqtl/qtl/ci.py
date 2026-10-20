@@ -138,10 +138,23 @@ def _scan_one_chromosome(
     if sample_ids is not None:
         z_mat, _ = build_z_matrix(list(sample_ids), list(genomecache.sample_ids))
         r_counts = z_mat.sum(axis=0)
+
+        # Rare cell types may have zero cells for some strains; dividing by zero
+        # produces NaN that propagates through the scan.  Replace zero counts with 1
+        # (safe divisor) — those strains' Z.T@y and Z.T@x sums are already 0, so
+        # 0/1 = 0 = RINT mean, the correct mean imputation.  Covariates for missing
+        # strains are then set to the valid-strain mean with the intercept forced to 1.
+        # The genomecache always returns the full m-strain haplotype matrix, so we
+        # must keep ev/evc at the original m-strain dimension — never subset them.
+        _valid_strains = r_counts > 0
+        if not _valid_strains.all():
+            r_counts = np.where(_valid_strains, r_counts, 1.0)
         x_scan = (z_mat.T @ x) / r_counts[:, None]
+        if not _valid_strains.all():
+            x_scan[~_valid_strains] = x_scan[_valid_strains].mean(axis=0)
+            x_scan[~_valid_strains, 0] = 1.0
         y0 = (z_mat.T @ y0) / r_counts
-        # y0 and x_scan are now at strain level; z_mat is not passed further
-        # because kinship_decomp is at strain level (m×m), not sample level (n×n)
+        # y0[~_valid_strains] = 0 (RINT mean) since Z.T@y0 = 0 for missing strains
 
     h2, _ = lmm_module.estimate_h2_null(evc.T @ y0, evc.T @ x_scan, ev, method='ml')
     chr_data = lmm_module.precompute_chromosome(genomecache, chrom, ev, evc, z_mat=None)

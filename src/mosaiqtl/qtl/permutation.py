@@ -362,7 +362,26 @@ def run_threshold_scans(
 
         _z_red, _ = build_z_matrix(list(sample_ids), list(genomecache.sample_ids))
         _r_counts = _z_red.sum(axis=0)
+
+        # Rare cell types may have zero cells for some strains; dividing by zero
+        # produces NaN that propagates to the scan.  Replace zero counts with 1
+        # (safe divisor) — those strains' Z.T@y and Z.T@x sums are already 0, so
+        # 0/1 = 0 = RINT mean, which is the correct mean imputation.  Covariates
+        # for missing strains are then set to the valid-strain mean with the
+        # intercept forced to 1 so the FWL projection stays well-defined.
+        _valid_strains = _r_counts > 0
+        if not _valid_strains.all():
+            n_dropped = int((~_valid_strains).sum())
+            logger.warning(
+                'run_threshold_scans: %d strain(s) with no replicates — '
+                'mean-imputing for permutation null; remaining=%d',
+                n_dropped, int(_valid_strains.sum()),
+            )
+            _r_counts = np.where(_valid_strains, _r_counts, 1.0)
         x_scan = (_z_red.T @ x) / _r_counts[:, None]
+        if not _valid_strains.all():
+            x_scan[~_valid_strains] = x_scan[_valid_strains].mean(axis=0)
+            x_scan[~_valid_strains, 0] = 1.0
 
     # z_mat path: expand kinship to sample level (K_n = Z K_m Z^T)
     _n_kd: "dict | None" = None
