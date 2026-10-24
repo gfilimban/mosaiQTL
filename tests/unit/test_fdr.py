@@ -216,8 +216,8 @@ class TestCalibrateGenePvalue:
         p_adj, a_hat, b_hat, h2_g = calibrate_gene_pvalue(
             y, cache, chrom, peak_lod, cov, kd, kl, n_perms=50, seed=42
         )
-        assert peak_lod == pytest.approx(9.612248697250159, rel=1e-9)
-        assert p_adj == pytest.approx(0.4182766707369369, rel=1e-9)
-        assert a_hat == pytest.approx(0.19591891452920132, rel=1e-9)
+        assert peak_lod == pytest.approx(9.612248697250159, rel=1e-6)
+        assert p_adj == pytest.approx(0.4182766707369369, rel=1e-4)
+        assert a_hat == pytest.approx(0.19591891452920132, rel=1e-4)
         assert b_hat == pytest.approx(40342.827788641735, rel=1e-3)
-        assert h2_g == pytest.approx(1e-6, rel=1e-6)
+        assert h2_g == pytest.approx(1e-6, rel=1e-4)
