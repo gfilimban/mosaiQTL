@@ -25,7 +25,7 @@ PKG_DIR="/share/crsp/lab/seyedam/gfilimba/packages/mosaiqtl"
 
 R_SCRIPT="${PKG_DIR}/validation/r_reference/gastroc_miqtl_scan.R"
 MERGE_SCRIPT="${PKG_DIR}/validation/r_reference/merge_chr_outputs.R"
-GASTROC_DATA="${PKG_DIR}/validation/gastroc_data"
+GASTROC_DATA="${PKG_DIR}/validation/gastroc_data/next"
 LOGS="${GASTROC_DATA}/logs"
 
 TS=$(date +%Y%m%d_%H%M%S)

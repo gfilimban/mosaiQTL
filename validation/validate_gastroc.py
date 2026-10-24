@@ -206,13 +206,13 @@ _MIQTL_HPC   = Path('/share/crsp/lab/seyedam/gfilimba/projects'
 _MIQTL_DIR   = _MIQTL_LOCAL if _MIQTL_LOCAL.exists() else _MIQTL_HPC
 GENOMECACHE  = _MIQTL_DIR / 'output' / 'genomecache'   # default for --build-cache
 
-_ALLELE_H5_LOCAL = Path('validation/gastroc_data/founder_alleles.h5')
+_ALLELE_H5_LOCAL = Path('validation/gastroc_data/next/founder_alleles.h5')
 _ALLELE_H5_PHASE2 = Path('validation/phase2/py_data/founder_alleles.h5')
 ALLELE_H5    = (_ALLELE_H5_LOCAL if _ALLELE_H5_LOCAL.exists()
                 else _ALLELE_H5_PHASE2)
 
-GASTROC_DATA = Path('validation/gastroc_data')
-OUT_DIR      = GASTROC_DATA   # py_data/, plots/, compare/ all live under gastroc_data/
+GASTROC_DATA = Path('validation/gastroc_data/next')
+OUT_DIR      = GASTROC_DATA / 'whole'   # py_data/, plots/, compare/ live under next/whole/
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1923,7 +1923,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     gene_info_path.name)
 
     # ── load GenomeCache (must be pre-built as HDF5) ──────────────────────────
-    hdf5_cache = GASTROC_DATA / 'py_data' / 'cache.h5'
+    hdf5_cache = OUT_DIR / 'py_data' / 'cache.h5'
     if hdf5_cache.exists():
         log.info('loading GenomeCache from HDF5: %s', hdf5_cache)
         cache = GenomeCache.from_hdf5(str(hdf5_cache))
@@ -1941,7 +1941,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
              len(cache.chromosomes), len(cache.sample_ids), cache.sample_ids[0])
 
     # ── load or compute LOCO kinship decomp ───────────────────────────────────
-    kd_npz = GASTROC_DATA / 'py_data' / 'kinship_decomp.npz'
+    kd_npz = OUT_DIR / 'py_data' / 'kinship_decomp.npz'
     if kd_npz.exists():
         log.info('loading kinship decomp: %s', kd_npz)
         raw = np.load(kd_npz, allow_pickle=True)

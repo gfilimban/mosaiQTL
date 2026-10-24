@@ -15,16 +15,16 @@ Three models
 Prerequisites
 -------------
   python validation/validate_gastroc.py --build-cache
-  → builds gastroc_data/py_data/cache.h5 and kinship_decomp.npz once
+  → builds gastroc_data/next/whole/py_data/cache.h5 and kinship_decomp.npz once
 
 Outputs
 -------
-  gastroc_data/py_data/weight_qtl/{trait}_per_gene.csv     per-gene weight LOD table
-  gastroc_data/py_data/weight_qtl/{trait}_perm_lods.npy    null max-LOD distribution
-  gastroc_data/py_data/weight_qtl/{trait}_threshold.csv    GEV permutation threshold
-  gastroc_data/py_data/weight_qtl/{trait}_effects.csv      founder effects at top gene's locus
-  gastroc_data/plots/weight_qtl/{trait}_manhattan.png      gene-level Manhattan
-  gastroc_data/plots/weight_qtl/{trait}_effects.png        founder effect bars at top gene
+  gastroc_data/next/whole/py_data/weight_qtl/{trait}_per_gene.csv   per-gene weight LOD table
+  gastroc_data/next/whole/py_data/weight_qtl/{trait}_perm_lods.npy  null max-LOD distribution
+  gastroc_data/next/whole/py_data/weight_qtl/{trait}_threshold.csv  GEV permutation threshold
+  gastroc_data/next/whole/py_data/weight_qtl/{trait}_effects.csv    founder effects at top locus
+  gastroc_data/next/whole/plots/weight_qtl/{trait}_manhattan.png    gene-level Manhattan
+  gastroc_data/next/whole/plots/weight_qtl/{trait}_effects.png      founder effect bars at top gene
 
 Usage
 -----
@@ -71,10 +71,10 @@ log = logging.getLogger('scan_weight_qtl')
 
 _FOUNDER_CODE_INV: dict[str, str] = {v: k for k, v in FOUNDER_CODE.items()}
 
-GASTROC_DATA = Path('validation/gastroc_data')
-PY_DIR       = GASTROC_DATA / 'py_data'
-OUT_DIR      = GASTROC_DATA / 'py_data' / 'weight_qtl'
-PLOT_DIR     = GASTROC_DATA / 'plots' / 'weight_qtl'
+GASTROC_DATA = Path('validation/gastroc_data/next')
+PY_DIR       = GASTROC_DATA / 'whole' / 'py_data'
+OUT_DIR      = PY_DIR / 'weight_qtl'
+PLOT_DIR     = GASTROC_DATA / 'whole' / 'plots' / 'weight_qtl'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
