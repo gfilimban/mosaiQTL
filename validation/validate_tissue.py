@@ -40,7 +40,7 @@ Outputs, per cell type ({data}/celltypes/{ct}/) or whole-tissue ({data}/whole/):
     compare/             py-vs-R merged CSVs (written only when R data present)
 
 Usage (gastroc, existing default):
-  python validation/validate_tissue.py --tissue gastroc --data validation/gastroc_data
+  python validation/validate_tissue.py --tissue gastroc --dataset next
   python validation/validate_tissue.py --tissue gastroc --full
   python validation/validate_tissue.py --tissue gastroc --scan
   python validation/validate_tissue.py --tissue gastroc --scan_type G
@@ -3858,6 +3858,12 @@ def main() -> None:
                     help='discover all cell types under {data}/celltypes/, skip '
                          'low-quality variants, and run the scan for each in '
                          'natsorted order; mutually exclusive with --celltype')
+    ap.add_argument('--all-subtypes', action='store_true',
+                    help='discover all subtypes under {data}/subtypes/ (built by '
+                         'convert_h5ad.py --celltype_col subtype --all_celltypes), '
+                         'skip any whose directory name also exists under celltypes/ '
+                         '(identical resolution — would duplicate that scan), and run '
+                         'the remaining ones in natsorted order')
     ap.add_argument('--compare-celltypes', action='store_true',
                     help='cross-cell-type comparison: reads per-CT scan outputs and '
                          'produces comparison plots; exits after completion')
@@ -4036,22 +4042,29 @@ def main() -> None:
     # ── mutual-exclusion guard ────────────────────────────────────────────────
     if args.all_celltypes and args.celltype:
         ap.error('--all-celltypes and --celltype are mutually exclusive')
+    if args.all_subtypes and args.celltype:
+        ap.error('--all-subtypes and --celltype are mutually exclusive')
+    if args.all_subtypes and args.all_celltypes:
+        ap.error('--all-subtypes and --all-celltypes are mutually exclusive')
 
     scan_desc = scan_type if scan_type != 'L' else f'L ±{window_mb:.1f} Mb'
 
     # ── helper: validate and return (run_data_dir, run_out_dir) for one CT ───
-    def _ct_dirs(ct_label: str) -> 'tuple[Path, Path] | None':
-        """Return (data_dir, out_dir) for *ct_label*, or None to skip."""
+    def _ct_dirs(
+        ct_label: str,
+        ct_root: str = 'celltypes',
+    ) -> 'tuple[Path, Path] | None':
+        """Return (data_dir, out_dir) for *ct_label* under *ct_root*, or None to skip."""
         _ct = re.sub(r'[^a-z0-9]+', '_', ct_label.lower()).strip('_')
         if 'low' in _ct and 'qual' in _ct:
             log.warning('skipping low-quality cell type %r', ct_label)
             return None
-        _ct_dir    = data_dir / 'celltypes' / _ct
+        _ct_dir    = data_dir / ct_root / _ct
         _ct_exp_gi = _ct_dir / f'exp_gene_info_{_ct}.csv'
         if not _ct_dir.exists():
-            log.error('cell-type directory not found: %s\n'
+            log.error('%s directory not found: %s\n'
                       'Run first: conda run -n bioinfo python validation/tools/convert_h5ad.py'
-                      ' --tissue %s --celltype %s', _ct_dir, tissue, ct_label)
+                      ' --tissue %s --celltype %s', ct_root, _ct_dir, tissue, ct_label)
             return None
         if not _ct_exp_gi.exists():
             log.error('exp_gene_info_%s.csv not found — rerun convert_h5ad.py --celltype %s',
@@ -4090,6 +4103,48 @@ def main() -> None:
                 log.exception('cell type %r failed — continuing with remaining CTs', _ct_label)
                 _n_err += 1
         log.info('--all-celltypes done: %d ok  %d skipped  %d errors',
+                 _n_ok, _n_skip, _n_err)
+        if _n_err:
+            sys.exit(1)
+        return
+
+    # ── all-subtypes mode ─────────────────────────────────────────────────────
+    if args.all_subtypes:
+        _subs_root = data_dir / 'subtypes'
+        if not _subs_root.is_dir():
+            log.error('subtypes/ directory not found under %s — '
+                      'run convert_h5ad.py --celltype_col subtype --all_celltypes first',
+                      data_dir)
+            sys.exit(1)
+        # names that already have a celltypes/ scan — skip to avoid redundancy
+        _ct_names = {d.name for d in (data_dir / 'celltypes').iterdir() if d.is_dir()} \
+            if (data_dir / 'celltypes').is_dir() else set()
+        _all_subs = natsorted(d.name for d in _subs_root.iterdir() if d.is_dir())
+        log.info('--all-subtypes: discovered %d subtypes under %s', len(_all_subs), _subs_root)
+        _n_ok = _n_skip = _n_err = 0
+        for _sub_label in _all_subs:
+            if _sub_label in _ct_names:
+                log.info('skipping %r — already covered by celltypes/ scan', _sub_label)
+                _n_skip += 1
+                continue
+            _dirs = _ct_dirs(_sub_label, ct_root='subtypes')
+            if _dirs is None:
+                _n_skip += 1
+                continue
+            _run_data_dir, _run_out_dir = _dirs
+            log.info('=== subtype %r ===', _sub_label)
+            log.info('  data_dir  = %s', _run_data_dir)
+            log.info('  scan_tag  = %s', _stag)
+            try:
+                run(_run_data_dir, _run_out_dir, sections, args.force, args.n_genes,
+                    scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,
+                    celltype=_sub_label, tissue=tissue, gtf_path=args.gtf,
+                    sanger_alleles=args.sanger_alleles)
+                _n_ok += 1
+            except Exception:
+                log.exception('subtype %r failed — continuing', _sub_label)
+                _n_err += 1
+        log.info('--all-subtypes done: %d ok  %d skipped  %d errors',
                  _n_ok, _n_skip, _n_err)
         if _n_err:
             sys.exit(1)
