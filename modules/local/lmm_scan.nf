@@ -13,7 +13,7 @@ process LMM_SCAN {
     label 'process_medium'
     tag   "${celltype}/chr${chrom}"
 
-    publishDir { "${params.output_dir}/${celltype}/lod" }, mode: 'copy'
+    publishDir { "${params.output_dir}/${celltype}" }, mode: 'copy'
 
     input:
     path  genomecache

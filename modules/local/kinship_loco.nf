@@ -9,7 +9,7 @@ process KINSHIP_LOCO {
     label 'process_medium'
     tag   'kinship_loco'
 
-    publishDir "${params.output_dir}", mode: 'copy'
+    publishDir "${params.data_dir}", mode: 'copy'
 
     input:
     path genomecache

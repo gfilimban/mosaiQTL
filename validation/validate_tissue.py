@@ -188,7 +188,12 @@ from mosaiqtl.qtl.mediation import (
     mediation_scan_multi_outcome,
 )
 from mosaiqtl.io.covariates import encode_sex
-from mosaiqtl.io.results_io import pos_merge as _pos_merge, scan_result_to_df as _scan_to_df
+from mosaiqtl.io.results_io import (
+    pos_merge as _pos_merge,
+    scan_result_to_df as _scan_to_df,
+    write_eqtl_peak,
+    write_eqtl_stats,
+)
 from mosaiqtl.io.anndata_io import load_expression_h5 as _load_expression_h5
 from mosaiqtl.qtl.scan import scan_multi_gene_lmm as _scan_multi_gene_lmm
 from mosaiqtl.pipeline import (
@@ -3511,6 +3516,23 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                                      overlap, len(merged_ci))
                 else:
                     results['bootstrap_ci'] = None
+            # write minimal pre-finemap eqtl_peak so S12 has ci_lo_bp/ci_hi_bp
+            if egenes_df is not None and len(egenes_df) > 0:
+                _ci_csv = ext_dir / 'ci.csv'
+                _pre_fm_path = py_dir / f'eqtl_peak_{_run_sfx}.csv'
+                _pre = egenes_df[['gene_id', 'chr', 'peak_mb', 'peak_lod', 'peak_locus']].copy()
+                _pre['pos'] = (_pre['peak_mb'] * 1e6).round().astype('Int64')
+                _pre['lod'] = _pre['peak_lod']
+                _pre['variant'] = _pre['peak_locus']
+                if _ci_csv.exists():
+                    _ci_tmp = pd.read_csv(_ci_csv)[['gene_id', 'ci_lo', 'ci_hi']]
+                    _ci_tmp['ci_lo_bp'] = (_ci_tmp['ci_lo'] * 1e6).round().astype('Int64')
+                    _ci_tmp['ci_hi_bp'] = (_ci_tmp['ci_hi'] * 1e6).round().astype('Int64')
+                    _pre = _pre.merge(_ci_tmp[['gene_id', 'ci_lo_bp', 'ci_hi_bp']],
+                                      on='gene_id', how='left')
+                _pre.to_csv(_pre_fm_path, index=False)
+                log.info('  pre-finemap eqtl_peak_%s.csv written (%d rows)', _run_sfx, len(_pre))
+
             _, _ci_heap_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
             _record_stats('bootstrap_ci', 'positional_resample', len(egenes_df) if egenes_df is not None else 0,
@@ -3577,6 +3599,81 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                           time.perf_counter() - _t_fm, _fm_heap_peak / 1e6,
                           max(0.0, _get_rss_mb() - _rss_fm))
             _mark_done(py_dir, str(sec))
+
+    # submission report — full eqtl_peak.csv (EQTL_PEAK_COLS) + eqtl_stats.csv
+    # Runs AFTER S12 so finemap outputs are available (eqtl_finemapping_*.csv).
+    sec = 13
+    if sec in sections:
+        if not _checkpoint(py_dir, str(sec), force):
+            _rss_sub = _get_rss_mb()
+            log.info('\n── submission report ─────────────────────────────────────────')
+            if egenes_df is None or len(egenes_df) == 0:
+                log.info('  %s no eGenes — run S4+S5+S6 first', SKIP)
+            else:
+                # merge allele effects (beta_{founder} columns)
+                _eff_path = core_dir / f'allele_effects_{_run_sfx}.csv'
+                _sub_df = egenes_df.copy()
+                if _eff_path.exists():
+                    _eff = pd.read_csv(_eff_path)
+                    _beta_cols = [c for c in _eff.columns if c.startswith('beta_')]
+                    if _beta_cols:
+                        _sub_df = _sub_df.merge(
+                            _eff[['gene_id'] + _beta_cols], on='gene_id', how='left')
+
+                # merge CI bounds (Mb → bp) from S10 output
+                _ci_csv = ext_dir / 'ci.csv'
+                if _ci_csv.exists():
+                    _ci_tmp = pd.read_csv(_ci_csv)[['gene_id', 'ci_lo', 'ci_hi']]
+                    _ci_tmp['ci_lo_bp'] = (_ci_tmp['ci_lo'] * 1e6).round().astype('Int64')
+                    _ci_tmp['ci_hi_bp'] = (_ci_tmp['ci_hi'] * 1e6).round().astype('Int64')
+                    _sub_df = _sub_df.merge(
+                        _ci_tmp[['gene_id', 'ci_lo_bp', 'ci_hi_bp']], on='gene_id', how='left')
+
+                # write full eqtl_peak.csv (overwrites the pre-finemap version from S10)
+                _disp_f = _display_founders(list(cache.founders))
+                _eqtl_peak_path = py_dir / f'eqtl_peak_{_run_sfx}.csv'
+                write_eqtl_peak(_sub_df, _disp_f, _eqtl_peak_path)
+                log.info('  eqtl_peak_%s.csv written  (%d eGenes)', _run_sfx, len(_sub_df))
+
+                # per-chr GEV stats for eqtl_stats.csv
+                # get_gev_thresholds returns (threshold, params_dict | None)
+                # params keys: loc, scale, c → remap to gev_mu, gev_sigma, gev_xi
+                def _gev_row(ch: str, max_lods: 'np.ndarray') -> dict:
+                    _thr, _p = get_gev_thresholds(max_lods)
+                    _r: dict = {'chr': ch, 'lod_threshold': _thr,
+                                'n_perms': len(max_lods)}
+                    if _p:
+                        _r['gev_mu']    = _p.get('loc')
+                        _r['gev_sigma'] = _p.get('scale')
+                        _r['gev_xi']    = _p.get('c')
+                    return _r
+
+                _chr_stats = []
+                for _pf in sorted(
+                    core_dir.glob(f'perm_max_lods_chr*.csv'),
+                    key=lambda p: _chr_sort_key(p.stem.replace('perm_max_lods_chr', '')),
+                ):
+                    _ch = _pf.stem.replace('perm_max_lods_chr', '')
+                    _ml = pd.read_csv(_pf)['max_lod'].values
+                    _row = _gev_row(_ch, _ml)
+                    _row['n_egenes'] = int((_sub_df['chr'].astype(str) == str(_ch)).sum())
+                    _chr_stats.append(_row)
+
+                _gw_stats: dict = {'chr': 'genome', 'n_egenes': len(_sub_df),
+                                   'fdr_threshold': 0.05,
+                                   'scan_window_mb': window_mb if scan_type == 'L' else None,
+                                   'git_hash': _git_hash()}
+                if perm_max_lods is not None:
+                    _gw = _gev_row('genome', perm_max_lods)
+                    _gw_stats.update({k: v for k, v in _gw.items() if k != 'chr'})
+
+                _eqtl_stats_path = py_dir / f'eqtl_stats_{_run_sfx}.csv'
+                write_eqtl_stats(_chr_stats, _gw_stats, _eqtl_stats_path)
+                log.info('  eqtl_stats_%s.csv written  (%d chr rows + genome row)',
+                         _run_sfx, len(_chr_stats))
+
+            _mark_done(py_dir, str(sec))
+            log.info('  RSS delta: +%.0f MB', max(0.0, _get_rss_mb() - _rss_sub))
 
     # instability scan
     sec = 11
@@ -3818,6 +3915,10 @@ def main() -> None:
     ap.add_argument('--genomecache', default=None,
                     help='path to HAPPY genomecache dir for --build-cache '
                          f'(default: {GENOMECACHE})')
+    ap.add_argument('--submission', action='store_true',
+                    help='run scan (S1-S6) + CI (S10) + submission report (S13) + '
+                         'Sanger fine-mapping (S12); auto-uses data/sanger_alleles.h5 '
+                         'when --sanger-alleles is not given')
     ap.add_argument('--full', action='store_true',
                     help='run all sections (cache, haplotypes, kinship, scan, permutation, '
                          'eGene calling, LOD support CI, Sanger fine-mapping, MI, mediation, instability)')
@@ -4010,16 +4111,20 @@ def main() -> None:
 
     if args.plots_only:
         sections: set[int] = set()
-    elif not any([args.full, args.scan, args.mi,
+    elif not any([args.full, args.scan, args.submission, args.mi,
                   args.mediation, args.ci, args.finemap, args.instability]):
         sections = set(range(1, 7))    # default: --scan (cache → egene calling)
     else:
         sections = set()
         if args.full:
-            sections = set(range(1, 13))
+            sections = set(range(1, 14))
         else:
             if args.scan:
                 sections.update(range(1, 7))
+            if args.submission:
+                # scan → CI → finemap → submission report
+                sections.update(range(1, 7))
+                sections.update({10, 12, 13})
             if args.mi:
                 sections.add(7)
             if args.mediation:
@@ -4030,6 +4135,16 @@ def main() -> None:
                 sections.add(12)
             if args.instability:
                 sections.add(11)
+
+    # --submission: default sanger_alleles to data/sanger_alleles.h5 when not given
+    if args.submission and not args.sanger_alleles:
+        _default_sa = Path(__file__).resolve().parent.parent / 'data' / 'sanger_alleles.h5'
+        if _default_sa.exists():
+            args.sanger_alleles = str(_default_sa)
+            log.info('[submission] using default sanger_alleles: %s', args.sanger_alleles)
+        else:
+            log.warning('[submission] sanger_alleles.h5 not found at %s; S12 will be skipped',
+                        _default_sa)
 
     # scan_type/window_mb (and _stag) already parsed above, before --compare-celltypes
 

@@ -9,15 +9,16 @@
 #     gene_info:     /path/to/exp_gene_info_{tissue}.csv   # global fallback
 #
 #   Single-CT mode:
-#     phenotypes:    /path/to/pseudobulk.h5
+#     phenotypes:    /path/to/counts_lognorm.h5
 #     celltype:      'my_ct'                  # label used in output paths
 #     gene_info:     /path/to/gene_info.csv
 
-genomecache:    null   # path to genome cache HDF5 (required)
-kinship_loco:   null   # path to LOCO kinship HDF5 (optional — built from genomecache if null)
+genomecache:    null   # path to genome cache HDF5 (required) — lives in data/cache.h5
+data_dir:       null   # path to shared data dir (data/); kinship_loco.h5 + sanger_alleles.h5 published here
+kinship_loco:   null   # path to LOCO kinship HDF5 (optional — built from genomecache if null; published to data_dir)
 
 # cell-type inputs — set one mode
-celltypes_dir:  null   # directory; each subdir is a cell type containing pseudobulk.h5
+celltypes_dir:  null   # directory; each subdir is a cell type containing counts_lognorm.h5
 celltypes:      'all'  # 'all' or comma-separated: 'glutamatergic_neuron,oligodendrocyte'
 gene_info:      null   # gene info CSV (gene_id, chr, start, end) — global or per-CT fallback
 
