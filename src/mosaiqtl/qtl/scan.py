@@ -696,7 +696,7 @@ def scan_multi_gene_lmm(
         _fnames = list(founder_names)
     else:
         try:
-            from ..genotype.founders import FOUNDER_CODE  # noqa: PLC0415
+            from ..genotype.cc import FOUNDER_CODE  # noqa: PLC0415
 
             _fc_inv = {v: k for k, v in FOUNDER_CODE.items()}
             _fnames = [_fc_inv.get(f, f) for f in _fcodes]

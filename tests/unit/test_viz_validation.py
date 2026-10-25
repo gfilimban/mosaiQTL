@@ -107,7 +107,7 @@ class TestPlotKinshipHeatmap:
         rng = np.random.default_rng(1)
         K = rng.random((8, 8))
         # include a few founder names to trigger block line drawing
-        from mosaiqtl.genotype.founders import FOUNDER_ORDER
+        from mosaiqtl.genotype.cc import FOUNDER_ORDER
 
         sample_ids = FOUNDER_ORDER[:5] + ["CC001", "CC002", "CC003"]
         fig, ax = plot_kinship_heatmap(K, sample_ids=sample_ids)
@@ -279,7 +279,7 @@ class TestPlotFounderEffectsComparison:
         import pandas as pd
         from mosaiqtl.genotype.kinship import decomp_kinship
         from mosaiqtl.qtl.scan import scan_h2lmm
-        from mosaiqtl.genotype.founders import FOUNDER_ORDER
+        from mosaiqtl.genotype.cc import FOUNDER_ORDER
 
         kd = decomp_kinship(tiny_kinship)
         sr = scan_h2lmm(

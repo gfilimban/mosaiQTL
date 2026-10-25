@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, 'src')
 from mosaiqtl.genotype.genomecache import GenomeCache
-from mosaiqtl.genotype.founders import FOUNDER_ORDER, F1_COLORS
+from mosaiqtl.genotype.cc import FOUNDER_ORDER, F1_COLORS
 from mosaiqtl.viz.locus import locus_panel, locus_panels_per_chr
 from mosaiqtl.viz.haplotypes import pxg_figure
 

@@ -36,7 +36,7 @@ import seaborn as sns
 from natsort import natsorted
 from scipy import stats
 
-from mosaiqtl.genotype.founders import FOUNDER_ORDER
+from mosaiqtl.genotype.cc import FOUNDER_ORDER
 
 log = logging.getLogger(__name__)
 

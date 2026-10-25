@@ -23,7 +23,7 @@ import seaborn as sns
 from natsort import natsorted
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / 'src'))
-from mosaiqtl.genotype.founders import FOUNDER_COLORS, strip_j
+from mosaiqtl.genotype.cc import FOUNDER_COLORS, strip_j
 
 # ── constants ─────────────────────────────────────────────────────────────────
 _BASE       = pathlib.Path(__file__).parents[2] / 'validation' / 'ctxhipp_data' / 'egene_effects'

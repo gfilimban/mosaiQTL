@@ -343,11 +343,6 @@ class TestResolve:
         rr = resolve(dr, modules=("snp_catalogue",))
         assert rr.snp_catalogue == {}
 
-    def test_ase_no_args_returns_empty(self, tiny_cache, tiny_strain_phenotype):
-        dr = self._lmm_disc(tiny_cache, tiny_strain_phenotype)
-        rr = resolve(dr, modules=("ase",))
-        assert rr.ase == {}
-
     def test_sqtl_no_args_returns_empty(self, tiny_cache, tiny_strain_phenotype):
         dr = self._lmm_disc(tiny_cache, tiny_strain_phenotype)
         rr = resolve(dr, modules=("sqtl",))
@@ -360,9 +355,8 @@ class TestResolve:
 
     def test_modules_run_recorded(self, tiny_cache, tiny_strain_phenotype):
         dr = self._lmm_disc(tiny_cache, tiny_strain_phenotype)
-        rr = resolve(dr, modules=("snp_catalogue", "ase"))
+        rr = resolve(dr, modules=("snp_catalogue",))
         assert "snp_catalogue" in rr.modules_run
-        assert "ase" in rr.modules_run
 
     def test_conditional_scan_returns_dict(
         self, tiny_cache, tiny_kinship, tiny_strain_phenotype

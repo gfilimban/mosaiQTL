@@ -54,7 +54,7 @@ if _8CUBE_SCRIPTS.exists() and str(_8CUBE_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_8CUBE_SCRIPTS))
 
 try:
-    from mosaiqtl.genotype.founders import FOUNDER_ORDER, FOUNDER_COLORS
+    from mosaiqtl.genotype.cc import FOUNDER_ORDER, FOUNDER_COLORS
 except ImportError:
     FOUNDER_ORDER = ['AJ', 'B6J', '129S1J', 'NODJ', 'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ']
     FOUNDER_COLORS = {

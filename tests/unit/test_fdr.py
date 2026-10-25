@@ -144,7 +144,7 @@ def _make_tiny_cache():
 
     sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
     from mosaiqtl.genotype.genomecache import GenomeCache
-    from mosaiqtl.genotype.founders import FOUNDER_ORDER
+    from mosaiqtl.genotype.cc import FOUNDER_ORDER
     from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 
     N_STRAINS, N_FOUNDERS, N_LOCI = 10, 8, 15

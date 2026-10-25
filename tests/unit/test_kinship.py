@@ -58,7 +58,7 @@ class TestCalcKinship:
     def test_identical_strains_have_max_offdiag(self):
         # two strains with identical haplotype probs → K_ij == K_ii
         from mosaiqtl.genotype.genomecache import GenomeCache
-        from mosaiqtl.genotype.founders import FOUNDER_ORDER
+        from mosaiqtl.genotype.cc import FOUNDER_ORDER
 
         rng = np.random.default_rng(7)
         probs = rng.dirichlet(np.ones(8), size=(5, 1)).astype(np.float64)
@@ -77,7 +77,7 @@ class TestCalcKinship:
     def test_loco_equals_kinship_from_remaining_chroms(self, tiny_cache):
         # K_loco[c] must equal kinship computed using only the other chromosomes
         from mosaiqtl.genotype.genomecache import GenomeCache
-        from mosaiqtl.genotype.founders import FOUNDER_ORDER
+        from mosaiqtl.genotype.cc import FOUNDER_ORDER
 
         K_loco = calc_kinship(tiny_cache, method="loco")
         for held_out in tiny_cache.chromosomes:

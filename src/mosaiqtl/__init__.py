@@ -19,7 +19,7 @@ except Exception:  # package not installed (e.g. running from a raw checkout)
 
 # population configuration — first-class public type
 from .models.config import Population, ScanConfig, PipelineConfig  # noqa: F401
-from .genotype.founders import CCPopulation  # noqa: F401
+from .genotype.cc import CCPopulation  # noqa: F401
 
 # genome cache and kinship
 from .genotype.genomecache import GenomeCache  # noqa: F401

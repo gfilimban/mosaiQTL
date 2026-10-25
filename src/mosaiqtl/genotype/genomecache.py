@@ -23,7 +23,7 @@ from ..utils import chr_sort_key
 logger = logging.getLogger("mosaiqtl")
 
 # default cc founder strain names (in standard order)
-from .founders import FOUNDER_ORDER as _FOUNDER_ORDER, F1_COLORS as _F1_COLORS
+from .cc import FOUNDER_ORDER as _FOUNDER_ORDER, F1_COLORS as _F1_COLORS
 
 CC_FOUNDERS: list[str] = list(_FOUNDER_ORDER)
 

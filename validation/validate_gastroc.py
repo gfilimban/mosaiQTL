@@ -69,7 +69,7 @@ from scipy import stats as sp_stats
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from mosaiqtl.genotype.founders import (
+from mosaiqtl.genotype.cc import (
     COLOR_CC_FALLBACK, COLOR_NEUTRAL_DARK, COLOR_NEUTRAL_LIGHT,
     F1_COLORS, FOUNDER_CODE, FOUNDER_COLORS, FOUNDER_ORDER,
 )

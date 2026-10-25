@@ -93,7 +93,7 @@ def _load_cache_from_probs_csv(
     keep_strains : if given, subset to these strains in this order so that
         cache.sample_ids, kinship, and phenotype are all aligned from the start.
     """
-    from mosaiqtl.genotype.founders import FOUNDER_ORDER, FOUNDER_CODE
+    from mosaiqtl.genotype.cc import FOUNDER_ORDER, FOUNDER_CODE
 
     # R exports single-letter codes; derive column order from FOUNDER_ORDER via
     # FOUNDER_CODE so probs axis-2 aligns with FOUNDER_ORDER (not assumed alphabetical)
@@ -521,13 +521,13 @@ def run(sparcc_cache, r_data, out_dir):
 
     # allele effects at peak locus — betas are now (J,) sum ≈ 0 directly
     betas_peak = peak['betas']                          # (J,) sum ≈ 0
-    from mosaiqtl.genotype.founders import FOUNDER_ORDER
+    from mosaiqtl.genotype.cc import FOUNDER_ORDER
     effects_py = pd.DataFrame({'founder': FOUNDER_ORDER, 'beta': betas_peak})
     effects_py.to_csv(py_dir / 'allele_effects_peak.csv', index=False)
 
     effects_r_path = r_data / 'allele_effects_peak.csv'
     if effects_r_path.exists():
-        from mosaiqtl.genotype.founders import FOUNDER_CODE
+        from mosaiqtl.genotype.cc import FOUNDER_CODE
         _letter_to_founder = {v: k for k, v in FOUNDER_CODE.items()}
         r_eff = pd.read_csv(effects_r_path)
         # R exports single-letter codes (A-H); remap to full names before merge
@@ -540,7 +540,7 @@ def run(sparcc_cache, r_data, out_dir):
         sym = PASS if r_eff_val >= 0.90 else FAIL
         log.info('  %s allele effects r = %.4f  (threshold >= 0.90)', sym, r_eff_val)
 
-        from mosaiqtl.genotype.founders import FOUNDER_COLORS
+        from mosaiqtl.genotype.cc import FOUNDER_COLORS
         fig, ax = plt.subplots(figsize=(4, 4), dpi=300)
         for _, row in merged.iterrows():
             color = FOUNDER_COLORS.get(row['founder'], '#888888')

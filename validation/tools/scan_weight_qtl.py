@@ -55,7 +55,7 @@ from scipy.stats import chi2 as _chi2_dist
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-from mosaiqtl.genotype.founders import FOUNDER_CODE
+from mosaiqtl.genotype.cc import FOUNDER_CODE
 from mosaiqtl.genotype.genomecache import GenomeCache
 from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 from mosaiqtl.io.covariates import encode_sex

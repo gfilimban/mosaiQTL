@@ -62,7 +62,7 @@ import h5py
 import numpy as np
 import pandas as pd
 
-from mosaiqtl.genotype.founders import STRAIN_ORDER
+from mosaiqtl.genotype.cc import STRAIN_ORDER
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s  %(message)s')
 log = logging.getLogger(__name__)

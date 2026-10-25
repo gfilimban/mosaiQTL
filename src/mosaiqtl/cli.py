@@ -882,7 +882,7 @@ def report(
     _setup_logging(verbose)
     import numpy as np
     import pandas as pd
-    from .genotype.founders import FOUNDER_ORDER
+    from .genotype.cc import FOUNDER_ORDER
     from .io.results_io import write_eqtl_peak, write_eqtl_stats
     from .pipeline import calibrate_egenes_storey, call_egenes, finalize_egene_summary
     from .qtl.thresholds import get_gev_thresholds, load_per_chr_thresholds

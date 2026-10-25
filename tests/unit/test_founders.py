@@ -1,10 +1,10 @@
-# tests/unit/test_founders.py — unit tests for genotype/founders.py
+# tests/unit/test_founders.py — unit tests for genotype/cc.py
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
-from mosaiqtl.genotype.founders import (
+from mosaiqtl.genotype.cc import (
     FOUNDER_COLORS,
     FOUNDER_ORDER,
     F1_COLORS,
@@ -85,7 +85,7 @@ class TestNoInlineHexElsewhere:
         _approved = {"compare.py", "_theme.py"}
         violations = []
         for py_file in src.rglob("*.py"):
-            if py_file.name == "founders.py":
+            if py_file.name == "cc.py":
                 continue
             if py_file.name in _approved:
                 continue

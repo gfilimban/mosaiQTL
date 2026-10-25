@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
 
-from ..genotype.founders import (
+from ..genotype.cc import (
     FOUNDER_COLORS,
     F1_COLORS,
     COLOR_NEUTRAL_DARK,

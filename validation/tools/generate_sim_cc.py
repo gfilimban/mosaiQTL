@@ -69,7 +69,7 @@ _CHR_LEN_MB: dict[str, float] = {
 # Average mouse recombination rate (cM per Mb); Morgan 2015 + Brunschwig 2012
 _DEFAULT_RECOMB_CM_PER_MB: float = 0.5
 
-# CC founders in canonical display-name order (matches genotype/founders.py)
+# CC founders in canonical display-name order (matches genotype/cc.py)
 _CC_FOUNDERS: list[str] = ['AJ', 'B6J', '129S1J', 'NODJ', 'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ']
 
 

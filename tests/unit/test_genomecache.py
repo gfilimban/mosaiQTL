@@ -14,7 +14,7 @@ from mosaiqtl.genotype.genomecache import (
     pheno_df,
 )
 from mosaiqtl.genotype.cache_builder import _save_group_probs, _save_kinship
-from mosaiqtl.genotype.founders import FOUNDER_ORDER
+from mosaiqtl.genotype.cc import FOUNDER_ORDER
 
 N_FOUNDERS = 8
 N_LOCI = 15
@@ -370,7 +370,7 @@ class TestReorderToCanonical:
 
     def _build_cache(self, sample_ids, seed=42):
         """Helper: build a small GenomeCache with the given sample_ids."""
-        from mosaiqtl.genotype.founders import FOUNDER_ORDER as _FO
+        from mosaiqtl.genotype.cc import FOUNDER_ORDER as _FO
 
         rng = np.random.default_rng(seed)
         data = {}
@@ -389,7 +389,7 @@ class TestReorderToCanonical:
         """Cache already in canonical order returns object with identical sample_ids."""
         # Canonical: Founders first, then CC strains alphanumeric.
         # Use a subset of founders followed by CC strains.
-        from mosaiqtl.genotype.founders import FOUNDER_ORDER as _FO
+        from mosaiqtl.genotype.cc import FOUNDER_ORDER as _FO
 
         canonical_ids = list(_FO) + ["CC001", "CC002", "CC003"]
         gc = self._build_cache(canonical_ids, seed=10)
@@ -398,7 +398,7 @@ class TestReorderToCanonical:
 
     def test_reorders_out_of_order(self):
         """CC strain before a founder is moved after founders."""
-        from mosaiqtl.genotype.founders import FOUNDER_ORDER as _FO
+        from mosaiqtl.genotype.cc import FOUNDER_ORDER as _FO
 
         # Put CC001 before the first founder — out of canonical order.
         mixed_ids = ["CC001"] + list(_FO)
@@ -413,7 +413,7 @@ class TestReorderToCanonical:
 
     def test_probs_axis_follows_samples(self):
         """After reorder, probs[:,i,:] corresponds to sample_ids[i]."""
-        from mosaiqtl.genotype.founders import FOUNDER_ORDER as _FO
+        from mosaiqtl.genotype.cc import FOUNDER_ORDER as _FO
 
         # Build cache with a specific sample order (CC002 before CC001, founders last).
         sample_ids = ["CC002", "CC001"] + list(_FO)
@@ -437,7 +437,7 @@ class TestReorderToCanonical:
 
     def test_founders_and_chromosomes_unchanged(self):
         """founders list and chromosomes are invariant under reorder."""
-        from mosaiqtl.genotype.founders import FOUNDER_ORDER as _FO
+        from mosaiqtl.genotype.cc import FOUNDER_ORDER as _FO
 
         mixed_ids = ["CC003", "CC001", "CC002"] + list(_FO)
         gc = self._build_cache(mixed_ids, seed=13)

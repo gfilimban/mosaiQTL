@@ -724,10 +724,6 @@ def resolve(
         )
         res.modules_run.append("conditional_scan")
 
-    if "ase" in modules:
-        res.ase = _run_ase_kallisto(discovery_result, **(ase_kwargs or {}))
-        res.modules_run.append("ase")
-
     if "sqtl" in modules:
         res.sqtl = _run_sqtl(discovery_result, cache, covariates, **(sqtl_kwargs or {}))
         res.modules_run.append("sqtl")
@@ -791,59 +787,6 @@ def _run_conditional_scan(disc, cache, covariates, n_signals=3, lod_drop_thresho
     return results
 
 
-def _run_ase_kallisto(
-    disc,
-    f1_fastq_dirs=None,
-    founder_fastas=None,
-    gtf_path=None,
-    tool="kallisto",
-    threads=8,
-):
-    """3c — ASE in F1 hybrids via kallisto|bustools.
-
-    for each F1 cross in f1_fastq_dirs, builds a two-founder transcriptome
-    index (dam × sire from founder_fastas + gtf), runs kallisto bus, then
-    separates reads by allele of origin using bustools.
-
-    only F1 hybrid samples (heterozygous) are processed. inbred CC strains
-    are skipped because homozygosity precludes allele-specific assignment.
-
-    approach:
-      1. build founder-specific transcriptomes from MGP pseudogenomes + GTF
-         using kb ref with the founder genome FASTA as d-list
-      2. concatenate dam + sire transcriptomes into one two-allele index
-      3. run kallisto bus → BUS file
-      4. bustools sort → bustools capture (transcript-to-allele t2g)
-      5. bustools count per allele → two count matrices (dam / sire)
-      6. compute allelic imbalance: AI = (dam − sire) / (dam + sire)
-
-    parameters
-    ----------
-    f1_fastq_dirs  : dict {cross_name: [r1, r2]}
-        e.g. {'B6CASTF1J': ['/r1.fastq.gz', '/r2.fastq.gz']}
-        cross_name must encode parental founders as 'B6{FOUNDER}F1J'
-        to allow automatic lookup in founder_fastas.
-    founder_fastas : dict {founder_name: fasta_path}
-        founder genome FASTAs from MGP pseudogenomes (one per CC founder).
-    gtf_path       : str  shared genome annotation GTF.
-    tool           : str  'kallisto' (default). future: 'alevin_fry'.
-    threads        : int  kallisto thread count.
-
-    returns
-    -------
-    dict {cross_name: DataFrame}
-        columns: gene_id, dam_counts, sire_counts, ai, n_cells
-    """
-    if f1_fastq_dirs is None or founder_fastas is None or gtf_path is None:
-        logger.warning(
-            "ase: f1_fastq_dirs, founder_fastas, and gtf_path required — skipping"
-        )
-        return {}
-    if tool != "kallisto":
-        raise NotImplementedError(f'ase tool {tool!r} not implemented; use "kallisto"')
-    from .qtl.ase import run_kallisto_ase
-
-    return run_kallisto_ase(f1_fastq_dirs, founder_fastas, gtf_path, threads=threads)
 
 
 def _run_sqtl(

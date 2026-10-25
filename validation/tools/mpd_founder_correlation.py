@@ -76,7 +76,7 @@ _SRC       = _REPO_ROOT / 'src'
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from mosaiqtl.genotype.founders import FOUNDER_COLORS  # noqa: E402 (after sys.path fix)
+from mosaiqtl.genotype.cc import FOUNDER_COLORS  # noqa: E402 (after sys.path fix)
 
 # 8 CC founders in canonical order (matches eqtl_peak effect_* columns)
 _FOUNDERS: list[str] = ['AJ', 'B6J', '129S1J', 'NODJ', 'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ']

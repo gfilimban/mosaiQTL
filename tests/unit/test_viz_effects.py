@@ -20,7 +20,7 @@ from mosaiqtl.viz.effects import (
     dispersion_distribution,
     _recover_full_betas,
 )
-from mosaiqtl.genotype.founders import FOUNDER_ORDER  # noqa: F401
+from mosaiqtl.genotype.cc import FOUNDER_ORDER  # noqa: F401
 
 N_FOUNDERS = 8
 N_LOCI = 20

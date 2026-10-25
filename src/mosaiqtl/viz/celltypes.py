@@ -22,7 +22,7 @@ import pandas as pd
 
 import seaborn as sns
 
-from ..genotype.founders import FOUNDER_ORDER
+from ..genotype.cc import FOUNDER_ORDER
 from ._theme import INK, MUTED
 from .compare import (
     lod_scatter as _cmp_scatter,
