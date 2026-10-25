@@ -71,12 +71,14 @@ COLOR_THRESHOLD: str = '#E8870A'
 def cc_strain_palette(
     cc_strains: list[str],
     haplotype_probs: Optional[dict[str, list[float]]] = None,
+    n_top: int = 2,
 ) -> dict[str, str]:
     """Ancestry-aware color palette for CC strains using OKLab blending.
 
-    Each strain's color is a full 8-founder weighted average in OKLab space,
-    which gives perceptually correct mid-tones. Falls back to grey when
-    ancestry data is absent.
+    Blends the top ``n_top`` founders by ancestry proportion in OKLab space,
+    renormalised to sum to 1. Using only the dominant founders avoids the
+    washed-out convergence that arises when all 8 minor contributions pull
+    every strain toward the same muted mid-tone.
 
     Parameters
     ----------
@@ -85,6 +87,8 @@ def cc_strain_palette(
     haplotype_probs :
         Per-strain genome-wide mean founder ancestry proportions, one value
         per founder in FOUNDER_ORDER order. None → fallback grey for all.
+    n_top :
+        Number of dominant founders to include in the blend (default 3).
 
     Returns
     -------
@@ -101,7 +105,11 @@ def cc_strain_palette(
         if len(probs) != len(FOUNDER_ORDER) or sum(probs) < 1e-9:
             palette[strain] = COLOR_CC_FALLBACK
             continue
-        palette[strain] = blend_hex_oklab(founder_hexes, probs)
+        # keep only the top-n_top founders by proportion
+        top = sorted(enumerate(probs), key=lambda x: x[1], reverse=True)[:n_top]
+        idxs, weights = zip(*top)
+        colors = [founder_hexes[i] for i in idxs]
+        palette[strain] = blend_hex_oklab(list(colors), list(weights))
     return palette
 
 
