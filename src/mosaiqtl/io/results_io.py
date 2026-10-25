@@ -477,7 +477,6 @@ def build_eqtl_finemapping_df(
     ci_hi_bp: "int | None" = None,
     gene_symbol: str = "",
     alleles_df: "pd.DataFrame | None" = None,
-    n_founders: int = 7,
 ) -> pd.DataFrame:
     """Build the ``EQTL_FINEMAPPING_COLS`` DataFrame for one gene's credible set.
 
@@ -510,8 +509,6 @@ def build_eqtl_finemapping_df(
     alleles_df:
         Optional per-SNP Sanger allele annotations with a ``snp`` column
         matching ``fm_df["snp"]`` and any subset of ``_SANGER_COLS``.
-    n_founders:
-        Chi-squared degrees of freedom for ``pval_nominal`` (default 7).
 
     Returns
     -------
@@ -524,7 +521,7 @@ def build_eqtl_finemapping_df(
 
     lod_arr = np.asarray(cs["lod"], dtype=np.float64)
     chi2_scale = 2.0 * np.log(10)
-    pval = _sp_stats.chi2.sf(chi2_scale * np.maximum(lod_arr, 0.0), df=n_founders)
+    pval = _sp_stats.chi2.sf(chi2_scale * np.maximum(lod_arr, 0.0), df=1)
     with np.errstate(divide="ignore"):
         log10p = -np.log10(np.maximum(pval, 1e-300))
 
@@ -581,7 +578,6 @@ def write_eqtl_finemapping(
     ci_hi_bp: "int | None" = None,
     gene_symbol: str = "",
     alleles_df: "pd.DataFrame | None" = None,
-    n_founders: int = 7,
 ) -> pd.DataFrame:
     """Build the ``_eqtl_finemapping.csv`` table and write it atomically.
 
@@ -594,7 +590,7 @@ def write_eqtl_finemapping(
     df = build_eqtl_finemapping_df(
         fm_df, gene_id, chr_, hap_peak_pos, hap_peak_variant, hap_peak_lod,
         ci_lo_bp=ci_lo_bp, ci_hi_bp=ci_hi_bp, gene_symbol=gene_symbol,
-        alleles_df=alleles_df, n_founders=n_founders,
+        alleles_df=alleles_df,
     )
     _atomic_write_csv(df, out_path)
     return df

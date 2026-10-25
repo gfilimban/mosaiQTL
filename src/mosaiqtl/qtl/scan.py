@@ -711,6 +711,9 @@ def scan_multi_gene_lmm(
         chrs_needed = {str(gene_chr_map.get(g, "")) for g in gene_ids}
         chrom_list = [c for c in chrom_list if str(c) in chrs_needed]
 
+    if lod_path is not None:
+        Path(lod_path).unlink(missing_ok=True)
+
     peak_rows: "list[dict]" = []
     _lod_first = True
     t_total = time.perf_counter()

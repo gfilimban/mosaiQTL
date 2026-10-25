@@ -109,6 +109,7 @@ def _scan_one_chromosome(
     kinship_decomp: dict,
     sample_ids: 'list[str] | None' = None,
     use_rint: bool = True,
+    chr_data: 'dict | None' = None,
 ) -> 'tuple[np.ndarray, np.ndarray]':
     """Single-gene single-chromosome LMM scan.
 
@@ -157,7 +158,8 @@ def _scan_one_chromosome(
         # y0[~_valid_strains] = 0 (RINT mean) since Z.T@y0 = 0 for missing strains
 
     h2, _ = lmm_module.estimate_h2_null(evc.T @ y0, evc.T @ x_scan, ev, method='ml')
-    chr_data = lmm_module.precompute_chromosome(genomecache, chrom, ev, evc, z_mat=None)
+    if chr_data is None:
+        chr_data = lmm_module.precompute_chromosome(genomecache, chrom, ev, evc, z_mat=None)
     result = lmm_module.scan_chromosome(y0, chr_data, x_scan, ev, evc, h2)
     return result['positions'], result['lod']
 
@@ -212,6 +214,8 @@ def ci_scan_multi_gene(
     if output_path is not None:
         output_path.unlink(missing_ok=True)
 
+    from . import lmm as lmm_module
+
     _gm_idx = _build_gm_idx(gene_meta)
     _id_cols = ['gene_id', 'chr']
     _data_cols = ['peak_lod', 'peak_mb', 'ci_peak_lod', 'ci_lo', 'ci_hi', 'ci_width_mb']
@@ -219,6 +223,17 @@ def ci_scan_multi_gene(
     _buf: 'list[pd.DataFrame]' = []
     _n = len(expr_cache)
     logger.info('ci_scan_multi_gene: n_genes=%d  lod_drop=%.1f', _n, lod_drop)
+
+    # precompute chromosome data once per chromosome rather than once per gene
+    _chrs_needed = {str(gene_chr_map.get(g, '')) for g in expr_cache} - {''}
+    _chr_data_cache: 'dict[str, dict]' = {}
+    for _c in _chrs_needed:
+        if _c in kinship_decomp:
+            _ev = kinship_decomp[_c]['values']
+            _evc = kinship_decomp[_c]['vectors']
+            _chr_data_cache[_c] = lmm_module.precompute_chromosome(
+                genomecache, _c, _ev, _evc, z_mat=None,
+            )
 
     for _g, (gene_id, y) in enumerate(expr_cache.items()):
         gene_chr = gene_chr_map.get(gene_id, '')
@@ -235,6 +250,7 @@ def ci_scan_multi_gene(
             positions, lod = _scan_one_chromosome(
                 y, genomecache, gene_chr, covariates, _kd_g,
                 sample_ids=sample_ids, use_rint=use_rint,
+                chr_data=_chr_data_cache.get(gene_chr),
             )
             ci_lo, ci_hi = lod_support_interval(positions, lod, lod_drop=lod_drop)
             _peak_idx = int(np.nanargmax(lod))

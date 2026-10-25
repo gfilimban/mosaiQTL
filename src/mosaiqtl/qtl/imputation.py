@@ -92,7 +92,8 @@ def abf_pip(
         Shape ``(n_snps,)``.  PIP values in (0, 1).
     """
     abf = np.asarray(abf, dtype=np.float64)
-    log_abf = np.log(np.maximum(abf, 1e-300))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        log_abf = np.where(np.isfinite(abf), np.log(np.maximum(abf, 1e-300)), 700.0)
     log_z = log_abf.max()
     w = np.exp(log_abf - log_z)
     return w / w.sum()
