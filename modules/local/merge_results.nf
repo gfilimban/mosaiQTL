@@ -19,7 +19,7 @@ process MERGE_RESULTS {
     tuple val(celltype), path(lod_csvs)
 
     output:
-    tuple val(celltype), path('lod_genome.csv')
+    tuple val(celltype), path('lod_genome.csv'), path('peak_lod.csv')
 
     script:
     """

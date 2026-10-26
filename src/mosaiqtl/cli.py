@@ -128,6 +128,14 @@ def main() -> None:
 @click.option(
     "--cell-type", default=None, help="Cell type label to subset from AnnData obs."
 )
+@click.option(
+    "--covariates",
+    default="sex,dataset",
+    show_default=True,
+    help="Comma-separated metadata columns to include as fixed effects. "
+    "Categorical columns are one-hot encoded (first level dropped). "
+    "Pass '' to use an intercept-only model.",
+)
 @click.option("--verbose", is_flag=True, default=False)
 def fit_null(
     cache: Path,
@@ -135,6 +143,7 @@ def fit_null(
     metadata: Path,
     output: Path,
     cell_type: Optional[str],
+    covariates: str,
     verbose: bool,
 ) -> None:
     """Stage 1: fit NB-GLMM null (dispersion + random effect) per gene.
@@ -182,10 +191,11 @@ def fit_null(
     meta = pd.read_csv(metadata)
     # build cell-level covariates from metadata (optional)
     covariates_cells: Optional[np.ndarray] = None
+    _cov_cols = [c for c in covariates.split(",") if c.strip()]
     if "sample_id" in meta.columns and not meta.empty:
         from .io.covariates import build_covariate_matrix
 
-        cov_df = build_covariate_matrix(meta)
+        cov_df = build_covariate_matrix(meta, covariates=_cov_cols)
         # align to cell order via sample_id
         cell_sample = pd.Series(sample_ids, name="sample_id")
         cov_aligned = cell_sample.map(
@@ -296,6 +306,14 @@ def fit_null(
     "alongside peak_lod.csv.  Omit for large genome-wide runs where the "
     "per-locus file would be very large; include for cis-window scans.",
 )
+@click.option(
+    "--covariates",
+    default="sex,dataset",
+    show_default=True,
+    help="Comma-separated metadata columns to include as fixed effects. "
+    "Categorical columns are one-hot encoded (first level dropped). "
+    "Pass '' to use an intercept-only model.",
+)
 @click.option("--verbose", is_flag=True, default=False)
 def scan(
     cache: Path,
@@ -310,6 +328,7 @@ def scan(
     window_mb: float,
     n_cores: int,
     eqtl_scan: bool,
+    covariates: str,
     verbose: bool,
 ) -> None:
     """Stage 2: genome-wide QTL scan → per-gene peak LOD.
@@ -359,17 +378,18 @@ def scan(
     sample_ids = list(adata.obs.index)
 
     meta = pd.read_csv(metadata)
-    covariates: Optional[np.ndarray] = None
+    _cov_cols = [c for c in covariates.split(",") if c.strip()]
+    covariates_arr: Optional[np.ndarray] = None
     if "sample_id" in meta.columns:
         from .io.covariates import build_covariate_matrix
 
-        cov_df = build_covariate_matrix(meta)
+        cov_df = build_covariate_matrix(meta, covariates=_cov_cols)
         sid_series = pd.Series(sample_ids, name="sample_id")
         cov_aligned = sid_series.map(
             cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
         )
         if not cov_aligned.isna().any():
-            covariates = np.vstack(cov_aligned.values)
+            covariates_arr = np.vstack(cov_aligned.values)
 
     null_params = pd.read_csv(null_fit)
     # build per-gene lib_sizes from cell-level counts (sum over genes → per cell total)
@@ -416,7 +436,7 @@ def scan(
         phenotype_matrix=counts_filt,
         gene_ids=gene_ids_filt,
         genomecache=gc,
-        covariates=covariates,
+        covariates=covariates_arr,
         sample_ids=sample_ids,
         model=model,
         lib_sizes=lib_sizes,
@@ -532,6 +552,14 @@ def scan(
     help="Half-window in Mb around the representative gene's TSS, used only "
     "when --scan-window local.",
 )
+@click.option(
+    "--covariates",
+    default="sex,dataset",
+    show_default=True,
+    help="Comma-separated metadata columns to include as fixed effects. "
+    "Categorical columns are one-hot encoded (first level dropped). "
+    "Pass '' to use an intercept-only model.",
+)
 @click.option("--verbose", is_flag=True, default=False)
 def permute(
     cache: Path,
@@ -545,6 +573,7 @@ def permute(
     gene_info: Optional[Path],
     scan_window: str,
     window_mb: float,
+    covariates: str,
     verbose: bool,
 ) -> None:
     """Permutation thresholds → GEV fit on max-LOD distribution.
@@ -590,18 +619,19 @@ def permute(
     phenotype = counts_mat[:, gi]
 
     meta = pd.read_csv(metadata)
-    covariates: Optional[np.ndarray] = None
+    _cov_cols = [c for c in covariates.split(",") if c.strip()]
+    covariates_arr: Optional[np.ndarray] = None
     if "sample_id" in meta.columns:
         from .io.covariates import build_covariate_matrix
 
-        cov_df = build_covariate_matrix(meta)
+        cov_df = build_covariate_matrix(meta, covariates=_cov_cols)
         sample_ids = list(adata.obs.index)
         sid_series = pd.Series(sample_ids, name="sample_id")
         cov_aligned = sid_series.map(
             cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
         )
         if not cov_aligned.isna().any():
-            covariates = np.vstack(cov_aligned.values)
+            covariates_arr = np.vstack(cov_aligned.values)
 
     kd_raw = kin_module.calc_kinship(gc, method="loco")
     kinship_decomp = kin_module.decomp_kinship(kd_raw)
@@ -635,7 +665,7 @@ def permute(
         null_outcomes,
         gc,
         phenotype=phenotype,
-        covariates=covariates,
+        covariates=covariates_arr,
         kinship_decomp=kinship_decomp,
         kinship_loco=kd_raw,
         chrom=perm_chrom,
@@ -703,6 +733,14 @@ def permute(
 @click.option(
     "--cell-type", default=None, help="Cell type label to subset from AnnData obs."
 )
+@click.option(
+    "--covariates",
+    default="sex,dataset",
+    show_default=True,
+    help="Comma-separated metadata columns to include as fixed effects. "
+    "Categorical columns are one-hot encoded (first level dropped). "
+    "Pass '' to use an intercept-only model.",
+)
 @click.option("--verbose", is_flag=True, default=False)
 def estimate(
     cache: Path,
@@ -712,6 +750,7 @@ def estimate(
     output: Path,
     method: str,
     cell_type: Optional[str],
+    covariates: str,
     verbose: bool,
 ) -> None:
     """Estimate haplotype effects at each gene's peak locus.
@@ -750,17 +789,18 @@ def estimate(
     sample_ids = list(adata.obs.index)
 
     meta = pd.read_csv(metadata)
-    covariates: Optional[np.ndarray] = None
+    _cov_cols = [c for c in covariates.split(",") if c.strip()]
+    covariates_arr: Optional[np.ndarray] = None
     if "sample_id" in meta.columns:
         from .io.covariates import build_covariate_matrix
 
-        cov_df = build_covariate_matrix(meta)
+        cov_df = build_covariate_matrix(meta, covariates=_cov_cols)
         sid_series = pd.Series(sample_ids, name="sample_id")
         cov_aligned = sid_series.map(
             cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
         )
         if not cov_aligned.isna().any():
-            covariates = np.vstack(cov_aligned.values)
+            covariates_arr = np.vstack(cov_aligned.values)
 
     kd_raw = kin_module.calc_kinship(gc, method="loco")
     kinship_decomp = kin_module.decomp_kinship(kd_raw)
@@ -784,7 +824,7 @@ def estimate(
                 locus_id=locus_id,
                 chrom=chrom,
                 kinship_decomp=kinship_decomp,
-                covariates=covariates,
+                covariates=covariates_arr,
                 sample_ids=sample_ids,
                 method=method,
             )
@@ -1082,6 +1122,14 @@ def report(
     help="Wakefield prior variance.",
 )
 @click.option(
+    "--covariates",
+    default="sex,dataset",
+    show_default=True,
+    help="Comma-separated metadata columns to include as fixed effects. "
+    "Categorical columns are one-hot encoded (first level dropped). "
+    "Pass '' to use an intercept-only model.",
+)
+@click.option(
     "--suffix",
     default=None,
     help="Tag appended to output filenames, e.g. gastroc_Lw1.  "
@@ -1100,6 +1148,7 @@ def finemap(
     coverage: float,
     ref_founder: str,
     prior_var: float,
+    covariates: str,
     suffix: Optional[str],
     verbose: bool,
 ) -> None:
@@ -1170,17 +1219,18 @@ def finemap(
     sample_ids = list(adata.obs.index)
 
     meta = pd.read_csv(metadata)
-    covariates: Optional[np.ndarray] = None
+    _cov_cols = [c for c in covariates.split(",") if c.strip()]
+    covariates_arr: Optional[np.ndarray] = None
     if "sample_id" in meta.columns:
         from .io.covariates import build_covariate_matrix
 
-        cov_df = build_covariate_matrix(meta)
+        cov_df = build_covariate_matrix(meta, covariates=_cov_cols)
         sid_series = pd.Series(sample_ids, name="sample_id")
         cov_aligned = sid_series.map(
             cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
         )
         if not cov_aligned.isna().any():
-            covariates = np.vstack(cov_aligned.values)
+            covariates_arr = np.vstack(cov_aligned.values)
 
     logger.info("Computing LOCO kinship...")
     kd_raw = kin_module.calc_kinship(gc, method="loco")
@@ -1194,7 +1244,7 @@ def finemap(
         genomecache=gc,
         alleles_h5=alleles,
         out_dir=output_dir,
-        covariates=covariates,
+        covariates=covariates_arr,
         kinship_decomp=kinship_decomp,
         tag=_tag,
         coverage=coverage,

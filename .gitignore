@@ -122,4 +122,9 @@ goals/
 
 # ── misc local artifacts ──────────────────────────────────────────────────────
 graphify-out/
-data/
+
+# ref/ — large binaries excluded; small reference files tracked
+ref/
+!ref/GM_ccf1fo_mm39.csv
+!ref/igvf_sample_metadata.csv
+!ref/kinship_loco.h5

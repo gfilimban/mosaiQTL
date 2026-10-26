@@ -17,7 +17,7 @@ Prerequisites (required):
        python validation/validate_tissue.py --tissue gastroc --build-cache \
          --genomecache /path/to/genomecache
      Cache is shared across tissues (same CC mice, same mm39 genome).
-     All tissues share validation/py_ref/ — no extra flags needed for subsequent tissues.
+     All tissues share ref/ — no extra flags needed for subsequent tissues.
 
 Prerequisites (optional, for R comparison gates):
   Rscript validation/r_reference/gastroc_miqtl_scan.R [sections] [chr] [scan_type]
@@ -46,7 +46,7 @@ Usage (gastroc, existing default):
   python validation/validate_tissue.py --tissue gastroc --scan_type G
   python validation/validate_tissue.py --tissue gastroc --scan_type L --window_mb 2.0 --chr 8
 
-Usage (ctxhipp, new tissue — shares validation/py_ref/ genomecache):
+Usage (ctxhipp, new tissue — shares ref/ genomecache):
   python validation/validate_tissue.py \
     --tissue ctxhipp \
     --data validation/ctxhipp_data \
@@ -231,8 +231,7 @@ GENOMECACHE  = _MIQTL_DIR / 'output' / 'genomecache'   # default for --build-cac
 
 # shared genomecache + kinship — tissue-agnostic (same CC mice, same mm39 genome).
 # built by: conda run -n bioinfo python validation/tools/build_cache.py
-_DATA_DIR = Path(__file__).resolve().parent.parent / 'data'
-PY_REF = _DATA_DIR if _DATA_DIR.is_dir() else Path('validation/py_ref')
+_DATA_DIR = Path(__file__).resolve().parent.parent / 'ref'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2069,7 +2068,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     gene_info_path.name)
 
     # ── load GenomeCache (must be pre-built as HDF5) ──────────────────────────
-    hdf5_cache = PY_REF / 'cache.h5'
+    hdf5_cache = _DATA_DIR / 'cache.h5'
     if hdf5_cache.exists():
         log.info('loading GenomeCache from HDF5: %s', hdf5_cache)
         cache = GenomeCache.from_hdf5(str(hdf5_cache))
@@ -2088,25 +2087,28 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
              len(cache.chromosomes), len(cache.sample_ids), cache.sample_ids[0])
 
     # ── load or compute LOCO kinship decomp ───────────────────────────────────
-    kd_npz = PY_REF / 'kinship_decomp.npz'
-    if kd_npz.exists():
-        log.info('loading kinship decomp: %s', kd_npz)
-        raw = np.load(kd_npz, allow_pickle=True)
-        kinship_decomp = {k: {'values': raw[f'{k}_vals'], 'vectors': raw[f'{k}_vecs']}
-                          for k in cache.chromosomes if f'{k}_vals' in raw}
-        del raw
+    kd_h5 = _DATA_DIR / 'kinship_loco.h5'
+    if kd_h5.exists():
+        import h5py as _h5py
+        log.info('loading kinship decomp: %s', kd_h5)
+        with _h5py.File(kd_h5, 'r') as _f:
+            kinship_decomp = {
+                c: {'values': _f[f'chr{c}/values'][:], 'vectors': _f[f'chr{c}/vectors'][:]}
+                for c in cache.chromosomes if f'chr{c}' in _f
+            }
     else:
-        log.info('computing LOCO kinship from cache (first run — saves to %s)...', kd_npz)
-        PY_REF.mkdir(parents=True, exist_ok=True)
+        import h5py as _h5py
+        log.info('computing LOCO kinship from cache (first run — saves to %s)...', kd_h5)
+        _DATA_DIR.mkdir(parents=True, exist_ok=True)
         kin_raw = calc_kinship(cache, method='loco')
         kinship_decomp = decomp_kinship(kin_raw)
-        save_kd: dict[str, np.ndarray] = {}
-        for ch, kd in kinship_decomp.items():
-            save_kd[f'{ch}_vals'] = kd['values']
-            save_kd[f'{ch}_vecs'] = kd['vectors']
-        np.savez(kd_npz, **save_kd)
-        del kin_raw, save_kd; gc.collect()
-        log.info('  saved to %s', kd_npz)
+        with _h5py.File(kd_h5, 'w') as _f:
+            for ch, kd in kinship_decomp.items():
+                grp = _f.create_group(f'chr{ch}')
+                grp.create_dataset('values',  data=kd['values'].astype(np.float64))
+                grp.create_dataset('vectors', data=kd['vectors'].astype(np.float64))
+        del kin_raw; gc.collect()
+        log.info('  saved to %s', kd_h5)
 
     # ── chromosomes to scan ───────────────────────────────────────────────────
     chrs_to_scan = [c for c in cache.chromosomes if c in kinship_decomp]
@@ -3911,7 +3913,7 @@ def main() -> None:
                          'lives under --data/celltypes/<ct>.')
     ap.add_argument('--build-cache', action='store_true',
                     help='one-time: read HAPPY genomecache via rpy2 → save '
-                         'validation/py_ref/cache.h5, then exit (requires rpy2)')
+                         'ref/cache.h5, then exit (requires rpy2)')
     ap.add_argument('--genomecache', default=None,
                     help='path to HAPPY genomecache dir for --build-cache '
                          f'(default: {GENOMECACHE})')
@@ -4098,11 +4100,11 @@ def main() -> None:
     # ── --build-cache: one-time rpy2 step, exits when done ────────────────────
     if args.build_cache:
         gc_dir  = Path(args.genomecache) if args.genomecache else GENOMECACHE
-        out_h5  = PY_REF / 'cache.h5'
+        out_h5  = _DATA_DIR / 'cache.h5'
         if not gc_dir.exists():
             log.error('genomecache not found: %s', gc_dir)
             sys.exit(1)
-        PY_REF.mkdir(parents=True, exist_ok=True)
+        _DATA_DIR.mkdir(parents=True, exist_ok=True)
         log.info('--build-cache  genomecache=%s  → %s', gc_dir, out_h5)
         _build_cache_from_happy(gc_dir, out_h5)
         log.info('done — run validate_tissue.py --tissue %s without --build-cache to validate',
@@ -4196,7 +4198,7 @@ def main() -> None:
             sys.exit(1)
         _all_cts = natsorted(d.name for d in _cts_root.iterdir() if d.is_dir())
         log.info('--all-celltypes: discovered %d cell types under %s', len(_all_cts), _cts_root)
-        log.info('  py_ref    = %s', PY_REF)
+        log.info('  ref_dir   = %s', _DATA_DIR)
         _n_ok = _n_skip = _n_err = 0
         for _ct_label in _all_cts:
             _dirs = _ct_dirs(_ct_label)
@@ -4286,7 +4288,7 @@ def main() -> None:
     log.info('  data_dir  = %s', _run_data_dir)
     log.info('  out_dir   = %s', _run_out_dir)
     log.info('  scan_tag  = %s  (output nests under this — see run()::_scan_tag)', _stag)
-    log.info('  py_ref    = %s', PY_REF)
+    log.info('  ref_dir   = %s', _DATA_DIR)
 
     run(_run_data_dir, _run_out_dir, sections, args.force, args.n_genes,
         scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,

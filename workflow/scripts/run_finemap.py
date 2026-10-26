@@ -1,4 +1,4 @@
-"""Sanger SNP fine-mapping for eGenes — called by Nextflow FINEMAP process."""
+"""Sanger SNP fine-mapping — called by Nextflow FINEMAP process."""
 
 from __future__ import annotations
 
@@ -9,34 +9,34 @@ from pathlib import Path
 
 import click
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(message)s',
-    datefmt='%H:%M:%S',
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s',
+                    datefmt='%H:%M:%S')
 log = logging.getLogger(__name__)
 
 
 @click.command()
-@click.option('--egenes',          required=True, type=click.Path(exists=True))
-@click.option('--counts',          required=True, type=click.Path(exists=True))
-@click.option('--lod',             required=True, type=click.Path(exists=True))
-@click.option('--sanger-alleles',  required=True, type=click.Path(exists=True))
-@click.option('--celltype',        required=True)
-@click.option('--output-dir',      required=True, type=click.Path())
-def main(egenes: str, counts: str, lod: str, sanger_alleles: str,
-         celltype: str, output_dir: str) -> None:
+@click.option('--egenes',     required=True, type=click.Path(exists=True))
+@click.option('--counts',     required=True, type=click.Path(exists=True))
+@click.option('--metadata',   required=True, type=click.Path(exists=True))
+@click.option('--cache',      required=True, type=click.Path(exists=True))
+@click.option('--alleles',    required=True, type=click.Path(exists=True))
+@click.option('--celltype',   required=True)
+@click.option('--output-dir', required=True, type=click.Path())
+@click.option('--covariates', default='sex,dataset', show_default=True)
+def main(egenes: str, counts: str, metadata: str, cache: str,
+         alleles: str, celltype: str, output_dir: str, covariates: str) -> None:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-
-    log.info('finemap %s', celltype)
     cmd = [
         sys.executable, '-m', 'mosaiqtl', 'finemap',
-        '--egenes',         egenes,
-        '--counts',         counts,
-        '--lod',            lod,
-        '--sanger-alleles', sanger_alleles,
-        '--output-dir',     str(out),
+        '--egenes',     egenes,
+        '--counts',     counts,
+        '--metadata',   metadata,
+        '--cache',      cache,
+        '--alleles',    alleles,
+        '--cell-type',  celltype,
+        '--covariates', covariates,
+        '--output-dir', str(out),
     ]
     log.info('running: %s', ' '.join(cmd))
     subprocess.run(cmd, check=True)

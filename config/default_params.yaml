@@ -26,6 +26,9 @@ gene_info:      null   # gene info CSV (gene_id, chr, start, end) — global or 
 phenotypes:     null   # path to single phenotype HDF5
 celltype:       null   # cell type label for output paths (default: 'default')
 
+metadata:      null        # path to sample metadata CSV (required by fit-null, permute, estimate, finemap)
+covariates:    'sex,dataset'  # comma-separated metadata columns as fixed effects; '' = intercept-only
+
 output_dir:    'results'
 scan_type:     'lmm'      # lmm | nb-glmm
 scan_window:   'cis'      # cis | genome | local

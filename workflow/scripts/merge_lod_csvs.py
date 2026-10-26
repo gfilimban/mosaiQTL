@@ -41,6 +41,13 @@ def main(csvs: tuple[str, ...], celltype: str, output: str) -> None:
     merged.to_csv(output, index=False)
     log.info('wrote %s (%d rows)', output, len(merged))
 
+    # also write peak_lod.csv — one row per gene at its maximum-LOD locus
+    peak_idx = merged.groupby('gene_id')['lod'].idxmax()
+    peak = merged.loc[peak_idx].reset_index(drop=True)
+    peak_path = str(output).replace('lod_genome.csv', 'peak_lod.csv')
+    peak.to_csv(peak_path, index=False)
+    log.info('wrote %s (%d genes)', peak_path, len(peak))
+
 
 if __name__ == '__main__':
     main()

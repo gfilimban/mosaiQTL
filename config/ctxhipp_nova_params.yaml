@@ -9,17 +9,9 @@
 #       --output_dir    /dfs9/seyedam-lab/share/igvf_qtl/output/ctxhipp/nova/subtypes \
 #       -resume
 
-genomecache:   '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/data/cache.h5'
-data_dir:      '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/data'
-kinship_loco:  '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/data/kinship_loco.h5'
+genomecache:   '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/cache.h5'
+data_dir:      '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref'
 
 celltypes_dir: '/dfs9/seyedam-lab/share/igvf_qtl/output/ctxhipp/nova/celltypes'
-celltypes:     'all'
 gene_info:     '/dfs9/seyedam-lab/share/igvf_qtl/output/ctxhipp/nova/exp_gene_info_ctxhipp_universe.csv'
-
 output_dir:    '/dfs9/seyedam-lab/share/igvf_qtl/output/ctxhipp/nova/celltypes'
-scan_type:     'lmm'
-scan_window:   'cis'
-chroms:        'all'
-n_perms:       1000
-window_mb:     1.0

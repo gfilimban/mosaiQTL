@@ -1,11 +1,11 @@
 /*
- * FINEMAP — Sanger SNP fine-mapping for eGenes
+ * FINEMAP — Sanger SNP fine-mapping for eGenes (Wakefield ABF credible sets)
  *
- * Input  : [celltype, egenes_csv, counts_h5, lod_genome_csv]
- * Output : [celltype, eqtl_finemapping.csv, eqtl_finemapping_peak.csv]
+ * Input  : [celltype, eqtl_peak.csv, phenotypes_path]
+ * Output : [celltype, eqtl_finemapping*.csv, eqtl_finemapping_peak*.csv]
  *
  * Requires sanger_alleles.h5 in params.data_dir (shared across all cell types).
- * One job per cell type, fires after MERGE_RESULTS completes for that CT.
+ * One job per cell type, fires after REPORT.
  */
 
 process FINEMAP {
@@ -16,21 +16,24 @@ process FINEMAP {
     publishDir { "${params.output_dir}/${celltype}" }, mode: 'copy'
 
     input:
+    path  genomecache
     path  sanger_alleles
-    tuple val(celltype), path(egenes_csv), path(counts_h5), path(lod_genome_csv)
+    tuple val(celltype), path(eqtl_peak), path(phenotypes)
 
     output:
-    tuple val(celltype), path('eqtl_finemapping.csv'), path('eqtl_finemapping_peak.csv')
+    tuple val(celltype), path('eqtl_finemapping*.csv'), path('eqtl_finemapping_peak*.csv')
 
     script:
     """
     python ${projectDir}/workflow/scripts/run_finemap.py \\
-        --egenes         ${egenes_csv} \\
-        --counts         ${counts_h5} \\
-        --lod            ${lod_genome_csv} \\
-        --sanger-alleles ${sanger_alleles} \\
-        --celltype       ${celltype} \\
-        --output-dir     .
+        --egenes   ${eqtl_peak} \\
+        --counts   ${phenotypes} \\
+        --metadata   ${params.metadata} \\
+        --covariates '${params.covariates}' \\
+        --cache      ${genomecache} \\
+        --alleles  ${sanger_alleles} \\
+        --celltype ${celltype} \\
+        --output-dir .
     """
 
     stub:

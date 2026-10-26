@@ -4,14 +4,14 @@
  *
  * Single cell type:
  *   nextflow run workflow/main.nf -profile slurm \
- *       -params-file config/gastroc_params.yaml -resume
+ *       -params-file config/gastroc_next_params.yaml -resume
  *
  * Multiple cell types (celltypes_dir × all chrs):
  *   nextflow run workflow/main.nf -profile slurm \
- *       -params-file config/ctxhipp_params.yaml -resume
+ *       -params-file config/ctxhipp_next_params.yaml -resume
  *   # or override cell type list on the CLI:
  *   nextflow run workflow/main.nf -profile slurm \
- *       -params-file config/ctxhipp_params.yaml \
+ *       -params-file config/ctxhipp_next_params.yaml \
  *       --celltypes 'glutamatergic_neuron,oligodendrocyte' -resume
  *
  * Stub run (DAG validation, no compute):
@@ -27,20 +27,30 @@
  *   params.phenotypes     path to a single phenotype HDF5 (single-CT mode, legacy)
  *
  * publishDir layout:
- *   {data_dir}/kinship_loco.h5                         — shared, written once
- *   {output_dir}/{celltype}/lod_chr{c}.csv             — per-chr LOD
- *   {output_dir}/{celltype}/lod_genome.csv             — merged genome-wide LOD
- *   {output_dir}/{celltype}/eqtl_finemapping.csv       — ABF credible sets
- *   {output_dir}/{celltype}/eqtl_finemapping_peak.csv  — per-gene fine-mapping peak
- *   {output_dir}/{celltype}/eqtl_peak.csv              — submission eQTL peak table
- *   {output_dir}/{celltype}/eqtl_stats.csv             — per-chr GEV stats
+ *   {data_dir}/kinship_loco.h5                              — shared, written once
+ *   {output_dir}/{celltype}/null_fit.csv                    — LMM null fit per gene
+ *   {output_dir}/{celltype}/lod_chr{c}.csv                  — per-chr LOD
+ *   {output_dir}/{celltype}/lod_genome.csv                  — merged genome-wide LOD
+ *   {output_dir}/{celltype}/peak_lod.csv                    — per-gene peak locus
+ *   {output_dir}/{celltype}/perm_max_lods.csv               — permutation max-LOD (all chrs)
+ *   {output_dir}/{celltype}/perm_max_lods_chr{c}.csv        — per-chr permutation max-LOD
+ *   {output_dir}/{celltype}/allele_effects.csv              — founder haplotype effects
+ *   {output_dir}/{celltype}/eqtl_summary.csv                — eGene calling summary
+ *   {output_dir}/{celltype}/eqtl_peak*.csv                  — submission eQTL peak table
+ *   {output_dir}/{celltype}/eqtl_stats*.csv                 — per-chr GEV stats
+ *   {output_dir}/{celltype}/run_metadata.json               — version + git hash + provenance
+ *   {output_dir}/{celltype}/eqtl_finemapping*.csv           — ABF credible sets
+ *   {output_dir}/{celltype}/eqtl_finemapping_peak*.csv      — per-gene fine-mapping peak
  */
 
 include { KINSHIP_LOCO  } from '../modules/local/kinship_loco'
+include { FIT_NULL      } from '../modules/local/fit_null'
 include { LMM_SCAN      } from '../modules/local/lmm_scan'
+include { PERMUTE       } from '../modules/local/permute'
 include { MERGE_RESULTS } from '../modules/local/merge_results'
-include { FINEMAP       } from '../modules/local/finemap'
+include { ESTIMATE      } from '../modules/local/estimate'
 include { REPORT        } from '../modules/local/report'
+include { FINEMAP       } from '../modules/local/finemap'
 
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -77,7 +87,6 @@ def ct_channel(gene_info_global) {
     if (params.celltypes_dir) {
         def ctdir = file(params.celltypes_dir)
 
-        // collect candidate directories
         def ct_ch
         if (params.celltypes && params.celltypes != 'all') {
             ct_ch = Channel.from(
@@ -92,7 +101,6 @@ def ct_channel(gene_info_global) {
                 [ct, pheno, gi]
             }
         } else {
-            // discover all subdirs that contain counts_lognorm.h5
             ct_ch = Channel.fromPath("${params.celltypes_dir}/*/counts_lognorm.h5")
                 .map { pheno ->
                     def ct       = pheno.parent.name
@@ -104,8 +112,7 @@ def ct_channel(gene_info_global) {
         return ct_ch
 
     } else if (params.phenotypes) {
-        // legacy single-CT mode
-        def ct   = params.celltype ?: 'default'
+        def ct    = params.celltype ?: 'default'
         def pheno = file(params.phenotypes)
         return Channel.value([ct, pheno, gene_info_global])
 
@@ -121,6 +128,7 @@ workflow {
 
     genomecache      = _require(params.genomecache, 'genomecache')
     gene_info_global = _require(params.gene_info,   'gene_info')
+    sanger_alleles   = file("${params.data_dir}/sanger_alleles.h5")
 
     // kinship: shared across all cell types — built once, then reused
     if (params.kinship_loco) {
@@ -129,53 +137,73 @@ workflow {
         kinship = KINSHIP_LOCO(genomecache).kinship_h5
     }
 
-    // cell-type × chromosome grid
-    ct_ch  = ct_channel(gene_info_global)
+    // cell-type channel — emits [celltype, phenotypes, gene_info]
+    ct_ch = ct_channel(gene_info_global)
+
+    // ── Stage 0: null model fit (once per CT) ────────────────────────────────
+    FIT_NULL(genomecache, kinship, ct_ch)
+    // FIT_NULL.out: [celltype, null_fit.csv]
+
+    // ── Stage 1a: LMM scan (CT × chr grid) ───────────────────────────────────
     chroms = chr_channel()
-
-    // combine: every (celltype, pheno, gene_info, chrom) tuple → one LMM_SCAN job
     ct_chr = ct_ch.combine(chroms)
-    //   ct_chr emits: [celltype, pheno_path, gene_info_path, chrom]
+    // ct_chr: [celltype, phenotypes, gene_info, chrom]
 
-    LMM_SCAN(
-        genomecache,
-        kinship,
-        ct_chr,
-    )
-    // LMM_SCAN.out emits: [celltype, lod_csv]
+    LMM_SCAN(genomecache, kinship, ct_chr)
+    // LMM_SCAN.out: [celltype, lod_chr.csv]
 
-    // merge per-celltype: group all per-chr CSVs by CT, then concatenate
+    // ── Stage 1b: permutation thresholds (once per CT, parallel with scan) ───
+    // Join null_fit with gene_info + phenotypes from ct_ch on celltype
+    permute_input = FIT_NULL.out
+        .join(ct_ch.map { ct, pheno, gi -> [ct, gi, pheno] })
+        .map { ct, null_fit, gi, pheno -> [ct, null_fit, gi, pheno] }
+
+    PERMUTE(genomecache, permute_input)
+    // PERMUTE.out: [celltype, perm_max_lods.csv, [perm_max_lods_chr*.csv]]
+
+    // ── Stage 2: merge per-chr LOD → genome + peak per CT ────────────────────
     LMM_SCAN.out
         .groupTuple()
         | MERGE_RESULTS
+    // MERGE_RESULTS.out: [celltype, lod_genome.csv, peak_lod.csv]
 
-    // fine-mapping: one job per CT, fires after MERGE_RESULTS
-    sanger_alleles = file("${params.data_dir}/sanger_alleles.h5")
+    // ── Stage 3: founder haplotype effects at peak loci ───────────────────────
+    // Join peak_lod with phenotypes from ct_ch on celltype
+    estimate_input = MERGE_RESULTS.out
+        .map { ct, lod, peak -> [ct, peak] }
+        .join(ct_ch.map { ct, pheno, gi -> [ct, pheno] })
+        .map { ct, peak, pheno -> [ct, peak, pheno] }
 
-    finemap_input = ct_ch.join(MERGE_RESULTS.out.map { ct, lod -> [ct, lod] })
-    //   finemap_input emits: [celltype, pheno_path, gene_info_path, lod_genome_csv]
-    //   FINEMAP needs: [celltype, egenes_csv, counts_h5, lod_genome_csv]
-    //   egenes_csv produced by mosaiqtl report in a prior step — placeholder join below;
-    //   wire properly once permute + effects subcommands are added to the workflow.
+    ESTIMATE(genomecache, estimate_input)
+    // ESTIMATE.out: [celltype, allele_effects.csv]
 
-    // submission report: fires after FINEMAP
-    FINEMAP(
-        sanger_alleles,
-        MERGE_RESULTS.out.map { ct, lod ->
-            def egenes = file("${params.output_dir}/${ct}/eqtl_summary.csv")
-            def counts  = file("${params.celltypes_dir}/${ct}/counts_lognorm.h5")
-            [ct, egenes, counts, lod]
-        },
-    )
+    // ── Stage 4: eGene calling + submission files ─────────────────────────────
+    // Collect all perm files into a list so REPORT's work dir has them all
+    perm_files_ch = PERMUTE.out
+        .map { ct, perm_lods, perm_chrs ->
+            [ct, [perm_lods, perm_chrs].flatten()]
+        }
 
-    REPORT(
-        FINEMAP.out.map { ct, fm, fmp ->
-            def egenes   = file("${params.output_dir}/${ct}/eqtl_summary.csv")
-            def effects  = file("${params.output_dir}/${ct}/allele_effects.csv")
-            def perm     = file("${params.output_dir}/${ct}/perm_max_lods.csv")
-            def lod      = file("${params.output_dir}/${ct}/lod_genome.csv")
-            [ct, egenes, effects, perm, lod, fm, fmp]
-        },
-    )
+    report_input = MERGE_RESULTS.out
+        .map { ct, lod, peak -> [ct, peak] }
+        .join(perm_files_ch)
+        .join(ESTIMATE.out)
+        .map { ct, peak, perms, effects -> [ct, peak, perms, effects] }
+
+    REPORT(report_input)
+    // REPORT.out: [celltype, eqtl_summary.csv, [eqtl_peak*.csv], [eqtl_stats*.csv], run_metadata.json]
+
+    // ── Stage 5: Sanger SNP fine-mapping ─────────────────────────────────────
+    // eqtl_peak*.csv from REPORT (glob → list); take first element as eGene table
+    finemap_input = REPORT.out
+        .map { ct, summary, peaks, stats, metadata ->
+            def peak_file = peaks instanceof List ? peaks[0] : peaks
+            [ct, peak_file]
+        }
+        .join(ct_ch.map { ct, pheno, gi -> [ct, pheno] })
+        .map { ct, eqtl_peak, pheno -> [ct, eqtl_peak, pheno] }
+
+    FINEMAP(genomecache, sanger_alleles, finemap_input)
+    // FINEMAP.out: [celltype, [eqtl_finemapping*.csv], [eqtl_finemapping_peak*.csv]]
 
 }
