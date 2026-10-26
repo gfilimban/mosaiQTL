@@ -10,7 +10,7 @@
 
 process MERGE_RESULTS {
 
-    label 'process_single'
+    label 'process_medium'
     tag   "${celltype}"
 
     publishDir { "${params.output_dir}/${celltype}" }, mode: 'copy'
