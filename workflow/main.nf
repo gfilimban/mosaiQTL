@@ -36,7 +36,8 @@
  *   {output_dir}/{celltype}/perm_max_lods_chr{c}.csv        — per-chr permutation max-LOD
  *   {output_dir}/{celltype}/allele_effects.csv              — founder haplotype effects
  *   {output_dir}/{celltype}/eqtl_summary.csv                — eGene calling summary
- *   {output_dir}/{celltype}/eqtl_peak*.csv                  — submission eQTL peak table
+ *   {output_dir}/{celltype}/eqtl_peak*.csv                  — submission eQTL peak table (haplotype-level, NaN CI)
+ *   {output_dir}/{celltype}/eqtl_peak_ci*.csv              — eQTL peak with LOD-drop CI (ci_lo_bp/ci_hi_bp filled)
  *   {output_dir}/{celltype}/eqtl_stats*.csv                 — per-chr GEV stats
  *   {output_dir}/{celltype}/run_metadata.json               — version + git hash + provenance
  *   {output_dir}/{celltype}/eqtl_finemapping*.csv           — ABF credible sets
@@ -49,6 +50,7 @@ include { PERMUTE       } from '../modules/local/permute'
 include { MERGE_RESULTS } from '../modules/local/merge_results'
 include { ESTIMATE      } from '../modules/local/estimate'
 include { REPORT        } from '../modules/local/report'
+include { CHARACTERISE  } from '../modules/local/characterise'
 include { FINEMAP       } from '../modules/local/finemap'
 
 
@@ -126,19 +128,17 @@ def ct_channel(gene_info_global) {
 workflow {
 
     // derive paths from data_dir when not set explicitly in the params file
-    if (params.data_dir) {
-        if (!params.kinship_loco)   params.kinship_loco   = "${params.data_dir}/kinship_loco.h5"
-        if (!params.metadata)       params.metadata       = "${params.data_dir}/igvf_sample_metadata.csv"
-        if (!params.sanger_alleles) params.sanger_alleles = "${params.data_dir}/sanger_alleles.h5"
-    }
+    def _kinship_path  = params.kinship_loco   ?: (params.data_dir ? "${params.data_dir}/kinship_loco.h5"           : null)
+    def _metadata_path = params.metadata       ?: (params.data_dir ? "${params.data_dir}/igvf_sample_metadata.csv"  : null)
+    def _sanger_path   = params.sanger_alleles ?: (params.data_dir ? "${params.data_dir}/sanger_alleles.h5"         : null)
 
     genomecache      = _require(params.genomecache, 'genomecache')
     gene_info_global = _require(params.gene_info,   'gene_info')
-    sanger_alleles   = _require(params.sanger_alleles, 'sanger_alleles')
+    sanger_alleles   = _require(_sanger_path, 'sanger_alleles')
 
     // kinship: shared across all cell types — built once, then reused
-    if (params.kinship_loco) {
-        kinship = Channel.value(file(params.kinship_loco))
+    if (_kinship_path) {
+        kinship = Channel.value(file(_kinship_path))
     } else {
         kinship = KINSHIP_LOCO(genomecache).kinship_h5
     }
@@ -193,15 +193,29 @@ workflow {
     REPORT(report_input)
     // REPORT.out: [celltype, eqtl_summary.csv, [eqtl_peak*.csv], [eqtl_stats*.csv], run_metadata.json]
 
-    // ── Stage 5: Sanger SNP fine-mapping ─────────────────────────────────────
-    // eqtl_peak*.csv from REPORT (glob → list); take first element as eGene table
-    finemap_input = REPORT.out
+    // ── Stage 5: LOD-drop CI for eGenes ──────────────────────────────────────
+    // CHARACTERISE rescans each eGene's chromosome to fill ci_lo_bp/ci_hi_bp.
+    // Takes eqtl_peak*.csv from REPORT; outputs eqtl_peak_ci*.csv for FINEMAP.
+    char_input = REPORT.out
         .map { ct, summary, peaks, stats, metadata ->
             def peak_file = peaks instanceof List ? peaks[0] : peaks
             [ct, peak_file]
         }
         .join(ct_ch.map { ct, pheno, gi -> [ct, pheno] })
         .map { ct, eqtl_peak, pheno -> [ct, eqtl_peak, pheno] }
+
+    CHARACTERISE(genomecache, kinship, char_input)
+    // CHARACTERISE.out: [celltype, eqtl_peak_ci*.csv]
+
+    // ── Stage 6: Sanger SNP fine-mapping ─────────────────────────────────────
+    // eqtl_peak_ci*.csv from CHARACTERISE has ci_lo_bp/ci_hi_bp populated.
+    finemap_input = CHARACTERISE.out
+        .map { ct, ci_peak ->
+            def peak_file = ci_peak instanceof List ? ci_peak[0] : ci_peak
+            [ct, peak_file]
+        }
+        .join(ct_ch.map { ct, pheno, gi -> [ct, pheno] })
+        .map { ct, eqtl_peak_ci, pheno -> [ct, eqtl_peak_ci, pheno] }
 
     FINEMAP(genomecache, kinship, sanger_alleles, finemap_input)
     // FINEMAP.out: [celltype, [eqtl_finemapping*.csv], [eqtl_finemapping_peak*.csv]]

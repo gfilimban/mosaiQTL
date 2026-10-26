@@ -1240,6 +1240,153 @@ def report(
     logger.info("eqtl_stats_%s.csv written: %d rows", _tag, len(chrom_stats) + 1)
 
 
+# ── characterise ──────────────────────────────────────────────────────────
+
+
+@main.command("characterise")
+@click.option(
+    "--egenes",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="eqtl_peak.csv from `report` (ci_lo_bp/ci_hi_bp will be filled in).",
+)
+@click.option(
+    "--phenotypes",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="counts_lognorm.h5 — LMM log-normalised expression.",
+)
+@click.option(
+    "--kinship",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="kinship_loco.h5 from `build-kinship`.",
+)
+@click.option(
+    "--cache",
+    "gc_path",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="GenomeCache HDF5.",
+)
+@click.option(
+    "--metadata",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Sample metadata CSV (sample_id column mandatory).",
+)
+@click.option(
+    "--covariates",
+    default="sex,dataset",
+    show_default=True,
+    help="Comma-separated covariate columns from metadata.",
+)
+@click.option(
+    "--output-dir",
+    default=".",
+    show_default=True,
+    type=click.Path(path_type=Path),
+    help="Directory for output files.",
+)
+@click.option("-v", "--verbose", is_flag=True)
+def characterise(
+    egenes: Path,
+    phenotypes: Path,
+    kinship: Path,
+    gc_path: Path,
+    metadata: Path,
+    covariates: str,
+    output_dir: Path,
+    verbose: bool,
+) -> None:
+    """LOD-drop CI for eGenes; fills ci_lo_bp/ci_hi_bp in eqtl_peak.csv.
+
+    Reads eqtl_peak.csv (one row per eGene from `report`), computes 1.5-LOD
+    support intervals by rescanning each eGene's chromosome with LMM, converts
+    ci_lo/ci_hi from Mb to integer bp, and writes eqtl_peak_ci.csv alongside
+    the original file.  eqtl_peak_ci.csv is the input expected by `finemap`.
+    """
+    _setup_logging(verbose)
+    import numpy as np
+    import pandas as pd
+    from .genotype.genomecache import GenomeCache
+    from .qtl.ci import ci_scan_multi_gene
+
+    egene_df = pd.read_csv(egenes)
+    if egene_df.empty:
+        logger.info("characterise: no eGenes — writing empty eqtl_peak_ci.csv")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        _out_stem = egenes.stem.replace("eqtl_peak", "eqtl_peak_ci")
+        egene_df.to_csv(output_dir / f"{_out_stem}.csv", index=False)
+        return
+
+    gene_ids = list(egene_df["gene_id"].astype(str))
+    mat, found_ids, sample_ids = _load_phenotypes_h5(phenotypes, gene_ids)
+    if not found_ids:
+        raise click.ClickException("No eGene IDs found in phenotypes file.")
+
+    logger.info("characterise: %d eGenes, %d found in h5", len(gene_ids), len(found_ids))
+
+    kinship_decomp = _load_kinship_h5(kinship)
+    gc = GenomeCache.from_hdf5(str(gc_path))
+
+    _cov_cols = [c for c in covariates.split(",") if c.strip()]
+    covariates_arr = _covariates_for_samples(metadata, sample_ids, _cov_cols)
+
+    # build per-gene lookup dicts
+    row_by_id = egene_df.set_index("gene_id")
+    expr_cache: dict = {}
+    gene_chr_map: dict = {}
+    peak_mb_map: dict = {}
+    peak_lod_map: dict = {}
+    for i, gid in enumerate(found_ids):
+        expr_cache[gid] = mat[i].astype(float)
+        row = row_by_id.loc[gid] if gid in row_by_id.index else None
+        if row is not None:
+            gene_chr_map[gid] = str(row.get("chr", ""))
+            peak_mb_map[gid] = float(row.get("peak_mb", np.nan))
+            peak_lod_map[gid] = float(row.get("lod", np.nan))
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _out_stem = egenes.stem.replace("eqtl_peak", "eqtl_peak_ci")
+    _ci_out = output_dir / "ci_raw.csv"
+
+    ci_df = ci_scan_multi_gene(
+        expr_cache,
+        gene_chr_map,
+        peak_mb_map,
+        gc,
+        peak_lod_map=peak_lod_map,
+        covariates=covariates_arr,
+        kinship_decomp=kinship_decomp,
+        sample_ids=sample_ids,
+        output_path=_ci_out,
+    )
+    del expr_cache
+
+    if ci_df.empty:
+        logger.warning("characterise: ci_scan_multi_gene returned no rows")
+        egene_df.to_csv(output_dir / f"{_out_stem}.csv", index=False)
+        return
+
+    # convert Mb → integer bp and merge back into eqtl_peak
+    ci_bp = ci_df[["gene_id", "ci_lo", "ci_hi"]].copy()
+    ci_bp["ci_lo_bp"] = (ci_bp["ci_lo"] * 1e6).round().astype("Int64")
+    ci_bp["ci_hi_bp"] = (ci_bp["ci_hi"] * 1e6).round().astype("Int64")
+    ci_bp = ci_bp.drop(columns=["ci_lo", "ci_hi"])
+
+    out = egene_df.copy()
+    if "ci_lo_bp" in out.columns:
+        out = out.drop(columns=["ci_lo_bp", "ci_hi_bp"], errors="ignore")
+    out = out.merge(ci_bp, on="gene_id", how="left")
+
+    out_path = output_dir / f"{_out_stem}.csv"
+    out.to_csv(out_path, index=False)
+    logger.info(
+        "characterise: %d eGenes with CI written to %s", len(out), out_path
+    )
+
+
 # ── finemap ───────────────────────────────────────────────────────────────
 
 
