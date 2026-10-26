@@ -93,36 +93,32 @@ def _load_kinship(
 
 
 @click.command()
-@click.option('--cache', required=True, type=click.Path(exists=True),
-              help='Genome cache HDF5.')
-@click.option('--kinship', required=True, type=click.Path(exists=True),
-              help='LOCO kinship HDF5.')
-@click.option('--phenotypes', required=True, type=click.Path(exists=True),
-              help='Phenotype HDF5 (counts, gene_ids, sample_ids datasets).')
-@click.option('--gene-info', required=True, type=click.Path(exists=True),
-              help='Gene info CSV (gene_id, chr, start, end).')
-@click.option('--chr', 'chrom', required=True,
-              help='Chromosome to scan (e.g. 8 or X).')
+@click.option('--cache', required=True, type=click.Path(exists=True))
+@click.option('--kinship', required=True, type=click.Path(exists=True))
+@click.option('--phenotypes', required=True, type=click.Path(exists=True))
+@click.option('--gene-info', required=True, type=click.Path(exists=True))
+@click.option('--chr', 'chrom', required=True)
+@click.option('--metadata', required=True, type=click.Path(exists=True))
+@click.option('--covariates', default='sex,dataset', show_default=True)
 @click.option('--scan-window', default='cis', show_default=True,
-              type=click.Choice(['cis', 'genome', 'local']),
-              help='Scan window type.')
-@click.option('--window-mb', default=1.0, show_default=True, type=float,
-              help='Half-window for local scan (Mb).')
-@click.option('--output-dir', default='.', show_default=True,
-              type=click.Path(),
-              help='Directory to write lod_chr{chrom}.csv.')
+              type=click.Choice(['cis', 'genome', 'local']))
+@click.option('--window-mb', default=1.0, show_default=True, type=float)
+@click.option('--output-dir', default='.', show_default=True, type=click.Path())
 def main(
     cache: str,
     kinship: str,
     phenotypes: str,
     gene_info: str,
     chrom: str,
+    metadata: str,
+    covariates: str,
     scan_window: str,
     window_mb: float,
     output_dir: str,
 ) -> None:
     """Per-chromosome LMM QTL scan for mosaiQTL Nextflow pipeline."""
     from mosaiqtl.genotype.genomecache import GenomeCache
+    from mosaiqtl.io.covariates import build_covariate_matrix
     from mosaiqtl.qtl.scan import scan_multi_gene
 
     out = Path(output_dir)
@@ -143,6 +139,18 @@ def main(
         )
         return
 
+    # build covariate matrix aligned to scan sample order
+    cov_cols = [c for c in covariates.split(',') if c.strip()]
+    covariates_arr: 'np.ndarray | None' = None
+    if cov_cols:
+        meta = pd.read_csv(metadata)
+        meta_scan = meta[meta['sample_id'].isin(sample_ids)]
+        cov_df = build_covariate_matrix(meta_scan, covariates=cov_cols)
+        sid_series = pd.Series(sample_ids, name='sample_id')
+        cov_aligned = sid_series.map(cov_df.apply(lambda r: r.tolist(), axis=1))
+        if not cov_aligned.isna().any():
+            covariates_arr = np.vstack(cov_aligned.values)
+
     gc = GenomeCache.from_hdf5(Path(cache))
     kinship_decomp = _load_kinship(Path(kinship), chrom, sample_ids)
 
@@ -153,6 +161,7 @@ def main(
         gene_chr_map=gene_chr_map,
         kinship_decomp=kinship_decomp,
         sample_ids=sample_ids,
+        covariates=covariates_arr,
         use_rint=True,
         scan_window=scan_window,
         window_mb=window_mb,

@@ -31,6 +31,8 @@ process LMM_SCAN {
         --phenotypes  ${phenotypes} \\
         --gene-info   ${gene_info} \\
         --chr         ${chrom} \\
+        --metadata    ${params.metadata} \\
+        --covariates  '${params.covariates}' \\
         --scan-window ${params.scan_window} \\
         --window-mb   ${params.window_mb} \\
         --output-dir  .
