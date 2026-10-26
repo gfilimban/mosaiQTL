@@ -987,6 +987,15 @@ def estimate(
     _cov_cols = [c for c in covariates.split(",") if c.strip()]
     covariates_arr = _covariates_for_samples(metadata, sample_ids, _cov_cols)
 
+    # map replicate-level sample IDs → strain-level genotype IDs for the genomecache
+    _meta_est = pd.read_csv(metadata)
+    _geno_map_est: dict[str, str] = (
+        dict(zip(_meta_est["sample_id"], _meta_est["genotype"]))
+        if "genotype" in _meta_est.columns and "sample_id" in _meta_est.columns
+        else {}
+    )
+    geno_ids = [_geno_map_est.get(s, s) for s in sample_ids]
+
     output.parent.mkdir(parents=True, exist_ok=True)
     rows = []
     gene_id_to_idx = {g: i for i, g in enumerate(gene_ids)}
@@ -1007,7 +1016,7 @@ def estimate(
                 chrom=chrom,
                 kinship_decomp=kinship_decomp,
                 covariates=covariates_arr,
-                sample_ids=sample_ids,
+                sample_ids=geno_ids,
                 method=method,
             )
             effect_row: dict = {
