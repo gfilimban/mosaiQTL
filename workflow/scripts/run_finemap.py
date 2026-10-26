@@ -29,7 +29,7 @@ def main(egenes: str, phenotypes: str, kinship: str, metadata: str, cache: str,
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     cmd = [
-        sys.executable, '-m', 'mosaiqtl', 'finemap',
+        str(Path(sys.executable).parent / 'mosaiqtl'), 'finemap',
         '--egenes',      egenes,
         '--phenotypes',  phenotypes,
         '--kinship',     kinship,

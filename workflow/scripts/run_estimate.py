@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 def main(cache: str, scan_result: str, phenotypes: str, kinship: str,
          metadata: str, output: str, covariates: str) -> None:
     cmd = [
-        sys.executable, '-m', 'mosaiqtl', 'estimate',
+        str(Path(sys.executable).parent / 'mosaiqtl'), 'estimate',
         '--cache',       cache,
         '--scan-result', scan_result,
         '--phenotypes',  phenotypes,

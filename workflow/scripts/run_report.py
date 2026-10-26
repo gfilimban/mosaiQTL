@@ -51,7 +51,7 @@ def main(scan_result: str, perm_dir: str, allele_effects: str, output_dir: str,
     out.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        sys.executable, '-m', 'mosaiqtl', 'report',
+        str(Path(sys.executable).parent / 'mosaiqtl'), 'report',
         '--scan-result',    scan_result,
         '--perm-dir',       perm_dir,
         '--allele-effects', allele_effects,

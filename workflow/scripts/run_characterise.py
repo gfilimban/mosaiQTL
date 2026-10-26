@@ -23,7 +23,7 @@ def main() -> None:
     args = p.parse_args()
 
     cmd = [
-        sys.executable, '-m', 'mosaiqtl', 'characterise',
+        str(Path(sys.executable).parent / 'mosaiqtl'), 'characterise',
         '--egenes',      args.egenes,
         '--phenotypes',  args.phenotypes,
         '--kinship',     args.kinship,

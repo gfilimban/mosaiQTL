@@ -28,8 +28,9 @@ def main(cache: str, phenotypes: str, kinship: str, metadata: str, gene_info: st
          n_perms: int, scan_window: str, window_mb: float, output: str) -> None:
     out = Path(output)
     out.mkdir(parents=True, exist_ok=True)
+    mosaiqtl_bin = str(Path(sys.executable).parent / 'mosaiqtl')
     cmd = [
-        sys.executable, '-m', 'mosaiqtl', 'permute',
+        mosaiqtl_bin, 'permute',
         '--cache',       cache,
         '--phenotypes',  phenotypes,
         '--kinship',     kinship,
