@@ -33,7 +33,7 @@ process REPORT {
 
     script:
     """
-    python ${projectDir}/workflow/scripts/run_report.py \\
+    python ${projectDir}/scripts/run_report.py \\
         --scan-result    ${peak_lod} \\
         --perm-dir       . \\
         --allele-effects ${allele_effects} \\

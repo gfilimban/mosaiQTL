@@ -24,7 +24,7 @@ process FIT_NULL {
 
     script:
     """
-    python ${projectDir}/workflow/scripts/run_fit_null.py \\
+    python ${projectDir}/scripts/run_fit_null.py \\
         --cache       ${genomecache} \\
         --counts      ${phenotypes} \\
         --metadata    ${params.metadata} \\

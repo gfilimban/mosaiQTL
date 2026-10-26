@@ -27,7 +27,7 @@ process FINEMAP {
 
     script:
     """
-    python ${projectDir}/workflow/scripts/run_finemap.py \\
+    python ${projectDir}/scripts/run_finemap.py \\
         --egenes      ${eqtl_peak} \\
         --phenotypes  ${phenotypes} \\
         --kinship     ${kinship_loco} \\

@@ -25,7 +25,7 @@ process ESTIMATE {
 
     script:
     """
-    python ${projectDir}/workflow/scripts/run_estimate.py \\
+    python ${projectDir}/scripts/run_estimate.py \\
         --cache       ${genomecache} \\
         --scan-result ${peak_lod} \\
         --phenotypes  ${phenotypes} \\

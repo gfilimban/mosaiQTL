@@ -25,7 +25,7 @@ process PERMUTE {
 
     script:
     """
-    python ${projectDir}/workflow/scripts/run_permute.py \\
+    python ${projectDir}/scripts/run_permute.py \\
         --cache       ${genomecache} \\
         --phenotypes  ${phenotypes} \\
         --kinship     ${kinship_loco} \\

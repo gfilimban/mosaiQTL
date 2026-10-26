@@ -25,7 +25,7 @@ process LMM_SCAN {
 
     script:
     """
-    python ${projectDir}/workflow/scripts/run_lmm_scan_chr.py \\
+    python ${projectDir}/scripts/run_lmm_scan_chr.py \\
         --cache       ${genomecache} \\
         --kinship     ${kinship_loco} \\
         --phenotypes  ${phenotypes} \\

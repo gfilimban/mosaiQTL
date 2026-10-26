@@ -23,7 +23,7 @@ process MERGE_RESULTS {
 
     script:
     """
-    python ${projectDir}/workflow/scripts/merge_lod_csvs.py \
+    python ${projectDir}/scripts/merge_lod_csvs.py \
         --celltype ${celltype} \
         --output   lod_genome.csv \
         ${lod_csvs}

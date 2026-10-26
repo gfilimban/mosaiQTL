@@ -27,7 +27,7 @@ process CHARACTERISE {
 
     script:
     """
-    python ${projectDir}/workflow/scripts/run_characterise.py \\
+    python ${projectDir}/scripts/run_characterise.py \\
         --egenes      ${eqtl_peak} \\
         --phenotypes  ${phenotypes} \\
         --kinship     ${kinship_loco} \\

@@ -19,7 +19,7 @@ process KINSHIP_LOCO {
 
     script:
     """
-    python ${projectDir}/workflow/scripts/build_kinship_loco.py \\
+    python ${projectDir}/scripts/build_kinship_loco.py \\
         --cache  ${genomecache} \\
         --output kinship_loco.h5
     """
