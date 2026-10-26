@@ -1135,11 +1135,11 @@ def report(
     _setup_logging(verbose)
     import numpy as np
     import pandas as pd
-    from .genotype.cc import FOUNDER_ORDER
+    from .genotype.cc import FOUNDER_ORDER, STRAIN_ORDER
     from .io.results_io import write_eqtl_peak, write_eqtl_stats
     from .pipeline import calibrate_egenes_storey, call_egenes, finalize_egene_summary
     from .qtl.thresholds import get_gev_thresholds, load_per_chr_thresholds
-    from .utils import git_hash
+    from .utils import chr_sort_key, git_hash
 
     peaks = pd.read_csv(scan_result)
     perm_path = perm_dir / "perm_max_lods.csv"
@@ -1157,9 +1157,10 @@ def report(
     # derive tag from scan-result stem when not supplied:
     # peak_lod_glutamatergic_neuron_Lw1.csv  →  glutamatergic_neuron_Lw1
     _tag = suffix or scan_result.stem.removeprefix("peak_lod_")
-    egenes_df = call_egenes(peaks, threshold=gw_thr)
+    _peaks_strict = peaks[peaks["peak_lod"] > gw_thr] if "peak_lod" in peaks.columns else peaks
+    egenes_df = call_egenes(_peaks_strict, threshold=gw_thr)
     is_egene = (
-        peaks["peak_lod"] >= gw_thr
+        peaks["peak_lod"] > gw_thr
         if "peak_lod" in peaks.columns
         else (peaks.index.isin(egenes_df.index))
     )
@@ -1281,7 +1282,13 @@ def report(
             )
         else:
             _strain_counts = _meta_df.groupby("genotype").size()
-            _sorted_strains = [(s, int(_strain_counts[s])) for s in natsorted(_strain_counts.index)]
+            _strain_rank: dict[str, int] = {s: i for i, s in enumerate(STRAIN_ORDER)}
+            _ns_keys = natsorted(_strain_counts.index.tolist())
+            _ns_rank: dict[str, int] = {s: i for i, s in enumerate(_ns_keys)}
+            _sorted_strains = [(s, int(_strain_counts[s])) for s in sorted(
+                _strain_counts.index,
+                key=lambda x: (0, _strain_rank[x], 0) if x in _strain_rank else (1, 0, _ns_rank.get(x, 0)),
+            )]
             _n_total = int(len(_meta_df))
             _n_strains = len(_sorted_strains)
             _min_rep = int(min(n for _, n in _sorted_strains)) if _sorted_strains else 0
@@ -1310,14 +1317,16 @@ def report(
             logger.info("sample_breakdown.csv written: %d strains", _n_strains)
 
             # scan_info.json
+            _chrs_scanned = ','.join(
+                sorted(peaks["chr"].astype(str).unique(), key=chr_sort_key)
+            ) if "chr" in peaks.columns else "all"
             (output_dir / "scan_info.json").write_text(_json.dumps({
                 "mosaiqtl_version": _pkg_version("mosaiqtl"),
                 "git_hash":         git_hash(),
                 "run_date":         pd.Timestamp.now().strftime("%Y-%m-%d"),
                 "celltype":         celltype or "whole_tissue",
-                "model":            "lmm",
                 "scan_type":        scan_type,
-                "chr":              "all",
+                "chr":              _chrs_scanned,
                 "n_genes":          int(len(peaks)),
                 "samples": {
                     "n_total":    _n_total,
