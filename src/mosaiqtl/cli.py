@@ -65,6 +65,32 @@ def _gene_window_lookup(gene_info) -> dict:
     return lookup
 
 
+def _covariates_for_samples(
+    metadata_path: "Path",
+    sample_ids: "list[str]",
+    cov_cols: "list[str]",
+) -> "Optional[np.ndarray]":
+    """Load metadata, restrict to scan samples, build covariate matrix.
+
+    Returns (n_samples, n_covariates) float64 array aligned to sample_ids,
+    or None when sample_id column is absent or any sample is missing.
+    """
+    from .io.covariates import build_covariate_matrix
+
+    meta = pd.read_csv(metadata_path)
+    if "sample_id" not in meta.columns:
+        return None
+    meta_scan = meta[meta["sample_id"].isin(sample_ids)]
+    cov_df = build_covariate_matrix(meta_scan, covariates=cov_cols)
+    sid_series = pd.Series(sample_ids, name="sample_id")
+    cov_aligned = sid_series.map(
+        cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
+    )
+    if cov_aligned.isna().any():
+        return None
+    return np.vstack(cov_aligned.values)
+
+
 def _build_cis_loci_dict(
     genomecache, gene_window: dict, gene_ids: list, window_mb: float
 ) -> dict:
@@ -188,21 +214,8 @@ def fit_null(
     # sample_ids: one per cell — use obs index (sample-level barcode)
     sample_ids = np.asarray(adata.obs.index)
 
-    meta = pd.read_csv(metadata)
-    # build cell-level covariates from metadata (optional)
-    covariates_cells: Optional[np.ndarray] = None
     _cov_cols = [c for c in covariates.split(",") if c.strip()]
-    if "sample_id" in meta.columns and not meta.empty:
-        from .io.covariates import build_covariate_matrix
-
-        cov_df = build_covariate_matrix(meta, covariates=_cov_cols)
-        # align to cell order via sample_id
-        cell_sample = pd.Series(sample_ids, name="sample_id")
-        cov_aligned = cell_sample.map(
-            cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
-        )
-        if not cov_aligned.isna().any():
-            covariates_cells = np.vstack(cov_aligned.values)
+    covariates_cells = _covariates_for_samples(metadata, list(sample_ids), _cov_cols)
 
     logger.info(
         "fit_null_sc_native: %d genes × %d cells",
@@ -377,19 +390,8 @@ def scan(
     gene_ids = list(adata.raw.var.index)
     sample_ids = list(adata.obs.index)
 
-    meta = pd.read_csv(metadata)
     _cov_cols = [c for c in covariates.split(",") if c.strip()]
-    covariates_arr: Optional[np.ndarray] = None
-    if "sample_id" in meta.columns:
-        from .io.covariates import build_covariate_matrix
-
-        cov_df = build_covariate_matrix(meta, covariates=_cov_cols)
-        sid_series = pd.Series(sample_ids, name="sample_id")
-        cov_aligned = sid_series.map(
-            cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
-        )
-        if not cov_aligned.isna().any():
-            covariates_arr = np.vstack(cov_aligned.values)
+    covariates_arr = _covariates_for_samples(metadata, sample_ids, _cov_cols)
 
     null_params = pd.read_csv(null_fit)
     # build per-gene lib_sizes from cell-level counts (sum over genes → per cell total)
@@ -618,20 +620,9 @@ def permute(
     gi = gene_ids.index(rep_gene)
     phenotype = counts_mat[:, gi]
 
-    meta = pd.read_csv(metadata)
+    sample_ids = list(adata.obs.index)
     _cov_cols = [c for c in covariates.split(",") if c.strip()]
-    covariates_arr: Optional[np.ndarray] = None
-    if "sample_id" in meta.columns:
-        from .io.covariates import build_covariate_matrix
-
-        cov_df = build_covariate_matrix(meta, covariates=_cov_cols)
-        sample_ids = list(adata.obs.index)
-        sid_series = pd.Series(sample_ids, name="sample_id")
-        cov_aligned = sid_series.map(
-            cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
-        )
-        if not cov_aligned.isna().any():
-            covariates_arr = np.vstack(cov_aligned.values)
+    covariates_arr = _covariates_for_samples(metadata, sample_ids, _cov_cols)
 
     kd_raw = kin_module.calc_kinship(gc, method="loco")
     kinship_decomp = kin_module.decomp_kinship(kd_raw)
@@ -788,19 +779,8 @@ def estimate(
     gene_ids = list(adata.raw.var.index if adata.raw is not None else adata.var.index)
     sample_ids = list(adata.obs.index)
 
-    meta = pd.read_csv(metadata)
     _cov_cols = [c for c in covariates.split(",") if c.strip()]
-    covariates_arr: Optional[np.ndarray] = None
-    if "sample_id" in meta.columns:
-        from .io.covariates import build_covariate_matrix
-
-        cov_df = build_covariate_matrix(meta, covariates=_cov_cols)
-        sid_series = pd.Series(sample_ids, name="sample_id")
-        cov_aligned = sid_series.map(
-            cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
-        )
-        if not cov_aligned.isna().any():
-            covariates_arr = np.vstack(cov_aligned.values)
+    covariates_arr = _covariates_for_samples(metadata, sample_ids, _cov_cols)
 
     kd_raw = kin_module.calc_kinship(gc, method="loco")
     kinship_decomp = kin_module.decomp_kinship(kd_raw)
@@ -1218,19 +1198,8 @@ def finemap(
     counts_mat = np.asarray(raw_x, dtype=np.float64)  # (n_cells, n_genes)
     sample_ids = list(adata.obs.index)
 
-    meta = pd.read_csv(metadata)
     _cov_cols = [c for c in covariates.split(",") if c.strip()]
-    covariates_arr: Optional[np.ndarray] = None
-    if "sample_id" in meta.columns:
-        from .io.covariates import build_covariate_matrix
-
-        cov_df = build_covariate_matrix(meta, covariates=_cov_cols)
-        sid_series = pd.Series(sample_ids, name="sample_id")
-        cov_aligned = sid_series.map(
-            cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
-        )
-        if not cov_aligned.isna().any():
-            covariates_arr = np.vstack(cov_aligned.values)
+    covariates_arr = _covariates_for_samples(metadata, sample_ids, _cov_cols)
 
     logger.info("Computing LOCO kinship...")
     kd_raw = kin_module.calc_kinship(gc, method="loco")

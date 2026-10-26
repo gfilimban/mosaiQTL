@@ -2087,9 +2087,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
              len(cache.chromosomes), len(cache.sample_ids), cache.sample_ids[0])
 
     # ── load or compute LOCO kinship decomp ───────────────────────────────────
+    import h5py as _h5py
     kd_h5 = _DATA_DIR / 'kinship_loco.h5'
     if kd_h5.exists():
-        import h5py as _h5py
         log.info('loading kinship decomp: %s', kd_h5)
         with _h5py.File(kd_h5, 'r') as _f:
             kinship_decomp = {
@@ -2097,7 +2097,6 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 for c in cache.chromosomes if f'chr{c}' in _f
             }
     else:
-        import h5py as _h5py
         log.info('computing LOCO kinship from cache (first run — saves to %s)...', kd_h5)
         _DATA_DIR.mkdir(parents=True, exist_ok=True)
         kin_raw = calc_kinship(cache, method='loco')
