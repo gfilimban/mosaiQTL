@@ -16,10 +16,10 @@ process MERGE_RESULTS {
     publishDir { "${params.output_dir}/${celltype}" }, mode: 'copy'
 
     input:
-    tuple val(celltype), path(lod_csvs)
+    tuple val(celltype), path(lod_csvs), path(timing_jsons)
 
     output:
-    tuple val(celltype), path('lod_genome.csv'), path('peak_lod.csv')
+    tuple val(celltype), path('lod_genome.csv'), path('peak_lod.csv'), path('scan_stats.csv')
 
     script:
     """
@@ -31,6 +31,6 @@ process MERGE_RESULTS {
 
     stub:
     """
-    touch lod_genome.csv
+    touch lod_genome.csv peak_lod.csv scan_stats.csv
     """
 }

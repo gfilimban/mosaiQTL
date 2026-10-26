@@ -6,6 +6,7 @@ Called by the MERGE_RESULTS Nextflow process:
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -53,6 +54,26 @@ def main(csvs: tuple[str, ...], celltype: str, output: str) -> None:
     peak_path = str(output).replace('lod_genome.csv', 'peak_lod.csv')
     peak.to_csv(peak_path, index=False)
     log.info('wrote %s (%d genes)', peak_path, len(peak))
+
+    # scan_stats.csv — collect per-chr timing JSONs emitted by run_lmm_scan_chr.py
+    timing_files = sorted(Path('.').glob('timing_chr*.json'), key=lambda p: _chr_key(str(p)))
+    scan_stats_rows = []
+    for tf in timing_files:
+        try:
+            t = json.loads(tf.read_text())
+            scan_stats_rows.append({
+                'section':      'lmm_scan',
+                'component':    f'chr{t["chr"]}',
+                'n_items':      t['n_genes'],
+                'elapsed_s':    t['elapsed_s'],
+                'peak_heap_mb': t['peak_heap_mb'],
+                'peak_rss_mb':  t['peak_rss_mb'],
+            })
+        except Exception as exc:
+            log.warning('could not read %s: %s', tf, exc)
+    stats_path = str(output).replace('lod_genome.csv', 'scan_stats.csv')
+    pd.DataFrame(scan_stats_rows).to_csv(stats_path, index=False)
+    log.info('wrote %s (%d rows)', stats_path, len(scan_stats_rows))
 
 
 if __name__ == '__main__':

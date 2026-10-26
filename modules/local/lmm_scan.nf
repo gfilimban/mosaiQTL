@@ -21,7 +21,7 @@ process LMM_SCAN {
     tuple val(celltype), path(phenotypes), path(gene_info), val(chrom)
 
     output:
-    tuple val(celltype), path("lod_chr${chrom}.csv")
+    tuple val(celltype), path("lod_chr${chrom}.csv"), path("timing_chr${chrom}.json")
 
     script:
     """
@@ -40,6 +40,6 @@ process LMM_SCAN {
 
     stub:
     """
-    touch lod_chr${chrom}.csv
+    touch lod_chr${chrom}.csv timing_chr${chrom}.json
     """
 }

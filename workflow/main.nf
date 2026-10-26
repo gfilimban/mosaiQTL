@@ -165,12 +165,12 @@ workflow {
     LMM_SCAN.out
         .groupTuple()
         | MERGE_RESULTS
-    // MERGE_RESULTS.out: [celltype, lod_genome.csv, peak_lod.csv]
+    // MERGE_RESULTS.out: [celltype, lod_genome.csv, peak_lod.csv, scan_stats.csv]
 
     // ── Stage 3: founder haplotype effects at peak loci ───────────────────────
     // Join peak_lod with phenotypes from ct_ch on celltype
     estimate_input = MERGE_RESULTS.out
-        .map { ct, lod, peak -> [ct, peak] }
+        .map { ct, lod, peak, scan_stats -> [ct, peak] }
         .join(ct_ch.map { ct, pheno, gi -> [ct, pheno] })
         .map { ct, peak, pheno -> [ct, peak, pheno] }
 
@@ -185,19 +185,20 @@ workflow {
         }
 
     report_input = MERGE_RESULTS.out
-        .map { ct, lod, peak -> [ct, peak] }
+        .map { ct, lod, peak, scan_stats -> [ct, peak, scan_stats] }
         .join(perm_files_ch)
         .join(ESTIMATE.out)
-        .map { ct, peak, perms, effects -> [ct, peak, perms, effects] }
+        .map { ct, peak, scan_stats, perms, effects -> [ct, peak, perms, effects, scan_stats] }
 
     REPORT(report_input)
-    // REPORT.out: [celltype, eqtl_summary.csv, [eqtl_peak*.csv], [eqtl_stats*.csv], run_metadata.json]
+    // REPORT.out: [celltype, eqtl_summary.csv, [eqtl_peak*.csv], [eqtl_stats*.csv],
+    //              run_metadata.json, scan_info.json, sample_breakdown.csv]
 
     // ── Stage 5: LOD-drop CI for eGenes ──────────────────────────────────────
     // CHARACTERISE rescans each eGene's chromosome to fill ci_lo_bp/ci_hi_bp.
     // Takes eqtl_peak*.csv from REPORT; outputs eqtl_peak_ci*.csv for FINEMAP.
     char_input = REPORT.out
-        .map { ct, summary, peaks, stats, metadata ->
+        .map { ct, summary, peaks, stats, run_meta, scan_info, breakdown ->
             def peak_file = peaks instanceof List ? peaks[0] : peaks
             [ct, peak_file]
         }

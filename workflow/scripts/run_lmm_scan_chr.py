@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import time
+import tracemalloc
 from pathlib import Path
 
 import click
@@ -16,6 +19,19 @@ logging.basicConfig(
     datefmt='%H:%M:%S',
 )
 log = logging.getLogger(__name__)
+
+
+def _write_timing(
+    out: Path, chrom: str, n_genes: int,
+    elapsed_s: float, peak_heap_mb: float, peak_rss_mb: float,
+) -> None:
+    (out / f'timing_chr{chrom}.json').write_text(json.dumps({
+        'chr': chrom,
+        'n_genes': n_genes,
+        'elapsed_s': round(elapsed_s, 3),
+        'peak_heap_mb': round(peak_heap_mb, 1),
+        'peak_rss_mb': round(peak_rss_mb, 1),
+    }))
 
 
 def _load_phenotypes(
@@ -127,6 +143,9 @@ def main(
 
     log.info('starting chr%s scan', chrom)
 
+    t_start = time.perf_counter()
+    tracemalloc.start()
+
     gi = pd.read_csv(gene_info)
     pheno_mat, gene_ids, sample_ids, gene_chr_map = _load_phenotypes(
         Path(phenotypes), chrom, gi, scan_window
@@ -137,6 +156,10 @@ def main(
         pd.DataFrame(columns=['gene_id', 'chr', 'locus', 'pos_mb', 'lod']).to_csv(
             out_csv, index=False
         )
+        elapsed_s = time.perf_counter() - t_start
+        _, peak_heap = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        _write_timing(out, chrom, 0, elapsed_s, peak_heap / 1024 ** 2, 0.0)
         return
 
     meta = pd.read_csv(metadata)
@@ -176,7 +199,12 @@ def main(
         gene_symbol_map=gene_symbol_map,
     )
 
-    log.info('wrote %s', out_csv)
+    elapsed_s = time.perf_counter() - t_start
+    _, peak_heap = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    from mosaiqtl.utils import get_rss_mb
+    _write_timing(out, chrom, len(gene_ids), elapsed_s, peak_heap / 1024 ** 2, get_rss_mb())
+    log.info('wrote %s (%.1fs)', out_csv, elapsed_s)
 
 
 if __name__ == '__main__':

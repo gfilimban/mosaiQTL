@@ -1081,6 +1081,18 @@ def estimate(
     "eqtl_stats_<suffix>.csv, eqtl_summary_<suffix>.csv. Convention: "
     "<tissue>_<celltype>_<scan-tag>, e.g. ctxhipp_glutamatergic_neuron_Lw1.",
 )
+@click.option(
+    "--metadata",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="Sample metadata CSV (sample_id + genotype columns required). When given, "
+    "writes scan_info.json and sample_breakdown.csv alongside other outputs.",
+)
+@click.option(
+    "--celltype",
+    default=None,
+    help="Cell type label for scan_info.json. Defaults to 'whole_tissue'.",
+)
 @click.option("--verbose", is_flag=True, default=False)
 def report(
     scan_result: Path,
@@ -1090,6 +1102,8 @@ def report(
     allele_effects: Optional[Path],
     pval_perm: Optional[Path],
     suffix: Optional[str],
+    metadata: Optional[Path],
+    celltype: Optional[str],
     verbose: bool,
 ) -> None:
     """Summary tables + QC plots from a completed scan.
@@ -1097,7 +1111,8 @@ def report(
     Reads peak_lod.csv + perm directory from prior subcommands.
     Writes eqtl_summary.csv (eGene table with Storey FDR columns),
     genome_summary.png, eqtl_peak.csv (one row per eGene, haplotype-level stats),
-    and eqtl_stats.csv (run-level summary) into OUTPUT_DIR. Allele-contrast
+    and eqtl_stats.csv (run-level summary) into OUTPUT_DIR. When --metadata is
+    given, also writes scan_info.json and sample_breakdown.csv. Allele-contrast
     fields (variant, REF/ALT founders, AF, effect size) remain NaN until
     Sanger fine-mapping supplies real REF/ALT calls.
     """
@@ -1234,6 +1249,68 @@ def report(
     }
     write_eqtl_stats(chrom_stats, genome_stats, output_dir / f"eqtl_stats_{_tag}.csv")
     logger.info("eqtl_stats_%s.csv written: %d rows", _tag, len(chrom_stats) + 1)
+
+    # scan_info.json + sample_breakdown.csv — only when metadata is supplied
+    if metadata is not None:
+        import json as _json
+        from importlib.metadata import version as _pkg_version
+        from natsort import natsorted
+
+        _meta_df = pd.read_csv(metadata)
+        _req_cols = {"sample_id", "genotype"}
+        if not _req_cols.issubset(_meta_df.columns):
+            logger.warning(
+                "--metadata missing required columns %s; scan_info.json skipped",
+                _req_cols - set(_meta_df.columns),
+            )
+        else:
+            _strain_counts = _meta_df.groupby("genotype").size()
+            _sorted_strains = [(s, int(_strain_counts[s])) for s in natsorted(_strain_counts.index)]
+            _n_total = int(len(_meta_df))
+            _n_strains = len(_sorted_strains)
+            _min_rep = int(min(n for _, n in _sorted_strains)) if _sorted_strains else 0
+            _max_rep = int(max(n for _, n in _sorted_strains)) if _sorted_strains else 0
+            _multi_dataset = "dataset" in _meta_df.columns and _meta_df["dataset"].nunique() > 1
+
+            # sample_breakdown.csv
+            _breakdown_cols: list = ["strain", "n_samples"]
+            if _multi_dataset:
+                _breakdown_cols.append("dataset_breakdown")
+            _breakdown_rows: list = []
+            for _strain, _n in _sorted_strains:
+                _row: dict = {"strain": _strain, "n_samples": _n}
+                if _multi_dataset:
+                    _ds_counts = (
+                        _meta_df[_meta_df["genotype"] == _strain]
+                        .groupby("dataset").size().to_dict()
+                    )
+                    _row["dataset_breakdown"] = ";".join(
+                        f"{d}:{n}" for d, n in sorted(_ds_counts.items())
+                    )
+                _breakdown_rows.append(_row)
+            pd.DataFrame(_breakdown_rows, columns=_breakdown_cols).to_csv(
+                output_dir / "sample_breakdown.csv", index=False
+            )
+            logger.info("sample_breakdown.csv written: %d strains", _n_strains)
+
+            # scan_info.json
+            (output_dir / "scan_info.json").write_text(_json.dumps({
+                "mosaiqtl_version": _pkg_version("mosaiqtl"),
+                "git_hash":         git_hash(),
+                "run_date":         pd.Timestamp.now().strftime("%Y-%m-%d"),
+                "celltype":         celltype or "whole_tissue",
+                "scan_type":        "lmm",
+                "chr":              "all",
+                "n_genes":          int(len(peaks)),
+                "samples": {
+                    "n_total":    _n_total,
+                    "n_strains":  _n_strains,
+                    "min_reps":   _min_rep,
+                    "max_reps":   _max_rep,
+                    "per_strain": {str(s): int(n) for s, n in _sorted_strains},
+                },
+            }, indent=2))
+            logger.info("scan_info.json written")
 
 
 # ── characterise ──────────────────────────────────────────────────────────
