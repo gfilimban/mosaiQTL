@@ -75,6 +75,7 @@ def _covariates_for_samples(
     Returns (n_samples, n_covariates) float64 array aligned to sample_ids,
     or None when sample_id column is absent or any sample is missing.
     """
+    import pandas as pd
     from .io.covariates import build_covariate_matrix
 
     meta = pd.read_csv(metadata_path)
