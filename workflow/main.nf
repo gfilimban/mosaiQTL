@@ -125,9 +125,16 @@ def ct_channel(gene_info_global) {
 
 workflow {
 
+    // derive paths from data_dir when not set explicitly in the params file
+    if (params.data_dir) {
+        if (!params.kinship_loco)   params.kinship_loco   = "${params.data_dir}/kinship_loco.h5"
+        if (!params.metadata)       params.metadata       = "${params.data_dir}/igvf_sample_metadata.csv"
+        if (!params.sanger_alleles) params.sanger_alleles = "${params.data_dir}/sanger_alleles.h5"
+    }
+
     genomecache      = _require(params.genomecache, 'genomecache')
     gene_info_global = _require(params.gene_info,   'gene_info')
-    sanger_alleles   = file("${params.data_dir}/sanger_alleles.h5")
+    sanger_alleles   = _require(params.sanger_alleles, 'sanger_alleles')
 
     // kinship: shared across all cell types — built once, then reused
     if (params.kinship_loco) {
