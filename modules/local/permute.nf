@@ -32,7 +32,7 @@ process PERMUTE {
         --metadata    ${params.metadata ?: params.data_dir + '/igvf_sample_metadata.csv'} \\
         --gene-info   ${gene_info} \\
         --n-perms     ${params.n_perms} \\
-        --scan-window ${params.scan_window} \\
+        --scan-window genome \\
         --window-mb   ${params.window_mb} \\
         --output      .
     """
