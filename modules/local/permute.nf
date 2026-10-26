@@ -29,7 +29,7 @@ process PERMUTE {
         --cache       ${genomecache} \\
         --phenotypes  ${phenotypes} \\
         --kinship     ${kinship_loco} \\
-        --metadata    ${params.metadata} \\
+        --metadata    ${params.metadata ?: params.data_dir + '/igvf_sample_metadata.csv'} \\
         --gene-info   ${gene_info} \\
         --n-perms     ${params.n_perms} \\
         --scan-window ${params.scan_window} \\

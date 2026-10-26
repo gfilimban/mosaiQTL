@@ -31,7 +31,7 @@ process FINEMAP {
         --egenes      ${eqtl_peak} \\
         --phenotypes  ${phenotypes} \\
         --kinship     ${kinship_loco} \\
-        --metadata    ${params.metadata} \\
+        --metadata    ${params.metadata ?: params.data_dir + '/igvf_sample_metadata.csv'} \\
         --covariates  '${params.covariates}' \\
         --cache       ${genomecache} \\
         --alleles     ${sanger_alleles} \\

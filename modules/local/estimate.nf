@@ -30,7 +30,7 @@ process ESTIMATE {
         --scan-result ${peak_lod} \\
         --phenotypes  ${phenotypes} \\
         --kinship     ${kinship_loco} \\
-        --metadata    ${params.metadata} \\
+        --metadata    ${params.metadata ?: params.data_dir + '/igvf_sample_metadata.csv'} \\
         --covariates  '${params.covariates}' \\
         --output      allele_effects.csv
     """

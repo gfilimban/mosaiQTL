@@ -32,7 +32,7 @@ process CHARACTERISE {
         --phenotypes  ${phenotypes} \\
         --kinship     ${kinship_loco} \\
         --cache       ${genomecache} \\
-        --metadata    ${params.metadata} \\
+        --metadata    ${params.metadata ?: params.data_dir + '/igvf_sample_metadata.csv'} \\
         --covariates  '${params.covariates}' \\
         --output-dir  .
     """

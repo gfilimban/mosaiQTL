@@ -31,7 +31,7 @@ process LMM_SCAN {
         --phenotypes  ${phenotypes} \\
         --gene-info   ${gene_info} \\
         --chr         ${chrom} \\
-        --metadata    ${params.metadata} \\
+        --metadata    ${params.metadata ?: params.data_dir + '/igvf_sample_metadata.csv'} \\
         --covariates  '${params.covariates}' \\
         --scan-window ${params.scan_window} \\
         --window-mb   ${params.window_mb} \\
