@@ -144,12 +144,11 @@ def main(
     covariates_arr: 'np.ndarray | None' = None
     if cov_cols:
         meta = pd.read_csv(metadata)
-        meta_scan = meta[meta['sample_id'].isin(sample_ids)]
+        meta_scan = meta[meta['sample_id'].isin(sample_ids)].drop_duplicates('sample_id')
         cov_df = build_covariate_matrix(meta_scan, covariates=cov_cols)
-        sid_series = pd.Series(sample_ids, name='sample_id')
-        cov_aligned = sid_series.map(cov_df.apply(lambda r: r.tolist(), axis=1))
-        if not cov_aligned.isna().any():
-            covariates_arr = np.vstack(cov_aligned.values)
+        cov_aligned = cov_df.reindex(sample_ids)
+        if not cov_aligned.isna().any().any():
+            covariates_arr = cov_aligned.values
 
     gc = GenomeCache.from_hdf5(Path(cache))
     kinship_decomp = _load_kinship(Path(kinship), chrom, sample_ids)

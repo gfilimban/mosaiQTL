@@ -80,27 +80,12 @@ def _covariates_for_samples(
     meta = pd.read_csv(metadata_path)
     if "sample_id" not in meta.columns:
         return None
-    meta_scan = meta[meta["sample_id"].isin(sample_ids)]
+    meta_scan = meta[meta["sample_id"].isin(sample_ids)].drop_duplicates("sample_id")
     cov_df = build_covariate_matrix(meta_scan, covariates=cov_cols)
-    sid_series = pd.Series(sample_ids, name="sample_id")
-    cov_aligned = sid_series.map(
-        cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
-    )
-    import numpy as np
-    import pandas as pd
-
-    meta = pd.read_csv(metadata_path)
-    if "sample_id" not in meta.columns:
+    cov_aligned = cov_df.reindex(sample_ids)
+    if cov_aligned.isna().any().any():
         return None
-    meta_scan = meta[meta["sample_id"].isin(sample_ids)]
-    cov_df = build_covariate_matrix(meta_scan, covariates=cov_cols)
-    sid_series = pd.Series(sample_ids, name="sample_id")
-    cov_aligned = sid_series.map(
-        cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
-    )
-    if cov_aligned.isna().any():
-        return None
-    return np.vstack(cov_aligned.values)
+    return cov_aligned.values
 
 
 def _load_phenotypes_h5(
