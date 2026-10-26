@@ -1102,6 +1102,12 @@ def estimate(
     default=None,
     help="Cell type label for scan_info.json. Defaults to 'whole_tissue'.",
 )
+@click.option(
+    "--scan-type",
+    default="L",
+    type=click.Choice(["L", "C", "G"]),
+    help="Scan window type for scan_info.json: L = local ±window_mb, C = chromosome-wide, G = genome-wide.",
+)
 @click.option("--verbose", is_flag=True, default=False)
 def report(
     scan_result: Path,
@@ -1113,6 +1119,7 @@ def report(
     suffix: Optional[str],
     metadata: Optional[Path],
     celltype: Optional[str],
+    scan_type: str,
     verbose: bool,
 ) -> None:
     """Summary tables + QC plots from a completed scan.
@@ -1308,7 +1315,8 @@ def report(
                 "git_hash":         git_hash(),
                 "run_date":         pd.Timestamp.now().strftime("%Y-%m-%d"),
                 "celltype":         celltype or "whole_tissue",
-                "scan_type":        "lmm",
+                "model":            "lmm",
+                "scan_type":        scan_type,
                 "chr":              "all",
                 "n_genes":          int(len(peaks)),
                 "samples": {

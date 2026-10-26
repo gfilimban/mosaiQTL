@@ -40,14 +40,14 @@ def _load_phenotypes(
     gene_info: pd.DataFrame,
     scan_window: str,
 ) -> tuple[np.ndarray, list[str], list[str], dict[str, str]]:
-    """Load phenotype matrix for genes on chrom (cis) or all genes (genome).
+    """Load phenotype matrix for genes on chrom (cis/local) or all genes (genome).
 
     Returns
     -------
     pheno_mat : (n_genes, n_samples) float32
     gene_ids  : list of gene IDs, length n_genes
     sample_ids : list of sample IDs, length n_samples
-    gene_chr_map : {gene_id: chrom} for cis filtering
+    gene_chr_map : {gene_id: chrom} for cis/local filtering
     """
     with h5py.File(h5_path, 'r') as f:
         # accept both canonical names (gene_ids/sample_ids) and legacy (genes/samples)
@@ -59,7 +59,7 @@ def _load_phenotypes(
                                     for g in f[_gid_key][:]]
         gene_chr_map = dict(zip(gene_info['gene_id'], gene_info['chr'].astype(str)))
 
-        if scan_window == 'cis':
+        if scan_window in ('cis', 'local'):
             chrom_genes = gene_info.loc[
                 gene_info['chr'].astype(str) == str(chrom), 'gene_id'
             ].tolist()
@@ -108,6 +108,9 @@ def _load_kinship(
     return {chrom: {'values': values, 'vectors': vectors}}
 
 
+_SW_MAP: dict[str, str] = {'L': 'local', 'C': 'cis', 'G': 'genome'}
+
+
 @click.command()
 @click.option('--cache', required=True, type=click.Path(exists=True))
 @click.option('--kinship', required=True, type=click.Path(exists=True))
@@ -116,8 +119,9 @@ def _load_kinship(
 @click.option('--chr', 'chrom', required=True)
 @click.option('--metadata', required=True, type=click.Path(exists=True))
 @click.option('--covariates', default='sex,dataset', show_default=True)
-@click.option('--scan-window', default='cis', show_default=True,
-              type=click.Choice(['cis', 'genome', 'local']))
+@click.option('--scan-type', default='L', show_default=True,
+              type=click.Choice(['L', 'C', 'G']),
+              help='L = local ±window_mb | C = chromosome-wide | G = genome-wide')
 @click.option('--window-mb', default=1.0, show_default=True, type=float)
 @click.option('--output-dir', default='.', show_default=True, type=click.Path())
 def main(
@@ -128,7 +132,7 @@ def main(
     chrom: str,
     metadata: str,
     covariates: str,
-    scan_window: str,
+    scan_type: str,
     window_mb: float,
     output_dir: str,
 ) -> None:
@@ -137,18 +141,20 @@ def main(
     from mosaiqtl.io.covariates import build_covariate_matrix
     from mosaiqtl.qtl.scan import scan_multi_gene
 
+    _sw = _SW_MAP[scan_type]
+
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     out_csv = out / f'lod_chr{chrom}.csv'
 
-    log.info('starting chr%s scan', chrom)
+    log.info('starting chr%s scan (scan_type=%s)', chrom, scan_type)
 
     t_start = time.perf_counter()
     tracemalloc.start()
 
     gi = pd.read_csv(gene_info)
     pheno_mat, gene_ids, sample_ids, gene_chr_map = _load_phenotypes(
-        Path(phenotypes), chrom, gi, scan_window
+        Path(phenotypes), chrom, gi, _sw
     )
 
     if len(gene_ids) == 0:
@@ -184,6 +190,18 @@ def main(
         if 'gene_symbol' in gi.columns else None
     )
 
+    # strand-aware gene boundary: end/1e6 for − strand genes, start/1e6 for + strand
+    gene_pos_mb_map: 'dict[str, float] | None' = None
+    if _sw == 'local':
+        _has_strand = 'strand' in gi.columns
+        gene_pos_mb_map = {}
+        for _, row in gi.iterrows():
+            gid = str(row['gene_id'])
+            if _has_strand and row['strand'] == '-':
+                gene_pos_mb_map[gid] = float(row['end']) / 1e6
+            else:
+                gene_pos_mb_map[gid] = float(row['start']) / 1e6
+
     scan_multi_gene(
         pheno_mat.T,
         gene_ids,
@@ -193,7 +211,8 @@ def main(
         sample_ids=geno_ids,
         covariates=covariates_arr,
         use_rint=True,
-        scan_window=scan_window,
+        scan_window=_sw,
+        gene_pos_mb_map=gene_pos_mb_map,
         window_mb=window_mb,
         output_dir=out,
         gene_symbol_map=gene_symbol_map,

@@ -30,13 +30,6 @@ def _git_hash(project_dir: str | None) -> str:
         return 'unknown'
 
 
-def _pkg_version() -> str:
-    try:
-        return importlib.metadata.version('mosaiqtl')
-    except importlib.metadata.PackageNotFoundError:
-        return '0.0.0+unknown'
-
-
 @click.command()
 @click.option('--scan-result',    required=True,  type=click.Path(exists=True))
 @click.option('--perm-dir',       required=True,  type=click.Path(exists=True))
@@ -45,6 +38,8 @@ def _pkg_version() -> str:
               help='scan_stats.csv from MERGE_RESULTS — copied to output dir.')
 @click.option('--output-dir',     required=True,  type=click.Path())
 @click.option('--celltype',       default='',     help='Cell type label for metadata.')
+@click.option('--scan-type',      default='L',    type=click.Choice(['L', 'C', 'G']),
+              help='L = local ±window_mb | C = chromosome-wide | G = genome-wide')
 @click.option('--project-dir',    default=None,   help='Repo root for git-hash resolution.')
 @click.option('--nf-run-name',    default='',     help='Nextflow workflow.runName.')
 @click.option('--metadata',       default=None,   type=click.Path(),
@@ -52,8 +47,8 @@ def _pkg_version() -> str:
 @click.option('--phenotypes',     default=None,   type=click.Path(),
               help='counts_lognorm.h5 — forwarded to mosaiqtl report (currently unused).')
 def main(scan_result: str, perm_dir: str, allele_effects: str, scan_stats: str | None,
-         output_dir: str, celltype: str, project_dir: str | None, nf_run_name: str,
-         metadata: str | None, phenotypes: str | None) -> None:
+         output_dir: str, celltype: str, scan_type: str, project_dir: str | None,
+         nf_run_name: str, metadata: str | None, phenotypes: str | None) -> None:
     import shutil
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -65,6 +60,7 @@ def main(scan_result: str, perm_dir: str, allele_effects: str, scan_stats: str |
         '--allele-effects', allele_effects,
         '--output-dir',     str(out),
         '--celltype',       celltype or 'whole_tissue',
+        '--scan-type',      scan_type,
     ]
     if metadata and Path(metadata).exists():
         cmd += ['--metadata', metadata]
@@ -78,8 +74,13 @@ def main(scan_result: str, perm_dir: str, allele_effects: str, scan_stats: str |
             shutil.copy2(scan_stats, dest)
         log.info('scan_stats.csv copied to %s', dest)
 
+    try:
+        pkg_version = importlib.metadata.version('mosaiqtl')
+    except importlib.metadata.PackageNotFoundError:
+        pkg_version = '0.0.0+unknown'
+
     run_metadata = {
-        'mosaiqtl_version': _pkg_version(),
+        'mosaiqtl_version': pkg_version,
         'git_hash':         _git_hash(project_dir),
         'celltype':         celltype,
         'nf_run_name':      nf_run_name,

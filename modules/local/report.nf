@@ -48,6 +48,7 @@ process REPORT {
         --celltype       '${celltype}' \\
         --project-dir    '${projectDir}' \\
         --nf-run-name    '${workflow.runName}' \\
+        --scan-type      ${params.scan_type} \\
         --metadata       '${meta_path}' \\
         --phenotypes     '${pheno_path}'
     """

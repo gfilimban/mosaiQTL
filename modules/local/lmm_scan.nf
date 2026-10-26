@@ -33,7 +33,7 @@ process LMM_SCAN {
         --chr         ${chrom} \\
         --metadata    ${params.metadata ?: params.data_dir + '/igvf_sample_metadata.csv'} \\
         --covariates  '${params.covariates}' \\
-        --scan-window ${params.scan_window} \\
+        --scan-type   ${params.scan_type} \\
         --window-mb   ${params.window_mb} \\
         --output-dir  .
     """

@@ -18,8 +18,9 @@ log = logging.getLogger(__name__)
 
 
 def _chr_key(path: str) -> tuple[int, int | str]:
-    stem = Path(path).stem.replace('lod_chr', '')
-    return (0, int(stem)) if stem.isdigit() else (1, stem)
+    import re
+    m = re.search(r'(\d+)$', Path(path).stem)
+    return (0, int(m.group(1))) if m else (1, Path(path).stem)
 
 
 @click.command()

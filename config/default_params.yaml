@@ -30,8 +30,8 @@ metadata:      null        # path to sample metadata CSV (required by fit-null, 
 covariates:    'sex,dataset'  # comma-separated metadata columns as fixed effects; '' = intercept-only
 
 output_dir:    'results'
-scan_type:     'lmm'      # lmm | nb-glmm
-scan_window:   'cis'      # cis | genome | local
+model:         'lmm'      # lmm | nb-glmm
+scan_type:     'L'        # L (local ±window_mb) | C (chromosome-wide) | G (genome-wide)
 chroms:        'all'      # 'all' or comma-separated: '1,2,8'
 n_perms:       1000
 window_mb:     1.0        # half-window for local scan (Mb)
