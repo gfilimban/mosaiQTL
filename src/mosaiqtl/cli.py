@@ -149,6 +149,7 @@ def _pick_median_h2_gene(
     kinship_decomp: "dict",
     n_sample: int = 200,
     seed: int = 1,
+    geno_map: "dict[str, str] | None" = None,
 ) -> "tuple[str, float]":
     """Sample genes, estimate h² for each, return (gene_id, median_h²).
 
@@ -176,7 +177,8 @@ def _pick_median_h2_gene(
         mat = f["counts"][idxs, :].astype(np.float64)
         sampled_gids = [all_gids[i] for i in idxs]
 
-    Z, _ = _resolve_z(sids, gc)
+    geno_sids = [geno_map.get(s, s) for s in sids] if geno_map else sids
+    Z, _ = _resolve_z(geno_sids, gc)
     n_per_strain = Z.sum(axis=0)
     ref_chr = natsorted(kinship_decomp.keys())[0]
     ev = kinship_decomp[ref_chr]["values"]
@@ -739,6 +741,12 @@ def permute(
 
     gc = GenomeCache.from_hdf5(cache)
 
+    meta_df = pd.read_csv(metadata)
+    meta_geno_map: dict[str, str] = (
+        dict(zip(meta_df["sample_id"], meta_df["genotype"]))
+        if "genotype" in meta_df.columns else {}
+    )
+
     # ── kinship ────────────────────────────────────────────────────────────────
     if kinship is not None:
         kinship_decomp = _load_kinship_h5(kinship)
@@ -758,7 +766,9 @@ def permute(
             phenotype_vec = mat[0]
             rep_gene = gene
         else:
-            rep_gene, _ = _pick_median_h2_gene(phenotypes, gc, kinship_decomp)
+            rep_gene, _ = _pick_median_h2_gene(
+                phenotypes, gc, kinship_decomp, geno_map=meta_geno_map
+            )
             mat, found_gids, sample_ids_list = _load_phenotypes_h5(
                 phenotypes, [rep_gene]
             )
@@ -826,7 +836,7 @@ def permute(
         gene_pos_mb=perm_gene_pos_mb,
         window_mb=window_mb if perm_chrom is not None else None,
         permutation_method=perm_method,
-        sample_ids=list(sample_ids),
+        sample_ids=[meta_geno_map.get(s, s) for s in sample_ids],
     )
 
     output.mkdir(parents=True, exist_ok=True)

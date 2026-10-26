@@ -139,11 +139,14 @@ def main(
         )
         return
 
+    meta = pd.read_csv(metadata)
+    meta_geno_map: dict[str, str] = dict(zip(meta['sample_id'], meta['genotype']))
+    geno_ids = [meta_geno_map.get(s, s) for s in sample_ids]
+
     # build covariate matrix aligned to scan sample order
     cov_cols = [c for c in covariates.split(',') if c.strip()]
     covariates_arr: 'np.ndarray | None' = None
     if cov_cols:
-        meta = pd.read_csv(metadata)
         meta_scan = meta[meta['sample_id'].isin(sample_ids)].drop_duplicates('sample_id')
         cov_df = build_covariate_matrix(meta_scan, covariates=cov_cols)
         cov_aligned = cov_df.reindex(sample_ids)
@@ -159,12 +162,12 @@ def main(
     )
 
     scan_multi_gene(
-        pheno_mat,
+        pheno_mat.T,
         gene_ids,
         gc,
         gene_chr_map=gene_chr_map,
         kinship_decomp=kinship_decomp,
-        sample_ids=sample_ids,
+        sample_ids=geno_ids,
         covariates=covariates_arr,
         use_rint=True,
         scan_window=scan_window,
