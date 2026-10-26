@@ -86,9 +86,143 @@ def _covariates_for_samples(
     cov_aligned = sid_series.map(
         cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
     )
+    import numpy as np
+    import pandas as pd
+
+    meta = pd.read_csv(metadata_path)
+    if "sample_id" not in meta.columns:
+        return None
+    meta_scan = meta[meta["sample_id"].isin(sample_ids)]
+    cov_df = build_covariate_matrix(meta_scan, covariates=cov_cols)
+    sid_series = pd.Series(sample_ids, name="sample_id")
+    cov_aligned = sid_series.map(
+        cov_df.set_index(cov_df.index).apply(lambda r: r.tolist(), axis=1)
+    )
     if cov_aligned.isna().any():
         return None
     return np.vstack(cov_aligned.values)
+
+
+def _load_phenotypes_h5(
+    h5_path: "Path",
+    gene_ids: "list[str] | None" = None,
+) -> "tuple[np.ndarray, list[str], list[str]]":
+    """Load phenotype matrix from counts_lognorm.h5 (custom HDF5).
+
+    Returns (mat, gene_ids_out, sample_ids) where mat is (n_genes, n_samples).
+    When gene_ids is provided only those genes are returned (in order given).
+    """
+    import h5py
+    import numpy as np
+
+    with h5py.File(h5_path, "r") as f:
+        _sid_key = "sample_ids" if "sample_ids" in f else "samples"
+        _gid_key = "gene_ids" if "gene_ids" in f else "genes"
+        sids: list[str] = [
+            s.decode() if isinstance(s, bytes) else s for s in f[_sid_key][:]
+        ]
+        all_gids: list[str] = [
+            g.decode() if isinstance(g, bytes) else g for g in f[_gid_key][:]
+        ]
+        if gene_ids is None:
+            mat = f["counts"][:].astype(np.float64)
+            return mat, all_gids, sids
+        gid_idx = {g: i for i, g in enumerate(all_gids)}
+        idxs = [gid_idx[g] for g in gene_ids if g in gid_idx]
+        found = [g for g in gene_ids if g in gid_idx]
+        mat = f["counts"][np.array(idxs), :].astype(np.float64) if idxs else np.empty(
+            (0, len(sids))
+        )
+    return mat, found, sids
+
+
+def _load_kinship_h5(
+    h5_path: "Path",
+) -> "dict[str, dict[str, np.ndarray]]":
+    """Load all-chromosome LOCO kinship eigendecomp from HDF5.
+
+    Returns {chrom: {'values': ndarray, 'vectors': ndarray}}.
+    """
+    import h5py
+    import numpy as np
+
+    decomp: dict = {}
+    with h5py.File(h5_path, "r") as f:
+        for key in f:
+            if key.startswith("chr"):
+                c = key[3:]
+                decomp[c] = {
+                    "values": f[key]["values"][:].astype(np.float64),
+                    "vectors": f[key]["vectors"][:].astype(np.float64),
+                }
+    return decomp
+
+
+def _pick_median_h2_gene(
+    h5_path: "Path",
+    gc: "object",
+    kinship_decomp: "dict",
+    n_sample: int = 200,
+    seed: int = 1,
+) -> "tuple[str, float]":
+    """Sample genes, estimate h² for each, return (gene_id, median_h²).
+
+    Mirrors validate_tissue.py S5 median-h² representative gene selection.
+    """
+    import h5py
+    import numpy as np
+    from natsort import natsorted
+    from .qtl.lmm import estimate_h2_null
+    from .qtl.scan import _resolve_z
+    from .utils import rint
+
+    with h5py.File(h5_path, "r") as f:
+        _sid_key = "sample_ids" if "sample_ids" in f else "samples"
+        _gid_key = "gene_ids" if "gene_ids" in f else "genes"
+        sids: list[str] = [
+            s.decode() if isinstance(s, bytes) else s for s in f[_sid_key][:]
+        ]
+        all_gids: list[str] = [
+            g.decode() if isinstance(g, bytes) else g for g in f[_gid_key][:]
+        ]
+        rng = np.random.default_rng(seed)
+        n = min(n_sample, len(all_gids))
+        idxs = np.sort(rng.choice(len(all_gids), n, replace=False))
+        mat = f["counts"][idxs, :].astype(np.float64)
+        sampled_gids = [all_gids[i] for i in idxs]
+
+    Z, _ = _resolve_z(sids, gc)
+    n_per_strain = Z.sum(axis=0)
+    ref_chr = natsorted(kinship_decomp.keys())[0]
+    ev = kinship_decomp[ref_chr]["values"]
+    evc = kinship_decomp[ref_chr]["vectors"]
+    n_strains = len(gc.sample_ids)
+    x_rot = evc.T @ np.ones((n_strains, 1))
+
+    h2_pairs: list[tuple[str, float]] = []
+    for i, gid in enumerate(sampled_gids):
+        y_s = np.where(n_per_strain > 0, (Z.T @ mat[i]) / n_per_strain, 0.0)
+        y_s = rint(y_s)
+        if np.isnan(y_s).any():
+            continue
+        try:
+            h2, _ = estimate_h2_null(evc.T @ y_s, x_rot, ev)
+            h2_pairs.append((gid, float(h2)))
+        except Exception:  # noqa: BLE001
+            pass
+
+    if not h2_pairs:
+        logger.warning("h² estimation failed for all sampled genes; using first gene")
+        return all_gids[0], float("nan")
+
+    h2_arr = np.array([h for _, h in h2_pairs])
+    h2_med = float(np.median(h2_arr))
+    best = int(np.argmin(np.abs(h2_arr - h2_med)))
+    rep_gene, rep_h2 = h2_pairs[best]
+    logger.info(
+        "median h²=%.3f  representative gene: %s (h²=%.3f)", h2_med, rep_gene, rep_h2
+    )
+    return rep_gene, h2_med
 
 
 def _build_cis_loci_dict(
@@ -490,9 +624,21 @@ def scan(
 )
 @click.option(
     "--counts",
-    required=True,
+    default=None,
     type=click.Path(exists=True, path_type=Path),
-    help="AnnData H5AD file with raw counts in .raw.X.",
+    help="AnnData H5AD file with raw counts in .raw.X (NB mode; omit for LMM mode).",
+)
+@click.option(
+    "--phenotypes",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="Phenotype HDF5 file (counts_lognorm.h5 format; LMM mode).",
+)
+@click.option(
+    "--kinship",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="Pre-built LOCO kinship HDF5 (skips recompute; recommended for LMM mode).",
 )
 @click.option(
     "--metadata",
@@ -502,9 +648,9 @@ def scan(
 )
 @click.option(
     "--null-fit",
-    required=True,
+    default=None,
     type=click.Path(exists=True, path_type=Path),
-    help="CSV produced by `fit-null` (gene_id column required).",
+    help="CSV produced by `fit-null` (gene_id column required; NB mode only).",
 )
 @click.option(
     "--output",
@@ -565,9 +711,11 @@ def scan(
 @click.option("--verbose", is_flag=True, default=False)
 def permute(
     cache: Path,
-    counts: Path,
+    counts: Optional[Path],
+    phenotypes: Optional[Path],
+    kinship: Optional[Path],
     metadata: Path,
-    null_fit: Path,
+    null_fit: Optional[Path],
     output: Path,
     n_perms: int,
     gene: Optional[str],
@@ -580,71 +728,97 @@ def permute(
 ) -> None:
     """Permutation thresholds → GEV fit on max-LOD distribution.
 
-    A representative gene's phenotype is used for h² estimation.
+    LMM mode (default): provide --phenotypes (counts_lognorm.h5) and optionally
+    --kinship (pre-built LOCO HDF5). Representative gene is chosen by median-h²,
+    matching validate_tissue.py S5.
+
+    NB mode: provide --counts (AnnData h5ad) and --null-fit.
+
     Writes perm_max_lods.csv and perm_max_lods_chr{c}.csv into OUTPUT directory.
     """
     _setup_logging(verbose)
+    lmm_mode = phenotypes is not None
+    if not lmm_mode and (counts is None or null_fit is None):
+        raise click.ClickException(
+            "LMM mode requires --phenotypes; NB mode requires both --counts and --null-fit."
+        )
     if scan_window == "local" and gene_info is None:
         raise click.ClickException("--scan-window local requires --gene-info.")
+
     import numpy as np
     import pandas as pd
-    import anndata
     from .genotype.genomecache import GenomeCache
     from .genotype import kinship as kin_module
     from .qtl.permutation import generate_null_outcomes, run_threshold_scans
     from .qtl.thresholds import get_gev_thresholds
 
     gc = GenomeCache.from_hdf5(cache)
-    adata = anndata.read_h5ad(counts, backed="r")
-    null_params = pd.read_csv(null_fit)
 
-    import scipy.sparse as _sp
+    # ── kinship ────────────────────────────────────────────────────────────────
+    if kinship is not None:
+        kinship_decomp = _load_kinship_h5(kinship)
+        kd_raw = None
+    else:
+        kd_raw = kin_module.calc_kinship(gc, method="loco")
+        kinship_decomp = kin_module.decomp_kinship(kd_raw)
 
-    raw_x = adata.raw.X if adata.raw is not None else adata.X
-    if _sp.issparse(raw_x):
-        raw_x = raw_x.toarray()
-    counts_mat = np.asarray(raw_x, dtype=np.float64)  # (n_cells, n_genes)
-    gene_ids = list(adata.raw.var.index if adata.raw is not None else adata.var.index)
+    # ── representative gene + phenotype ───────────────────────────────────────
+    if lmm_mode:
+        if gene is not None:
+            mat, found_gids, sample_ids_list = _load_phenotypes_h5(phenotypes, [gene])
+            if not found_gids:
+                raise click.ClickException(
+                    f"--gene {gene!r} not found in --phenotypes file."
+                )
+            phenotype_vec = mat[0]
+            rep_gene = gene
+        else:
+            rep_gene, _ = _pick_median_h2_gene(phenotypes, gc, kinship_decomp)
+            mat, found_gids, sample_ids_list = _load_phenotypes_h5(
+                phenotypes, [rep_gene]
+            )
+            phenotype_vec = mat[0]
+        sample_ids: list = sample_ids_list
+    else:
+        import anndata
+        import scipy.sparse as _sp
 
-    # choose representative gene
-    null_gene_ids = list(null_params["gene_id"].astype(str))
-    rep_gene = (
-        gene if gene is not None else (null_gene_ids[0] if null_gene_ids else None)
-    )
-    if rep_gene is None:
-        raise click.ClickException("No genes found in null-fit CSV.")
-    if rep_gene not in gene_ids:
-        raise click.ClickException(
-            f"Representative gene {rep_gene!r} not found in counts file."
-        )
-    gi = gene_ids.index(rep_gene)
-    phenotype = counts_mat[:, gi]
+        adata = anndata.read_h5ad(counts, backed="r")
+        null_params = pd.read_csv(null_fit)
+        raw_x = adata.raw.X if adata.raw is not None else adata.X
+        if _sp.issparse(raw_x):
+            raw_x = raw_x.toarray()
+        counts_mat = np.asarray(raw_x, dtype=np.float64)
+        gene_ids = list(adata.raw.var.index if adata.raw is not None else adata.var.index)
+        sample_ids = list(adata.obs.index)
+        null_gene_ids = list(null_params["gene_id"].astype(str))
+        rep_gene = gene if gene is not None else (null_gene_ids[0] if null_gene_ids else None)
+        if rep_gene is None:
+            raise click.ClickException("No genes found in null-fit CSV.")
+        if rep_gene not in gene_ids:
+            raise click.ClickException(
+                f"Representative gene {rep_gene!r} not found in counts file."
+            )
+        phenotype_vec = counts_mat[:, gene_ids.index(rep_gene)]
 
-    sample_ids = list(adata.obs.index)
-    _cov_cols = [c for c in covariates.split(",") if c.strip()]
-    covariates_arr = _covariates_for_samples(metadata, sample_ids, _cov_cols)
-
-    kd_raw = kin_module.calc_kinship(gc, method="loco")
-    kinship_decomp = kin_module.decomp_kinship(kd_raw)
-
-    null_outcomes = generate_null_outcomes(
-        phenotype, n_perms=n_perms, method="permutation"
-    )
-
+    # ── local-window setup (mirrors validate_tissue.py S5) ────────────────────
     perm_chrom: Optional[str] = None
     perm_gene_pos_mb: Optional[float] = None
     if scan_window == "local":
         gene_info_df = pd.read_csv(gene_info)
-        gene_window = _gene_window_lookup(gene_info_df)
-        win = gene_window.get(str(rep_gene))
-        if win is None:
+        perm_row = gene_info_df[gene_info_df["gene_id"].astype(str) == str(rep_gene)]
+        if perm_row.empty:
             logger.warning(
-                "permute: %s not found in --gene-info — falling back to "
-                "genome-wide null",
+                "permute: %s not found in --gene-info — falling back to genome-wide null",
                 rep_gene,
             )
         else:
-            perm_chrom, perm_gene_pos_mb = win
+            _prow = perm_row.iloc[0]
+            perm_chrom = str(_prow["chr"])
+            if "strand" in perm_row.columns and _prow["strand"] == "-":
+                perm_gene_pos_mb = float(_prow["end"]) / 1e6
+            else:
+                perm_gene_pos_mb = float(_prow["start"]) / 1e6
             logger.info(
                 "permute: local-window null: chr%s TSS=%.3fMb ±%.1fMb",
                 perm_chrom,
@@ -652,27 +826,29 @@ def permute(
                 window_mb,
             )
 
+    # ── permutation scan (covariates=None — matches validate_tissue.py S5) ────
+    null_outcomes = generate_null_outcomes(
+        phenotype_vec, n_perms=n_perms, method="permutation"
+    )
     max_lods, chr_null_lods = run_threshold_scans(
         null_outcomes,
         gc,
-        phenotype=phenotype,
-        covariates=covariates_arr,
+        phenotype=phenotype_vec,
+        covariates=None,
         kinship_decomp=kinship_decomp,
         kinship_loco=kd_raw,
         chrom=perm_chrom,
         gene_pos_mb=perm_gene_pos_mb,
         window_mb=window_mb if perm_chrom is not None else None,
         permutation_method=perm_method,
+        sample_ids=list(sample_ids),
     )
 
     output.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"max_lod": max_lods}).to_csv(
-        output / "perm_max_lods.csv", index=False
-    )
+    pd.DataFrame({"max_lod": max_lods}).to_csv(output / "perm_max_lods.csv", index=False)
     for chrom, lods in chr_null_lods.items():
         pd.DataFrame({"max_lod": lods}).to_csv(
-            output / f"perm_max_lods_chr{chrom}.csv",
-            index=False,
+            output / f"perm_max_lods_chr{chrom}.csv", index=False
         )
     thr, _ = get_gev_thresholds(max_lods)
     if thr is not None:
@@ -698,9 +874,21 @@ def permute(
 )
 @click.option(
     "--counts",
-    required=True,
+    default=None,
     type=click.Path(exists=True, path_type=Path),
-    help="AnnData H5AD file with raw counts in .raw.X.",
+    help="AnnData H5AD file with raw counts in .raw.X (NB/legacy mode).",
+)
+@click.option(
+    "--phenotypes",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="counts_lognorm.h5 (LMM mode, preferred over --counts).",
+)
+@click.option(
+    "--kinship",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="Pre-built LOCO kinship HDF5 from KINSHIP_LOCO step (avoids recomputation).",
 )
 @click.option(
     "--metadata",
@@ -736,7 +924,9 @@ def permute(
 def estimate(
     cache: Path,
     scan_result: Path,
-    counts: Path,
+    counts: Optional[Path],
+    phenotypes: Optional[Path],
+    kinship: Optional[Path],
     metadata: Path,
     output: Path,
     method: str,
@@ -746,13 +936,19 @@ def estimate(
 ) -> None:
     """Estimate haplotype effects at each gene's peak locus.
 
+    LMM mode (preferred): provide --phenotypes (counts_lognorm.h5) and optionally
+    --kinship (pre-built LOCO HDF5). NB mode: provide --counts (AnnData h5ad).
+
     Writes allele_effects.csv with columns defined in pipeline.ALLELE_EFFECTS_BASE_COLS
     plus beta_{founder} and se_{founder} columns per founder.
     """
     _setup_logging(verbose)
+    lmm_mode = phenotypes is not None
+    if not lmm_mode and counts is None:
+        raise click.ClickException("Provide --phenotypes (LMM mode) or --counts (NB mode).")
+
     import numpy as np
     import pandas as pd
-    import anndata
     from .genotype.genomecache import GenomeCache
     from .genotype import kinship as kin_module
     from .qtl.effects import get_allele_effects
@@ -760,36 +956,46 @@ def estimate(
     gc = GenomeCache.from_hdf5(cache)
     peaks = pd.read_csv(scan_result)
 
-    adata = anndata.read_h5ad(counts, backed="r")
-    if cell_type is not None:
-        ct_col = _detect_ct_col(list(adata.obs.columns))
-        if ct_col is None:
-            raise click.ClickException(
-                f"No cell-type column found in {counts}.obs; "
-                'expected a column whose name contains both "cell" and "type".'
-            )
-        adata = adata[adata.obs[ct_col] == cell_type]
+    # ── kinship ────────────────────────────────────────────────────────────────
+    if kinship is not None:
+        kinship_decomp = _load_kinship_h5(kinship)
+    else:
+        kd_raw = kin_module.calc_kinship(gc, method="loco")
+        kinship_decomp = kin_module.decomp_kinship(kd_raw)
 
-    import scipy.sparse as _sp
+    # ── phenotype matrix ───────────────────────────────────────────────────────
+    if lmm_mode:
+        counts_mat, gene_ids, sample_ids = _load_phenotypes_h5(phenotypes)
+        # mat is (n_genes, n_samples) — transpose to (n_samples, n_genes) for index lookup
+        counts_mat = counts_mat.T
+    else:
+        import anndata
+        import scipy.sparse as _sp
 
-    raw_x = adata.raw.X if adata.raw is not None else adata.X
-    if _sp.issparse(raw_x):
-        raw_x = raw_x.toarray()
-    counts_mat = np.asarray(raw_x, dtype=np.float64)  # (n_cells, n_genes)
-    gene_ids = list(adata.raw.var.index if adata.raw is not None else adata.var.index)
-    sample_ids = list(adata.obs.index)
+        adata = anndata.read_h5ad(counts, backed="r")
+        if cell_type is not None:
+            ct_col = _detect_ct_col(list(adata.obs.columns))
+            if ct_col is None:
+                raise click.ClickException(
+                    f"No cell-type column found in {counts}.obs; "
+                    'expected a column whose name contains both "cell" and "type".'
+                )
+            adata = adata[adata.obs[ct_col] == cell_type]
+        raw_x = adata.raw.X if adata.raw is not None else adata.X
+        if _sp.issparse(raw_x):
+            raw_x = raw_x.toarray()
+        counts_mat = np.asarray(raw_x, dtype=np.float64)  # (n_samples, n_genes)
+        gene_ids = list(adata.raw.var.index if adata.raw is not None else adata.var.index)
+        sample_ids = list(adata.obs.index)
 
     _cov_cols = [c for c in covariates.split(",") if c.strip()]
     covariates_arr = _covariates_for_samples(metadata, sample_ids, _cov_cols)
-
-    kd_raw = kin_module.calc_kinship(gc, method="loco")
-    kinship_decomp = kin_module.decomp_kinship(kd_raw)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     rows = []
     gene_id_to_idx = {g: i for i, g in enumerate(gene_ids)}
     for _, row in peaks.iterrows():
-        gid = str(row.get("gene_symbol", row.get("gene_id", "")))
+        gid = str(row["gene_id"])
         chrom = str(row["chr"])
         locus_id = str(row["peak_locus"])
         if gid not in gene_id_to_idx:
@@ -809,8 +1015,8 @@ def estimate(
                 method=method,
             )
             effect_row: dict = {
-                "gene_symbol": gid,
                 "gene_id": gid,
+                "gene_symbol": str(row.get("gene_symbol", "")),
                 "chr": chrom,
                 "peak_locus": locus_id,
                 "peak_mb": float(row.get("peak_mb", float("nan"))),
@@ -1046,9 +1252,21 @@ def report(
 )
 @click.option(
     "--counts",
-    required=True,
+    default=None,
     type=click.Path(exists=True, path_type=Path),
-    help="AnnData H5AD file with raw counts in .raw.X.",
+    help="AnnData H5AD file with raw counts in .raw.X (NB/legacy mode).",
+)
+@click.option(
+    "--phenotypes",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="counts_lognorm.h5 (LMM mode, preferred over --counts).",
+)
+@click.option(
+    "--kinship",
+    default=None,
+    type=click.Path(exists=True, path_type=Path),
+    help="Pre-built LOCO kinship HDF5 (avoids recomputation).",
 )
 @click.option(
     "--metadata",
@@ -1118,7 +1336,9 @@ def report(
 @click.option("--verbose", is_flag=True, default=False)
 def finemap(
     egenes: Path,
-    counts: Path,
+    counts: Optional[Path],
+    phenotypes: Optional[Path],
+    kinship: Optional[Path],
     metadata: Path,
     cache: Path,
     alleles: Path,
@@ -1134,21 +1354,16 @@ def finemap(
 ) -> None:
     """Sanger fine-mapping of eGenes using Wakefield ABF within LOD-drop CIs.
 
-    Reads eqtl_peak.csv (ci_lo_bp and ci_hi_bp columns required; produced by
-    the `report` subcommand after LOD support CI computation). For each eGene, loads
-    Sanger alleles once per chromosome, imputes biallelic dosages via
-    make_alt_mask, runs the LMM SNP scan within the CI window, and computes
-    Wakefield ABF posterior inclusion probabilities.
-
-    Writes eqtl_finemapping_{suffix}.csv (EQTL_FINEMAPPING_COLS, one row per
-    credible-set SNP) and eqtl_finemapping_peak_{suffix}.csv
-    (EQTL_FINEMAPPING_PEAK_COLS, one row per eGene lead SNP).
+    LMM mode (preferred): provide --phenotypes (counts_lognorm.h5) and optionally
+    --kinship. NB/legacy mode: provide --counts (AnnData h5ad).
     """
     _setup_logging(verbose)
+    lmm_mode = phenotypes is not None
+    if not lmm_mode and counts is None:
+        raise click.ClickException("Provide --phenotypes (LMM mode) or --counts (NB mode).")
+
     import numpy as np
     import pandas as pd
-    import anndata
-    import scipy.sparse as _sp
     from .genotype.genomecache import GenomeCache
     from .genotype import kinship as kin_module
     from .pipeline import finemap_egenes as _finemap_egenes
@@ -1162,53 +1377,58 @@ def finemap(
             "Run `report` first, then the characterise step to compute ci_lo_bp/ci_hi_bp."
         )
 
-    logger.info("Loading genome cache: %s", cache)
     gc = GenomeCache.from_hdf5(cache)
 
-    logger.info("Loading counts: %s", counts)
-    adata = anndata.read_h5ad(counts, backed="r")
-    if cell_type is not None:
-        ct_col = _detect_ct_col(list(adata.obs.columns))
-        if ct_col is None:
-            raise click.ClickException(
-                f"No cell-type column found in {counts}.obs; "
-                'expected a column whose name contains both "cell" and "type".'
-            )
-        adata = adata[adata.obs[ct_col] == cell_type]
-        logger.info("Subset to cell type %r: %d cells", cell_type, adata.n_obs)
-
-    if counts_layer is not None:
-        if counts_layer not in adata.layers:
-            raise click.ClickException(
-                f"--counts-layer {counts_layer!r} not found in {counts}.layers.  "
-                f"Available layers: {list(adata.layers.keys())}"
-            )
-        raw_x = adata.layers[counts_layer]
-        gene_ids = list(adata.var.index)
-        logger.info("Using counts from layer %r", counts_layer)
+    if kinship is not None:
+        kinship_decomp = _load_kinship_h5(kinship)
     else:
-        if adata.raw is None:
-            raise click.ClickException(
-                "adata.raw is None — pass --counts-layer or store raw counts in .raw"
-            )
-        raw_x = adata.raw.X
-        gene_ids = list(adata.raw.var.index)
-    if _sp.issparse(raw_x):
-        raw_x = raw_x.toarray()
-    counts_mat = np.asarray(raw_x, dtype=np.float64)  # (n_cells, n_genes)
-    sample_ids = list(adata.obs.index)
+        kd_raw = kin_module.calc_kinship(gc, method="loco")
+        kinship_decomp = kin_module.decomp_kinship(kd_raw)
+
+    if lmm_mode:
+        counts_mat, gene_ids, sample_ids = _load_phenotypes_h5(phenotypes)
+        # _load_phenotypes_h5 returns (n_genes, n_samples); finemap_egenes expects same
+        pheno_matrix = counts_mat
+    else:
+        import anndata
+        import scipy.sparse as _sp
+
+        adata = anndata.read_h5ad(counts, backed="r")
+        if cell_type is not None:
+            ct_col = _detect_ct_col(list(adata.obs.columns))
+            if ct_col is None:
+                raise click.ClickException(
+                    f"No cell-type column found in {counts}.obs; "
+                    'expected a column whose name contains both "cell" and "type".'
+                )
+            adata = adata[adata.obs[ct_col] == cell_type]
+        if counts_layer is not None:
+            if counts_layer not in adata.layers:
+                raise click.ClickException(
+                    f"--counts-layer {counts_layer!r} not found in {counts}.layers."
+                )
+            raw_x = adata.layers[counts_layer]
+            gene_ids = list(adata.var.index)
+        else:
+            if adata.raw is None:
+                raise click.ClickException(
+                    "adata.raw is None — pass --counts-layer or store raw counts in .raw"
+                )
+            raw_x = adata.raw.X
+            gene_ids = list(adata.raw.var.index)
+        import scipy.sparse as _sp2
+        if _sp2.issparse(raw_x):
+            raw_x = raw_x.toarray()
+        pheno_matrix = np.asarray(raw_x, dtype=np.float64).T  # (n_genes, n_cells)
+        sample_ids = list(adata.obs.index)
 
     _cov_cols = [c for c in covariates.split(",") if c.strip()]
     covariates_arr = _covariates_for_samples(metadata, sample_ids, _cov_cols)
 
-    logger.info("Computing LOCO kinship...")
-    kd_raw = kin_module.calc_kinship(gc, method="loco")
-    kinship_decomp = kin_module.decomp_kinship(kd_raw)
-
     _tag = suffix or egenes.stem.removeprefix("eqtl_peak_")
     _finemap_egenes(
         egene_df=egene_df,
-        phenotype_matrix=counts_mat.T,  # (n_genes, n_cells)
+        phenotype_matrix=pheno_matrix,
         gene_ids=gene_ids,
         genomecache=gc,
         alleles_h5=alleles,

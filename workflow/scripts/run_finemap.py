@@ -16,27 +16,29 @@ log = logging.getLogger(__name__)
 
 @click.command()
 @click.option('--egenes',     required=True, type=click.Path(exists=True))
-@click.option('--counts',     required=True, type=click.Path(exists=True))
+@click.option('--phenotypes', required=True, type=click.Path(exists=True))
+@click.option('--kinship',    required=True, type=click.Path(exists=True))
 @click.option('--metadata',   required=True, type=click.Path(exists=True))
 @click.option('--cache',      required=True, type=click.Path(exists=True))
 @click.option('--alleles',    required=True, type=click.Path(exists=True))
 @click.option('--celltype',   required=True)
 @click.option('--output-dir', required=True, type=click.Path())
 @click.option('--covariates', default='sex,dataset', show_default=True)
-def main(egenes: str, counts: str, metadata: str, cache: str,
+def main(egenes: str, phenotypes: str, kinship: str, metadata: str, cache: str,
          alleles: str, celltype: str, output_dir: str, covariates: str) -> None:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable, '-m', 'mosaiqtl', 'finemap',
-        '--egenes',     egenes,
-        '--counts',     counts,
-        '--metadata',   metadata,
-        '--cache',      cache,
-        '--alleles',    alleles,
-        '--cell-type',  celltype,
-        '--covariates', covariates,
-        '--output-dir', str(out),
+        '--egenes',      egenes,
+        '--phenotypes',  phenotypes,
+        '--kinship',     kinship,
+        '--metadata',    metadata,
+        '--cache',       cache,
+        '--alleles',     alleles,
+        '--cell-type',   celltype,
+        '--covariates',  covariates,
+        '--output-dir',  str(out),
     ]
     log.info('running: %s', ' '.join(cmd))
     subprocess.run(cmd, check=True)

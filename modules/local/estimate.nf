@@ -1,8 +1,9 @@
 /*
  * ESTIMATE — founder haplotype effects at each gene's peak locus
  *
- * Input  : [celltype, peak_lod.csv, phenotypes_path]
- * Output : [celltype, allele_effects.csv]
+ * Input  : path kinship_loco (shared)
+ *          tuple [celltype, peak_lod.csv, phenotypes]
+ * Output : tuple [celltype, allele_effects.csv]
  *
  * One job per cell type, fires after MERGE_RESULTS.
  */
@@ -16,6 +17,7 @@ process ESTIMATE {
 
     input:
     path  genomecache
+    path  kinship_loco
     tuple val(celltype), path(peak_lod), path(phenotypes)
 
     output:
@@ -26,7 +28,8 @@ process ESTIMATE {
     python ${projectDir}/workflow/scripts/run_estimate.py \\
         --cache       ${genomecache} \\
         --scan-result ${peak_lod} \\
-        --counts      ${phenotypes} \\
+        --phenotypes  ${phenotypes} \\
+        --kinship     ${kinship_loco} \\
         --metadata    ${params.metadata} \\
         --covariates  '${params.covariates}' \\
         --output      allele_effects.csv

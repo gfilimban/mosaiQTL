@@ -134,7 +134,7 @@ def main(
 
     if len(gene_ids) == 0:
         log.warning('no genes for chr%s — writing empty CSV', chrom)
-        pd.DataFrame(columns=['gene', 'chr', 'locus', 'pos_mb', 'lod']).to_csv(
+        pd.DataFrame(columns=['gene_id', 'chr', 'locus', 'pos_mb', 'lod']).to_csv(
             out_csv, index=False
         )
         return
@@ -154,6 +154,11 @@ def main(
     gc = GenomeCache.from_hdf5(Path(cache))
     kinship_decomp = _load_kinship(Path(kinship), chrom, sample_ids)
 
+    gene_symbol_map = (
+        dict(zip(gi['gene_id'].astype(str), gi['gene_symbol'].astype(str)))
+        if 'gene_symbol' in gi.columns else None
+    )
+
     scan_multi_gene(
         pheno_mat,
         gene_ids,
@@ -166,6 +171,7 @@ def main(
         scan_window=scan_window,
         window_mb=window_mb,
         output_dir=out,
+        gene_symbol_map=gene_symbol_map,
     )
 
     log.info('wrote %s', out_csv)

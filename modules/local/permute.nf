@@ -1,10 +1,11 @@
 /*
- * PERMUTE — permutation threshold via GEV fit on max-LOD distribution
+ * PERMUTE — LMM permutation threshold via GEV fit on max-LOD distribution
  *
- * Input  : [celltype, null_fit.csv, gene_info_path, phenotypes_path]
- * Output : [celltype, perm_max_lods.csv, perm_max_lods_chr*.csv (glob)]
+ * Input  : path kinship_loco (shared)
+ *          tuple [celltype, gene_info, phenotypes]
+ * Output : tuple [celltype, perm_max_lods.csv, perm_max_lods_chr*.csv (glob)]
  *
- * One job per cell type, fires after FIT_NULL.
+ * One job per cell type. Uses pre-built kinship from KINSHIP_LOCO — no NB null fit needed.
  */
 
 process PERMUTE {
@@ -16,7 +17,8 @@ process PERMUTE {
 
     input:
     path  genomecache
-    tuple val(celltype), path(null_fit), path(gene_info), path(phenotypes)
+    path  kinship_loco
+    tuple val(celltype), path(gene_info), path(phenotypes)
 
     output:
     tuple val(celltype), path('perm_max_lods.csv'), path('perm_max_lods_chr*.csv')
@@ -25,14 +27,13 @@ process PERMUTE {
     """
     python ${projectDir}/workflow/scripts/run_permute.py \\
         --cache       ${genomecache} \\
-        --counts      ${phenotypes} \\
+        --phenotypes  ${phenotypes} \\
+        --kinship     ${kinship_loco} \\
         --metadata    ${params.metadata} \\
-        --null-fit    ${null_fit} \\
         --gene-info   ${gene_info} \\
         --n-perms     ${params.n_perms} \\
-        --scan-window local \\
+        --scan-window ${params.scan_window} \\
         --window-mb   ${params.window_mb} \\
-        --covariates  '${params.covariates}' \\
         --output      .
     """
 

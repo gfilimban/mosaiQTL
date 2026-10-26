@@ -38,12 +38,18 @@ def main(csvs: tuple[str, ...], celltype: str, output: str) -> None:
         [pd.read_csv(f) for f in sorted_csvs],
         ignore_index=True,
     )
+
     merged.to_csv(output, index=False)
     log.info('wrote %s (%d rows)', output, len(merged))
 
-    # also write peak_lod.csv — one row per gene at its maximum-LOD locus
+    # peak_lod.csv — one row per gene at its maximum-LOD locus
+    # columns renamed to the peak-specific schema used by mosaiqtl estimate
     peak_idx = merged.groupby('gene_id')['lod'].idxmax()
-    peak = merged.loc[peak_idx].reset_index(drop=True)
+    peak = merged.loc[peak_idx].reset_index(drop=True).rename(columns={
+        'locus':  'peak_locus',
+        'lod':    'peak_lod',
+        'pos_mb': 'peak_mb',
+    })
     peak_path = str(output).replace('lod_genome.csv', 'peak_lod.csv')
     peak.to_csv(peak_path, index=False)
     log.info('wrote %s (%d genes)', peak_path, len(peak))

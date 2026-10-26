@@ -16,17 +16,19 @@ log = logging.getLogger(__name__)
 @click.command()
 @click.option('--cache',       required=True, type=click.Path(exists=True))
 @click.option('--scan-result', required=True, type=click.Path(exists=True))
-@click.option('--counts',      required=True, type=click.Path(exists=True))
+@click.option('--phenotypes',  required=True, type=click.Path(exists=True))
+@click.option('--kinship',     required=True, type=click.Path(exists=True))
 @click.option('--metadata',    required=True, type=click.Path(exists=True))
 @click.option('--output',      required=True, type=click.Path())
 @click.option('--covariates',  default='sex,dataset', show_default=True)
-def main(cache: str, scan_result: str, counts: str, metadata: str, output: str,
-         covariates: str) -> None:
+def main(cache: str, scan_result: str, phenotypes: str, kinship: str,
+         metadata: str, output: str, covariates: str) -> None:
     cmd = [
         sys.executable, '-m', 'mosaiqtl', 'estimate',
         '--cache',       cache,
         '--scan-result', scan_result,
-        '--counts',      counts,
+        '--phenotypes',  phenotypes,
+        '--kinship',     kinship,
         '--metadata',    metadata,
         '--output',      output,
         '--covariates',  covariates,

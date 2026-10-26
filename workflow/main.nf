@@ -44,7 +44,6 @@
  */
 
 include { KINSHIP_LOCO  } from '../modules/local/kinship_loco'
-include { FIT_NULL      } from '../modules/local/fit_null'
 include { LMM_SCAN      } from '../modules/local/lmm_scan'
 include { PERMUTE       } from '../modules/local/permute'
 include { MERGE_RESULTS } from '../modules/local/merge_results'
@@ -140,10 +139,6 @@ workflow {
     // cell-type channel — emits [celltype, phenotypes, gene_info]
     ct_ch = ct_channel(gene_info_global)
 
-    // ── Stage 0: null model fit (once per CT) ────────────────────────────────
-    FIT_NULL(genomecache, kinship, ct_ch)
-    // FIT_NULL.out: [celltype, null_fit.csv]
-
     // ── Stage 1a: LMM scan (CT × chr grid) ───────────────────────────────────
     chroms = chr_channel()
     ct_chr = ct_ch.combine(chroms)
@@ -153,12 +148,10 @@ workflow {
     // LMM_SCAN.out: [celltype, lod_chr.csv]
 
     // ── Stage 1b: permutation thresholds (once per CT, parallel with scan) ───
-    // Join null_fit with gene_info + phenotypes from ct_ch on celltype
-    permute_input = FIT_NULL.out
-        .join(ct_ch.map { ct, pheno, gi -> [ct, gi, pheno] })
-        .map { ct, null_fit, gi, pheno -> [ct, null_fit, gi, pheno] }
+    // Uses pre-built kinship directly — no NB null fit required
+    permute_input = ct_ch.map { ct, pheno, gi -> [ct, gi, pheno] }
 
-    PERMUTE(genomecache, permute_input)
+    PERMUTE(genomecache, kinship, permute_input)
     // PERMUTE.out: [celltype, perm_max_lods.csv, [perm_max_lods_chr*.csv]]
 
     // ── Stage 2: merge per-chr LOD → genome + peak per CT ────────────────────
@@ -174,7 +167,7 @@ workflow {
         .join(ct_ch.map { ct, pheno, gi -> [ct, pheno] })
         .map { ct, peak, pheno -> [ct, peak, pheno] }
 
-    ESTIMATE(genomecache, estimate_input)
+    ESTIMATE(genomecache, kinship, estimate_input)
     // ESTIMATE.out: [celltype, allele_effects.csv]
 
     // ── Stage 4: eGene calling + submission files ─────────────────────────────
@@ -203,7 +196,7 @@ workflow {
         .join(ct_ch.map { ct, pheno, gi -> [ct, pheno] })
         .map { ct, eqtl_peak, pheno -> [ct, eqtl_peak, pheno] }
 
-    FINEMAP(genomecache, sanger_alleles, finemap_input)
+    FINEMAP(genomecache, kinship, sanger_alleles, finemap_input)
     // FINEMAP.out: [celltype, [eqtl_finemapping*.csv], [eqtl_finemapping_peak*.csv]]
 
 }

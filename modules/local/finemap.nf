@@ -1,8 +1,9 @@
 /*
  * FINEMAP — Sanger SNP fine-mapping for eGenes (Wakefield ABF credible sets)
  *
- * Input  : [celltype, eqtl_peak.csv, phenotypes_path]
- * Output : [celltype, eqtl_finemapping*.csv, eqtl_finemapping_peak*.csv]
+ * Input  : path kinship_loco (shared)
+ *          tuple [celltype, eqtl_peak.csv, phenotypes]
+ * Output : tuple [celltype, eqtl_finemapping*.csv, eqtl_finemapping_peak*.csv]
  *
  * Requires sanger_alleles.h5 in params.data_dir (shared across all cell types).
  * One job per cell type, fires after REPORT.
@@ -17,6 +18,7 @@ process FINEMAP {
 
     input:
     path  genomecache
+    path  kinship_loco
     path  sanger_alleles
     tuple val(celltype), path(eqtl_peak), path(phenotypes)
 
@@ -26,14 +28,15 @@ process FINEMAP {
     script:
     """
     python ${projectDir}/workflow/scripts/run_finemap.py \\
-        --egenes   ${eqtl_peak} \\
-        --counts   ${phenotypes} \\
-        --metadata   ${params.metadata} \\
-        --covariates '${params.covariates}' \\
-        --cache      ${genomecache} \\
-        --alleles  ${sanger_alleles} \\
-        --celltype ${celltype} \\
-        --output-dir .
+        --egenes      ${eqtl_peak} \\
+        --phenotypes  ${phenotypes} \\
+        --kinship     ${kinship_loco} \\
+        --metadata    ${params.metadata} \\
+        --covariates  '${params.covariates}' \\
+        --cache       ${genomecache} \\
+        --alleles     ${sanger_alleles} \\
+        --celltype    ${celltype} \\
+        --output-dir  .
     """
 
     stub:
