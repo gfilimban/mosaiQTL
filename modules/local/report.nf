@@ -1,60 +1,72 @@
-/*
- * REPORT — eGene calling + submission files (eqtl_summary, eqtl_peak, eqtl_stats)
- *
- * Input  : [celltype, peak_lod.csv, perm_dir/, allele_effects.csv]
- * Output : [celltype, eqtl_summary.csv, eqtl_peak*.csv, eqtl_stats*.csv,
- *           run_metadata.json]
- *
- * run_metadata.json captures mosaiqtl package version, git hash of the repo,
- * celltype label, Nextflow run name, and UTC timestamp for provenance.
- *
- * Calls `mosaiqtl report`.  Fires after PERMUTE + ESTIMATE both complete.
- */
-
 process REPORT {
 
     label 'process_single'
     tag   "${celltype}"
 
-    publishDir { "${params.output_dir}/${celltype}" }, mode: 'copy'
+    publishDir { "${params.output_dir}/${celltype}/${scan_tag}" }, mode: 'copy'
 
     input:
-    tuple val(celltype),
-          path(peak_lod),
-          path(perm_files),   // list: perm_max_lods.csv + perm_max_lods_chr*.csv — staged in work dir; script uses --perm-dir .
-          path(allele_effects),
-          path(scan_stats)
+    path  genomecache
+    path  kinship_loco
+    path  gtf
+    tuple val(celltype), val(scan_tag),
+          path(peak_lod), path(eqtl_summary),
+          path(pval_perm_json), path(perm_max_lods),
+          path(perm_max_lods_chrs),
+          path(gene_info), path(lod_genome)
 
     output:
-    tuple val(celltype),
-          path('eqtl_summary.csv'),
-          path('eqtl_peak*.csv'),
-          path('eqtl_stats*.csv'),
-          path('run_metadata.json'),
-          path('scan_info.json'),
-          path('sample_breakdown.csv')
+    tuple val(celltype), val(scan_tag),
+          path('*_eqtl_stats.csv'),
+          path('*_genome_summary.png'),
+          path('*_genome_summary_share.png'),
+          path('*_genome_diagnostic.png'),
+          path('*_genome_diagnostic_share.png'),
+          path('*_perm_distribution.png'),
+          path('*_perm_distribution_share.png'),
+          path('*_egene_lod_dist.png'),
+          path('*_egene_lod_dist_share.png'),
+          path('run_metadata.json')
+    path '*_loci_per_chr*.png',        optional: true
+    path '*_lod_panel_grid*.png',      optional: true
+    path '*_perm_panel_grid*.png',     optional: true
+    path '*_cis_distance_panel*.png',  optional: true
+    path '*_cis_histogram*.png',       optional: true
+    path '*_effects_grid*.png',        optional: true
+    path '*_kinship_heatmap*.png',     optional: true
+    path '*_kinship_dist*.png',        optional: true
+    path '*_lod_profile_chr*.png',     optional: true
+    path '*_perm_dist_chr*.png',       optional: true
+    path '*_effects_chr*.png',         optional: true
+    path '*_haplotype_heatmap*.png',   optional: true
+    path '*_manhattan*.png',           optional: true
+    path '*_locus_panel_grid*.png',    optional: true
+    path '*_locus_panel_chr*.png',     optional: true
 
     script:
-    def meta_path  = params.metadata ?: (params.data_dir ? "${params.data_dir}/igvf_sample_metadata.csv" : '')
-    def pheno_path = params.celltypes_dir ? "${params.celltypes_dir}/${celltype}/counts_lognorm.h5"
-                                          : (params.phenotypes ?: '')
+    def gtf_arg = gtf.name != 'NO_GTF' ? gtf.name : '-'
+    def tag     = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
+    set -o pipefail
+    mkdir -p ${launchDir}/${params.output_dir}/logs
     python ${projectDir}/scripts/run_report.py \\
-        --scan-result    ${peak_lod} \\
-        --perm-dir       . \\
-        --allele-effects ${allele_effects} \\
-        --scan-stats     ${scan_stats} \\
-        --output-dir     . \\
-        --celltype       '${celltype}' \\
-        --project-dir    '${projectDir}' \\
-        --nf-run-name    '${workflow.runName}' \\
-        --scan-type      ${params.scan_type} \\
-        --metadata       '${meta_path}' \\
-        --phenotypes     '${pheno_path}'
+        ${peak_lod} ${eqtl_summary} ${pval_perm_json} ${perm_max_lods} \\
+        ${gene_info} ${lod_genome} ${kinship_loco} ${genomecache} \\
+        '${celltype}' ${scan_tag} . ${gtf_arg} ${params.tissue} \\
+        2>&1 | tee ${launchDir}/${params.output_dir}/logs/${tag}_report.log
     """
 
     stub:
+    def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
-    touch eqtl_summary.csv eqtl_peak.csv eqtl_stats.csv run_metadata.json scan_info.json sample_breakdown.csv
+    touch ${tag}_eqtl_stats.csv \\
+          ${tag}_genome_summary.png ${tag}_genome_summary_share.png \\
+          ${tag}_genome_diagnostic.png ${tag}_genome_diagnostic_share.png \\
+          ${tag}_perm_distribution.png ${tag}_perm_distribution_share.png \\
+          ${tag}_egene_lod_dist.png ${tag}_egene_lod_dist_share.png \\
+          ${tag}_manhattan.png ${tag}_manhattan_share.png \\
+          ${tag}_haplotype_heatmap.png ${tag}_haplotype_heatmap_share.png \\
+          ${tag}_locus_panel_grid.png ${tag}_locus_panel_grid_share.png \\
+          run_metadata.json
     """
 }

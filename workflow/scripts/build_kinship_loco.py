@@ -1,58 +1,49 @@
-"""Build LOCO kinship HDF5 from a genome cache — called by Nextflow KINSHIP_LOCO process."""
+"""Build LOCO kinship HDF5 from a genome cache — called by Nextflow KINSHIP_LOCO process.
 
-from __future__ import annotations
+Usage: python build_kinship_loco.py <cache.h5> <output_filename.h5>
 
+<output_filename.h5> is written in the current working directory.
+"""
+import sys, time
 import logging
+import numpy as np
+import h5py
 from pathlib import Path
 
-import click
-import h5py
-import numpy as np
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(message)s',
-    datefmt='%H:%M:%S',
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s',
+                    stream=sys.stdout)
 log = logging.getLogger(__name__)
 
 
-@click.command()
-@click.option('--cache', required=True, type=click.Path(exists=True),
-              help='Genome cache HDF5.')
-@click.option('--output', required=True, type=click.Path(),
-              help='Output kinship_loco.h5 path.')
-def main(cache: str, output: str) -> None:
-    """Compute per-chromosome LOCO kinship and eigendecompose into HDF5.
+def main() -> None:
+    cache_path  = Path(sys.argv[1])
+    out_path    = Path(sys.argv[2])
 
-    Output layout: /chr{c}/values (eigenvalues), /chr{c}/vectors (eigenvectors),
-    /sample_ids (strain labels).
-    """
+    if out_path.exists():
+        log.info('kinship file already exists — skipping: %s', out_path)
+        return
+
     from mosaiqtl.genotype.genomecache import GenomeCache
     from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 
-    log.info('loading genome cache from %s', cache)
-    gc = GenomeCache.from_hdf5(Path(cache))
-    log.info('cache: %d strains, %d chromosomes', len(gc.sample_ids), len(gc.chromosomes))
+    gc = GenomeCache.from_hdf5(cache_path)
+    sample_ids = list(gc.sample_ids)
+    chroms = list(gc.chromosomes)
+    t0 = time.perf_counter()
+    log.info('START kinship_loco: %d strains × %d chrs', len(sample_ids), len(chroms))
 
-    log.info('computing LOCO kinship …')
-    loco = calc_kinship(gc, method='loco')
+    kinship_loco = calc_kinship(gc, method='loco')
+    decomp       = decomp_kinship(kinship_loco)
 
-    log.info('eigendecomposing %d matrices …', len(loco))
-    decomp = decomp_kinship(loco)
+    with h5py.File(out_path, 'w') as fh:
+        fh.create_dataset('sample_ids', data=np.array(sample_ids, dtype='S'))
+        for _ci, (chrom, d) in enumerate(decomp.items(), 1):
+            grp = fh.create_group(f'chr{chrom}')
+            grp.create_dataset('values',  data=d['values'])
+            grp.create_dataset('vectors', data=d['vectors'])
+            log.info('  [%d/%d] chr%s done', _ci, len(chroms), chrom)
 
-    out = Path(output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with h5py.File(out, 'w') as f:
-        sids = np.array([s.encode() for s in gc.sample_ids])
-        f.create_dataset('sample_ids', data=sids)
-        for chrom, d in decomp.items():
-            grp = f.create_group(f'chr{chrom}')
-            grp.create_dataset('values',  data=d['values'].astype(np.float64))
-            grp.create_dataset('vectors', data=d['vectors'].astype(np.float64))
-            log.info('  chr%s: top-3 λ=%s', chrom, d['values'][:3])
-
-    log.info('wrote %s', out)
+    log.info('DONE kinship_loco: wrote %s  %.1fs', out_path, time.perf_counter() - t0)
 
 
 if __name__ == '__main__':

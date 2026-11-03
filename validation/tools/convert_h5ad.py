@@ -63,6 +63,7 @@ import numpy as np
 import pandas as pd
 
 from mosaiqtl.genotype.cc import STRAIN_ORDER
+from mosaiqtl.io.covariates import encode_sex as _encode_sex
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s  %(message)s')
 log = logging.getLogger(__name__)
@@ -399,6 +400,7 @@ def init_celltypes(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str,
                          .sort_values(['_sort', 'sample_id'])
                          .drop(columns='_sort')
                          .reset_index(drop=True))
+    obs_unique['sex'] = _encode_sex(obs_unique['sex'])
     meta_path = out_dir / 'metadata.csv'
     log.info('writing %s  (%d samples, cols: %s)', meta_path, len(obs_unique),
              ', '.join(meta_cols))
@@ -456,6 +458,7 @@ def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str,
     obs = adata.obs[['sample_id', 'genotype', 'sex', 'dataset']].copy()
     obs['_sort'] = obs['genotype'].astype(str).map(_strain_sort_key)
     obs = obs.sort_values(['_sort', 'sample_id']).drop(columns='_sort')
+    obs['sex'] = _encode_sex(obs['sex'])
 
     X = adata.X if not hasattr(adata.X, 'toarray') else adata.X.toarray()
     lib_sizes = adata.obs['psbulk_counts'].values.astype(np.float32)

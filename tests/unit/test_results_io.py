@@ -28,7 +28,11 @@ from mosaiqtl.io.results_io import (
     write_eqtl_finemapping,
     write_eqtl_finemapping_peak,
 )
-from mosaiqtl.pipeline import EQTL_FINEMAPPING_COLS, EQTL_FINEMAPPING_PEAK_COLS
+from mosaiqtl.pipeline import (
+    _FOUNDER_EFFECT_COLS,
+    EQTL_FINEMAPPING_COLS,
+    EQTL_FINEMAPPING_PEAK_COLS,
+)
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -229,15 +233,15 @@ class TestBuildEqtlScanDf:
         peak_row = df[df["peak_locus"] == "T"].iloc[0]
         assert float(peak_row["lod"]) == max(lod_vals)
 
-    def test_sanger_cols_are_nan(self, tiny_cache):
-        """Sanger-blocked columns (variant, ref_founders, …) are all NaN/NA."""
+    def test_sanger_cols_absent_from_scan(self, tiny_cache):
+        """Sanger allele columns are not part of EQTL_SCAN_COLS schema."""
         from mosaiqtl.io.results_io import build_eqtl_scan_df, _SANGER_COLS
 
         lids, pos, _ = tiny_cache.get_chromosome("1")
         sr = self._make_sr(lod=[1.0] * len(lids), loci=list(lids), pos_mb=list(pos))
         df = build_eqtl_scan_df({"g1": sr}, tiny_cache)
         for col in _SANGER_COLS:
-            assert df[col].isna().all(), f"Expected all-NA in {col!r}"
+            assert col not in df.columns, f"Sanger col {col!r} should not appear in scan output"
 
     def test_pval_nominal_decreases_with_lod(self, tiny_cache):
         """pval_nominal is a monotone decreasing function of LOD."""
@@ -373,7 +377,10 @@ class TestBuildEqtlFinemappingDf:
         df = build_eqtl_finemapping_df(
             _fm_df(), "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2
         )
-        assert list(df.columns) == EQTL_FINEMAPPING_COLS
+        # intermediate df carries EQTL_FINEMAPPING_COLS + _FOUNDER_EFFECT_COLS so
+        # build_eqtl_finemapping_peak_df can lift founder betas into the peak file.
+        # write_eqtl_finemapping trims to EQTL_FINEMAPPING_COLS at write time.
+        assert list(df.columns) == EQTL_FINEMAPPING_COLS + _FOUNDER_EFFECT_COLS
 
     def test_only_cs_members_included(self):
         df = build_eqtl_finemapping_df(
@@ -436,21 +443,21 @@ class TestBuildEqtlFinemappingDf:
             {
                 "snp": snps,
                 "ref": ["A", "C"],
-                "effect_allele": ["T", "G"],
+                "alt": ["T", "G"],
             }
         )
         df = build_eqtl_finemapping_df(
             fm, "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2, alleles_df=alleles
         )
         assert df["ref"].notna().all()
-        assert df["effect_allele"].notna().all()
+        assert df["alt"].notna().all()
 
     def test_no_alleles_df_sanger_cols_nan(self):
         df = build_eqtl_finemapping_df(
             _fm_df(), "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2
         )
         assert df["ref"].isna().all()
-        assert df["effect_allele"].isna().all()
+        assert df["alt"].isna().all()
 
     def test_gene_id_and_symbol_populated(self):
         df = build_eqtl_finemapping_df(
@@ -507,34 +514,44 @@ class TestBuildEqtlFinemappingPeakDf:
         df = build_eqtl_finemapping_peak_df(fm_built)
         assert "lead_snp" not in df.columns
 
-    def test_founder_effects_populated(self, fm_built):
+    def test_founder_effects_populated(self):
         effects = {
             f"effect_{f}": float(i)
             for i, f in enumerate(
                 ["AJ", "B6J", "129S1J", "NODJ", "NZOJ", "CASTJ", "PWKJ", "WSBJ"]
             )
         }
-        df = build_eqtl_finemapping_peak_df(fm_built, founder_effects=effects)
+        fm = build_eqtl_finemapping_df(
+            _fm_df(n_cs=3), "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2,
+            founder_effects=effects,
+        )
+        df = build_eqtl_finemapping_peak_df(fm)
         assert float(df["effect_AJ"].iloc[0]) == pytest.approx(0.0)
         assert float(df["effect_B6J"].iloc[0]) == pytest.approx(1.0)
 
     def test_founder_effects_nan_when_none(self, fm_built):
-        df = build_eqtl_finemapping_peak_df(fm_built, founder_effects=None)
+        # fm_built built without founder_effects → NaN
+        df = build_eqtl_finemapping_peak_df(fm_built)
         assert df["effect_AJ"].isna().all()
 
-    def test_sig_values_populated(self, fm_built):
+    def test_sig_values_populated(self):
         sig = {
             "pval_perm": 0.01,
             "fdr": 0.03,
             "fdr_method": "storey",
             "significance": "T",
         }
-        df = build_eqtl_finemapping_peak_df(fm_built, sig_values=sig)
+        fm = build_eqtl_finemapping_df(
+            _fm_df(n_cs=3), "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2,
+            sig_values=sig,
+        )
+        df = build_eqtl_finemapping_peak_df(fm)
         assert float(df["fdr"].iloc[0]) == pytest.approx(0.03)
         assert df["fdr_method"].iloc[0] == "storey"
 
     def test_sig_values_nan_when_none(self, fm_built):
-        df = build_eqtl_finemapping_peak_df(fm_built, sig_values=None)
+        # fm_built built without sig_values → NaN
+        df = build_eqtl_finemapping_peak_df(fm_built)
         assert df["pval_perm"].isna().all()
 
 

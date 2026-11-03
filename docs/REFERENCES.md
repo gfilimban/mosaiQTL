@@ -96,6 +96,9 @@ See `docs/DATA_SOURCES.md` for the complete derivation chain from these files to
 | Broman KW et al. R/qtl2: Software for Mapping QTL with High-Dimensional Data. *Genetics* 2019 | 10.1534/genetics.119.302463 | `scan1snps()` + `index_snps()` — direct-join SNP↔locus design used in snp_db.py; `find_peaks()` API design |
 | Churchill GA et al. The Collaborative Cross, a community resource for genetic analysis. *Nat Genet* 2004 | 10.1038/ng1104-1133 | Founder probability weighting formula: d[strain]=Σ_f H[strain,f]×geno[f]; theoretical basis of PORT-08 imputation |
 | Wakefield J. Bayes factors for genome-wide association studies: comparison with P-values. *Genet Epidemiol* 2009 **33**:79–86 | 10.1002/gepi.20359 | `qtl/imputation.py::wakefield_abf` — log-space ABF formula; `prior_var=0.04` default for cis-eQTL on standardized phenotypes |
+| Wang G et al. A simple new approach to variable selection in regression, with application to genetic fine-mapping. *JRSS-B* 2020 | 10.1111/rssb.12388 | SuSiE: iterative Bayesian stepwise selection for multi-causal fine-mapping; credible set purity concept (min pairwise r² ≥ 0.5); motivates haplotype-compressed LD-group design in `qtl/imputation.py` |
+| Zou Y et al. Fine-mapping from summary data with the "Sum of Single Effects" model. *PLOS Genet* 2022 | 10.1371/journal.pgen.1010299 | SuSiE-RSS: extends SuSiE to summary statistics via z-scores; LD matrix input; long-term target for `qtl/imputation.py` when optional `rss` dependency is available |
+| Holmes JB et al. Revealing the secrets of sequence variation with SPDI. *Bioinformatics* 2020 | 10.1093/bioinformatics/btz856 | SPDI format for unambiguous variant representation: `{RefSeq_accession}:{pos_0based}:{ref}:{alt}`; used as the `variant` column in EQTL_FINEMAPPING_COLS; GRCm39 RefSeq accessions from NCBI assembly GCF_000001635.27 |
 
 ---
 

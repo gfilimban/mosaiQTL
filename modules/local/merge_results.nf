@@ -1,36 +1,34 @@
-/*
- * MERGE_RESULTS — concatenate per-chromosome LOD CSVs into lod_genome.csv
- *
- * Input  : [celltype, [lod_chr*.csv, ...]]  (groupTuple output from LMM_SCAN)
- * Output : [celltype, lod_genome.csv]
- *
- * One job per cell type, fires after all its chr jobs complete.
- * Published to {output_dir}/{celltype}/lod_genome.csv.
- */
-
 process MERGE_RESULTS {
 
-    label 'process_medium'
+    label 'process_single'
     tag   "${celltype}"
 
-    publishDir { "${params.output_dir}/${celltype}" }, mode: 'copy'
+    publishDir { "${params.output_dir}/${celltype}/${scan_tag}" }, mode: 'copy'
 
     input:
-    tuple val(celltype), path(lod_csvs), path(timing_jsons)
+    tuple val(celltype), val(scan_tag),
+          path(lod_csvs), path(peak_stats_csvs), path(timing_jsons),
+          path(gene_info)
 
     output:
-    tuple val(celltype), path('lod_genome.csv'), path('peak_lod.csv'), path('scan_stats.csv')
+    tuple val(celltype), val(scan_tag),
+          path('*_lod_genome.csv'),
+          path('*_peak_lod.csv'),
+          path('*_scan_stats.csv')
 
     script:
+    def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
-    python ${projectDir}/scripts/merge_lod_csvs.py \
-        --celltype ${celltype} \
-        --output   lod_genome.csv \
-        ${lod_csvs}
+    set -o pipefail
+    mkdir -p ${launchDir}/${params.output_dir}/logs
+    python ${projectDir}/scripts/run_merge.py \\
+        . ${gene_info} '${celltype}' ${scan_tag} . ${params.tissue} \\
+        2>&1 | tee ${launchDir}/${params.output_dir}/logs/${tag}_merge.log
     """
 
     stub:
+    def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
-    touch lod_genome.csv peak_lod.csv scan_stats.csv
+    touch ${tag}_lod_genome.csv ${tag}_peak_lod.csv ${tag}_scan_stats.csv
     """
 }

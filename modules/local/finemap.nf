@@ -1,47 +1,38 @@
-/*
- * FINEMAP — Sanger SNP fine-mapping for eGenes (Wakefield ABF credible sets)
- *
- * Input  : path kinship_loco (shared)
- *          tuple [celltype, eqtl_peak.csv, phenotypes]
- * Output : tuple [celltype, eqtl_finemapping*.csv, eqtl_finemapping_peak*.csv]
- *
- * Requires sanger_alleles.h5 in params.data_dir (shared across all cell types).
- * One job per cell type, fires after REPORT.
- */
-
 process FINEMAP {
 
-    label 'process_medium'
+    label 'process_long'
     tag   "${celltype}"
 
-    publishDir { "${params.output_dir}/${celltype}" }, mode: 'copy'
+    publishDir { "${params.output_dir}/${celltype}/${scan_tag}" }, mode: 'copy'
 
     input:
     path  genomecache
     path  kinship_loco
     path  sanger_alleles
-    tuple val(celltype), path(eqtl_peak), path(phenotypes)
+    tuple val(celltype), val(scan_tag),
+          path(eqtl_summary), path(peak_lod), path(phenotypes), path(metadata)
 
     output:
-    tuple val(celltype), path('eqtl_finemapping*.csv'), path('eqtl_finemapping_peak*.csv')
+    tuple val(celltype), val(scan_tag),
+          path('*_eqtl_finemapping.csv'),
+          path('*_eqtl_finemapping_peak.csv')
 
     script:
+    def sanger = sanger_alleles.name != 'NO_SANGER' ? sanger_alleles.name : ''
+    def tag    = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
+    set -o pipefail
+    mkdir -p ${launchDir}/${params.output_dir}/logs
     python ${projectDir}/scripts/run_finemap.py \\
-        --egenes      ${eqtl_peak} \\
-        --phenotypes  ${phenotypes} \\
-        --kinship     ${kinship_loco} \\
-        --metadata    ${params.metadata ?: params.data_dir + '/igvf_sample_metadata.csv'} \\
-        --covariates  '${params.covariates}' \\
-        --cache       ${genomecache} \\
-        --alleles     ${sanger_alleles} \\
-        --celltype    ${celltype} \\
-        --output-dir  .
+        ${eqtl_summary} ${genomecache} ${kinship_loco} ${phenotypes} ${metadata} \\
+        '${celltype}' ${scan_tag} '${params.covariates}' \\
+        . ${sanger} ${peak_lod} ${params.tissue} \\
+        2>&1 | tee ${launchDir}/${params.output_dir}/logs/${tag}_finemap.log
     """
 
     stub:
+    def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
-    touch eqtl_finemapping.csv
-    touch eqtl_finemapping_peak.csv
+    touch ${tag}_eqtl_finemapping.csv ${tag}_eqtl_finemapping_peak.csv
     """
 }

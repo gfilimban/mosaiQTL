@@ -49,6 +49,7 @@ where = ['src']
 [tool.pytest.ini_options]
 testpaths   = ['tests']
 addopts     = '-q'
+markers     = ['slow: marks tests that are slow or require external tools (deselect with -m "not slow")']
 
 # ── coverage ──────────────────────────────────────────────────────────────────
 [tool.coverage.run]

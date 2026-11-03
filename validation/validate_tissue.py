@@ -29,14 +29,25 @@ Outputs, per cell type ({data}/celltypes/{ct}/) or whole-tissue ({data}/whole/):
               at this root, shared across every scan_tag below
   {scan_tag}/ everything scan_type/window_mb-dependent, where scan_tag is 'C', 'G',
               or 'Lw<window_mb>' (see run()::_scan_tag) — so different
-              --scan_type/--window_mb runs never overwrite each other:
-    core/, extended/    scan CSVs, checkpoint .done files, run_summary.csv,
-                         eqtl_summary.csv, scan_info.json, scan_stats.csv
-                         (the 4 core scan CSVs — lod/peak_lod/allele_effects/threshold —
-                         carry a '_{celltype_or_whole}_{scan_tag}' filename suffix, e.g.
-                         'peak_lod_astrocyte_Lw1.csv', 'lod_whole_C.csv' — see run()::_sfx)
-    plots/               descriptive + optional R-comparison figures; R-comparison
-                         scatter PNGs carry the same suffix, e.g. 'mi_scatter_whole_G.png'
+              --scan_type/--window_mb runs never overwrite each other.
+    Tagged final outputs (NF-mirrored, prefix = {ct}_{scan_tag}_):
+      {sfx}_eqtl_summary.csv      comprehensive: sig cols + null model + founder effects
+      {sfx}_eqtl_peak.csv         submission eQTL peak table (EQTL_PEAK_COLS)
+      {sfx}_eqtl_stats.csv        per-chr GEV + run stats (EQTL_STATS_COLS)
+      {sfx}_eqtl_finemapping.csv  ABF credible-set SNPs
+      {sfx}_eqtl_finemapping_peak.csv  one row per eGene finemapped
+      {sfx}_peak_lod.csv          lightweight peak-per-gene (for report CLI)
+      {sfx}_perm_max_lods.csv     genome-wide permutation max-LOD distribution
+      {sfx}_perm_max_lods_chr*.csv per-chr permutation max-LOD
+      {sfx}_ci.csv                1.5-LOD support confidence intervals
+      {sfx}_mi_lod.csv            multiple-imputation LOD scan (when run)
+      {sfx}_instability.csv       instability scan (when run)
+      {sfx}_scan_stats.csv        per-section timing + memory
+      run_metadata.json           run provenance summary
+    Intermediates in core/ (scratch, not delivery artifacts):
+      lod/peak_lod/allele_effects/threshold CSVs, checkpoint .done files,
+      scan_info.json, run_summary.csv, sample_breakdown.csv
+    plots/               descriptive + optional R-comparison figures
     compare/             py-vs-R merged CSVs (written only when R data present)
 
 Usage (gastroc, existing default):
@@ -63,9 +74,10 @@ from __future__ import annotations
 
 import argparse
 import gc
+import json as _json
 import logging
 import re
-import resource
+import shutil
 import sys
 import time
 import tracemalloc
@@ -97,14 +109,6 @@ def _display_founders(cache_founders: 'list[str]') -> list[str]:
     """Map cache founder codes (A-H from HAPPY format) to FOUNDER_ORDER display names."""
     return [_FOUNDER_CODE_INV.get(f, _FOUNDER_CODE_INV.get(f.upper(), f))
             for f in cache_founders]
-
-
-def _get_rss_mb() -> float:
-    """Current process RSS in MB (macOS returns bytes; Linux returns kilobytes)."""
-    usage = resource.getrusage(resource.RUSAGE_SELF)
-    if sys.platform == 'darwin':
-        return usage.ru_maxrss / 1024**2
-    return usage.ru_maxrss / 1024
 
 
 from mosaiqtl.genotype.genomecache import GenomeCache
@@ -171,7 +175,11 @@ from mosaiqtl.viz.celltypes import (
     ct_cis_distance_comparison as _ct_cis_distance,
     compare_scan_types as _compare_scan_types,
 )
-from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
+from mosaiqtl.genotype.kinship import (
+    calc_kinship, decomp_kinship, kinship_from_decomp,
+    load_kinship_decomp as _load_kinship_decomp,
+    save_kinship_decomp as _save_kinship_decomp,
+)
 from mosaiqtl.qtl.scan import scan_h2lmm, ScanResult
 from mosaiqtl.qtl.peaks import grab_locus_from_scan
 from mosaiqtl.qtl.mi import scan_h2lmm_mi, scan_multi_gene_mi
@@ -179,7 +187,7 @@ from mosaiqtl.qtl.instability import instability_lm_scan, instability_scan_multi
 from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome
 from mosaiqtl.qtl.ci import ci_scan_multi_gene
 from mosaiqtl.qtl.fdr import calibrate_gene_pvalue
-from mosaiqtl.qtl.permutation import generate_null_outcomes, run_threshold_scans
+from mosaiqtl.qtl.permutation import generate_null_outcomes, pick_rep_gene, run_threshold_scans
 from mosaiqtl.qtl.thresholds import get_gev_thresholds, load_per_chr_thresholds
 from mosaiqtl.qtl.mediation import (
     mediation_scan_qr,
@@ -187,8 +195,9 @@ from mosaiqtl.qtl.mediation import (
     select_cis_mediation_pairs,
     mediation_scan_multi_outcome,
 )
-from mosaiqtl.io.covariates import encode_sex
+from mosaiqtl.io.covariates import build_covariate_matrix, build_sample_geno_map, encode_sex
 from mosaiqtl.io.results_io import (
+    build_gev_row as _build_gev_row,
     pos_merge as _pos_merge,
     scan_result_to_df as _scan_to_df,
     write_eqtl_peak,
@@ -201,20 +210,12 @@ from mosaiqtl.pipeline import (
     call_egenes, finalize_egene_summary, finemap_egenes,
     LOD_COLS, ALLELE_EFFECTS_BASE_COLS, PEAK_LOD_COLS, EGENE_SUMMARY_COLS,
 )
-from mosaiqtl.utils import build_z_matrix, rint
+from mosaiqtl.utils import build_z_matrix, rint, get_rss_mb, git_hash
 from natsort import natsorted
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 log = logging.getLogger('validate_tissue')
 
-
-def _git_hash() -> str:
-    import subprocess
-    try:
-        return subprocess.check_output(
-            ['git', 'rev-parse', '--short', 'HEAD'], text=True).strip()
-    except Exception:
-        return 'unknown'
 
 PASS = '✅'
 FAIL = '❌'
@@ -326,60 +327,19 @@ def _build_cache_from_happy(genomecache_dir: Path, out_h5: Path) -> None:
 # expression + metadata helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _load_expression(h5_path: Path, genes_wanted: list[str],
-                     ) -> tuple[np.ndarray, list[str], list[str]]:
-    """load only the requested genes from counts_lognorm.h5.
-
-    No cross-loading: only the cis-gene rows for the chromosome being scanned
-    are materialised from the HDF5 file.
-
-    Returns
-    -------
-    counts : (n_genes, n_samples) float32
-    genes  : gene IDs in order (subset of genes_wanted that were found)
-    samples: sample IDs in order
-    """
-    import h5py
-    with h5py.File(h5_path, 'r') as f:
-        all_genes   = np.array(f['genes']).astype(str).tolist()
-        all_samples = np.array(f['samples']).astype(str).tolist()
-        counts_ds   = f['counts']   # (n_genes_total, n_samples)
-        wanted_set  = set(genes_wanted)
-        idx = [i for i, g in enumerate(all_genes) if g in wanted_set]
-        if not idx:
-            return np.empty((0, len(all_samples))), [], all_samples
-        counts = np.array(counts_ds[idx, :], dtype=np.float32)
-    genes_out = [all_genes[i] for i in idx]
-    return counts, genes_out, all_samples
 
 
 def _build_covariates(meta: pd.DataFrame,
                       sample_order: list[str]) -> np.ndarray:
-    """build covariate matrix aligned to sample_order — matches R formula '~ sex + dataset'.
+    """build covariate matrix aligned to sample_order.
 
-    Columns (scan_h2lmm prepends intercept internally):
-      sex     : 0=Female (reference), 1=Male  — mandatory; X-linked dosage + hormone effects
-      dataset : n_cats-1 dummies; the 'founder*' category (case-insensitive) is the reference
-                level (biological baseline); remaining categories sorted lexicographically.
+    Covariates: sex + dataset (Founder as reference level).
     """
-    meta_idx = meta.set_index('sample_id')
-    rows     = meta_idx.loc[sample_order]
-
-    sex_vec  = encode_sex(rows['sex']).values.astype(np.float64)
-
-    # auto-detect reference level: first category whose name starts with 'founder'
-    # (handles both 'Founder' in gastroc and 'founder' in ctxhipp)
-    ds_vals     = rows['dataset'].values
-    unique_cats = sorted(set(ds_vals), key=str.lower)
-    ref         = next(
-        (c for c in unique_cats if c.lower().startswith('founder')),
-        unique_cats[0],
+    cov_df = build_covariate_matrix(
+        meta[meta['sample_id'].isin(sample_order)].drop_duplicates('sample_id'),
+        covariates=['sex', 'dataset'],
     )
-    ordered = [ref] + [c for c in unique_cats if c != ref]
-    cat     = pd.Categorical(ds_vals, categories=ordered)
-    dummies = pd.get_dummies(cat, drop_first=True).values.astype(np.float64)
-
-    return np.column_stack([sex_vec, dummies])
+    return cov_df.reindex(sample_order).values
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1303,8 +1263,12 @@ def _make_descriptive_plots(
                         .astype(float).values)
             _ci_hi = (ci_df.get('ci_hi_mb', ci_df.get('ci_hi', np.full(len(ci_df), np.nan)))
                         .astype(float).values)
-            _ci_lod = (ci_df['peak_lod'].values if 'peak_lod' in ci_df.columns
-                         else np.ones(len(ci_df)) * (_genome_thr or 3.0))
+            _ci_lod_raw = (ci_df['peak_lod'].values if 'peak_lod' in ci_df.columns
+                           else None)
+            if _ci_lod_raw is None or np.all(np.isnan(_ci_lod_raw.astype(float))):
+                _ci_lod_raw = (ci_df['ci_peak_lod'].values if 'ci_peak_lod' in ci_df.columns
+                               else np.ones(len(ci_df)) * (_genome_thr or 3.0))
+            _ci_lod = _ci_lod_raw.astype(float)
             _ci_mb = (ci_df['peak_mb'].values if 'peak_mb' in ci_df.columns
                         else np.zeros(len(ci_df)))
             _viz_ci_genomic_interval(
@@ -1926,6 +1890,93 @@ def _sfx(celltype: str | None, scan_tag: str) -> str:
     return f'{ct_token}_{scan_tag}'
 
 
+def _finalize_tagged_outputs(
+    py_dir: Path,
+    core_dir: Path,
+    ext_dir: Path,
+    sfx: str,
+    run_summary: dict,
+    celltype: 'str | None',
+    scan_tag: str,
+    tissue: 'str | None',
+    n_egenes: int,
+    lod_threshold: 'float | None',
+) -> None:
+    """Write NF-mirrored tagged outputs to py_dir.
+
+    Merges eqtl_summary + allele_effects + peak_lod into a comprehensive
+    {sfx}_eqtl_summary.csv; tags perm, ci, scan_stats files; surfaces finemap
+    outputs; writes run_metadata.json.  Intermediates in core_dir are kept as-is.
+    """
+    from importlib.metadata import version as _pkg_version
+
+    # 1. Comprehensive eqtl_summary — merge sig cols + null model + founder effects
+    _es_src  = py_dir   / 'eqtl_summary.csv'
+    _eff_src = core_dir / f'allele_effects_{sfx}.csv'
+    _pk_src  = core_dir / f'peak_lod_{sfx}.csv'
+    if _es_src.exists():
+        _es = pd.read_csv(_es_src, dtype={'gene_id': str})
+        for _src in (_pk_src, _eff_src):
+            if _src.exists():
+                _aux = pd.read_csv(_src, dtype={'gene_id': str})
+                _extra = [c for c in _aux.columns
+                          if c not in _es.columns and c != 'gene_id']
+                if _extra:
+                    _es = _es.merge(_aux[['gene_id'] + _extra], on='gene_id', how='left')
+        _es.to_csv(py_dir / f'{sfx}_eqtl_summary.csv', index=False)
+
+    # 2. Tagged peak_lod (lightweight — report CLI reads this)
+    _pk_dst = py_dir / f'{sfx}_peak_lod.csv'
+    if _pk_src.exists() and not _pk_dst.exists():
+        shutil.copy2(_pk_src, _pk_dst)
+
+    # 3. Tagged perm files
+    _pm_src = core_dir / 'perm_max_lods.csv'
+    if _pm_src.exists():
+        shutil.copy2(_pm_src, py_dir / f'{sfx}_perm_max_lods.csv')
+    for _pf in sorted(core_dir.glob('perm_max_lods_chr*.csv')):
+        _chr_tok = _pf.stem.replace('perm_max_lods_', '')
+        shutil.copy2(_pf, py_dir / f'{sfx}_perm_max_lods_{_chr_tok}.csv')
+
+    # 4. Tagged scan_stats
+    _ss_src = py_dir / 'scan_stats.csv'
+    if _ss_src.exists():
+        shutil.copy2(_ss_src, py_dir / f'{sfx}_scan_stats.csv')
+
+    # 5. Tagged extended outputs (ci, mi_lod, instability)
+    for _name in ('ci.csv', 'mi_lod.csv', 'instability.csv'):
+        _src = ext_dir / _name
+        if _src.exists():
+            _stem = _name.replace('.csv', '')
+            shutil.copy2(_src, py_dir / f'{sfx}_{_stem}.csv')
+
+    # 6. Surface finemap outputs to py_dir
+    _fm_dir = py_dir / 'finemap'
+    if _fm_dir.exists():
+        for _fp in sorted(_fm_dir.glob('eqtl_finemapping*.csv')):
+            _dst = py_dir / _fp.name
+            if not _dst.exists():
+                shutil.copy2(_fp, _dst)
+
+    # 7. run_metadata.json (NF-compatible summary doc)
+    try:
+        _ver = _pkg_version('mosaiqtl')
+    except Exception:
+        _ver = '0.0.0+unknown'
+    _meta = {
+        'tag':               sfx,
+        'celltype':          celltype or '',
+        'tissue':            tissue or '',
+        'scan_tag':          scan_tag,
+        'n_egenes':          n_egenes,
+        'lod_threshold':     lod_threshold,
+        'mosaiqtl_version':  _ver,
+        'git_hash':          run_summary.get('git_hash', ''),
+        'generated_at':      pd.Timestamp.now().isoformat(),
+    }
+    (py_dir / 'run_metadata.json').write_text(_json.dumps(_meta, indent=2))
+
+
 def run(data_dir: Path, out_dir: Path, sections: set[int],
         force: bool, n_genes: int | None,
         scan_type: str = 'L',
@@ -1935,7 +1986,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         tissue: str = 'gastroc',
         priority_gene: dict[str, str] | None = None,
         gtf_path: str | None = None,
-        sanger_alleles: str | None = None) -> dict:
+        sanger_alleles: str | None = None,
+        seed: int = 42,
+        n_perms: int = 1000,
+        perm_method: str = 'parametric') -> dict:
     """run tissue characterization sections; return gate results dict.
 
     Parameters
@@ -2011,7 +2065,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     meta = pd.read_csv(meta_path)
     sample_ids_meta = meta['sample_id'].tolist()
     # map sample-level IDs (individual mice) to genotype IDs (strain names in cache)
-    meta_geno_map: dict[str, str] = dict(zip(meta['sample_id'], meta['genotype']))
+    meta_geno_map: dict[str, str] = build_sample_geno_map(meta)
     log.info('metadata: %d samples  %d genotypes  datasets: %s',
              len(meta), meta['genotype'].nunique(),
              sorted(meta['dataset'].unique()))
@@ -2027,6 +2081,8 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     else:
         gene_info_path = data_dir / f'exp_gene_info_{tissue}.csv'
     gene_info = pd.read_csv(gene_info_path)
+    if 'gene_name' in gene_info.columns and 'gene_symbol' not in gene_info.columns:
+        gene_info = gene_info.rename(columns={'gene_name': 'gene_symbol'})
     gene_info['chr'] = gene_info['chr'].astype(str)
     log.info('gene_info: %d genes  (%s)', len(gene_info), gene_info_path.name)
 
@@ -2044,14 +2100,17 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     # (validation/input/ per .claudeignore policy); it lives in the sibling qtl/input/
     # directory alongside the raw h5ad — repo_root.parent, not a hardcoded home path
     _input_dirs = [Path(__file__).parent / 'input',
-                  Path(__file__).parent.parent.parent / 'input']
+                  Path(__file__).parent.parent.parent / 'input',
+                  Path(__file__).parent.parent / 'ref']
     _gene_tss_path = next(
         (d / 'gene_tss.vm36.csv' for d in _input_dirs if (d / 'gene_tss.vm36.csv').exists()),
         None,
     )
     if _gene_tss_path is not None:
-        _gene_tss = pd.read_csv(_gene_tss_path,
-                                usecols=['gene_name', 'start', 'end', 'strand'])
+        _gtss_header = pd.read_csv(_gene_tss_path, nrows=0).columns.tolist()
+        _gtss_usecols = [c for c in ['gene_id', 'gene_name', 'start', 'end', 'strand']
+                         if c in _gtss_header]
+        _gene_tss = pd.read_csv(_gene_tss_path, usecols=_gtss_usecols)
         _gene_tss['tss_mb'] = np.where(
             _gene_tss['strand'] == '-',
             _gene_tss['end'] / 1e6,
@@ -2068,11 +2127,12 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     gene_info_path.name)
 
     # ── load GenomeCache (must be pre-built as HDF5) ──────────────────────────
-    hdf5_cache = _DATA_DIR / 'cache.h5'
+    hdf5_cache = _DATA_DIR / 'igvf_cache.h5'
+    if not hdf5_cache.exists():
+        hdf5_cache = _DATA_DIR / 'cache.h5'
     if hdf5_cache.exists():
         log.info('loading GenomeCache from HDF5: %s', hdf5_cache)
         cache = GenomeCache.from_hdf5(str(hdf5_cache))
-        cache = cache.reorder_to_canonical()  # fast no-op if already canonical
     else:
         log.error(
             'cache.h5 not found at %s\n'
@@ -2087,25 +2147,18 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
              len(cache.chromosomes), len(cache.sample_ids), cache.sample_ids[0])
 
     # ── load or compute LOCO kinship decomp ───────────────────────────────────
-    import h5py as _h5py
-    kd_h5 = _DATA_DIR / 'kinship_loco.h5'
+    kd_h5 = _DATA_DIR / 'igvf_kinship_loco.h5'
+    if not kd_h5.exists():
+        kd_h5 = _DATA_DIR / 'kinship_loco.h5'
     if kd_h5.exists():
         log.info('loading kinship decomp: %s', kd_h5)
-        with _h5py.File(kd_h5, 'r') as _f:
-            kinship_decomp = {
-                c: {'values': _f[f'chr{c}/values'][:], 'vectors': _f[f'chr{c}/vectors'][:]}
-                for c in cache.chromosomes if f'chr{c}' in _f
-            }
+        kinship_decomp = _load_kinship_decomp(kd_h5)
     else:
         log.info('computing LOCO kinship from cache (first run — saves to %s)...', kd_h5)
         _DATA_DIR.mkdir(parents=True, exist_ok=True)
         kin_raw = calc_kinship(cache, method='loco')
         kinship_decomp = decomp_kinship(kin_raw)
-        with _h5py.File(kd_h5, 'w') as _f:
-            for ch, kd in kinship_decomp.items():
-                grp = _f.create_group(f'chr{ch}')
-                grp.create_dataset('values',  data=kd['values'].astype(np.float64))
-                grp.create_dataset('vectors', data=kd['vectors'].astype(np.float64))
+        _save_kinship_decomp(kinship_decomp, kd_h5)
         del kin_raw; gc.collect()
         log.info('  saved to %s', kd_h5)
 
@@ -2135,7 +2188,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\ncache: verifying loci count, founder IDs, and sample ordering against HDF5...')
-            _rss_cache = _get_rss_mb()
+            _rss_cache = get_rss_mb()
             tracemalloc.start()
             _t_cache = time.perf_counter()
             cache_ok = True
@@ -2193,7 +2246,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             _cache_elapsed = time.perf_counter() - _t_cache
             _record_stats('cache', 'cache_info', _n_items_cache,
                           _cache_elapsed, _cache_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_cache))
+                          max(0.0, get_rss_mb() - _rss_cache))
             log.info('  [timing] cache: %.2fs  heap_peak=%.0fMB',
                      _cache_elapsed, _cache_peak / 1e6)
 
@@ -2205,7 +2258,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nhaplotype probs: exporting per-locus founder probability matrix sample for QC...')
-            _rss_hap = _get_rss_mb()
+            _rss_hap = get_rss_mb()
             tracemalloc.start()
             _t_hap = time.perf_counter()
             founder_cols = list(cache.founders)
@@ -2271,7 +2324,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             _hap_elapsed = time.perf_counter() - _t_hap
             _record_stats('haplotype_probs', 'haplotype_probe', _n_items_hap,
                           _hap_elapsed, _hap_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_hap))
+                          max(0.0, get_rss_mb() - _rss_hap))
             log.info('  [timing] haplotype probs: %.2fs  heap_peak=%.0fMB',
                      _hap_elapsed, _hap_peak / 1e6)
             _mark_done(py_dir, str(sec))
@@ -2281,7 +2334,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
             log.info('\nLOCO kinship: per-chromosome kinship excluding test chr, eigendecomposition for WLS rotation...')
-            _rss_kinship = _get_rss_mb()
+            _rss_kinship = get_rss_mb()
             tracemalloc.start()
             _t_kinship = time.perf_counter()
 
@@ -2331,7 +2384,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             _kinship_elapsed = time.perf_counter() - _t_kinship
             _record_stats('loco_kinship', 'kinship_summary', _n_items_kinship,
                           _kinship_elapsed, _kinship_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_kinship))
+                          max(0.0, get_rss_mb() - _rss_kinship))
             log.info('  [timing] LOCO kinship: %.2fs  heap_peak=%.0fMB',
                      _kinship_elapsed, _kinship_peak / 1e6)
 
@@ -2423,7 +2476,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             # ── scan_info.json — provenance + sample summary ──────────────────
             (py_dir / 'scan_info.json').write_text(_json.dumps({
                 'mosaiqtl_version': _pkg_version('mosaiqtl'),
-                'git_hash':         _git_hash(),
+                'git_hash':         git_hash(),
                 'run_date':         time.strftime('%Y-%m-%d'),
                 'celltype':         celltype if celltype else 'whole_tissue',
                 'scan_type':        scan_type,
@@ -2441,7 +2494,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             h5_path = data_dir / 'counts_lognorm.h5'
             all_effect_rows: list[dict] = []
             _lod_header_written = False
-            _rss_scan = _get_rss_mb()
+            _rss_scan = get_rss_mb()
             tracemalloc.start()
             t_scan = time.perf_counter()
             n_genes_total = 0
@@ -2463,7 +2516,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 if n_genes is not None:
                     gene_ids_ch = gene_ids_ch[:n_genes]
 
-                counts_ch, loaded_ids, sids_ch = _load_expression(h5_path, gene_ids_ch)
+                counts_ch, loaded_ids, sids_ch = _load_expression_h5(h5_path, gene_ids_ch)
                 if counts_ch.shape[0] == 0:
                     log.info('  chr%s: no genes found in HDF5 — skipping', ch)
                     continue
@@ -2655,7 +2708,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 log.info('  scan complete: %d genes  %.1fs  %.1f genes/min',
                          n_genes_total, elapsed_s, genes_per_min)
                 _record_stats('lmm_scan', 'genome_total', n_genes_total, elapsed_s,
-                              _scan_heap_peak / 1e6, max(0.0, _get_rss_mb() - _rss_scan))
+                              _scan_heap_peak / 1e6, max(0.0, get_rss_mb() - _rss_scan))
                 # read back only the columns needed for peak reduction — avoids
                 # holding the full (genes × loci) LOD matrix in RAM twice
                 log.info('  computing peak LOD per gene ...')
@@ -2860,7 +2913,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     if sec in sections:
         log.info('\npermutation threshold + eGene calling: genome-wide GEV null from phenotype permutation → LOD threshold → eGene calls...')
         if not _checkpoint(py_dir, str(sec), force):
-            _rss_perm = _get_rss_mb()
+            _rss_perm = get_rss_mb()
             tracemalloc.start()
             _t_perm = time.perf_counter()
             if not peak_lod_path.exists():
@@ -2870,97 +2923,26 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 h5_path = data_dir / 'counts_lognorm.h5'
 
                 # ── pick median-h² gene as representative for permutation ──────
-                # Prefer h² from allele_effects.csv if the column exists
-                # (written when S4 was run with the current code).  When the
-                # on-disk file predates the h² column, estimate h² independently
-                # using estimate_h2_null on a random gene sample — fast (Brent's
-                # 1D optimisation, no scan) and makes S5 self-contained.
-                _perm_gene: str
-                _perm_id:   str
-                _h2_med:    float
+                # pick_rep_gene reads h² from peak_lod.csv (PEAK_LOD_COLS) and
+                # resolves the strand-aware TSS from _gene_tss when available.
+                # Chromosome restriction matches the null to each scan type:
+                #   L — rep gene on same chr; null restricted to ±window_mb window
+                #   C — rep gene on same chr; null restricted to full chromosome
+                #   G — no restriction; genome-wide null
+                _peak_df_perm = pd.read_csv(peak_lod_path, dtype={'chr': str})
+                _perm_id, _perm_chr_rep, _perm_tss_mb, _h2_med = pick_rep_gene(
+                    _peak_df_perm,
+                    chrom=str(peak_chr) if scan_type in ('L', 'C') else None,
+                    gene_tss_df=_gene_tss,
+                )
+                _perm_gene = (
+                    _peak_df_perm.loc[_peak_df_perm['gene_id'] == _perm_id, 'gene_symbol'].iloc[0]
+                    if 'gene_symbol' in _peak_df_perm.columns
+                    and (_peak_df_perm['gene_id'] == _perm_id).any()
+                    else _perm_id
+                )
 
-                eff_path_perm = core_dir / f'allele_effects_{_run_sfx}.csv'
-                _h2_from_effects = False
-                if eff_path_perm.exists():
-                    _eff_cols = pd.read_csv(eff_path_perm, nrows=0).columns.tolist()
-                    if 'h2' in _eff_cols:
-                        _h2_from_effects = True
-
-                if _h2_from_effects:
-                    _eff_perm    = pd.read_csv(eff_path_perm, usecols=['gene_id', 'gene_symbol', 'h2'])
-                    _h2_valid  = _eff_perm['h2'].dropna()
-                    _h2_med    = float(_h2_valid.median())
-                    _best_row  = _eff_perm.iloc[(_h2_valid - _h2_med).abs().values.argmin()]
-                    _perm_gene = str(_best_row['gene_symbol'])
-                    _perm_id   = str(_best_row['gene_id'])
-                    # join peak_lod for chr + LOD of representative gene
-                    _perm_gene_info = (pd.read_csv(peak_lod_path, usecols=['gene_symbol', 'chr', 'peak_lod'])
-                                   if peak_lod_path.exists() else None)
-                    _rep_info = (
-                        _perm_gene_info[_perm_gene_info['gene_symbol'] == _perm_gene].iloc[0]
-                        if _perm_gene_info is not None and (_perm_gene_info['gene_symbol'] == _perm_gene).any()
-                        else None
-                    )
-                    if _rep_info is not None:
-                        log.info('  h² from effects file  median=%.3f  gene: %s  '
-                                 'chr%s  LOD=%.2f  h²=%.3f',
-                                 _h2_med, _perm_gene,
-                                 str(_rep_info['chr']), float(_rep_info['peak_lod']),
-                                 float(_best_row['h2']))
-                    else:
-                        log.info('  h² from effects file  median=%.3f  gene: %s (h²=%.3f)',
-                                 _h2_med, _perm_gene, float(_best_row['h2']))
-                else:
-                    # estimate h² on-the-fly from a random sample of peak_lod genes
-                    log.info('  estimating h² for representative gene selection ...')
-                    _peak_df_perm     = pd.read_csv(peak_lod_path)
-                    _perm_chr_genes    = _peak_df_perm[_peak_df_perm['chr'].astype(str) == str(peak_chr)]
-                    _perm_chr_sample   = _perm_chr_genes.sample(
-                        min(500, len(_perm_chr_genes)), random_state=1)
-                    _samp_ids     = _perm_chr_sample['gene_id'].tolist()
-                    _samp_symbols = dict(zip(_perm_chr_sample['gene_id'],
-                                              _perm_chr_sample['gene_symbol']))
-                    _perm_counts, _perm_loaded, _perm_sids = _load_expression(h5_path, _samp_ids)
-                    _perm_gids   = [meta_geno_map.get(s, s) for s in _perm_sids]
-                    _kd_ref    = kinship_decomp[peak_chr]
-                    _ev_ref    = _kd_ref['values']
-                    _evc_ref   = _kd_ref['vectors']
-                    # restrict to samples present in cache
-                    _perm_valid_idx   = np.array([i for i, g in enumerate(_perm_gids)
-                                           if g in cache.sample_ids])
-                    _h2_pairs: list[tuple[str, float]] = []
-                    for _pgi, _pgn in enumerate(_perm_loaded):
-                        _py = rint(_perm_counts[_pgi].astype(float))
-                        if np.any(np.isnan(_py[_perm_valid_idx])):
-                            continue
-                        try:
-                            _pcov = _build_covariates(meta, [_perm_sids[j]
-                                                              for j in _perm_valid_idx])
-                            _px   = np.hstack([np.ones((_pcov.shape[0], 1)), _pcov])
-                            _ph2, _ = estimate_h2_null(
-                                _evc_ref.T @ _py[_perm_valid_idx],
-                                _evc_ref.T @ _px,
-                                _ev_ref)
-                            _h2_pairs.append((_pgn, float(_ph2)))
-                        except Exception:
-                            pass
-                    del _perm_counts; gc.collect()
-                    if not _h2_pairs:
-                        log.warning('  h² estimation failed for all sampled genes; '
-                                    'falling back to highest-LOD gene on chr%s', peak_chr)
-                        _fallback_idx = _perm_chr_genes['peak_lod'].idxmax()
-                        _perm_id   = str(_perm_chr_genes.loc[_fallback_idx, 'gene_id'])
-                        _perm_gene = str(_perm_chr_genes.loc[_fallback_idx, 'gene_symbol'])
-                        _h2_med    = float('nan')
-                    else:
-                        _h2_arr    = np.array([h for _, h in _h2_pairs])
-                        _h2_med    = float(np.median(_h2_arr))
-                        _best_idx  = int(np.argmin(np.abs(_h2_arr - _h2_med)))
-                        _perm_id   = _h2_pairs[_best_idx][0]
-                        _perm_gene = _samp_symbols.get(_perm_id, _perm_id)
-                    log.info('  median h²=%.3f  representative gene: %s', _h2_med, _perm_gene)
-
-                _cts, _lds, _sids = _load_expression(h5_path, [_perm_id])
+                _cts, _lds, _sids = _load_expression_h5(h5_path, [_perm_id])
                 if _cts.shape[0] == 0:
                     log.info('  %s expression for %s not found', SKIP, _perm_id)
                     results['perm_threshold'] = None
@@ -2968,45 +2950,31 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _gids = [meta_geno_map.get(s, s) for s in _sids]
                     _y    = _cts[0].astype(float)
 
-                    # L (local) mode: the real per-gene scan never leaves a
-                    # ±window_mb window around the gene's own TSS, so a null
-                    # drawn from a genome-wide (or even whole-chromosome) max
-                    # tests far more loci than the real scan ever did —
-                    # inflating the threshold and understating power. Restrict
-                    # the representative gene's null scan to its own
-                    # chr/window so the multiple-testing burden matches.
-                    # C/G modes keep the genome-wide null: 'C' still tests
-                    # every locus on some chromosome per gene (the max can
-                    # land on any of them), and 'G' is genome-wide already.
-                    _perm_chrom = None
-                    _perm_gene_pos_mb = None
+                    _perm_chrom: 'str | None' = None
+                    _perm_gene_pos_mb: 'float | None' = None
                     if scan_type == 'L':
-                        _perm_row = gene_info[gene_info['gene_id'] == _perm_id]
-                        if not _perm_row.empty:
-                            _prow = _perm_row.iloc[0]
-                            _perm_chrom = str(_prow['chr'])
-                            if 'strand' in _perm_row.columns and _prow['strand'] == '-':
-                                _perm_gene_pos_mb = float(_prow['end']) / 1e6
-                            else:
-                                _perm_gene_pos_mb = float(_prow['start']) / 1e6
-                            log.info('  local-window null: chr%s  TSS=%.3fMb  ±%.1fMb',
-                                     _perm_chrom, _perm_gene_pos_mb, window_mb)
-                        else:
-                            log.warning('  %s not found in gene_info — falling back to '
-                                        'genome-wide null for representative gene %s',
-                                        _perm_id, _perm_gene)
+                        _perm_chrom      = _perm_chr_rep
+                        _perm_gene_pos_mb = _perm_tss_mb
+                        log.info('  L-mode local null: chr%s  TSS=%.3fMb  ±%.1fMb',
+                                 _perm_chrom, _perm_gene_pos_mb, window_mb)
+                    elif scan_type == 'C':
+                        _perm_chrom = _perm_chr_rep
+                        log.info('  C-mode chr-wide null: chr%s', _perm_chrom)
 
-                    _null = generate_null_outcomes(_y, n_perms=1000, seed=1)
+                    _perm_cov = _build_covariates(meta, _sids)
+                    _null = generate_null_outcomes(_y, n_perms=n_perms, seed=seed)
                     _t_perm_scan = time.perf_counter()
                     _gw_max, _chr_nulls = run_threshold_scans(
                         _null, cache,
                         phenotype=_y,
-                        covariates=None,
+                        covariates=_perm_cov,
                         kinship_decomp=kinship_decomp,
+                        permutation_method=perm_method,
                         chrom=_perm_chrom,
                         sample_ids=_gids,
                         gene_pos_mb=_perm_gene_pos_mb,
                         window_mb=window_mb if _perm_chrom is not None else None,
+                        seed=seed,
                     )
                     _perm_scan_elapsed = time.perf_counter() - _t_perm_scan
                     chr_null_lods = _chr_nulls
@@ -3070,13 +3038,13 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                                      _gw_thr - r_thr)
 
                     results['perm_threshold'] = True
-                    n_genes_perm_total = len(_eff_perm)
+                    n_genes_perm_total = 1
 
             _, _perm_heap_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
             _record_stats('permutation', 'gev_threshold', n_genes_perm_total if 'n_genes_perm_total' in locals() else 0,
                           time.perf_counter() - _t_perm, _perm_heap_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_perm))
+                          max(0.0, get_rss_mb() - _rss_perm))
             _mark_done(py_dir, str(sec))
 
     # ── eGene calling (after S5 — genome-wide threshold from threshold.csv)
@@ -3136,11 +3104,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             # Each eGene that cleared the Stage-1 FWER gate gets its own
             # parametric null drawn at its own h² (calibrate_gene_pvalue),
             # then Storey's method estimates pi0 and q-values across all eGenes.
-            # kinship_loco is recomputed here because only the decomposed form is
-            # persisted to the .npz checkpoint; calc_kinship is fast.
             if egenes_df is not None and len(egenes_df) > 0 and 'gene_id' in egenes_df.columns:
                 log.info('[Storey] calibrating per-gene p-values for %d eGenes...', len(egenes_df))
-                _kin_raw = calc_kinship(cache, method='loco')
+                _kin_raw = {c: kinship_from_decomp(d) for c, d in kinship_decomp.items()}
                 _h5_path_st = data_dir / 'counts_lognorm.h5'
                 _pval_perm: dict = {}
                 for _, _eg in egenes_df.iterrows():
@@ -3148,7 +3114,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _chrom   = str(_eg['chr'])
                     _plod    = float(_eg['peak_lod'])
                     _pos_mb  = float(_eg['peak_mb']) if pd.notna(_eg.get('peak_mb')) else None
-                    _cts, _lds, _sids = _load_expression(_h5_path_st, [_gid])
+                    _cts, _lds, _sids = _load_expression_h5(_h5_path_st, [_gid])
                     if not _lds:
                         log.debug('[Storey] skip %s — not in h5', _gid)
                         continue
@@ -3283,7 +3249,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     r_mi_path = r_data / 'mi_lod_genome.csv'
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
-            _rss_mi = _get_rss_mb()
+            _rss_mi = get_rss_mb()
             tracemalloc.start()
             _t_mi = time.perf_counter()
             _n_imp_mi = 11
@@ -3296,7 +3262,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 h5_path = data_dir / 'counts_lognorm.h5'
                 _mi_ids = [r['gene_id']
                            for _, r in egenes_df.iterrows()]
-                _mi_counts, _mi_loaded, _mi_sids = _load_expression(h5_path, _mi_ids)
+                _mi_counts, _mi_loaded, _mi_sids = _load_expression_h5(h5_path, _mi_ids)
                 _mi_expr = {gid: _mi_counts[i].astype(float)
                             for i, gid in enumerate(_mi_loaded)}
                 _mi_chr_map = {}
@@ -3349,7 +3315,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             tracemalloc.stop()
             _record_stats('mi_scan', 'rubin_average', len(egenes_df) if egenes_df is not None else 0,
                           time.perf_counter() - _t_mi, _mi_heap_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_mi))
+                          max(0.0, get_rss_mb() - _rss_mi))
             _mark_done(py_dir, str(sec))
 
     # SNP scan
@@ -3358,7 +3324,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     r_med_path = r_data / 'mediation_genome.csv'
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
-            _rss_med = _get_rss_mb()
+            _rss_med = get_rss_mb()
             tracemalloc.start()
             _t_med = time.perf_counter()
             log.info('\nmediation scan: QR-based test whether cis-eGenes mediate each other\'s haplotype QTL signal...')
@@ -3395,7 +3361,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 for _ml in _pairs_by_outcome.values():
                     _med_all_names.update(_mn for _mn, _ in _ml)
                 _med_all_ids = list(dict.fromkeys(_med_all_names))
-                _med_counts, _med_loaded, _med_sids = _load_expression(h5_path, _med_all_ids)
+                _med_counts, _med_loaded, _med_sids = _load_expression_h5(h5_path, _med_all_ids)
                 _med_expr = {gid: _med_counts[i].astype(float)
                              for i, gid in enumerate(_med_loaded)}
                 del _med_counts
@@ -3452,7 +3418,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             tracemalloc.stop()
             _record_stats('mediation', 'qr_mediation', len(egenes_df) if egenes_df is not None else 0,
                           time.perf_counter() - _t_med, _med_heap_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_med))
+                          max(0.0, get_rss_mb() - _rss_med))
             _mark_done(py_dir, str(sec))
 
     # bootstrap CI
@@ -3460,7 +3426,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     r_ci_path = r_data / 'ci_summary_genome.csv'
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
-            _rss_ci = _get_rss_mb()
+            _rss_ci = get_rss_mb()
             tracemalloc.start()
             _t_ci = time.perf_counter()
             log.info('\nbootstrap CI: phenotype-resampling positional confidence intervals around eGene peak loci...')
@@ -3471,16 +3437,20 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 h5_path = data_dir / 'counts_lognorm.h5'
                 _ci_ids = [r['gene_id']
                            for _, r in egenes_df.iterrows()]
-                _ci_counts, _ci_loaded, _ci_sids = _load_expression(h5_path, _ci_ids)
+                _ci_counts, _ci_loaded, _ci_sids = _load_expression_h5(h5_path, _ci_ids)
                 _ci_expr = {gid: _ci_counts[i].astype(float)
                             for i, gid in enumerate(_ci_loaded)}
                 del _ci_counts
                 _ci_chr_map = {}
                 _ci_peak_map = {}
+                _ci_lod_map: dict[str, float] = {}
                 for _, erow in egenes_df.iterrows():
                     gid = erow['gene_id']
                     _ci_chr_map[gid] = str(erow.get('chr', peak_chr))
                     _ci_peak_map[gid] = float(erow.get('peak_mb', np.nan))
+                    _pl = erow.get('peak_lod', np.nan)
+                    if pd.notna(_pl):
+                        _ci_lod_map[gid] = float(_pl)
                 geno_ids_ci = [meta_geno_map.get(s, s) for s in _ci_sids]
                 cov_ci = _build_covariates(meta, _ci_sids)
                 _ci_out_path = ext_dir / 'ci.csv'
@@ -3492,6 +3462,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     sample_ids=geno_ids_ci,
                     output_path=_ci_out_path,
                     gene_meta=_gene_meta,
+                    peak_lod_map=_ci_lod_map if _ci_lod_map else None,
                 )
                 del _ci_expr
                 if not ci_df.empty:
@@ -3521,7 +3492,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             if egenes_df is not None and len(egenes_df) > 0:
                 _ci_csv = ext_dir / 'ci.csv'
                 _pre_fm_path = py_dir / f'eqtl_peak_{_run_sfx}.csv'
-                _pre = egenes_df[['gene_id', 'chr', 'peak_mb', 'peak_lod', 'peak_locus']].copy()
+                _keep = ['gene_id', 'chr', 'peak_mb', 'peak_lod', 'peak_locus']
+                if 'gene_symbol' in egenes_df.columns:
+                    _keep.insert(1, 'gene_symbol')
+                _pre = egenes_df[_keep].copy()
                 _pre['pos'] = (_pre['peak_mb'] * 1e6).round().astype('Int64')
                 _pre['lod'] = _pre['peak_lod']
                 _pre['variant'] = _pre['peak_locus']
@@ -3531,6 +3505,34 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _ci_tmp['ci_hi_bp'] = (_ci_tmp['ci_hi'] * 1e6).round().astype('Int64')
                     _pre = _pre.merge(_ci_tmp[['gene_id', 'ci_lo_bp', 'ci_hi_bp']],
                                       on='gene_id', how='left')
+                    # In L mode the CI scan is chromosome-wide but haplotype evidence
+                    # only exists within ±window_mb of the gene TSS (the same anchor
+                    # used by the scanner at line ~2553).  Cap CI bounds to that window
+                    # so the SNP scan never extends beyond the scanned region.
+                    # TSS source priority: gene_tss.vm36.csv (strand-aware transcript TSS,
+                    # joined via gene_symbol) > gene_info start/end/strand columns.
+                    if scan_type == 'L':
+                        if _gene_tss is not None and gene_info is not None and 'gene_symbol' in gene_info.columns:
+                            _sym_to_tss = _gene_tss.groupby('gene_name')['tss_mb'].mean()
+                            _gi_sym = gene_info.set_index('gene_id')['gene_symbol']
+                            _pre['_tss_mb'] = _pre['gene_id'].map(_gi_sym).map(_sym_to_tss)
+                        elif gene_info is not None and 'start' in gene_info.columns:
+                            _has_strand = 'strand' in gene_info.columns
+                            _gi_tss = gene_info.set_index('gene_id').apply(
+                                lambda r: (float(r['end']) / 1e6
+                                           if _has_strand and r.get('strand') == '-'
+                                           else float(r['start']) / 1e6),
+                                axis=1,
+                            )
+                            _pre['_tss_mb'] = _pre['gene_id'].map(_gi_tss)
+                        else:
+                            _pre['_tss_mb'] = _pre['peak_mb']
+                        _tss_bp = (_pre['_tss_mb'].fillna(_pre['peak_mb']) * 1e6).round().astype('Int64')
+                        _cap_lo = (_tss_bp - int(window_mb * 1e6)).clip(lower=0)
+                        _cap_hi = (_tss_bp + int(window_mb * 1e6))
+                        _pre['ci_lo_bp'] = _pre['ci_lo_bp'].fillna(_cap_lo).combine(_cap_lo, max)
+                        _pre['ci_hi_bp'] = _pre['ci_hi_bp'].fillna(_cap_hi).combine(_cap_hi, min)
+                        _pre = _pre.drop(columns=['_tss_mb'])
                 _pre.to_csv(_pre_fm_path, index=False)
                 log.info('  pre-finemap eqtl_peak_%s.csv written (%d rows)', _run_sfx, len(_pre))
 
@@ -3538,14 +3540,14 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             tracemalloc.stop()
             _record_stats('bootstrap_ci', 'positional_resample', len(egenes_df) if egenes_df is not None else 0,
                           time.perf_counter() - _t_ci, _ci_heap_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_ci))
+                          max(0.0, get_rss_mb() - _rss_ci))
             _mark_done(py_dir, str(sec))
 
     # Sanger fine-mapping (requires bootstrap CI outputs + --sanger-alleles HDF5)
     sec = 12
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
-            _rss_fm = _get_rss_mb()
+            _rss_fm = get_rss_mb()
             tracemalloc.start()
             _t_fm = time.perf_counter()
             log.info('\nSanger fine-mapping: ABF credible sets on CI-window SNPs...')
@@ -3568,9 +3570,41 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                                 _required - set(egene_peak_df.columns))
                     results['sanger_finemap'] = None
                 else:
+                    # enrich egene_peak_df with sig cols from eqtl_summary
+                    _sum_path = py_dir / 'eqtl_summary.csv'
+                    if _sum_path.exists():
+                        _sum_fm = pd.read_csv(_sum_path, dtype={'gene_id': str})
+                        _sig_want = ['pval_perm', 'fdr', 'fdr_method', 'significance', 'cis_dist_mb']
+                        _sig_avail = [c for c in _sig_want if c in _sum_fm.columns]
+                        if _sig_avail:
+                            egene_peak_df = egene_peak_df.merge(
+                                _sum_fm[['gene_id'] + _sig_avail], on='gene_id', how='left',
+                            )
+                    # enrich with founder effects + null model cols from allele_effects
+                    _eff_path = py_dir / 'core' / f'allele_effects_{_run_sfx}.csv'
+                    if _eff_path.exists():
+                        _eff_fm = pd.read_csv(_eff_path, dtype={'gene_id': str})
+                        if 'n_valid' in _eff_fm.columns:
+                            _eff_fm['n_sample'] = _eff_fm['n_valid']
+                        if 'h2' in _eff_fm.columns:
+                            _eff_fm['h2_null_chr'] = _eff_fm['h2']
+                        if 'rss0' in _eff_fm.columns and 'n_valid' in _eff_fm.columns:
+                            _eff_fm['sd_phenotype'] = np.sqrt(
+                                _eff_fm['rss0'] / (_eff_fm['n_valid'] - 1).clip(lower=1)
+                            )
+                        _eff_want = (
+                            ['n_sample', 'sd_phenotype', 'h2_null_chr']
+                            + [f'beta_{f}' for f in ['AJ', 'B6J', '129S1J', 'NODJ',
+                                                      'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ']]
+                        )
+                        _eff_avail = [c for c in _eff_want if c in _eff_fm.columns]
+                        if _eff_avail:
+                            egene_peak_df = egene_peak_df.merge(
+                                _eff_fm[['gene_id'] + _eff_avail], on='gene_id', how='left',
+                            )
                     h5_path = data_dir / 'counts_lognorm.h5'
                     _fm_ids = list(egene_peak_df['gene_id'])
-                    _fm_counts, _fm_loaded, _fm_sids = _load_expression(h5_path, _fm_ids)
+                    _fm_counts, _fm_loaded, _fm_sids = _load_expression_h5(h5_path, _fm_ids)
                     geno_ids_fm = [meta_geno_map.get(s, s) for s in _fm_sids]
                     cov_fm = _build_covariates(meta, _fm_sids)
                     fm_dir = py_dir / 'finemap'
@@ -3583,6 +3617,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         out_dir=fm_dir,
                         covariates=cov_fm,
                         kinship_decomp=kinship_decomp,
+                        sample_ids=geno_ids_fm,
                         tag=_run_sfx,
                     )
                     del _fm_counts
@@ -3598,7 +3633,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             _record_stats('sanger_finemap', 'abf_credible_sets',
                           len(egenes_df) if egenes_df is not None else 0,
                           time.perf_counter() - _t_fm, _fm_heap_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_fm))
+                          max(0.0, get_rss_mb() - _rss_fm))
             _mark_done(py_dir, str(sec))
 
     # submission report — full eqtl_peak.csv (EQTL_PEAK_COLS) + eqtl_stats.csv
@@ -3606,7 +3641,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
     sec = 13
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
-            _rss_sub = _get_rss_mb()
+            _rss_sub = get_rss_mb()
             log.info('\n── submission report ─────────────────────────────────────────')
             if egenes_df is None or len(egenes_df) == 0:
                 log.info('  %s no eGenes — run S4+S5+S6 first', SKIP)
@@ -3639,16 +3674,6 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 # per-chr GEV stats for eqtl_stats.csv
                 # get_gev_thresholds returns (threshold, params_dict | None)
                 # params keys: loc, scale, c → remap to gev_mu, gev_sigma, gev_xi
-                def _gev_row(ch: str, max_lods: 'np.ndarray') -> dict:
-                    _thr, _p = get_gev_thresholds(max_lods)
-                    _r: dict = {'chr': ch, 'lod_threshold': _thr,
-                                'n_perms': len(max_lods)}
-                    if _p:
-                        _r['gev_mu']    = _p.get('loc')
-                        _r['gev_sigma'] = _p.get('scale')
-                        _r['gev_xi']    = _p.get('c')
-                    return _r
-
                 _chr_stats = []
                 for _pf in sorted(
                     core_dir.glob(f'perm_max_lods_chr*.csv'),
@@ -3656,16 +3681,16 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 ):
                     _ch = _pf.stem.replace('perm_max_lods_chr', '')
                     _ml = pd.read_csv(_pf)['max_lod'].values
-                    _row = _gev_row(_ch, _ml)
+                    _row = _build_gev_row(_ch, _ml)
                     _row['n_egenes'] = int((_sub_df['chr'].astype(str) == str(_ch)).sum())
                     _chr_stats.append(_row)
 
                 _gw_stats: dict = {'chr': 'genome', 'n_egenes': len(_sub_df),
                                    'fdr_threshold': 0.05,
                                    'scan_window_mb': window_mb if scan_type == 'L' else None,
-                                   'git_hash': _git_hash()}
+                                   'git_hash': git_hash()}
                 if perm_max_lods is not None:
-                    _gw = _gev_row('genome', perm_max_lods)
+                    _gw = _build_gev_row('genome', perm_max_lods)
                     _gw_stats.update({k: v for k, v in _gw.items() if k != 'chr'})
 
                 _eqtl_stats_path = py_dir / f'eqtl_stats_{_run_sfx}.csv'
@@ -3674,14 +3699,14 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                          _run_sfx, len(_chr_stats))
 
             _mark_done(py_dir, str(sec))
-            log.info('  RSS delta: +%.0f MB', max(0.0, _get_rss_mb() - _rss_sub))
+            log.info('  RSS delta: +%.0f MB', max(0.0, get_rss_mb() - _rss_sub))
 
     # instability scan
     sec = 11
     r_inst_path = r_data / 'instability_genome.csv'
     if sec in sections:
         if not _checkpoint(py_dir, str(sec), force):
-            _rss_inst = _get_rss_mb()
+            _rss_inst = get_rss_mb()
             tracemalloc.start()
             _t_inst = time.perf_counter()
             log.info('\ninstability scan: subsampling stability of eGene peak loci across bootstrap resamples...')
@@ -3692,7 +3717,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 h5_path = data_dir / 'counts_lognorm.h5'
                 _inst_ids = [r['gene_id']
                              for _, r in egenes_df.iterrows()]
-                _inst_counts, _inst_loaded, _inst_sids = _load_expression(h5_path, _inst_ids)
+                _inst_counts, _inst_loaded, _inst_sids = _load_expression_h5(h5_path, _inst_ids)
                 _inst_expr = {gid: _inst_counts[i].astype(float)
                               for i, gid in enumerate(_inst_loaded)}
                 del _inst_counts
@@ -3751,7 +3776,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             tracemalloc.stop()
             _record_stats('instability', 'subsample_scan', len(egenes_df) if egenes_df is not None else 0,
                           time.perf_counter() - _t_inst, _inst_heap_peak / 1e6,
-                          max(0.0, _get_rss_mb() - _rss_inst))
+                          max(0.0, get_rss_mb() - _rss_inst))
             _mark_done(py_dir, str(sec))
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -3811,6 +3836,33 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
         _sorted_stats = sorted(_scan_stats,
                                key=lambda r: _sec_ord.get(r['section'], 999))
         pd.DataFrame(_sorted_stats).to_csv(py_dir / 'scan_stats.csv', index=False)
+
+    # ── NF-mirrored tagged outputs ────────────────────────────────────────────
+    try:
+        _thr_file = core_dir / f'threshold_{_run_sfx}.csv'
+        _genome_thr_run: 'float | None' = None
+        if _thr_file.exists():
+            _tdf = pd.read_csv(_thr_file)
+            _tdf['chr'] = _tdf['chr'].astype(str)
+            _tcol = 'threshold' if 'threshold' in _tdf.columns else 'threshold_lod'
+            _trow = _tdf[_tdf['chr'] == 'genome']
+            if len(_trow) > 0:
+                _genome_thr_run = float(_trow[_tcol].iloc[0])
+        _finalize_tagged_outputs(
+            py_dir=py_dir,
+            core_dir=core_dir,
+            ext_dir=ext_dir,
+            sfx=_run_sfx,
+            run_summary=run_summary,
+            celltype=celltype,
+            scan_tag=_stag,
+            tissue=tissue,
+            n_egenes=n_egenes,
+            lod_threshold=_genome_thr_run,
+        )
+        log.info('  tagged outputs written to %s', py_dir)
+    except Exception as _fe:
+        log.warning('  finalize_tagged_outputs: %s', _fe)
 
     # ── descriptive plots (always, no R needed) ───────────────────────────────
     log.info('\n── DESCRIPTIVE PLOTS ─────────────────────────────────────────')
@@ -3992,6 +4044,13 @@ def main() -> None:
                     help='path to .gtf or .gtf.gz annotation file (e.g. GENCODE vM36); '
                          'when provided, locus panel gene tracks show real '
                          'exon/intron/CDS structure instead of plain gene-body bars')
+    ap.add_argument('--seed', type=int, default=42,
+                    help='RNG seed for permutation null (default 42)')
+    ap.add_argument('--n-perms', type=int, default=1000,
+                    help='number of permutations for threshold calibration (default 1000)')
+    ap.add_argument('--perm-method', default='parametric',
+                    choices=['parametric', 'shuffle'],
+                    help='permutation method: parametric (default) or shuffle')
     args = ap.parse_args()
 
     # ── resolve tissue data root ──────────────────────────────────────────────
@@ -4213,7 +4272,8 @@ def main() -> None:
                 run(_run_data_dir, _run_out_dir, sections, args.force, args.n_genes,
                     scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,
                     celltype=_ct_label, tissue=tissue, gtf_path=args.gtf,
-                    sanger_alleles=args.sanger_alleles)
+                    sanger_alleles=args.sanger_alleles,
+                    seed=args.seed, n_perms=args.n_perms, perm_method=args.perm_method)
                 _n_ok += 1
             except Exception:
                 log.exception('cell type %r failed — continuing with remaining CTs', _ct_label)
@@ -4255,7 +4315,8 @@ def main() -> None:
                 run(_run_data_dir, _run_out_dir, sections, args.force, args.n_genes,
                     scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,
                     celltype=_sub_label, tissue=tissue, gtf_path=args.gtf,
-                    sanger_alleles=args.sanger_alleles)
+                    sanger_alleles=args.sanger_alleles,
+                    seed=args.seed, n_perms=args.n_perms, perm_method=args.perm_method)
                 _n_ok += 1
             except Exception:
                 log.exception('subtype %r failed — continuing', _sub_label)
@@ -4293,7 +4354,8 @@ def main() -> None:
         scan_type=scan_type, window_mb=window_mb, scan_chr=scan_chr,
         celltype=_ct_label,
         tissue=tissue, gtf_path=args.gtf,
-        sanger_alleles=args.sanger_alleles)
+        sanger_alleles=args.sanger_alleles,
+        seed=args.seed, n_perms=args.n_perms, perm_method=args.perm_method)
 
 
 if __name__ == '__main__':

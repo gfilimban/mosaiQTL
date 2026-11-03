@@ -20,6 +20,119 @@ from mosaiqtl.qtl.thresholds import get_gev_thresholds
 # ── generate_null_outcomes ────────────────────────────────────────────────────
 
 
+class TestPickRepGene:
+    """Tests for pick_rep_gene — median-h² representative gene selection."""
+
+    def _make_peak_df(self, h2_values: list, chroms: list | None = None) -> 'pd.DataFrame':
+        import pandas as pd
+        n = len(h2_values)
+        return pd.DataFrame({
+            'gene_id':   [f'ENSMUSG{i:011d}.1' for i in range(n)],
+            'gene_symbol': [f'Gene{i}' for i in range(n)],
+            'chr':       chroms if chroms else ['1'] * n,
+            'start_mb':  [float(i) for i in range(n)],
+            'h2':        h2_values,
+        })
+
+    def test_returns_median_h2_gene(self):
+        from mosaiqtl.qtl.permutation import pick_rep_gene
+        df = self._make_peak_df([0.1, 0.3, 0.5, 0.7, 0.9])
+        gene_id, chrom, start_mb, h2_med = pick_rep_gene(df)
+        assert h2_med == pytest.approx(0.5)
+        assert gene_id == 'ENSMUSG00000000002.1'  # h2=0.5 is index 2
+
+    def test_chrom_filter_restricts_candidates(self):
+        from mosaiqtl.qtl.permutation import pick_rep_gene
+        # genes on chr1: h2=[0.1, 0.9]; genes on chr2: h2=[0.4, 0.6]
+        df = self._make_peak_df([0.1, 0.4, 0.6, 0.9], chroms=['1', '2', '2', '1'])
+        gene_id, chrom, start_mb, h2_med = pick_rep_gene(df, chrom='2')
+        assert chrom == '2'
+        assert h2_med == pytest.approx(0.5)  # median of [0.4, 0.6]
+
+    def test_nan_h2_excluded(self):
+        import numpy as np
+        from mosaiqtl.qtl.permutation import pick_rep_gene
+        df = self._make_peak_df([0.1, float('nan'), 0.9])
+        gene_id, chrom, start_mb, h2_med = pick_rep_gene(df)
+        # median of [0.1, 0.9] = 0.5; nearest is either 0.1 or 0.9
+        assert h2_med == pytest.approx(0.5)
+        assert gene_id in ('ENSMUSG00000000000.1', 'ENSMUSG00000000002.1')
+
+    def test_missing_columns_raises(self):
+        import pandas as pd
+        from mosaiqtl.qtl.permutation import pick_rep_gene
+        df = pd.DataFrame({'gene_id': ['A'], 'chr': ['1'], 'h2': [0.5]})  # missing start_mb
+        with pytest.raises(ValueError, match='missing columns'):
+            pick_rep_gene(df)
+
+    def test_all_nan_raises(self):
+        import numpy as np
+        from mosaiqtl.qtl.permutation import pick_rep_gene
+        df = self._make_peak_df([float('nan'), float('nan')])
+        with pytest.raises(ValueError):
+            pick_rep_gene(df)
+
+    def test_chrom_filter_no_genes_raises(self):
+        from mosaiqtl.qtl.permutation import pick_rep_gene
+        df = self._make_peak_df([0.3, 0.7], chroms=['1', '1'])
+        with pytest.raises(ValueError):
+            pick_rep_gene(df, chrom='99')
+
+    def test_returns_correct_start_mb(self):
+        from mosaiqtl.qtl.permutation import pick_rep_gene
+        df = self._make_peak_df([0.2, 0.5, 0.8])
+        gene_id, chrom, start_mb, h2_med = pick_rep_gene(df)
+        assert h2_med == pytest.approx(0.5)
+        assert start_mb == pytest.approx(1.0)  # index 1 has start_mb=1.0
+
+    def test_gene_tss_df_strand_aware_plus(self):
+        """+ strand gene: TSS = start."""
+        import pandas as pd
+        from mosaiqtl.qtl.permutation import pick_rep_gene
+        df = self._make_peak_df([0.5])
+        tss = pd.DataFrame({
+            'gene_id': ['ENSMUSG00000000000.1'],
+            'chr': ['1'], 'start': [2_000_000], 'end': [5_000_000], 'strand': ['+'],
+        })
+        _, _, tss_mb, _ = pick_rep_gene(df, gene_tss_df=tss)
+        assert tss_mb == pytest.approx(2.0)
+
+    def test_gene_tss_df_strand_aware_minus(self):
+        """− strand gene: TSS = end."""
+        import pandas as pd
+        from mosaiqtl.qtl.permutation import pick_rep_gene
+        df = self._make_peak_df([0.5])
+        tss = pd.DataFrame({
+            'gene_id': ['ENSMUSG00000000000.1'],
+            'chr': ['1'], 'start': [2_000_000], 'end': [5_000_000], 'strand': ['-'],
+        })
+        _, _, tss_mb, _ = pick_rep_gene(df, gene_tss_df=tss)
+        assert tss_mb == pytest.approx(5.0)
+
+    def test_gene_tss_df_precomputed_tss_mb(self):
+        """Pre-computed tss_mb column is used directly (no re-derivation)."""
+        import pandas as pd
+        from mosaiqtl.qtl.permutation import pick_rep_gene
+        df = self._make_peak_df([0.5])
+        tss = pd.DataFrame({
+            'gene_id': ['ENSMUSG00000000000.1'],
+            'chr': ['1'], 'start': [2_000_000], 'end': [5_000_000],
+            'strand': ['-'], 'tss_mb': [3.7],
+        })
+        _, _, tss_mb, _ = pick_rep_gene(df, gene_tss_df=tss)
+        assert tss_mb == pytest.approx(3.7)
+
+    def test_gene_tss_df_missing_gene_falls_back_to_start_mb(self):
+        """Gene absent from gene_tss_df falls back to start_mb."""
+        import pandas as pd
+        from mosaiqtl.qtl.permutation import pick_rep_gene
+        df = self._make_peak_df([0.5])
+        tss = pd.DataFrame({'gene_id': ['ENSMUSG99999999999.1'], 'chr': ['1'],
+                             'start': [1_000], 'end': [2_000], 'strand': ['+']})
+        _, _, tss_mb, _ = pick_rep_gene(df, gene_tss_df=tss)
+        assert tss_mb == pytest.approx(0.0)  # start_mb of index 0
+
+
 class TestGenerateNullOutcomes:
     def test_permutation_shape(self):
         rng = np.random.default_rng(0)

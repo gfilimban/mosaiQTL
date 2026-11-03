@@ -1,45 +1,38 @@
-/*
- * PERMUTE — LMM permutation threshold via GEV fit on max-LOD distribution
- *
- * Input  : path kinship_loco (shared)
- *          tuple [celltype, gene_info, phenotypes]
- * Output : tuple [celltype, perm_max_lods.csv, perm_max_lods_chr*.csv (glob)]
- *
- * One job per cell type. Uses pre-built kinship from KINSHIP_LOCO — no NB null fit needed.
- */
-
 process PERMUTE {
 
     label 'process_long'
     tag   "${celltype}"
 
-    publishDir { "${params.output_dir}/${celltype}" }, mode: 'copy'
+    publishDir { "${params.output_dir}/${celltype}/${scan_tag}" }, mode: 'copy'
 
     input:
     path  genomecache
     path  kinship_loco
-    tuple val(celltype), path(gene_info), path(phenotypes)
+    tuple val(celltype), val(scan_tag), path(phenotypes), path(peak_lod), path(metadata), path(gene_tss)
 
     output:
-    tuple val(celltype), path('perm_max_lods.csv'), path('perm_max_lods_chr*.csv')
+    tuple val(celltype), val(scan_tag),
+          path('*_perm_max_lods.csv'),
+          path('*_perm_max_lods_chr*.csv'),
+          path('*_perm_gev_params.json')
 
     script:
+    def tss_arg = gene_tss.name != 'NO_GENE_TSS' ? gene_tss.name : ''
+    def tag     = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
+    set -o pipefail
+    mkdir -p ${launchDir}/${params.output_dir}/logs
     python ${projectDir}/scripts/run_permute.py \\
-        --cache       ${genomecache} \\
-        --phenotypes  ${phenotypes} \\
-        --kinship     ${kinship_loco} \\
-        --metadata    ${params.metadata ?: params.data_dir + '/igvf_sample_metadata.csv'} \\
-        --gene-info   ${gene_info} \\
-        --n-perms     ${params.n_perms} \\
-        --scan-type   ${params.scan_type} \\
-        --window-mb   ${params.window_mb} \\
-        --output      .
+        ${genomecache} ${kinship_loco} ${phenotypes} ${peak_lod} ${metadata} \\
+        '${celltype}' ${scan_tag} '${params.covariates}' \\
+        ${params.n_perms} ${params.seed} ${params.perm_method} . \\
+        '${params.scan_type ?: 'G'}' ${params.window_mb ?: 0} '${params.tissue ?: ''}' ${tss_arg} \\
+        2>&1 | tee ${launchDir}/${params.output_dir}/logs/${tag}_permute.log
     """
 
     stub:
+    def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
-    touch perm_max_lods.csv
-    touch perm_max_lods_chr1.csv
+    touch ${tag}_perm_max_lods.csv ${tag}_perm_max_lods_chr1.csv ${tag}_perm_gev_params.json
     """
 }

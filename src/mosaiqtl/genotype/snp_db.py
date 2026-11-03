@@ -47,6 +47,34 @@ __all__ = [
     "build_snp_catalogue",
 ]
 
+# GRCm39 (mm39) bare chromosome name → NCBI RefSeq accession.
+# required to construct SPDI variant IDs: the seq_id field must be a recognised
+# RefSeq accession, not a UCSC-style chr name.  source: NCBI assembly GCF_000001635.27.
+_MM39_REFSEQ: dict[str, str] = {
+    "1":  "NC_000067.7",
+    "2":  "NC_000068.8",
+    "3":  "NC_000069.7",
+    "4":  "NC_000070.7",
+    "5":  "NC_000071.7",
+    "6":  "NC_000072.7",
+    "7":  "NC_000073.7",
+    "8":  "NC_000074.7",
+    "9":  "NC_000075.7",
+    "10": "NC_000076.7",
+    "11": "NC_000077.7",
+    "12": "NC_000078.7",
+    "13": "NC_000079.7",
+    "14": "NC_000080.7",
+    "15": "NC_000081.7",
+    "16": "NC_000082.7",
+    "17": "NC_000083.7",
+    "18": "NC_000084.7",
+    "19": "NC_000085.7",
+    "X":  "NC_000086.8",
+    "Y":  "NC_000087.8",
+    "MT": "NC_005089.1",
+}
+
 # maps MGP VCF sample names → canonical CC founder names in mosaiQTL
 CC_VCF_SAMPLE_MAP: dict[str, str] = {
     "A_J": "AJ",
@@ -390,8 +418,11 @@ def build_founder_allele_mgp(
             chr_key = chrom.lstrip("chr")  # VCF uses bare contig names: '1', '2', …
 
             markers_list: list[str] = []
+            rsid_list: list[str] = []
             pos_bp_list: list[int] = []
             allele_rows: list[list[str]] = []
+
+            seq_id = _MM39_REFSEQ.get(chr_key, f"chr{chr_key}")
 
             try:
                 for rec in vcf.fetch(chr_key):
@@ -402,7 +433,7 @@ def build_founder_allele_mgp(
                     if len(ref_nuc) != 1 or len(alt_nuc) != 1:
                         continue
 
-                    row: list[str] = [ref_nuc]  # B6J synthetic REF column
+                    row: list[str] = [ref_nuc]  # B6J is GRCm39 reference; allele is always REF
                     for sname in fcols_vcf:
                         gt = rec.samples[sname]["GT"]
                         if gt == (0, 0):
@@ -412,8 +443,11 @@ def build_founder_allele_mgp(
                         else:
                             row.append("N")
 
-                    markers_list.append(f"{chr_key}_{rec.pos}")
-                    pos_bp_list.append(rec.pos)
+                    # SPDI: {RefSeq_accession}:{pos_0based}:{ref}:{alt}
+                    # rec.pos is already 0-based; seq_id from _MM39_REFSEQ
+                    markers_list.append(f"{seq_id}:{rec.pos}:{ref_nuc}:{alt_nuc}")
+                    rsid_list.append(rec.id if (rec.id and rec.id != ".") else "")
+                    pos_bp_list.append(rec.pos + 1)
                     allele_rows.append(row)
                     n_raw += 1
             except ValueError:
@@ -434,6 +468,7 @@ def build_founder_allele_mgp(
                 continue
 
             markers_arr = np.array(markers_list)[keep]
+            rsid_arr = np.array(rsid_list)[keep]
             pos_bp_arr = np.array(pos_bp_list, dtype=np.int32)[keep]
             pos_mb_arr = pos_bp_arr.astype(np.float64) / 1e6
             founder_calls = founder_calls[keep]
@@ -459,6 +494,7 @@ def build_founder_allele_mgp(
                 )
 
             markers_arr = markers_arr[close]
+            rsid_arr = rsid_arr[close]
             pos_bp_arr = pos_bp_arr[close]
             pos_mb_arr = pos_mb_arr[close]
             founder_calls = founder_calls[close]
@@ -482,6 +518,11 @@ def build_founder_allele_mgp(
             )
             grp.create_dataset(
                 "alleles", data=founder_calls.astype(object), dtype=str_dt
+            )
+            grp.create_dataset(
+                "rsid",
+                data=np.array(rsid_arr, dtype=object),
+                dtype=str_dt,
             )
 
             n_chr = len(markers_arr)

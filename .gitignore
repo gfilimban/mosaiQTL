@@ -116,9 +116,25 @@ docs/WIKI.md
 
 # ── tests ─────────────────────────────────────────────────────────────────────
 tests/fixtures/data/
+tests/integration/test_nf_workflow_parity.py
+tests/workflow/nf_out/
+tests/workflow/vt_out/
+tests/workflow/syn_data/
 
 # ── goals (internal progress tracking) ────────────────────────────────────────
 goals/
+
+# ── pipeline outputs ──────────────────────────────────────────────────────────
+results/
+
+# ── validation/tools — one-time data-modification scripts ─────────────────────
+validation/tools/build_allele_dir.py
+validation/tools/build_gm_ccf1fo.py
+validation/tools/build_gm_gmap_pmap.py
+validation/tools/liftover_twist_exome.py
+validation/tools/pseudobulk_backed.py
+validation/tools/fix_cache_canonical_order.py
+validation/tools/make_founders_rsid_vcf.py
 
 # ── misc local artifacts ──────────────────────────────────────────────────────
 graphify-out/
@@ -127,4 +143,5 @@ graphify-out/
 ref/*
 !ref/GM_ccf1fo_mm39.csv
 !ref/igvf_sample_metadata.csv
-!ref/kinship_loco.h5
+!ref/igvf_kinship_loco.h5
+!ref/gene_tss.vm36.csv

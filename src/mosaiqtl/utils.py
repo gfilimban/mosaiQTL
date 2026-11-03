@@ -174,7 +174,7 @@ def git_hash() -> str:
 
 
 def build_tss_lookup(genes_df: "pd.DataFrame") -> "dict[str, float]":
-    """Build a gene-name → TSS position (Mb) mapping from a gene-info DataFrame.
+    """Build a gene_id → TSS position (Mb) mapping from a gene-info DataFrame.
 
     Uses strand-aware boundary selection: ``start`` column for ``+`` strand,
     ``end`` column for ``-`` strand.  Falls back to ``start`` when the
@@ -183,24 +183,24 @@ def build_tss_lookup(genes_df: "pd.DataFrame") -> "dict[str, float]":
     Parameters
     ----------
     genes_df :
-        DataFrame with at minimum a ``gene_symbol`` column and ``start`` column
+        DataFrame with at minimum a ``gene_id`` column and ``start`` column
         (base-pair coordinates).  Optional: ``end``, ``strand``.
 
     Returns
     -------
     dict[str, float]
-        Mapping from gene name to TSS position in Mb.
+        Mapping from gene_id to TSS position in Mb.
     """
     lookup: dict[str, float] = {}
-    if "start" not in genes_df.columns:
+    if "start" not in genes_df.columns or "gene_id" not in genes_df.columns:
         return lookup
     has_strand = "strand" in genes_df.columns
     has_end = "end" in genes_df.columns
     for _, row in genes_df.iterrows():
         if has_strand and has_end and row["strand"] == "-":
-            lookup[row["gene_symbol"]] = float(row["end"]) / 1e6
+            lookup[str(row["gene_id"])] = float(row["end"]) / 1e6
         else:
-            lookup[row["gene_symbol"]] = float(row["start"]) / 1e6
+            lookup[str(row["gene_id"])] = float(row["start"]) / 1e6
     return lookup
 
 

@@ -15,7 +15,7 @@ import pandas as pd
 import logging
 from pathlib import Path
 
-from ..utils import chr_sort_key, _build_gm_idx, _enrich_scan_df
+from ..utils import _build_gm_idx, _enrich_scan_df
 
 logger = logging.getLogger("mosaiqtl")
 
@@ -35,6 +35,39 @@ SNP_SCAN_COLS: list[str] = [
 ]
 
 
+def _reduce_to_strain_means(
+    phenotype: np.ndarray,
+    covariates: "np.ndarray | None",
+    sample_ids: list,
+    genomecache,
+) -> "tuple[np.ndarray, np.ndarray | None]":
+    """Average sample-level phenotype and covariates to cache strain order.
+
+    Strains without any sample (or samples not in the cache) are NaN, which the
+    scan's non-missing mask then drops.
+    """
+    from ..utils import build_z_matrix
+
+    z_mat, valid_mask = build_z_matrix(sample_ids, list(genomecache.sample_ids))
+    valid_idx = np.where(valid_mask)[0]
+    z_sub = z_mat[valid_idx]
+    r_cnt = z_sub.sum(axis=0)
+    active = r_cnt > 0
+    z_act = z_sub[:, active]
+    r_act = r_cnt[active]
+    active_idx = np.where(active)[0]
+    n_strains = len(genomecache.sample_ids)
+
+    y_str = np.full(n_strains, np.nan)
+    y_str[active_idx] = (z_act.T @ phenotype[valid_idx]) / r_act
+
+    cov_str = None
+    if covariates is not None:
+        cov_str = np.full((n_strains, covariates.shape[1]), np.nan)
+        cov_str[active_idx] = (z_act.T @ covariates[valid_idx]) / r_act[:, None]
+    return y_str, cov_str
+
+
 def imputed_snp_scan_h2lmm(
     phenotype,
     genomecache,
@@ -43,7 +76,9 @@ def imputed_snp_scan_h2lmm(
     kinship_decomp=None,
     use_rint=True,
     phenotype_id="unknown",
+    gene_symbol="",
     just_these_snps=None,
+    sample_ids=None,
 ):
     """snp association scan using haplotype-imputed dosages.
 
@@ -65,7 +100,14 @@ def imputed_snp_scan_h2lmm(
     kinship_decomp : dict or None
     use_rint : bool  apply RINT to phenotype (default True)
     phenotype_id : str  stored in 'gene_id' column of output
+    gene_symbol : str  display name used only in log output; never written to output columns
     just_these_snps : list or None  restrict to these snp ids
+    sample_ids : list or None  genotype ID per row of phenotype/covariates
+        (cache strain names, one per sample).  When given, phenotype and
+        covariates are reduced to strain means in cache order before the
+        scan, so replicate-level inputs align with the strain-level
+        haplotype probabilities and kinship.  None = inputs already in
+        cache strain order.
 
     returns
     -------
@@ -82,19 +124,37 @@ def imputed_snp_scan_h2lmm(
     _n_snps_requested = (
         len(just_these_snps) if just_these_snps is not None else len(snp_genos)
     )
-    logger.info(
-        "imputed_snp_scan_h2lmm: gene=%s  n_snps=%d",
-        phenotype_id,
-        _n_snps_requested,
-    )
+    logger.info("imputed_snp_scan_h2lmm: n_snps=%d", _n_snps_requested)
 
     if kinship_decomp is None:
         kd = kin_module.calc_kinship(genomecache, method="loco")
         kinship_decomp = kin_module.decomp_kinship(kd)
 
+    _rint_done = False
+    if sample_ids is not None:
+        pheno_arr = np.asarray(phenotype, dtype=float)
+        if use_rint:
+            # Apply RINT to sample-level phenotype before strain aggregation so
+            # the transformation matches the haplotype scan, which RINTs y_raw
+            # at sample level (rint(y_raw[vsid])) before scan_chromosome.
+            _valid_ph = ~np.isnan(pheno_arr)
+            pheno_arr[_valid_ph] = _rint(pheno_arr[_valid_ph])
+            _rint_done = True
+        phenotype, covariates = _reduce_to_strain_means(
+            pheno_arr, covariates, sample_ids, genomecache
+        )
+    else:
+        n_cache = len(list(genomecache.sample_ids))
+        if len(phenotype) != n_cache:
+            raise ValueError(
+                f"imputed_snp_scan_h2lmm: phenotype length {len(phenotype)} != "
+                f"cache n_strains {n_cache}; pass sample_ids to reduce "
+                "replicate inputs to strain means before the scan"
+            )
+
     valid = ~np.isnan(phenotype)
     y = phenotype[valid].copy()
-    if use_rint:
+    if use_rint and not _rint_done:
         y = _rint(y)
     n = len(y)
 
@@ -116,7 +176,8 @@ def imputed_snp_scan_h2lmm(
         just_these_snps if just_these_snps is not None else snp_genos.index.tolist()
     )
 
-    results = []
+    results: list = []
+    _pat_best_dosage: dict = {}  # pattern → (dosage_vec, best_lod)
 
     # normalize snp_genos chr col once: strip leading 'chr' to match cache format
     _snp_chr_norm = snp_genos["chr"].astype(str).str.replace(r"^chr", "", regex=True)
@@ -170,6 +231,7 @@ def imputed_snp_scan_h2lmm(
 
             res = lmm_module.fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2)
 
+            _pat = tuple(int(round(x)) for x in geno_f.tolist())
             results.append(
                 {
                     "gene_id": phenotype_id,
@@ -184,10 +246,35 @@ def imputed_snp_scan_h2lmm(
                     "rss0": res.rss_null,
                     "rss1": res.rss_alt,
                     "beta_dosage": float(res.betas[0]),
+                    "_founder_pattern": _pat,
                 }
             )
+            # track best dosage per unique founder pattern — one vector per
+            # pattern (≤2^8=256 for 8 binary founder positions), not one per
+            # SNP. memory stays O(n_patterns × n_valid) regardless of window.
+            if _pat not in _pat_best_dosage or res.lod > _pat_best_dosage[_pat][1]:
+                _pat_best_dosage[_pat] = (dosage, res.lod)
 
-    return pd.DataFrame(results)
+    df = pd.DataFrame(results)
+    if df.empty:
+        return df
+
+    # compact LD representation: r² between pattern representatives.
+    # callers extract this via df.attrs["_ld"] before any concat strips it.
+    rep_patterns = list(_pat_best_dosage.keys())
+    rep_dosages = np.column_stack(
+        [_pat_best_dosage[p][0] for p in rep_patterns]
+    )  # (n_valid, n_reps) — n_reps ≤ 256
+    if rep_dosages.shape[1] > 1:
+        corr = np.corrcoef(rep_dosages.T)
+        r2_between_reps = corr ** 2
+    else:
+        r2_between_reps = np.array([[1.0]])
+    df.attrs["_ld"] = {
+        "rep_patterns": rep_patterns,   # list of 8-tuple
+        "r2_matrix": r2_between_reps,   # (n_reps, n_reps) r² matrix
+    }
+    return df
 
 
 def imputed_snp_scan_from_db(
@@ -308,29 +395,6 @@ def imputed_snp_scan_from_db(
     snp_genos = pd.DataFrame(rows, index=snp_ids)
     snp_genos.index.name = None
 
-    # reduce sample-level inputs to strain means when sample_ids are provided
-    if sample_ids is not None:
-        from ..utils import build_z_matrix
-
-        z_mat, valid_mask = build_z_matrix(sample_ids, list(genomecache.sample_ids))
-        valid_idx = np.where(valid_mask)[0]
-        z_sub = z_mat[valid_idx]
-        r_cnt = z_sub.sum(axis=0)
-        active = r_cnt > 0
-        z_act = z_sub[:, active]
-        r_act = r_cnt[active]
-        active_idx = np.where(active)[0]
-        n_strains = len(genomecache.sample_ids)
-
-        y_str = np.full(n_strains, np.nan)
-        y_str[active_idx] = (z_act.T @ phenotype[valid_idx]) / r_act
-        phenotype = y_str
-
-        if covariates is not None:
-            cov_str = np.full((n_strains, covariates.shape[1]), np.nan)
-            cov_str[active_idx] = (z_act.T @ covariates[valid_idx]) / r_act[:, None]
-            covariates = cov_str
-
     return imputed_snp_scan_h2lmm(
         phenotype,
         genomecache,
@@ -340,6 +404,7 @@ def imputed_snp_scan_from_db(
         use_rint=use_rint,
         phenotype_id=phenotype_id,
         just_these_snps=just_these_snps,
+        sample_ids=sample_ids,
     )
 
 
