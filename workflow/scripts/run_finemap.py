@@ -36,17 +36,26 @@ def main() -> None:
 
     sanger_path: 'Path | None' = None
     peak_lod_path: 'Path | None' = None
+    gene_tss_path: 'Path | None' = None
     tissue = ''
     chrom_filter = ''
+    scan_type = 'C'
+    window_mb = 0.0
     import re as _re
     for extra in sys.argv[10:]:
         p = Path(extra)
         if p.suffix == '.h5':
             sanger_path = p
+        elif p.suffix == '.csv' and 'tss' in p.name.lower():
+            gene_tss_path = p
         elif p.suffix == '.csv':
             peak_lod_path = p
         elif _re.fullmatch(r'\d{1,2}|X|Y|M', extra):
             chrom_filter = extra
+        elif extra in ('L', 'C', 'G'):
+            scan_type = extra
+        elif _re.fullmatch(r'\d+\.\d*', extra):
+            window_mb = float(extra)
         else:
             tissue = extra
 
@@ -56,7 +65,7 @@ def main() -> None:
     fm_out      = out / f'{tag}{chr_sfx}_eqtl_finemapping.csv'
     fm_peak_out = out / f'{tag}{chr_sfx}_eqtl_finemapping_peak.csv'
 
-    from mosaiqtl.pipeline import EQTL_FINEMAPPING_COLS, EQTL_FINEMAPPING_PEAK_COLS
+    from mosaiqtl.pipeline import cap_egene_ci, EQTL_FINEMAPPING_COLS, EQTL_FINEMAPPING_PEAK_COLS
 
     egenes_df = pd.read_csv(egene_csv, dtype={'gene_id': str, 'chr': str})
     if chrom_filter:
@@ -141,11 +150,26 @@ def main() -> None:
         pd.DataFrame(columns=EQTL_FINEMAPPING_PEAK_COLS).to_csv(fm_peak_out, index=False)
         return
 
-    ci_bp = pd.DataFrame({
-        'gene_id':  ci_df['gene_id'].astype(str),
-        'ci_lo_bp': (ci_df['ci_lo'] * 1e6).round().astype('Int64'),
-        'ci_hi_bp': (ci_df['ci_hi'] * 1e6).round().astype('Int64'),
-    })
+    _ci_mb = ci_df[['gene_id', 'ci_lo', 'ci_hi']].copy()
+    _ci_mb['gene_id'] = _ci_mb['gene_id'].astype(str)
+    _eg_with_ci = egenes_df.merge(
+        _ci_mb.assign(
+            ci_lo_bp=(_ci_mb['ci_lo'] * 1e6).round().astype('Int64'),
+            ci_hi_bp=(_ci_mb['ci_hi'] * 1e6).round().astype('Int64'),
+        )[['gene_id', 'ci_lo_bp', 'ci_hi_bp']],
+        on='gene_id', how='left',
+    )
+    _gtss = (pd.read_csv(gene_tss_path)
+             if gene_tss_path is not None and gene_tss_path.exists() else None)
+    _eg_capped = cap_egene_ci(_eg_with_ci, scan_type, window_mb, gene_tss_df=_gtss)
+    ci_bp = _eg_capped[['gene_id', 'ci_lo_bp', 'ci_hi_bp']].copy()
+    if scan_type == 'L' and window_mb > 0:
+        log.info(
+            'L-mode CI cap ±%.1f Mb applied: %d eGenes  mean CI %.2f Mb',
+            window_mb, len(ci_bp),
+            float((ci_bp['ci_hi_bp'] - ci_bp['ci_lo_bp']).mean() / 1e6),
+        )
+
     fm_in = egenes_df.assign(
         pos=(egenes_df['peak_mb'] * 1e6).round().astype('Int64'),
         lod=egenes_df['peak_lod'],

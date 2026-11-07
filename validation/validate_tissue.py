@@ -206,7 +206,7 @@ from mosaiqtl.io.results_io import (
 from mosaiqtl.io.anndata_io import load_expression_h5 as _load_expression_h5
 from mosaiqtl.qtl.scan import scan_multi_gene_lmm as _scan_multi_gene_lmm
 from mosaiqtl.pipeline import (
-    calibrate_egenes_storey,
+    calibrate_egenes_storey, cap_egene_ci,
     call_egenes, finalize_egene_summary, finemap_egenes,
     LOD_COLS, ALLELE_EFFECTS_BASE_COLS, PEAK_LOD_COLS, EGENE_SUMMARY_COLS,
 )
@@ -2922,17 +2922,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
             else:
                 h5_path = data_dir / 'counts_lognorm.h5'
 
-                # ── pick median-h² gene as representative for permutation ──────
-                # pick_rep_gene reads h² from peak_lod.csv (PEAK_LOD_COLS) and
-                # resolves the strand-aware TSS from _gene_tss when available.
-                # Chromosome restriction matches the null to each scan type:
-                #   L — rep gene on same chr; null restricted to ±window_mb window
-                #   C — rep gene on same chr; null restricted to full chromosome
-                #   G — no restriction; genome-wide null
                 _peak_df_perm = pd.read_csv(peak_lod_path, dtype={'chr': str})
                 _perm_id, _perm_chr_rep, _perm_tss_mb, _h2_med = pick_rep_gene(
                     _peak_df_perm,
-                    chrom=str(peak_chr) if scan_type in ('L', 'C') else None,
+                    chrom=None,
                     gene_tss_df=_gene_tss,
                 )
                 _perm_gene = (
@@ -3505,34 +3498,10 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _ci_tmp['ci_hi_bp'] = (_ci_tmp['ci_hi'] * 1e6).round().astype('Int64')
                     _pre = _pre.merge(_ci_tmp[['gene_id', 'ci_lo_bp', 'ci_hi_bp']],
                                       on='gene_id', how='left')
-                    # In L mode the CI scan is chromosome-wide but haplotype evidence
-                    # only exists within ±window_mb of the gene TSS (the same anchor
-                    # used by the scanner at line ~2553).  Cap CI bounds to that window
-                    # so the SNP scan never extends beyond the scanned region.
-                    # TSS source priority: gene_tss.vm36.csv (strand-aware transcript TSS,
-                    # joined via gene_symbol) > gene_info start/end/strand columns.
-                    if scan_type == 'L':
-                        if _gene_tss is not None and gene_info is not None and 'gene_symbol' in gene_info.columns:
-                            _sym_to_tss = _gene_tss.groupby('gene_name')['tss_mb'].mean()
-                            _gi_sym = gene_info.set_index('gene_id')['gene_symbol']
-                            _pre['_tss_mb'] = _pre['gene_id'].map(_gi_sym).map(_sym_to_tss)
-                        elif gene_info is not None and 'start' in gene_info.columns:
-                            _has_strand = 'strand' in gene_info.columns
-                            _gi_tss = gene_info.set_index('gene_id').apply(
-                                lambda r: (float(r['end']) / 1e6
-                                           if _has_strand and r.get('strand') == '-'
-                                           else float(r['start']) / 1e6),
-                                axis=1,
-                            )
-                            _pre['_tss_mb'] = _pre['gene_id'].map(_gi_tss)
-                        else:
-                            _pre['_tss_mb'] = _pre['peak_mb']
-                        _tss_bp = (_pre['_tss_mb'].fillna(_pre['peak_mb']) * 1e6).round().astype('Int64')
-                        _cap_lo = (_tss_bp - int(window_mb * 1e6)).clip(lower=0)
-                        _cap_hi = (_tss_bp + int(window_mb * 1e6))
-                        _pre['ci_lo_bp'] = _pre['ci_lo_bp'].fillna(_cap_lo).combine(_cap_lo, max)
-                        _pre['ci_hi_bp'] = _pre['ci_hi_bp'].fillna(_cap_hi).combine(_cap_hi, min)
-                        _pre = _pre.drop(columns=['_tss_mb'])
+                    _pre = cap_egene_ci(
+                        _pre, scan_type, window_mb,
+                        gene_tss_df=_gene_tss, gene_info_df=gene_info,
+                    )
                 _pre.to_csv(_pre_fm_path, index=False)
                 log.info('  pre-finemap eqtl_peak_%s.csv written (%d rows)', _run_sfx, len(_pre))
 

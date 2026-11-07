@@ -65,19 +65,8 @@ def main() -> None:
     peak_df     = pd.read_csv(peak_lod_csv, dtype={'chr': str})
     gene_tss_df = pd.read_csv(gene_tss_path, dtype={'chr': str}) if gene_tss_path else None
 
-    # pick representative gene: median-h² gene, chromosome-restricted for L/C modes
-    # L: restrict to the scan chromosome so the rep gene's local window is on the
-    #    same chr as every gene's scan window.
-    # C: restrict to the rep gene's chromosome so the null covers one chromosome
-    #    worth of loci, matching what each gene's per-chromosome real scan sees.
-    # G: no restriction — genome-wide null.
-    rep_chrom_filter: 'str | None' = None
-    if scan_type in ('L', 'C'):
-        rep_chroms = peak_df['chr'].astype(str).unique().tolist()
-        rep_chrom_filter = rep_chroms[0] if len(rep_chroms) == 1 else None
-
     rep_id, rep_chr, rep_tss_mb, h2_med = pick_rep_gene(
-        peak_df, chrom=rep_chrom_filter, gene_tss_df=gene_tss_df,
+        peak_df, chrom=None, gene_tss_df=gene_tss_df,
     )
 
     perm_chrom: 'str | None' = None

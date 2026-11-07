@@ -240,20 +240,26 @@ EQTL_PEAK_COLS: list[str] = [
 # Sanger fine-mapping — one row per credible-set member per eGene.
 # _FOUNDER_EFFECT_COLS excluded: founder betas are haplotype-peak properties, not per-SNP.
 EQTL_FINEMAPPING_COLS: list[str] = [
-    *_ALLELE_COLS,          # Sanger SNP is the row key: variant, rsid, alleles, freq, betas
-    *_SCAN_COLS,            # interpolated scan stats at this SNP position: chr, pos, gene_id, LOD
-    # ── fine-mapping posteriors ───────────────────────────────────────────────
-    "PIP",              # posterior inclusion probability (ABF)
-    "PIP_method",       # 'ABF'
-    "CS",               # credible-set ID (integer); NaN if not in a CS
-    "lead_snp",         # 'T' for the highest-PIP CS member per gene; 'F' otherwise
-    "ci_lo_bp",         # LOD-drop CI lower bound (bp, mm39)
-    "ci_hi_bp",         # LOD-drop CI upper bound (bp, mm39)
-    # ── pointer back to haplotype peak ────────────────────────────────────────
-    "hap_peak_pos",     # GigaMUGA peak position (bp, mm39)
-    "hap_peak_variant", # GigaMUGA peak marker ID
-    "hap_peak_lod",     # haplotype LOD at GigaMUGA peak
-    *_SIG_COLS,         # gene-level significance (same values repeated on every CS row)
+    # gene identity
+    "gene_id", "gene_symbol",
+    # SNP location
+    "chr", "pos", "variant", "rsid",
+    # alleles
+    "ref", "alt", "ref_founders", "alt_founders", "effect_allele", "other_allele",
+    # fine-mapping posteriors
+    "pip", "pip_method", "CS", "lead_snp",
+    # association statistics
+    "lod", "pval_nominal", "log10p_nominal", "cis_dist_mb",
+    # gene-level significance
+    "pval_perm", "fdr", "fdr_method", "significance",
+    # haplotype peak back-reference
+    "hap_peak_variant", "hap_peak_pos", "hap_peak_lod", "ci_lo_bp", "ci_hi_bp", "peak_locus",
+    # allele frequencies
+    "af", "maf", "mac", "ma_sample", "dosage",
+    # dosage regression (NaN until biallelic contrast system)
+    "effect_size", "se_effect_size",
+    # null model metadata
+    "h2_null_chr", "sd_phenotype", "n_sample",
 ]
 
 # Sanger fine-mapping peak — one row per eGene (highest-PIP CS member).
@@ -325,6 +331,7 @@ __all__ = [
     "IMPUTED_SNP_COLS",
     "call_egenes",
     "calibrate_egenes_storey",
+    "cap_egene_ci",
     "finalize_egene_summary",
     "impute_egene",
     "impute_egenes",
@@ -372,6 +379,81 @@ def finalize_egene_summary(
             out["chi2_haplotype"].values, df=n_founders - 1
         )
     return out.reindex(columns=[c for c in EGENE_SUMMARY_COLS if c in out.columns])
+
+
+def cap_egene_ci(
+    egene_df: pd.DataFrame,
+    scan_type: str,
+    window_mb: float,
+    gene_tss_df: 'pd.DataFrame | None' = None,
+    gene_info_df: 'pd.DataFrame | None' = None,
+) -> pd.DataFrame:
+    """Cap ci_lo_bp / ci_hi_bp to ±window_mb from TSS for L-mode scans.
+
+    Returns the DataFrame unchanged for C/G modes or when window_mb == 0.
+    TSS source priority: gene_tss_df (strand-aware, joined via gene_symbol) >
+    gene_info_df start/end/strand > start_mb column > peak_mb fallback.
+
+    Parameters
+    ----------
+    egene_df : DataFrame with gene_id, peak_mb, ci_lo_bp, ci_hi_bp columns.
+    scan_type : 'L', 'C', or 'G'.
+    window_mb : half-window in Mb for L-mode scans.
+    gene_tss_df : optional strand-aware TSS table (gene_name + tss_mb, or
+        gene_name + start/end/strand from which tss_mb is derived).
+    gene_info_df : optional gene info table (gene_id, gene_symbol, start, end,
+        strand); used as secondary TSS source and for gene_id→gene_symbol lookup
+        when gene_symbol is absent from egene_df.
+    """
+    if scan_type != 'L' or window_mb <= 0:
+        return egene_df.copy()
+
+    df = egene_df.copy()
+    _tss_mb: 'pd.Series | None' = None
+
+    if gene_tss_df is not None:
+        _gtss = gene_tss_df.copy()
+        _cols = set(_gtss.columns)
+        if {'start', 'end', 'strand'} <= _cols:
+            _gtss['tss_mb'] = np.where(
+                _gtss['strand'] == '-', _gtss['end'] / 1e6, _gtss['start'] / 1e6
+            )
+        elif 'start' in _cols and 'tss_mb' not in _cols:
+            _gtss['tss_mb'] = _gtss['start'] / 1e6
+        if 'gene_name' in _gtss.columns and 'tss_mb' in _gtss.columns:
+            _sym_to_tss = _gtss.groupby('gene_name')['tss_mb'].mean()
+            if 'gene_symbol' in df.columns:
+                _tss_mb = df['gene_symbol'].map(_sym_to_tss)
+            elif gene_info_df is not None and 'gene_symbol' in gene_info_df.columns:
+                _gid_to_sym = gene_info_df.set_index('gene_id')['gene_symbol']
+                _tss_mb = df['gene_id'].map(_gid_to_sym).map(_sym_to_tss)
+
+    if _tss_mb is None or _tss_mb.isna().all():
+        if gene_info_df is not None and 'start' in gene_info_df.columns:
+            _has_strand = 'strand' in gene_info_df.columns
+            _gi_tss = gene_info_df.set_index('gene_id').apply(
+                lambda r: (float(r['end']) / 1e6
+                           if _has_strand and r.get('strand') == '-'
+                           else float(r['start']) / 1e6),
+                axis=1,
+            )
+            _tss_mb = df['gene_id'].map(_gi_tss)
+        elif 'start_mb' in df.columns:
+            _tss_mb = df['start_mb']
+
+    _peak_mb = df['peak_mb'] if 'peak_mb' in df.columns else pd.Series(0.0, index=df.index)
+    _tss_fill = _tss_mb if _tss_mb is not None else _peak_mb
+    _tss_bp = (_tss_fill.fillna(_peak_mb) * 1e6).round().astype('Int64')
+    _half = int(window_mb * 1e6)
+    _cap_lo = (_tss_bp - _half).clip(lower=0)
+    _cap_hi = _tss_bp + _half
+
+    if 'ci_lo_bp' in df.columns:
+        df['ci_lo_bp'] = df['ci_lo_bp'].fillna(_cap_lo).combine(_cap_lo, max)
+    if 'ci_hi_bp' in df.columns:
+        df['ci_hi_bp'] = df['ci_hi_bp'].fillna(_cap_hi).combine(_cap_hi, min)
+
+    return df
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -971,11 +1053,18 @@ def impute_egene(
             n_alt = sum(1 for a in valid.values() if a != ref_allele)
             alt_set = {a for a in valid.values() if a != ref_allele}
             _af = n_alt / n_total if n_total > 0 else float("nan")
+            alt_allele = next(iter(alt_set), "")
             ann_rows.append(
                 {
                     "snp": arow["marker"],
+                    "rsid": arow.get("rsid", pd.NA),
                     "ref": ref_allele,
-                    "alt": next(iter(alt_set), ""),
+                    "alt": alt_allele,
+                    # dosage predictor is always the non-REF allele (make_alt_mask codes
+                    # 1 = "differs from ref_founder"); holds for any ref_founder choice
+                    "effect_allele": alt_allele,
+                    "other_allele": ref_allele,
+                    "dosage": "T",   # haplotype-probability imputed (not hard calls)
                     "ref_founders": ",".join(
                         f for f in f_order if valid.get(f) == ref_allele
                     ),
@@ -1014,6 +1103,7 @@ def impute_egenes(
     sample_ids: Optional[list] = None,
     founder_order: Optional[list] = None,
     ref_founder: str = "B6J",
+    n_cores: int = 1,
 ) -> pd.DataFrame:
     """Imputed SNP association scan for every eGene within its LOD-drop CI.
 
