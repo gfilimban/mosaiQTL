@@ -27,6 +27,6 @@ fdr_threshold:  0.05
 seed:           42
 
 n_bootstrap:    1000
-gtf:            null
+gtf:            '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/IGVFFI4777RDZK.gtf.gz'
 
 output_dir:     '/dfs9/seyedam-lab/share/igvf_qtl/output/gastroc/nova/celltypes'
