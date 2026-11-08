@@ -30,7 +30,7 @@ def main() -> None:
 
     t0 = time.perf_counter()
 
-    from mosaiqtl.pipeline import PEAK_LOD_COLS
+    from mosaiqtl.pipeline import PEAK_LOD_COLS, enrich_peak_lod
     from mosaiqtl.utils import chr_sort_key
 
     gi = pd.read_csv(gene_info_path)
@@ -57,18 +57,7 @@ def main() -> None:
     )
     peak_lod['chr'] = peak_lod['chr'].astype(str)
 
-    gi_cols = ['gene_id']
-    if 'gene_symbol' in gi.columns and 'gene_symbol' not in peak_lod.columns:
-        gi_cols.append('gene_symbol')
-    if 'start' in gi.columns:
-        gi_cols.append('start')
-    gi_sub = gi[gi_cols].drop_duplicates('gene_id')
-    if 'start' in gi_sub.columns:
-        gi_sub = gi_sub.assign(start_mb=gi_sub['start'] / 1e6)
-    peak_lod = peak_lod.merge(gi_sub, on='gene_id', how='left')
-
-    if 'start_mb' in peak_lod.columns and 'peak_mb' in peak_lod.columns:
-        peak_lod['cis_dist_mb'] = peak_lod['peak_mb'] - peak_lod['start_mb']
+    peak_lod = enrich_peak_lod(peak_lod, gi)
 
     # beta_{founder} cols come through from run_lmm_scan_chr.py peak_stats write
     _base = [c for c in PEAK_LOD_COLS if c in peak_lod.columns]

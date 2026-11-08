@@ -4,7 +4,12 @@ Usage: python run_call_egenes.py <peak_lod.csv> <perm_max_lods.csv>
            <phenotypes.h5> <gene_info.csv> <cache.h5> <kinship.h5>
            <metadata.csv> <celltype> <scan_tag>
            <covariates> <fdr_threshold> <n_perms_cal> <seed>
-           <output_dir> [tissue]
+           <output_dir> [tissue] [use_rint:0|1]  (default 1)
+
+use_rint must match the value used during the scan — allele effects are
+estimated on the same transformed phenotype so betas remain on the scan scale.
+Set to 0 when the scan ran without RINT (Gaussian phenotypes).  NB-GLMM path
+does not use this flag.
 
 <perm_max_lods.csv> is the genome-wide max-LOD null written by PERMUTE.
 <peak_lod.csv> is read only; outputs are always new files.
@@ -40,6 +45,7 @@ def main() -> None:
     seed           = int(sys.argv[13])
     out            = Path(sys.argv[14])
     tissue         = sys.argv[15] if len(sys.argv) > 15 else ''
+    use_rint       = sys.argv[16] != '0' if len(sys.argv) > 16 else True
 
     tag  = f'{tissue}_{celltype}_{stag}' if tissue else f'{celltype}_{stag}'
     out.mkdir(parents=True, exist_ok=True)
@@ -54,7 +60,7 @@ def main() -> None:
     from mosaiqtl.qtl.effects import get_allele_effects
     from mosaiqtl.qtl.fdr import calibrate_gene_pvalue
     from mosaiqtl.qtl.thresholds import get_gev_thresholds
-    from mosaiqtl.utils import build_z_matrix
+    from mosaiqtl.utils import build_z_matrix, reduce_to_strain_means
 
     peak_out    = out / f'{tag}_peak_lod.csv'
     pval_out    = out / f'{tag}_pval_perm.json'
@@ -107,17 +113,12 @@ def main() -> None:
     # calibrate_gene_pvalue operates at strain level; reduce sample phenotype/covariates
     strain_ids_ordered = list(gc.sample_ids)
     Z, valid_mask = build_z_matrix(geno_ids, strain_ids_ordered)
-    Z_sub = Z[valid_mask]                              # (n_valid, m)
-    rep_counts = Z_sub.sum(axis=0)                     # (m,) — replicates per strain
-
-    def _strain_mean_vec(vec: np.ndarray) -> np.ndarray:
-        s = Z_sub.T @ vec[valid_mask]
-        return np.where(rep_counts > 0, s / rep_counts, 0.0)
 
     cov_strain: 'np.ndarray | None' = None
     if cov_arr is not None:
         cov_strain = np.stack(
-            [_strain_mean_vec(cov_arr[:, j]) for j in range(cov_arr.shape[1])], axis=1
+            [reduce_to_strain_means(cov_arr[:, j], Z, valid_mask)
+             for j in range(cov_arr.shape[1])], axis=1
         )
 
     # ── allele effects at peak locus ───────────────────────────────────────────
@@ -138,7 +139,7 @@ def main() -> None:
             kinship_decomp=kinship_decomp,
             covariates=cov_arr,
             sample_ids=geno_ids,
-            use_rint=True,
+            use_rint=use_rint,
         )
         erow: dict = {'gene_id': gid, 'gene_symbol': row.get('gene_symbol', '')}
         for fe in fxe:
@@ -160,7 +161,7 @@ def main() -> None:
         if gid not in gene_idx:
             continue
         try:
-            y_strain = _strain_mean_vec(pheno_mat_eg[gene_idx[gid]])
+            y_strain = reduce_to_strain_means(pheno_mat_eg[gene_idx[gid]], Z, valid_mask)
             p_adj, _, _, _ = calibrate_gene_pvalue(
                 y_gene=y_strain,
                 genomecache=gc,

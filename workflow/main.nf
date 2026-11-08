@@ -122,7 +122,7 @@ workflow {
         .map { ct, stag, summary, peak_lod, pheno, m, chrom ->
                [ct, stag, chrom, summary, peak_lod, pheno, m] }
 
-    FINEMAP_CHR(gc, kinship, sanger_h5, finemap_chr_in)
+    FINEMAP_CHR(gc, kinship, sanger_h5, gene_tss, finemap_chr_in)
 
     finemap_merge_in = FINEMAP_CHR.out
         .map { ct, stag, chrom, fm, fm_peak -> [ct, stag, fm, fm_peak] }

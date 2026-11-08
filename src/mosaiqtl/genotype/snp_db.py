@@ -573,9 +573,10 @@ def load_founder_alleles(
 
     returns
     -------
-    pd.DataFrame  columns: marker, chr, pos_mb, pos_bp, locus_id,
+    pd.DataFrame  columns: marker, chr, pos_mb, pos_bp, locus_id, rsid,
                             <founder_0>, ..., <founder_J-1>
         founder column names match the population used at build time.
+        rsid is the dbSNP rsID where annotated; NaN (empty string) otherwise.
     """
     h5_path = Path(h5_path)
     frames = []
@@ -597,6 +598,7 @@ def load_founder_alleles(
             n = grp["marker"].shape[0]
             # .asstr() vectorises the bytes→str decode for vlen string datasets
             alleles = grp["alleles"].asstr()[:].reshape(n, n_f)
+            rsid_raw = grp["rsid"].asstr()[:]
             df = pd.DataFrame(
                 {
                     "marker": grp["marker"].asstr()[:],
@@ -604,6 +606,8 @@ def load_founder_alleles(
                     "pos_mb": np.array(grp["pos_mb"]).astype(float),
                     "pos_bp": np.array(grp["pos_bp"]).astype(int),
                     "locus_id": grp["locus_id"].asstr()[:],
+                    # empty string → NaN; keeps column dtype object (nullable string)
+                    "rsid": np.where(rsid_raw == "", np.nan, rsid_raw),
                 }
             )
             for fi, fname in enumerate(fcols):

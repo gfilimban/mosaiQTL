@@ -204,6 +204,36 @@ def build_tss_lookup(genes_df: "pd.DataFrame") -> "dict[str, float]":
     return lookup
 
 
+def reduce_to_strain_means(
+    y: np.ndarray,
+    Z: np.ndarray,
+    valid_mask: np.ndarray,
+) -> np.ndarray:
+    """Reduce a sample-level vector to strain means via the Z design matrix.
+
+    Parameters
+    ----------
+    y :
+        Sample-level vector of shape ``(n_samples,)``.
+    Z :
+        Design matrix of shape ``(n_samples, m)`` mapping samples to strains,
+        as returned by :func:`build_z_matrix`.
+    valid_mask :
+        Boolean mask of length ``n_samples`` marking samples that have a valid
+        strain assignment, as returned by :func:`build_z_matrix`.
+
+    Returns
+    -------
+    np.ndarray
+        Strain-mean vector of shape ``(m,)``.  Strains with no valid replicates
+        receive ``0.0``.
+    """
+    Z_sub = Z[valid_mask]
+    rep_counts = Z_sub.sum(axis=0)
+    s = Z_sub.T @ y[valid_mask]
+    return np.where(rep_counts > 0, s / rep_counts, 0.0)
+
+
 def compute_near_tss_mb(
     peak_df: "pd.DataFrame",
     gene_tss_df: "pd.DataFrame",

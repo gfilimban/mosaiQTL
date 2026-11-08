@@ -319,8 +319,12 @@ def write_eqtl_stats(
 # populates; left as NaN in the haplotype-only scan output.
 _SANGER_COLS: list[str] = [
     "variant",
+    "rsid",
     "ref",
     "alt",
+    "effect_allele",
+    "other_allele",
+    "dosage",
     "ref_founders",
     "alt_founders",
     "af",
@@ -549,8 +553,8 @@ def build_eqtl_finemapping_df(
         "lod": lod_arr,
         "pval_nominal": pval,
         "log10p_nominal": log10p,
-        "PIP": np.asarray(cs["pip"], dtype=np.float64),
-        "PIP_method": "ABF",
+        "pip": np.asarray(cs["pip"], dtype=np.float64),
+        "pip_method": "ABF",
         "CS": "T",
         "lead_snp": lead_flag,
         "ci_lo_bp": ci_lo_bp if ci_lo_bp is not None else pd.NA,
@@ -587,9 +591,15 @@ def build_eqtl_finemapping_df(
         if _ns.notna().any():
             out["ma_sample"] = (_maf * _ns).round().astype("Int64")
 
-    # round float columns to 3 dp; PIP values can be as small as 1e-3
+    _PVAL_COLS = {"pval_perm", "fdr", "pval_nominal"}
+    for _pc in _PVAL_COLS:
+        if _pc in out.columns:
+            out[_pc] = out[_pc].apply(
+                lambda x: f"{x:.3e}" if pd.notna(x) and isinstance(x, float) else x
+            )
+    # round remaining float columns to 3 dp
     for _fc in out.columns:
-        if pd.api.types.is_float_dtype(out[_fc]):
+        if _fc not in _PVAL_COLS and pd.api.types.is_float_dtype(out[_fc]):
             out[_fc] = out[_fc].round(3)
 
     # Preserve _FOUNDER_EFFECT_COLS alongside EQTL_FINEMAPPING_COLS so that

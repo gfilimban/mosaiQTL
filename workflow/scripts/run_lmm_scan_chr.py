@@ -3,6 +3,13 @@
 Usage: python run_lmm_scan_chr.py <cache.h5> <kinship.h5> <phenotypes.h5>
            <gene_info.csv> <metadata.csv> <chrom>
            <scan_type:L|C|G> <window_mb> <covariates> <output_dir>
+           [use_rint:0|1]  (default 1)
+
+use_rint=1 is correct only for LMM on log-normalised expression (the current
+scan path).  Set to 0 for Gaussian phenotypes that are already approximately
+normal (e.g. body weight), or when comparing against a reference that did not
+apply RINT.  The NB-GLMM path does not use this flag at all — RINT on raw
+counts invalidates the negative-binomial likelihood.
 """
 import sys, json, logging, time, tracemalloc
 import numpy as np
@@ -13,8 +20,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
                     stream=sys.stdout)
 log = logging.getLogger(__name__)
 
-_SW = {'L': 'local', 'C': 'cis', 'G': 'genome'}
-
 
 def main() -> None:
     cache_path, kinship_path, pheno_path, gene_info_path, meta_path = [Path(sys.argv[i]) for i in range(1, 6)]
@@ -23,16 +28,17 @@ def main() -> None:
     window_mb   = float(sys.argv[8])
     covariates  = sys.argv[9]
     out         = Path(sys.argv[10])
+    use_rint    = sys.argv[11] != '0' if len(sys.argv) > 11 else True
 
     from mosaiqtl.genotype.genomecache import GenomeCache
     from mosaiqtl.genotype.kinship import load_kinship_decomp
     from mosaiqtl.io.anndata_io import load_expression_h5
     from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
-    from mosaiqtl.pipeline import ALLELE_EFFECTS_BASE_COLS, PEAK_LOD_COLS
+    from mosaiqtl.pipeline import ALLELE_EFFECTS_BASE_COLS, PEAK_LOD_COLS, SCAN_TYPE_TO_WINDOW
     from mosaiqtl.qtl.scan import scan_multi_gene_lmm
     from mosaiqtl.utils import build_tss_lookup, get_rss_mb
 
-    scan_window = _SW[scan_type]
+    scan_window = SCAN_TYPE_TO_WINDOW[scan_type]
     out.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
     tracemalloc.start()
@@ -88,7 +94,7 @@ def main() -> None:
         covariates=cov_arr,
         kinship_decomp=kinship_decomp,
         sample_ids=geno_ids,
-        use_rint=True,
+        use_rint=use_rint,
         scan_window=scan_window,
         gene_pos_mb_map=gene_pos_mb_map,
         window_mb=window_mb,

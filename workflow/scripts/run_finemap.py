@@ -65,7 +65,10 @@ def main() -> None:
     fm_out      = out / f'{tag}{chr_sfx}_eqtl_finemapping.csv'
     fm_peak_out = out / f'{tag}{chr_sfx}_eqtl_finemapping_peak.csv'
 
-    from mosaiqtl.pipeline import cap_egene_ci, EQTL_FINEMAPPING_COLS, EQTL_FINEMAPPING_PEAK_COLS
+    from mosaiqtl.pipeline import (
+        cap_egene_ci, EQTL_FINEMAPPING_COLS, EQTL_FINEMAPPING_PEAK_COLS,
+        prepare_egenes_for_finemap,
+    )
 
     egenes_df = pd.read_csv(egene_csv, dtype={'gene_id': str, 'chr': str})
     if chrom_filter:
@@ -81,19 +84,7 @@ def main() -> None:
             egenes_df = egenes_df.merge(aux[['gene_id'] + extra], on='gene_id', how='left')
             log.info('enriched egenes_df from peak_lod.csv: +%d cols', len(extra))
 
-    # derive _NULL_MODEL_COLS names from raw scan cols if not already present
-    # h2_null_chr / n_sample / sd_phenotype are the output schema names that
-    # finemap_egenes reads; peak_lod.csv carries h2 / n_valid / rss0
-    if 'h2_null_chr' not in egenes_df.columns and 'h2' in egenes_df.columns:
-        egenes_df['h2_null_chr'] = egenes_df['h2']
-    if 'n_sample' not in egenes_df.columns and 'n_valid' in egenes_df.columns:
-        egenes_df['n_sample'] = egenes_df['n_valid']
-    if ('sd_phenotype' not in egenes_df.columns
-            and 'rss0' in egenes_df.columns
-            and 'n_valid' in egenes_df.columns):
-        egenes_df['sd_phenotype'] = np.sqrt(
-            egenes_df['rss0'] / (egenes_df['n_valid'] - 1).clip(lower=1)
-        )
+    egenes_df = prepare_egenes_for_finemap(egenes_df)
 
     log.info('START finemap: tag=%s  %d eGenes  sanger=%s',
              tag, len(egenes_df), sanger_path or 'none')

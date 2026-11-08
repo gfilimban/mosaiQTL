@@ -132,6 +132,38 @@ class TestPickRepGene:
         _, _, tss_mb, _ = pick_rep_gene(df, gene_tss_df=tss)
         assert tss_mb == pytest.approx(0.0)  # start_mb of index 0
 
+    def test_global_median_differs_from_chrom_restricted(self):
+        """chrom=None picks from all chromosomes; chrom='19' restricts to that chr.
+
+        9 genes: 5 on chr1 with h2 in [0.40, 0.60], 4 on chr19 with h2 in
+        [0.00, 0.09].  Global median (5th of 9 sorted values) = 0.40, which
+        is a chr1 gene.  chr19-restricted median = (0.03+0.06)/2 = 0.045,
+        nearest chr19 gene is NOT the same gene.  This cannot be distinguished
+        on a single-chromosome run (the parity test), where chrom=None and
+        chrom='19' draw from the same pool.
+        """
+        import pandas as pd
+        from mosaiqtl.qtl.permutation import pick_rep_gene
+
+        h2 = [0.40, 0.45, 0.50, 0.55, 0.60,   # chr1 — all above 0.25
+              0.00, 0.03, 0.06, 0.09]            # chr19 — all below 0.25
+        df = pd.DataFrame({
+            'gene_id':    [f'ENSMUSG{i:011d}.1' for i in range(9)],
+            'gene_symbol': [f'Gene{i}' for i in range(9)],
+            'chr':        ['1'] * 5 + ['19'] * 4,
+            'start_mb':   [float(i) for i in range(9)],
+            'h2':         h2,
+        })
+
+        global_id, global_chr, _, _ = pick_rep_gene(df, chrom=None)
+        restricted_id, restricted_chr, _, _ = pick_rep_gene(df, chrom='19')
+
+        # sorted h2: [0.00,0.03,0.06,0.09,0.40,0.45,0.50,0.55,0.60]
+        # global median = 0.40 → gene index 0 on chr1 (exact match)
+        assert global_chr == '1', f'global pick should land on chr1, got chr{global_chr}'
+        assert restricted_chr == '19', f'chr19-restricted pick should stay on chr19'
+        assert global_id != restricted_id, 'global and restricted must select different genes'
+
 
 class TestGenerateNullOutcomes:
     def test_permutation_shape(self):

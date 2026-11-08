@@ -54,7 +54,7 @@ def main() -> None:
     from mosaiqtl.genotype.genomecache import GenomeCache
     from mosaiqtl.genotype.kinship import load_kinship_decomp
     from mosaiqtl.io.anndata_io import load_expression_h5
-    from mosaiqtl.io.covariates import build_covariate_matrix, build_sample_geno_map
+    from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
     from mosaiqtl.qtl.permutation import generate_null_outcomes, pick_rep_gene, run_threshold_scans
     from mosaiqtl.qtl.thresholds import get_gev_thresholds
 
@@ -92,18 +92,8 @@ def main() -> None:
     geno_map = build_sample_geno_map(meta_df)
     geno_ids = [geno_map.get(s, s) for s in sample_ids]
 
-    cov_arr: 'np.ndarray | None' = None
     cov_cols = [c for c in covariates.split(',') if c.strip()]
-    if cov_cols:
-        meta_scan   = meta_df[meta_df['sample_id'].isin(sample_ids)].drop_duplicates('sample_id')
-        cov_df      = build_covariate_matrix(meta_scan, covariates=cov_cols)
-        cov_aligned = cov_df.reindex(sample_ids)
-        missing     = cov_aligned.index[cov_aligned.isna().any(axis=1)].tolist()
-        if missing:
-            raise ValueError(
-                f'covariates {cov_cols} missing for {len(missing)} sample(s): {missing}'
-            )
-        cov_arr = cov_aligned.values
+    cov_arr  = build_cov_array(meta_df, sample_ids, cov_cols)
 
     log.info('generating %d null outcomes …', n_perms)
     null_outcomes = generate_null_outcomes(y, n_perms=n_perms, seed=seed)

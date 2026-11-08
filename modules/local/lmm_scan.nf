@@ -20,10 +20,11 @@ process LMM_SCAN {
           path("timing_chr${chrom}.json")
 
     script:
-    def cov    = params.covariates ?: ''
-    def stype  = params.scan_type  ?: 'L'
-    def wmb    = params.window_mb  ?: 1.0
-    def ct_log = celltype.replaceAll(/\s+/, '_')
+    def cov     = params.covariates ?: ''
+    def stype   = params.scan_type  ?: 'L'
+    def wmb     = params.window_mb  ?: 1.0
+    def rint    = (params.use_rint != null && !params.use_rint) ? 0 : 1
+    def ct_log  = celltype.replaceAll(/\s+/, '_')
     """
     set -o pipefail
     mkdir -p ${launchDir}/${params.output_dir}/logs
@@ -38,6 +39,7 @@ process LMM_SCAN {
         ${wmb} \\
         '${cov}' \\
         . \\
+        ${rint} \\
         2>&1 | tee ${launchDir}/${params.output_dir}/logs/${ct_log}_lmm_scan_chr${chrom}.log
     """
 

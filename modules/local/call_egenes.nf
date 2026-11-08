@@ -19,7 +19,8 @@ process CALL_EGENES {
           path('*_eqtl_summary.csv')
 
     script:
-    def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
+    def tag  = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
+    def rint = (params.use_rint != null && !params.use_rint) ? 0 : 1
     """
     set -o pipefail
     mkdir -p ${launchDir}/${params.output_dir}/logs
@@ -27,7 +28,7 @@ process CALL_EGENES {
         ${peak_lod} ${perm_max_lods} ${phenotypes} ${gene_info} \\
         ${genomecache} ${kinship_loco} ${metadata} \\
         '${celltype}' ${scan_tag} '${params.covariates}' \\
-        ${params.fdr_threshold} ${params.n_perms_cal} ${params.seed} . ${params.tissue} \\
+        ${params.fdr_threshold} ${params.n_perms_cal} ${params.seed} . ${params.tissue} ${rint} \\
         2>&1 | tee ${launchDir}/${params.output_dir}/logs/${tag}_call_egenes.log
     """
 

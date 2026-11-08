@@ -238,26 +238,33 @@ EQTL_PEAK_COLS: list[str] = [
 ]
 
 # Sanger fine-mapping — one row per credible-set member per eGene.
+# Column order: variant identity → alleles → gene → fine-mapping posteriors
+#               → association → significance → allele carriers/freq
+#               → dosage regression → haplotype context → null model metadata.
 # _FOUNDER_EFFECT_COLS excluded: founder betas are haplotype-peak properties, not per-SNP.
 EQTL_FINEMAPPING_COLS: list[str] = [
-    # gene identity
+    # variant identity (Sanger SPDI + coordinate)
+    "variant", "rsid", "chr", "pos",
+    # VCF alleles
+    "ref", "alt",
+    # statistical allele coding
+    "effect_allele", "other_allele",
+    # gene
     "gene_id", "gene_symbol",
-    # SNP location
-    "chr", "pos", "variant", "rsid",
-    # alleles
-    "ref", "alt", "ref_founders", "alt_founders", "effect_allele", "other_allele",
     # fine-mapping posteriors
     "pip", "pip_method", "CS", "lead_snp",
     # association statistics
     "lod", "pval_nominal", "log10p_nominal", "cis_dist_mb",
     # gene-level significance
     "pval_perm", "fdr", "fdr_method", "significance",
+    # founder carrier sets
+    "ref_founders", "alt_founders",
+    # dosage mode and allele frequencies
+    "dosage", "af", "maf", "mac", "ma_sample",
+    # dosage regression
+    "effect_size", "se_effect_size",
     # haplotype peak back-reference
     "hap_peak_variant", "hap_peak_pos", "hap_peak_lod", "ci_lo_bp", "ci_hi_bp", "peak_locus",
-    # allele frequencies
-    "af", "maf", "mac", "ma_sample", "dosage",
-    # dosage regression (NaN until biallelic contrast system)
-    "effect_size", "se_effect_size",
     # null model metadata
     "h2_null_chr", "sd_phenotype", "n_sample",
 ]
@@ -282,13 +289,18 @@ IMPUTED_SNP_COLS: list[str] = [
     "ci_lo_bp",
     "ci_hi_bp",
 ] + [c for c in SNP_SCAN_COLS if c not in ("gene_id", "chr")] + [
+    "rsid",
     "ref",
     "alt",
+    "effect_allele",
+    "other_allele",
     "ref_founders",
     "alt_founders",
+    "dosage",
     "af",
     "maf",
     "effect_size",
+    "se_effect_size",
 ]
 
 # Summary stats — one row per chromosome + one 'genome' row per tissue × cell type.
@@ -314,7 +326,10 @@ EQTL_STATS_COLS: list[str] = [
     "git_hash",
 ]
 
+SCAN_TYPE_TO_WINDOW: dict[str, str] = {'L': 'local', 'C': 'cis', 'G': 'genome'}
+
 __all__ = [
+    "SCAN_TYPE_TO_WINDOW",
     "LOD_COLS",
     "ALLELE_EFFECTS_BASE_COLS",
     "PEAK_LOD_COLS",
@@ -332,7 +347,9 @@ __all__ = [
     "call_egenes",
     "calibrate_egenes_storey",
     "cap_egene_ci",
+    "enrich_peak_lod",
     "finalize_egene_summary",
+    "prepare_egenes_for_finemap",
     "impute_egene",
     "impute_egenes",
     "finemap_imputed",
@@ -344,6 +361,72 @@ __all__ = [
     "CharacterizationResult",
     "ResolutionResult",
 ]
+
+
+def enrich_peak_lod(
+    peak_lod_df: pd.DataFrame,
+    gene_info_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Join gene_symbol and start_mb from gene_info and compute cis_dist_mb.
+
+    Parameters
+    ----------
+    peak_lod_df :
+        Output of a scan merge step (PEAK_LOD_COLS subset).
+    gene_info_df :
+        Gene annotation table with at minimum ``gene_id`` and ``start`` columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        ``peak_lod_df`` enriched with ``gene_symbol``, ``start_mb``, and
+        ``cis_dist_mb`` columns (where data is available).
+    """
+    gi_cols = ['gene_id']
+    if 'gene_symbol' in gene_info_df.columns and 'gene_symbol' not in peak_lod_df.columns:
+        gi_cols.append('gene_symbol')
+    if 'start' in gene_info_df.columns:
+        gi_cols.append('start')
+    gi_sub = gene_info_df[gi_cols].drop_duplicates('gene_id')
+    if 'start' in gi_sub.columns:
+        gi_sub = gi_sub.assign(start_mb=gi_sub['start'] / 1e6).drop(columns=['start'])
+    out = peak_lod_df.merge(gi_sub, on='gene_id', how='left')
+    if 'start_mb' in out.columns and 'peak_mb' in out.columns:
+        out['cis_dist_mb'] = out['peak_mb'] - out['start_mb']
+    return out
+
+
+def prepare_egenes_for_finemap(egenes_df: pd.DataFrame) -> pd.DataFrame:
+    """Rename raw scan columns to the names expected by :func:`finemap_egenes`.
+
+    ``peak_lod.csv`` carries raw scan column names (``h2``, ``n_valid``,
+    ``rss0``).  The fine-mapping pipeline reads ``h2_null_chr``, ``n_sample``,
+    and ``sd_phenotype``.  This function adds the aliased columns when the
+    source columns are present and the target columns are absent.
+
+    Parameters
+    ----------
+    egenes_df :
+        eGene DataFrame, typically loaded from a merged ``peak_lod.csv`` or
+        ``eqtl_summary.csv``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of ``egenes_df`` with alias columns added.
+    """
+    df = egenes_df.copy()
+    if 'h2_null_chr' not in df.columns and 'h2' in df.columns:
+        df['h2_null_chr'] = df['h2']
+    if 'n_sample' not in df.columns and 'n_valid' in df.columns:
+        df['n_sample'] = df['n_valid']
+    if ('sd_phenotype' not in df.columns
+            and 'rss0' in df.columns
+            and 'n_valid' in df.columns):
+        df['sd_phenotype'] = np.sqrt(
+            df['rss0'] / (df['n_valid'] - 1).clip(lower=1)
+        )
+    return df
 
 
 def finalize_egene_summary(
@@ -1076,12 +1159,19 @@ def impute_egene(
                 }
             )
         ann_df = pd.DataFrame(ann_rows)
-        ann_df["effect_size"] = ann_df["snp"].map(
-            snp_df.set_index("snp")["beta_dosage"]
+        _snp_idx = snp_df.set_index("snp")
+        ann_df["effect_size"] = ann_df["snp"].map(_snp_idx["beta_dosage"])
+        # Wald inversion: se = |beta| / |z|, z = sqrt(2·ln10·lod)
+        _beta_abs = ann_df["snp"].map(_snp_idx["beta_dosage"]).abs()
+        _lod_map = ann_df["snp"].map(_snp_idx["lod"]).clip(lower=0.0)
+        _z_abs = np.sqrt(2.0 * np.log(10) * _lod_map)
+        ann_df["se_effect_size"] = (_beta_abs / _z_abs.where(_z_abs > 1e-10)).where(
+            _beta_abs > 1e-10, other=np.nan
         )
         snp_df = snp_df.merge(ann_df, on="snp", how="left")
     else:
-        for col in ("ref", "alt", "ref_founders", "alt_founders", "af", "maf", "effect_size"):
+        for col in ("ref", "alt", "ref_founders", "alt_founders", "af", "maf",
+                    "effect_size", "se_effect_size"):
             snp_df[col] = pd.NA
 
     result_df = snp_df[IMPUTED_SNP_COLS].copy()
@@ -1308,7 +1398,11 @@ def finemap_imputed(
             }
 
         _alleles_ann: Optional[pd.DataFrame] = None
-        _ann_cols = [c for c in ("ref", "alt", "ref_founders", "alt_founders", "af", "maf", "effect_size") if c in g.columns]
+        _ann_cols = [c for c in (
+            "rsid", "ref", "alt", "effect_allele", "other_allele",
+            "ref_founders", "alt_founders", "dosage",
+            "af", "maf", "effect_size", "se_effect_size",
+        ) if c in g.columns]
         if _ann_cols and "snp" in g.columns:
             _cs_snps = set(fm_df[fm_df["in_cs"]]["snp"].tolist()) if "snp" in fm_df.columns else set()
             if _cs_snps:
