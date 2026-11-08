@@ -538,7 +538,7 @@ class TestBuildEqtlFinemappingPeakDf:
         sig = {
             "pval_perm": 0.01,
             "fdr": 0.03,
-            "fdr_method": "storey",
+            "fdr_method": "qvalue",
             "significance": "T",
         }
         fm = build_eqtl_finemapping_df(
@@ -547,7 +547,7 @@ class TestBuildEqtlFinemappingPeakDf:
         )
         df = build_eqtl_finemapping_peak_df(fm)
         assert float(df["fdr"].iloc[0]) == pytest.approx(0.03)
-        assert df["fdr_method"].iloc[0] == "storey"
+        assert df["fdr_method"].iloc[0] == "qvalue"
 
     def test_sig_values_nan_when_none(self, fm_built):
         # fm_built built without sig_values → NaN

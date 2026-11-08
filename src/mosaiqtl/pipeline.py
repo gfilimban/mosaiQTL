@@ -209,7 +209,7 @@ _FOUNDER_EFFECT_COLS: list[str] = [
 _SIG_COLS: list[str] = [
     "pval_perm",    # Beta-calibrated per-gene permutation p-value
     "fdr",          # Storey q-value across all genes that cleared the Stage-1 GEV gate
-    "fdr_method",   # constant 'storey'
+    "fdr_method",   # constant 'qvalue'
     "significance", # 'T' if fdr <= fdr_threshold
 ]
 
@@ -243,28 +243,22 @@ EQTL_PEAK_COLS: list[str] = [
 #               → dosage regression → haplotype context → null model metadata.
 # _FOUNDER_EFFECT_COLS excluded: founder betas are haplotype-peak properties, not per-SNP.
 EQTL_FINEMAPPING_COLS: list[str] = [
-    # variant identity (Sanger SPDI + coordinate)
-    "variant", "rsid", "chr", "pos",
-    # VCF alleles
-    "ref", "alt",
-    # statistical allele coding
-    "effect_allele", "other_allele",
-    # gene
-    "gene_id", "gene_symbol",
-    # fine-mapping posteriors
-    "pip", "pip_method", "CS", "lead_snp",
+    # variant identity (Sanger SPDI → coordinate)
+    "variant", "rsid", "chr", "pos", "ref", "alt",
+    # gene context
+    "gene_id", "gene_symbol", "cis_dist_mb",
+    # fine-mapping posteriors (the primary result)
+    "pip", "CS", "lead_snp", "pip_method",
     # association statistics
-    "lod", "pval_nominal", "log10p_nominal", "cis_dist_mb",
+    "lod", "pval_nominal", "log10p_nominal",
     # gene-level significance
     "pval_perm", "fdr", "fdr_method", "significance",
-    # founder carrier sets
-    "ref_founders", "alt_founders",
-    # dosage mode and allele frequencies
-    "dosage", "af", "maf", "mac", "ma_sample",
-    # dosage regression
-    "effect_size", "se_effect_size",
-    # haplotype peak back-reference
-    "hap_peak_variant", "hap_peak_pos", "hap_peak_lod", "ci_lo_bp", "ci_hi_bp", "peak_locus",
+    # allele coding (effect/other allele + founder carrier sets)
+    "effect_allele", "other_allele", "ref_founders", "alt_founders",
+    # dosage, frequency, effect
+    "dosage", "af", "maf", "mac", "ma_sample", "effect_size", "se_effect_size",
+    # haplotype-scan back-reference
+    "hap_peak_variant", "hap_peak_pos", "hap_peak_lod", "ci_lo_bp", "ci_hi_bp",
     # null model metadata
     "h2_null_chr", "sd_phenotype", "n_sample",
 ]
@@ -625,7 +619,7 @@ def calibrate_egenes_storey(
 
     q_values, pi0 = fdr_module.storey_qvalue(out["pval_perm"].to_numpy())
     out["fdr"] = q_values
-    out["fdr_method"] = "storey"
+    out["fdr_method"] = "qvalue"
     out["significance"] = np.where(out["fdr"] <= fdr_threshold, "T", "F")
 
     logger.info(

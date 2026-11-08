@@ -394,14 +394,14 @@ class TestCalibrateEgenesStorey:
         for col in ("pval_perm", "fdr", "fdr_method", "significance"):
             assert col in out.columns, f"missing {col!r}"
 
-    def test_fdr_method_is_storey(self):
-        """fdr_method column is always the string 'storey'."""
+    def test_fdr_method_is_qvalue(self):
+        """fdr_method column is always the string 'qvalue'."""
         from mosaiqtl.pipeline import calibrate_egenes_storey
 
         df = self._egenes_df()
         pval_perm = {f"g{i}": 0.05 for i in range(len(df))}
         out = calibrate_egenes_storey(df, pval_perm)
-        assert (out["fdr_method"] == "storey").all()
+        assert (out["fdr_method"] == "qvalue").all()
 
     def test_fdr_in_unit_interval(self):
         """All q-values are in [0, 1]."""
