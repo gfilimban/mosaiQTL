@@ -18,7 +18,7 @@ from mosaiqtl.viz.haplotypes import (
     kinship_heatmap,
     epistasis_heatmap,
 )
-from mosaiqtl.genotype.founders import FOUNDER_ORDER  # noqa: F401
+from mosaiqtl.genotype.cc import FOUNDER_ORDER  # noqa: F401
 
 N_FOUNDERS = 8
 N_SAMPLES = 10

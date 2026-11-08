@@ -6,7 +6,7 @@ the two can be checked for agreement. the usual pairing is a Python run
 (series A, blue) against a reference run in another language (series B,
 red), but any two comparable result sets work.
 
-all colors come from ``mosaiqtl.genotype.founders`` — colors are never
+all colors come from ``mosaiqtl.genotype.cc`` — colors are never
 hardcoded here.
 """
 
@@ -21,7 +21,7 @@ import seaborn as sns
 from scipy import stats as sp_stats
 from scipy.stats import gaussian_kde
 
-from ..genotype.founders import (
+from ..genotype.cc import (
     COLOR_CC_FALLBACK,
     COLOR_NEUTRAL_DARK,
     COLOR_NEUTRAL_LIGHT,

@@ -154,6 +154,36 @@ def build_covariate_matrix(
     return result
 
 
+def build_sample_geno_map(
+    meta: "pd.DataFrame",
+    sample_col: str = "sample_id",
+    geno_col: str = "genotype",
+) -> "dict[str, str]":
+    """build a sample_id → genotype_id lookup from sample metadata.
+
+    returns a dict so callers build it once and apply it to many sample lists
+    without re-scanning the metadata DataFrame on each call.
+
+    parameters
+    ----------
+    meta :
+        sample metadata; must contain ``sample_col`` and ``geno_col``.
+    sample_col :
+        column holding sample identifiers (default ``'sample_id'``).
+    geno_col :
+        column holding the corresponding genotype/strain identifier
+        (default ``'genotype'``); used to index into the genomecache.
+
+    returns
+    -------
+    dict[str, str]
+        maps each sample_id to its genotype_id.
+        ``mapping.get(s, s)`` returns ``s`` unchanged when a sample has no
+        separate genotype entry (e.g. inbred lines where sample == genotype).
+    """
+    return dict(zip(meta[sample_col], meta[geno_col]))
+
+
 def encode_sex(series: "pd.Series") -> "pd.Series":
     """encode a sex column to float (male → 0.0, female → 1.0).
 
@@ -186,47 +216,52 @@ def encode_sex(series: "pd.Series") -> "pd.Series":
     return series.map(_map).astype(np.float64)
 
 
-def build_sex_dataset_covariates(
+# ---------------------------------------------------------------------------
+def build_cov_array(
     meta: "pd.DataFrame",
-    sample_order: "list[str]",
-    dataset_col: str = "dataset",
-    dataset_categories: "list[str] | None" = None,
-) -> "np.ndarray":
-    """build a covariate matrix aligned to ``sample_order`` for a sex + dataset model.
+    sample_ids: "list[str]",
+    cov_cols: "list[str]",
+) -> "np.ndarray | None":
+    """build a covariate array aligned to ``sample_ids``.
 
-    the reference (dropped) dataset category is Founder.
+    convenience wrapper that combines :func:`build_covariate_matrix` with
+    the reindex + missing-sample check used in every scan script.  Returns
+    ``None`` when *cov_cols* is empty.
 
     parameters
     ----------
     meta :
-        sample metadata DataFrame; must contain ``sample_id``, ``sex``, and
-        the column named by ``dataset_col``.
-    sample_order :
-        ordered list of sample IDs; defines the row order of the output.
-    dataset_col :
-        column in ``meta`` holding the dataset/batch label (default ``'dataset'``).
-    dataset_categories :
-        ordered category list for the dataset column; the first entry becomes
-        the reference level (dropped in dummies). defaults to
-        ``['Founder', 'CC1', 'CC2', 'CC3', 'F1']``.
+        sample metadata; must contain a ``sample_id`` column plus any
+        columns named in *cov_cols*.
+    sample_ids :
+        ordered list of sample identifiers that the covariate rows must
+        align to.
+    cov_cols :
+        covariate column names to include.
 
     returns
     -------
-    np.ndarray  (n_samples, n_covariates)
-        columns: sex (0=F, 1=M), then one-hot dataset dummies (reference dropped).
+    np.ndarray (n_samples, n_covariates) or None
+        ``None`` when *cov_cols* is empty.
+
+    raises
+    ------
+    ValueError
+        when any sample in *sample_ids* has no covariate entry.
     """
-    import pandas as pd
+    if not cov_cols:
+        return None
+    meta_scan = meta[meta['sample_id'].isin(sample_ids)].drop_duplicates('sample_id')
+    cov_df = build_covariate_matrix(meta_scan, covariates=cov_cols)
+    cov_aligned = cov_df.reindex(sample_ids)
+    missing = cov_aligned.index[cov_aligned.isna().any(axis=1)].tolist()
+    if missing:
+        raise ValueError(
+            f'covariates {cov_cols} missing for {len(missing)} sample(s): {missing}'
+        )
+    return cov_aligned.values
 
-    if dataset_categories is None:
-        dataset_categories = ["Founder", "CC1", "CC2", "CC3", "F1"]
-    rows = meta.set_index("sample_id").loc[sample_order]
-    sex_vec = encode_sex(rows["sex"]).values.astype(np.float64)
-    cat = pd.Categorical(rows[dataset_col].values, categories=dataset_categories)
-    dummies = pd.get_dummies(cat, drop_first=True).values.astype(np.float64)
-    return np.column_stack([sex_vec, dummies])
 
-
-# ---------------------------------------------------------------------------
 # private helpers
 # ---------------------------------------------------------------------------
 
@@ -253,12 +288,25 @@ def _check_nan(df: pd.DataFrame, col: str) -> None:
 
 
 def _encode_column(meta: pd.DataFrame, col: str) -> pd.DataFrame:
-    """one-hot encode categorical columns; pass numeric columns through."""
+    """one-hot encode categorical columns; pass numeric columns through.
+
+    for categorical columns, the reference level (dropped dummy) is the first
+    category whose value starts with 'founder' (case-insensitive) — the
+    biological baseline for CC/DO mixed-origin datasets.  when no such
+    category exists the alphabetically first value is dropped instead.
+    """
     _check_nan(meta, col)
     series = meta[col]
     if pd.api.types.is_numeric_dtype(series):
         return series.rename(col).to_frame()
-    dummies = pd.get_dummies(series, prefix=col, drop_first=True, dtype=float)
+    unique_vals = sorted(series.unique(), key=str.lower)
+    ref = next(
+        (v for v in unique_vals if str(v).lower().startswith('founder')),
+        unique_vals[0],
+    )
+    ordered = [ref] + [v for v in unique_vals if v != ref]
+    cat_series = series.astype(pd.CategoricalDtype(categories=ordered))
+    dummies = pd.get_dummies(cat_series, prefix=col, drop_first=True, dtype=float)
     return dummies
 
 

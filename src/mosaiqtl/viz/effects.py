@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from ..genotype.founders import (
+from ..genotype.cc import (
     COLOR_NEUTRAL_DARK,
     COLOR_NEUTRAL_LIGHT,
     COLOR_CC_FALLBACK,

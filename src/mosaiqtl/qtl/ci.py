@@ -109,6 +109,7 @@ def _scan_one_chromosome(
     kinship_decomp: dict,
     sample_ids: 'list[str] | None' = None,
     use_rint: bool = True,
+    chr_data: 'dict | None' = None,
 ) -> 'tuple[np.ndarray, np.ndarray]':
     """Single-gene single-chromosome LMM scan.
 
@@ -138,13 +139,27 @@ def _scan_one_chromosome(
     if sample_ids is not None:
         z_mat, _ = build_z_matrix(list(sample_ids), list(genomecache.sample_ids))
         r_counts = z_mat.sum(axis=0)
+
+        # Rare cell types may have zero cells for some strains; dividing by zero
+        # produces NaN that propagates through the scan.  Replace zero counts with 1
+        # (safe divisor) — those strains' Z.T@y and Z.T@x sums are already 0, so
+        # 0/1 = 0 = RINT mean, the correct mean imputation.  Covariates for missing
+        # strains are then set to the valid-strain mean with the intercept forced to 1.
+        # The genomecache always returns the full m-strain haplotype matrix, so we
+        # must keep ev/evc at the original m-strain dimension — never subset them.
+        _valid_strains = r_counts > 0
+        if not _valid_strains.all():
+            r_counts = np.where(_valid_strains, r_counts, 1.0)
         x_scan = (z_mat.T @ x) / r_counts[:, None]
+        if not _valid_strains.all():
+            x_scan[~_valid_strains] = x_scan[_valid_strains].mean(axis=0)
+            x_scan[~_valid_strains, 0] = 1.0
         y0 = (z_mat.T @ y0) / r_counts
-        # y0 and x_scan are now at strain level; z_mat is not passed further
-        # because kinship_decomp is at strain level (m×m), not sample level (n×n)
+        # y0[~_valid_strains] = 0 (RINT mean) since Z.T@y0 = 0 for missing strains
 
     h2, _ = lmm_module.estimate_h2_null(evc.T @ y0, evc.T @ x_scan, ev, method='ml')
-    chr_data = lmm_module.precompute_chromosome(genomecache, chrom, ev, evc, z_mat=None)
+    if chr_data is None:
+        chr_data = lmm_module.precompute_chromosome(genomecache, chrom, ev, evc, z_mat=None)
     result = lmm_module.scan_chromosome(y0, chr_data, x_scan, ev, evc, h2)
     return result['positions'], result['lod']
 
@@ -199,6 +214,8 @@ def ci_scan_multi_gene(
     if output_path is not None:
         output_path.unlink(missing_ok=True)
 
+    from . import lmm as lmm_module
+
     _gm_idx = _build_gm_idx(gene_meta)
     _id_cols = ['gene_id', 'chr']
     _data_cols = ['peak_lod', 'peak_mb', 'ci_peak_lod', 'ci_lo', 'ci_hi', 'ci_width_mb']
@@ -206,6 +223,17 @@ def ci_scan_multi_gene(
     _buf: 'list[pd.DataFrame]' = []
     _n = len(expr_cache)
     logger.info('ci_scan_multi_gene: n_genes=%d  lod_drop=%.1f', _n, lod_drop)
+
+    # precompute chromosome data once per chromosome rather than once per gene
+    _chrs_needed = {str(gene_chr_map.get(g, '')) for g in expr_cache} - {''}
+    _chr_data_cache: 'dict[str, dict]' = {}
+    for _c in _chrs_needed:
+        if _c in kinship_decomp:
+            _ev = kinship_decomp[_c]['values']
+            _evc = kinship_decomp[_c]['vectors']
+            _chr_data_cache[_c] = lmm_module.precompute_chromosome(
+                genomecache, _c, _ev, _evc, z_mat=None,
+            )
 
     for _g, (gene_id, y) in enumerate(expr_cache.items()):
         gene_chr = gene_chr_map.get(gene_id, '')
@@ -222,6 +250,7 @@ def ci_scan_multi_gene(
             positions, lod = _scan_one_chromosome(
                 y, genomecache, gene_chr, covariates, _kd_g,
                 sample_ids=sample_ids, use_rint=use_rint,
+                chr_data=_chr_data_cache.get(gene_chr),
             )
             ci_lo, ci_hi = lod_support_interval(positions, lod, lod_drop=lod_drop)
             _peak_idx = int(np.nanargmax(lod))

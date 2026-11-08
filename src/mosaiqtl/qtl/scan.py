@@ -379,6 +379,7 @@ def scan_multi_gene(
     window_mb: float = 10.0,
     output_dir: "Path | None" = None,
     model: str = "additive",
+    gene_symbol_map: "dict[str, str] | None" = None,
 ) -> "dict[str, ScanResult]":
     """scan many genes at once, sharing the same genome cache and kinship.
 
@@ -558,15 +559,19 @@ def scan_multi_gene(
         # write per-chr CSV and release row buffers immediately
         if output_dir is not None and _chr_gene:
             _lod_path = Path(output_dir) / f"lod_chr{chrom}.csv"
-            pd.DataFrame(
-                {
-                    "gene_id": _chr_gene,
-                    "chr": chrom,
-                    "locus": _chr_locus,
-                    "pos_mb": _chr_pos,
-                    "lod": _chr_lod,
-                }
-            ).to_csv(_lod_path, index=False)
+            _chr_df: dict = {
+                "gene_id": _chr_gene,
+                "gene_symbol": (
+                    [gene_symbol_map.get(g, "") for g in _chr_gene]
+                    if gene_symbol_map is not None
+                    else [""] * len(_chr_gene)
+                ),
+                "chr": chrom,
+                "locus": _chr_locus,
+                "pos_mb": _chr_pos,
+                "lod": _chr_lod,
+            }
+            pd.DataFrame(_chr_df).to_csv(_lod_path, index=False)
             logger.info(
                 "scan_multi_gene: chr%s (%d/%d)  n_genes=%d  n_rows=%d  elapsed=%.1fs → %s",
                 chrom,
@@ -696,7 +701,7 @@ def scan_multi_gene_lmm(
         _fnames = list(founder_names)
     else:
         try:
-            from ..genotype.founders import FOUNDER_CODE  # noqa: PLC0415
+            from ..genotype.cc import FOUNDER_CODE  # noqa: PLC0415
 
             _fc_inv = {v: k for k, v in FOUNDER_CODE.items()}
             _fnames = [_fc_inv.get(f, f) for f in _fcodes]
@@ -710,6 +715,9 @@ def scan_multi_gene_lmm(
     if scan_window in ("cis", "local"):
         chrs_needed = {str(gene_chr_map.get(g, "")) for g in gene_ids}
         chrom_list = [c for c in chrom_list if str(c) in chrs_needed]
+
+    if lod_path is not None:
+        Path(lod_path).unlink(missing_ok=True)
 
     peak_rows: "list[dict]" = []
     _lod_first = True

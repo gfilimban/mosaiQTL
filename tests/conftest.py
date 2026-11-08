@@ -24,7 +24,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from mosaiqtl.genotype.genomecache import GenomeCache
-from mosaiqtl.genotype.founders import FOUNDER_ORDER
+from mosaiqtl.genotype.cc import FOUNDER_ORDER
 
 # ── dimensions ───────────────────────────────────────────────────────────────
 N_STRAINS = 10  # unique CC genotypes: CC001–CC010

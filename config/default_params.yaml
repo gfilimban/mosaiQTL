@@ -1,33 +1,42 @@
-# mosaiQTL default pipeline parameters
-# Override any key on the CLI: nextflow run workflow/main.nf --chroms 8
-#
-# Two cell-type input modes (mutually exclusive; celltypes_dir takes precedence):
-#
-#   Multi-CT mode:
-#     celltypes_dir: /path/to/{tissue}_data/celltypes
-#     celltypes:     'all'                    # or 'glutamatergic_neuron,oligodendrocyte'
-#     gene_info:     /path/to/exp_gene_info_{tissue}.csv   # global fallback
-#
-#   Single-CT mode:
-#     phenotypes:    /path/to/pseudobulk.h5
-#     celltype:      'my_ct'                  # label used in output paths
-#     gene_info:     /path/to/gene_info.csv
+# mosaiQTL Nextflow pipeline parameters
+# Maps directly to positional args consumed by workflow/scripts/run_*.py
 
-genomecache:    null   # path to genome cache HDF5 (required)
-kinship_loco:   null   # path to LOCO kinship HDF5 (optional — built from genomecache if null)
+# ── inputs (required) ───────────────────────────────────────────────────────
+gigamuga_csv:   null          # path to GigaMUGA CSV (ref/GM_ccf1fo_mm39.csv); used only if ref/igvf_cache.h5 absent
+genomecache:    null          # path to genome cache HDF5 (ref/igvf_cache.h5)
+phenotypes:     null          # path to counts HDF5 (counts_lognorm.h5 for single-CT)
+gene_info:      null          # path to gene info CSV (ref/gene_info.vm36.csv)
+gene_tss:       null          # path to strand-aware TSS CSV (gene_tss.vm36.csv); used to cap CI bounds in L mode
+metadata:       null          # path to sample metadata CSV (ref/igvf_sample_metadata.csv)
+sanger_alleles: null          # path to Sanger alleles HDF5 (ref/sanger_alleles.h5); null = skip FINEMAP SNP step
 
-# cell-type inputs — set one mode
-celltypes_dir:  null   # directory; each subdir is a cell type containing pseudobulk.h5
-celltypes:      'all'  # 'all' or comma-separated: 'glutamatergic_neuron,oligodendrocyte'
-gene_info:      null   # gene info CSV (gene_id, chr, start, end) — global or per-CT fallback
+# ── cell type ────────────────────────────────────────────────────────────────
+celltype:       null          # cell type label for output paths
+tissue:         ''            # tissue label prepended to output filenames; '' = omit
 
-# single-CT legacy (used when celltypes_dir is null)
-phenotypes:     null   # path to single phenotype HDF5
-celltype:       null   # cell type label for output paths (default: 'default')
+# ── multi-CT mode ────────────────────────────────────────────────────────────
+celltypes_dir:  null          # directory of per-CT subdirs, each with counts_lognorm.h5
+celltypes:      'all'         # 'all' or comma-separated: 'glutamatergic_neuron,oligodendrocyte'
 
-output_dir:    'results'
-scan_type:     'lmm'      # lmm | nb-glmm
-scan_window:   'cis'      # cis | genome | local
-chroms:        'all'      # 'all' or comma-separated: '1,2,8'
-n_perms:       1000
-window_mb:     1.0        # half-window for local scan (Mb)
+# ── scan ─────────────────────────────────────────────────────────────────────
+scan_type:      'L'           # L (local ±window_mb) | C (chromosome-wide) | G (genome-wide)
+window_mb:      1.0           # half-window in Mb for scan_type L
+chroms:         'all'         # 'all' or comma-separated: '1,2,8'
+covariates:     'sex,dataset' # comma-separated metadata columns as fixed effects; '' = intercept-only
+use_rint:       true          # rank-inverse normal transform before LMM scan; correct for
+                              # log-normalised expression only — set false for Gaussian
+                              # phenotypes (body weight etc.) or NB-GLMM (future)
+
+# ── permutation + FDR ────────────────────────────────────────────────────────
+n_perms:              1000    # genome-wide permutations for GEV threshold
+n_perms_cal:          1000    # per-eGene permutations for Beta-calibrated p-values (Storey FDR)
+perm_method:          'parametric'   # permutation method passed to run_threshold_scans
+fdr_threshold:        0.05    # Storey q-value FDR threshold for eGene calling
+seed:                 42
+
+# ── fine-mapping ─────────────────────────────────────────────────────────────
+n_bootstrap:    1000          # bootstrap replicates for CI (run_finemap.py)
+gtf:            null          # optional GENCODE GTF path for gene-track locus panels in REPORT
+
+# ── outputs ──────────────────────────────────────────────────────────────────
+output_dir:     'results'

@@ -25,6 +25,8 @@ only that chromosome).
 """
 
 import time
+from pathlib import Path
+from typing import Optional
 import numpy as np
 import logging
 
@@ -33,6 +35,9 @@ logger = logging.getLogger("mosaiqtl")
 __all__ = [
     "calc_kinship",
     "decomp_kinship",
+    "kinship_from_decomp",
+    "load_kinship_decomp",
+    "save_kinship_decomp",
 ]
 
 
@@ -147,4 +152,87 @@ def decomp_kinship(kinship_dict):
             float(_ev[0]),
             ", ".join(f"{v:.4f}" for v in _ev[:3]),
         )
+    return result
+
+
+def kinship_from_decomp(decomp_chr: dict) -> np.ndarray:
+    """reconstruct the kinship matrix K from a per-chromosome decomp dict.
+
+    given the eigendecomposition produced by :func:`decomp_kinship` for one
+    chromosome, recover the symmetric kinship matrix::
+
+        K = (vectors * values) @ vectors.T
+
+    parameters
+    ----------
+    decomp_chr :
+        ``{'values': ndarray (m,), 'vectors': ndarray (m, m)}`` for one chromosome.
+
+    returns
+    -------
+    K : ndarray (m, m)
+    """
+    vecs = decomp_chr['vectors']
+    vals = decomp_chr['values']
+    return (vecs * vals) @ vecs.T
+
+
+def save_kinship_decomp(kinship_decomp: dict, h5_path: Path) -> None:
+    """write a LOCO kinship decomp dict to an HDF5 file.
+
+    writes the same layout as build_kinship_loco.py so the file can
+    be re-loaded by :func:`load_kinship_decomp`.
+
+    parameters
+    ----------
+    kinship_decomp :
+        ``{chrom_str: {'values': ndarray, 'vectors': ndarray}}``
+    h5_path :
+        destination path; parent directories must exist.
+    """
+    import h5py
+    with h5py.File(h5_path, 'w') as f:
+        for chrom, d in kinship_decomp.items():
+            grp = f.create_group(f'chr{chrom}')
+            grp.create_dataset('values',  data=d['values'].astype(np.float64))
+            grp.create_dataset('vectors', data=d['vectors'].astype(np.float64))
+
+
+def load_kinship_decomp(
+    h5_path: Path,
+    chroms: Optional[list[str]] = None,
+) -> dict:
+    """load pre-decomposed LOCO kinship matrices from HDF5.
+
+    reads the file written by build_kinship_loco.py: each group
+    ``chr{c}`` holds ``values`` (eigenvalues) and ``vectors`` (eigenvectors).
+
+    parameters
+    ----------
+    h5_path :
+        path to the kinship HDF5 file (opened read-only).
+    chroms :
+        chromosomes to load; ``None`` loads all present chromosomes.
+        pass a single-element list to load one chromosome without reading
+        the whole file (avoids the I/O cost for per-chromosome LMM scans).
+
+    returns
+    -------
+    dict  {chrom_str: {'values': ndarray, 'vectors': ndarray}}
+        chromosome strings match those stored in the file (no ``chr`` prefix).
+    """
+    import h5py
+    want = set(chroms) if chroms is not None else None
+    result: dict = {}
+    with h5py.File(h5_path, 'r') as f:
+        for key in f.keys():
+            if not key.startswith('chr'):
+                continue
+            chrom = key[3:]
+            if want is not None and chrom not in want:
+                continue
+            result[chrom] = {
+                'values':  f[key]['values'][:],
+                'vectors': f[key]['vectors'][:],
+            }
     return result

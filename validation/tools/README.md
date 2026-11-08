@@ -19,7 +19,7 @@ Not imported by the package; add `validation/tools/` to `sys.path` before import
 # Convert h5ad (prerequisite for gastroc/ctxhipp scans)
 conda run -n bioinfo python validation/tools/convert_h5ad.py \
     --h5ad data/gastroc.h5ad --tissue gastroc \
-    --out validation/gastroc_data
+    --out validation/gastroc_data/next
 
 # Build allele dir (Phase 2 S8 prerequisite)
 conda run -n bioinfo python validation/tools/build_allele_dir.py

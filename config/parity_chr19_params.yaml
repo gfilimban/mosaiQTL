@@ -1,0 +1,23 @@
+# Parity test: type_ii_myonucleus chr19 — mirrors validate_tissue.py run
+genomecache:    'ref/igvf_cache.h5'
+phenotypes:     'validation/gastroc_data/next/celltypes/type_ii_myonucleus/counts_lognorm.h5'
+gene_info:      'validation/gastroc_data/next/celltypes/type_ii_myonucleus/exp_gene_info_type_ii_myonucleus.csv'
+gene_tss:       'ref/gene_tss.vm36.csv'
+metadata:       'validation/gastroc_data/next/metadata.csv'
+sanger_alleles: 'ref/sanger_alleles.h5'
+
+celltype:       'type_ii_myonucleus'
+tissue:         ''
+
+scan_type:      'L'
+window_mb:      1.0
+chroms:         '19'
+covariates:     'sex,dataset'
+
+n_perms:        1000
+n_perms_cal:    1000
+perm_method:    'parametric'
+fdr_threshold:  0.05
+seed:           42
+
+output_dir:     'results/parity_chr19'

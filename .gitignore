@@ -32,6 +32,7 @@ docs/superpowers/
 # nextflow runtime — generated at runtime, can be very large
 .nextflow/
 .nextflow.log
+.nextflow.log.*
 work/
 
 # pytest / coverage
@@ -65,6 +66,7 @@ validation/ctxhipp_data/nova/
 validation/ctxhipp_data/next/
 validation/ctxhipp_data/bioground/
 validation/ctxhipp_data/cistrans_comp/
+validation/ctxhipp_data/founder_concordance/
 validation/ctxhipp_data/compare_generations/
 validation/ctxhipp_data/dose_response/
 validation/ctxhipp_data/egene_effects/
@@ -93,6 +95,9 @@ validation/validate_phase4.py
 # ── local analysis notes (not for repo) ──────────────────────────────────────
 docs/ANALYSIS_NOTES.md
 validation/mpd/
+validation/gwas_overlap/
+validation/test/
+validation/tools/cistrans_overlap.ipynb
 
 # ── generated docs ────────────────────────────────────────────────────────────
 docs/phase2_status.md
@@ -111,10 +116,32 @@ docs/WIKI.md
 
 # ── tests ─────────────────────────────────────────────────────────────────────
 tests/fixtures/data/
+tests/integration/test_nf_workflow_parity.py
+tests/workflow/nf_out/
+tests/workflow/vt_out/
+tests/workflow/syn_data/
 
 # ── goals (internal progress tracking) ────────────────────────────────────────
 goals/
 
+# ── pipeline outputs ──────────────────────────────────────────────────────────
+results/
+
+# ── validation/tools — one-time data-modification scripts ─────────────────────
+validation/tools/build_allele_dir.py
+validation/tools/build_gm_ccf1fo.py
+validation/tools/build_gm_gmap_pmap.py
+validation/tools/liftover_twist_exome.py
+validation/tools/pseudobulk_backed.py
+validation/tools/fix_cache_canonical_order.py
+validation/tools/make_founders_rsid_vcf.py
+
 # ── misc local artifacts ──────────────────────────────────────────────────────
 graphify-out/
-data/
+
+# ref/ — large binaries excluded; small reference files tracked
+ref/*
+!ref/GM_ccf1fo_mm39.csv
+!ref/igvf_sample_metadata.csv
+!ref/igvf_kinship_loco.h5
+!ref/gene_tss.vm36.csv

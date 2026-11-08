@@ -2707,7 +2707,7 @@ def lod_profiles_per_chr(
     thr_by_chr : dict, optional
         Per-chromosome permutation threshold (may contain None values).
     color : str
-        LOD line colour; must be imported from genotype.founders.
+        LOD line colour; must be imported from genotype.cc.
     ylabel : str
         Y-axis label.
     priority_genes : dict, optional
@@ -3490,7 +3490,7 @@ def sample_identity_cube(
     Build ``hap_bins`` from genome-wide argmax of a GenomeCache:
 
     >>> import numpy as np
-    >>> from mosaiqtl.genotype.founders import FOUNDER_ORDER
+    >>> from mosaiqtl.genotype.cc import FOUNDER_ORDER
     >>> # probs: dict[strain, np.ndarray shape (n_founders,)]
     >>> hap_bins = {s: FOUNDER_ORDER[int(np.argmax(p))] for s, p in probs.items()}
     >>> fig = sample_identity_cube(meta_df, hap_bins=hap_bins)
@@ -3500,7 +3500,7 @@ def sample_identity_cube(
 
     import natsort
 
-    from ..genotype.founders import FOUNDER_COLORS, FOUNDER_ORDER
+    from ..genotype.cc import FOUNDER_COLORS, FOUNDER_ORDER
 
     # ── resolve axis orders (up to 8 each) ───────────────────────────────────
     def _nat8(series: pd.Series) -> list[str]:

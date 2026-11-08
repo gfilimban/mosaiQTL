@@ -22,7 +22,7 @@ import pandas as pd
 
 import seaborn as sns
 
-from ..genotype.founders import FOUNDER_ORDER
+from ..genotype.cc import FOUNDER_ORDER
 from ._theme import INK, MUTED
 from .compare import (
     lod_scatter as _cmp_scatter,
@@ -57,6 +57,7 @@ __all__ = [
     "ct_lod_distributions",
     "ct_cis_distance_comparison",
     "compare_scan_types",
+    "ct_eqtl_summary",
 ]
 
 
@@ -1351,3 +1352,121 @@ def compare_scan_types(
                 exc,
                 exc_info=True,
             )
+
+
+def ct_eqtl_summary(
+    counts: pd.DataFrame,
+    peak_lods: np.ndarray,
+    out_path: Path,
+    n_distinct_egenes: int,
+) -> None:
+    """Detected eQTLs against genes tested per cell type, plus the LOD distribution.
+
+    Left panel: one row per cell type, sorted by detected count, with a light
+    bar for genes tested and a dark bar for eQTLs detected, labelled with
+    the detected fraction. Right panel: peak-LOD histogram over every
+    detected eQTL with the median marked. A headline line states the totals
+    as detected eQTLs out of tested gene-cell-type pairs.
+
+    Writes a transparent PNG at *out_path* and an opaque white copy named
+    ``<stem>_share.png`` beside it.
+
+    Parameters
+    ----------
+    counts :
+        One row per cell type with columns ``celltype``, ``n_tested`` and
+        ``n_eqtl``.
+    peak_lods :
+        Peak LOD of every detected eQTL, pooled across cell types.
+    out_path :
+        Destination of the transparent PNG.
+    n_distinct_egenes :
+        Number of distinct genes detected in at least one cell type.
+    """
+    from ._theme import BRAND_PRIMARY, KW_REFERENCE, WASH, info_box, set_style
+
+    set_style()
+    df = counts.sort_values("n_eqtl", ascending=False).reset_index(drop=True)
+    df["label"] = df["celltype"].str.replace("_", " ")
+    tot_tested = int(df["n_tested"].sum())
+    tot_eqtl = int(df["n_eqtl"].sum())
+
+    fig, (ax_l, ax_r) = plt.subplots(
+        1, 2, figsize=(14, 6.2), gridspec_kw={"width_ratios": [1.7, 1]}
+    )
+    sns.barplot(
+        data=df, x="n_tested", y="label", orient="h", color=WASH, ax=ax_l
+    )
+    sns.barplot(
+        data=df, x="n_eqtl", y="label", orient="h", color=BRAND_PRIMARY, ax=ax_l
+    )
+    xmax = float(df["n_tested"].max())
+    for i, r in df.iterrows():
+        ax_l.text(
+            r["n_tested"] + xmax * 0.01,
+            i,
+            f"{int(r['n_eqtl']):,} / {int(r['n_tested']):,}  "
+            f"({r['n_eqtl'] / r['n_tested']:.0%})",
+            va="center",
+            fontsize=9,
+            color=INK,
+        )
+    ax_l.set_xlim(0, xmax * 1.38)
+    ax_l.set_xlabel("Genes")
+    ax_l.set_ylabel("")
+    ax_l.legend(
+        handles=[
+            plt.Rectangle((0, 0), 1, 1, color=WASH, label="tested"),
+            plt.Rectangle((0, 0), 1, 1, color=BRAND_PRIMARY, label="detected eQTL"),
+        ],
+        loc="lower right",
+        frameon=False,
+    )
+
+    sns.histplot(
+        x=peak_lods, bins=40, color=BRAND_PRIMARY, edgecolor="white", ax=ax_r
+    )
+    med = float(np.median(peak_lods))
+    ax_r.axvline(med, **KW_REFERENCE)
+    ax_r.set_xlabel("Peak LOD of detected eQTLs")
+    ax_r.set_ylabel("eQTLs")
+    ax_r.set_xlim(left=0)
+    info_box(
+        ax_r,
+        f"median {med:.2f}\nmean {float(np.mean(peak_lods)):.2f}\n"
+        f"max {float(np.max(peak_lods)):.2f}\nmin {float(np.min(peak_lods)):.2f}",
+        corner="tr",
+        fontsize=9,
+    )
+
+    for ax in (ax_l, ax_r):
+        for item in (
+            [ax.xaxis.label, ax.yaxis.label]
+            + ax.get_xticklabels()
+            + ax.get_yticklabels()
+        ):
+            item.set_fontfamily(["Carlito", "Calibri", "DejaVu Sans"])
+        sns.despine(ax=ax)
+    fig.text(
+        0.01,
+        1.02,
+        f"{tot_eqtl:,} detected eQTLs of {tot_tested:,} tested gene–cell-type "
+        f"pairs ({tot_eqtl / tot_tested:.0%})  ·  "
+        f"{n_distinct_egenes:,} distinct eGenes",
+        fontsize=14,
+        fontweight="bold",
+        fontfamily=["Carlito", "Calibri", "DejaVu Sans"],
+        color=INK,
+    )
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=300, bbox_inches="tight", transparent=True)
+    fig.savefig(
+        out_path.with_name(f"{out_path.stem}_share.png"),
+        dpi=300,
+        bbox_inches="tight",
+        transparent=False,
+        facecolor="white",
+    )
+    plt.close(fig)
+    logger.info("ct_eqtl_summary: saved %s", out_path)

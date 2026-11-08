@@ -14,6 +14,7 @@ from mosaiqtl.qtl.imputation import (
     credible_set,
     lod_beta_to_z,
     fine_map_region,
+    merge_ld_groups,
 )
 
 _LOG10_TO_LN = np.log(10.0)
@@ -106,6 +107,31 @@ class TestAbfPip:
         pip = abf_pip(abf)
         assert np.all(np.isfinite(pip))
         assert float(pip.sum()) == pytest.approx(1.0, abs=1e-10)
+
+    def test_nan_abf_does_not_dominate(self):
+        # A NaN ABF (failed scan) must not collapse all other PIPs to zero.
+        # Before the fix, np.isfinite(NaN)=False → log_abf=700 → NaN SNP gets
+        # PIP≈1 and all others get PIP≈0.
+        abf_clean = np.array([1.0, 2.0, 3.0])
+        pip_clean = abf_pip(abf_clean)
+        abf_with_nan = np.array([1.0, 2.0, 3.0, np.nan])
+        pip_with_nan = abf_pip(abf_with_nan)
+        # the NaN SNP receives near-zero PIP and the others preserve their ratios
+        assert pip_with_nan[3] < 1e-10, "NaN ABF must not dominate"
+        np.testing.assert_allclose(
+            pip_with_nan[:3] / pip_with_nan[:3].sum(),
+            pip_clean,
+            atol=1e-10,
+        )
+
+    def test_nan_lod_excluded_from_fine_map_region(self):
+        # A NaN LOD row must not produce a valid PIP through fine_map_region.
+        lod = np.array([5.0, np.nan, 1.0, 0.5])
+        beta = np.array([0.3, 0.1, 0.2, -0.1])
+        df = fine_map_region(lod, beta, n=418)
+        # NaN-LOD SNP gets near-zero pip — not in the 95% CS
+        nan_row = df[df["snp"] == 1]  # index 1 has NaN lod
+        assert len(nan_row) == 0 or float(nan_row["pip"].iloc[0]) < 1e-6
 
 
 # ── credible_set ──────────────────────────────────────────────────────────────
@@ -238,3 +264,149 @@ class TestFineMapRegion:
         lod, beta = region
         df = fine_map_region(lod, beta, n=50)
         assert len(df) == len(lod)
+
+
+# ── merge_ld_groups ───────────────────────────────────────────────────────────
+
+
+class TestMergeLdGroups:
+    def _make_correlated_dosages(self, n: int = 20, rng=None):
+        if rng is None:
+            rng = np.random.default_rng(0)
+        base = rng.uniform(0.0, 1.0, n)
+        return base, base + rng.uniform(-0.02, 0.02, n)
+
+    def test_identical_patterns_always_merged(self):
+        # same pattern => r²=1 => merged regardless of threshold
+        pat = (1, 0, 0, 0, 0, 0, 0, 0)
+        rep_patterns = [pat]
+        r2 = np.array([[1.0]])
+        snp_patterns = [pat, pat, pat]
+        groups = merge_ld_groups(rep_patterns, r2, snp_patterns)
+        assert len(set(groups.values())) == 1
+
+    def test_two_correlated_patterns_merge(self):
+        rng = np.random.default_rng(1)
+        d1, d2 = self._make_correlated_dosages(rng=rng)
+        r2_val = float(np.corrcoef(d1, d2)[0, 1] ** 2)
+        pat_a = (1, 0, 0, 0, 0, 0, 0, 0)
+        pat_b = (1, 0, 0, 0, 0, 0, 0, 1)
+        rep_patterns = [pat_a, pat_b]
+        r2 = np.array([[1.0, r2_val], [r2_val, 1.0]])
+        snp_patterns = [pat_a] * 3 + [pat_b] * 3
+        groups = merge_ld_groups(rep_patterns, r2, snp_patterns, r2_threshold=0.8)
+        if r2_val >= 0.8:
+            assert len(set(groups.values())) == 1, 'high-r² patterns must merge'
+        else:
+            assert len(set(groups.values())) == 2, 'low-r² patterns must not merge'
+
+    def test_uncorrelated_patterns_stay_separate(self):
+        # r²=0 between patterns => two distinct groups
+        pat_a = (1, 0, 0, 0, 0, 0, 0, 0)
+        pat_b = (0, 1, 0, 0, 0, 0, 0, 0)
+        rep_patterns = [pat_a, pat_b]
+        r2 = np.array([[1.0, 0.0], [0.0, 1.0]])
+        snp_patterns = [pat_a, pat_a, pat_b, pat_b]
+        groups = merge_ld_groups(rep_patterns, r2, snp_patterns, r2_threshold=0.5)
+        assert len(set(groups.values())) == 2
+
+    def test_all_snps_assigned(self):
+        pat_a = (1, 0, 0, 0, 0, 0, 0, 0)
+        pat_b = (0, 0, 1, 0, 0, 0, 0, 0)
+        rep_patterns = [pat_a, pat_b]
+        r2 = np.array([[1.0, 0.1], [0.1, 1.0]])
+        snp_patterns = [pat_a, pat_b, pat_a, pat_b, pat_b]
+        groups = merge_ld_groups(rep_patterns, r2, snp_patterns)
+        assert sorted(groups.keys()) == list(range(5))
+
+    def test_group_ids_are_integers(self):
+        pat = (1, 0, 0, 0, 0, 0, 0, 0)
+        r2 = np.array([[1.0]])
+        groups = merge_ld_groups([pat], r2, [pat, pat])
+        assert all(isinstance(v, int) for v in groups.values())
+
+    def test_three_patterns_partial_merge(self):
+        # A-B correlated, B-C not => A and B merge, C stays separate
+        pat_a = (1, 0, 0, 0, 0, 0, 0, 0)
+        pat_b = (1, 0, 0, 0, 0, 0, 0, 1)
+        pat_c = (0, 1, 0, 0, 0, 0, 0, 0)
+        rep_patterns = [pat_a, pat_b, pat_c]
+        r2 = np.array([
+            [1.0, 0.95, 0.02],
+            [0.95, 1.0, 0.03],
+            [0.02, 0.03, 1.0],
+        ])
+        snp_patterns = [pat_a, pat_b, pat_c]
+        groups = merge_ld_groups(rep_patterns, r2, snp_patterns, r2_threshold=0.8)
+        assert groups[0] == groups[1], 'A and B should be in same group'
+        assert groups[2] != groups[0], 'C should be in its own group'
+
+
+# ── fine_map_region with ld_groups ────────────────────────────────────────────
+
+
+class TestFineMapRegionLdAware:
+    def test_pip_sums_to_one_with_ld_groups(self):
+        n_snps = 10
+        lod = np.ones(n_snps) * 2.0
+        lod[3] = 7.0
+        beta = np.ones(n_snps)
+        ld_groups = {i: i // 2 for i in range(n_snps)}  # pairs
+        df = fine_map_region(lod, beta, n=100, ld_groups=ld_groups)
+        assert float(df['pip'].sum()) == pytest.approx(1.0, abs=1e-8)
+
+    def test_all_same_group_distributes_evenly(self):
+        n_snps = 5
+        lod = np.array([1.0, 1.0, 8.0, 1.0, 1.0])
+        beta = np.ones(n_snps)
+        ld_groups = {i: 0 for i in range(n_snps)}  # all one group
+        df = fine_map_region(lod, beta, n=200, ld_groups=ld_groups)
+        # one group, mass=1 split equally => each PIP = 1/n_snps
+        np.testing.assert_allclose(
+            sorted(df['pip'].tolist()),
+            sorted([1.0 / n_snps] * n_snps),
+            atol=1e-10,
+        )
+
+    def test_group_cs_excludes_unrelated_snps(self):
+        # Two LD groups: group 0 (SNPs 0–4, LOD=5) and group 1 (SNPs 5–9, LOD=0).
+        # LD-aware CS should include all of group 0 and none of group 1.
+        n_snps = 10
+        lod = np.array([5.0, 5.0, 5.0, 5.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        beta = np.ones(n_snps)
+        ld_groups = {i: 0 if i < 5 else 1 for i in range(n_snps)}
+        df = fine_map_region(lod, beta, n=100, ld_groups=ld_groups, coverage=0.90)
+        cs_snps = set(df.loc[df['in_cs'], 'snp'].tolist())
+        # signal group (0–4) must be in CS
+        assert cs_snps.issuperset({0, 1, 2, 3, 4}), f'signal group missing: CS={cs_snps}'
+        # noise group (5–9) must NOT be in CS when signal group alone covers >90%
+        assert cs_snps.isdisjoint({5, 6, 7, 8, 9}), f'noise group in CS: {cs_snps}'
+
+    def test_cs_members_within_ld_groups(self):
+        n_snps = 8
+        lod = np.array([1.0, 1.0, 1.0, 1.0, 6.0, 6.0, 1.0, 1.0])
+        beta = np.ones(n_snps)
+        # Group 0: SNPs 4+5 (signal), Group 1: remainder
+        ld_groups = {4: 0, 5: 0, 0: 1, 1: 1, 2: 1, 3: 1, 6: 1, 7: 1}
+        df = fine_map_region(lod, beta, n=100, ld_groups=ld_groups)
+        cs_snps = set(df.loc[df['in_cs'], 'snp'].tolist())
+        # SNPs 4 and 5 are the signal group; they should be in the CS
+        assert 4 in cs_snps and 5 in cs_snps
+
+    def test_in_cs_flag_consistent_with_coverage(self):
+        n_snps = 12
+        rng = np.random.default_rng(42)
+        lod = rng.uniform(1.0, 8.0, n_snps)
+        beta = np.ones(n_snps)
+        ld_groups = {i: i // 3 for i in range(n_snps)}  # groups of 3
+        df = fine_map_region(lod, beta, n=150, ld_groups=ld_groups, coverage=0.95)
+        cs_pip_sum = float(df.loc[df['in_cs'], 'pip'].sum())
+        assert cs_pip_sum >= 0.95 - 1e-8
+
+    def test_output_row_count_unchanged(self):
+        n_snps = 15
+        lod = np.ones(n_snps) * 2.0
+        beta = np.ones(n_snps)
+        ld_groups = {i: i % 3 for i in range(n_snps)}
+        df = fine_map_region(lod, beta, n=100, ld_groups=ld_groups)
+        assert len(df) == n_snps

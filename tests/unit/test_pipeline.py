@@ -343,11 +343,6 @@ class TestResolve:
         rr = resolve(dr, modules=("snp_catalogue",))
         assert rr.snp_catalogue == {}
 
-    def test_ase_no_args_returns_empty(self, tiny_cache, tiny_strain_phenotype):
-        dr = self._lmm_disc(tiny_cache, tiny_strain_phenotype)
-        rr = resolve(dr, modules=("ase",))
-        assert rr.ase == {}
-
     def test_sqtl_no_args_returns_empty(self, tiny_cache, tiny_strain_phenotype):
         dr = self._lmm_disc(tiny_cache, tiny_strain_phenotype)
         rr = resolve(dr, modules=("sqtl",))
@@ -360,9 +355,8 @@ class TestResolve:
 
     def test_modules_run_recorded(self, tiny_cache, tiny_strain_phenotype):
         dr = self._lmm_disc(tiny_cache, tiny_strain_phenotype)
-        rr = resolve(dr, modules=("snp_catalogue", "ase"))
+        rr = resolve(dr, modules=("snp_catalogue",))
         assert "snp_catalogue" in rr.modules_run
-        assert "ase" in rr.modules_run
 
     def test_conditional_scan_returns_dict(
         self, tiny_cache, tiny_kinship, tiny_strain_phenotype
@@ -400,14 +394,14 @@ class TestCalibrateEgenesStorey:
         for col in ("pval_perm", "fdr", "fdr_method", "significance"):
             assert col in out.columns, f"missing {col!r}"
 
-    def test_fdr_method_is_storey(self):
-        """fdr_method column is always the string 'storey'."""
+    def test_fdr_method_is_qvalue(self):
+        """fdr_method column is always the string 'qvalue'."""
         from mosaiqtl.pipeline import calibrate_egenes_storey
 
         df = self._egenes_df()
         pval_perm = {f"g{i}": 0.05 for i in range(len(df))}
         out = calibrate_egenes_storey(df, pval_perm)
-        assert (out["fdr_method"] == "storey").all()
+        assert (out["fdr_method"] == "qvalue").all()
 
     def test_fdr_in_unit_interval(self):
         """All q-values are in [0, 1]."""

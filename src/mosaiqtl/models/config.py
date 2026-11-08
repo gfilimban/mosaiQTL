@@ -104,7 +104,7 @@ class ScanConfig(BaseModel):
     population : str
         population identifier; use 'cc' for Collaborative Cross.
         pass a Population.name — resolved to a Population instance at runtime
-        via a population registry (genotype/founders.py for built-ins)
+        via a population registry (genotype/cc.py for built-ins)
     model : str
         statistical model: 'nb-glmm' (primary) or 'lmm' (validated port)
     test_statistic : str

@@ -6,8 +6,8 @@ Whole-tissue mode (default):
         counts_lognorm.h5   metadata.csv   exp_gene_info_{tissue}.csv
 
 Cell-type mode (--celltype / --all_celltypes):
-    reads cell-type h5ad (one obs per sample × subtype)
-    subsets to the requested subtype
+    reads cell-type h5ad (one obs per sample × celltype)
+    subsets to the requested celltype
     writes counts_lognorm.h5 AND exp_gene_info_{ct}.csv to --out/celltypes/{ct}/
     metadata.csv is shared from --out/ (same samples for all cell types)
     exp_gene_info_{tissue}_universe.csv (unfiltered gene universe, written once by
@@ -15,8 +15,8 @@ Cell-type mode (--celltype / --all_celltypes):
     mode's CPM-filtered exp_gene_info_{tissue}.csv so the two never collide even when
     both target the same --out.
 
-    --all_celltypes converts every subtype in the h5ad in one pass.
-    --exclude_celltypes skips named subtypes (default: low-quality).
+    --all_celltypes converts every celltype in the h5ad in one pass.
+    --exclude_celltypes skips named celltypes (default: low-quality).
 
 gene_id (versioned Ensembl ID, e.g. 'ENSMUSG00000051951.6') is the identity key
 for every gene, everywhere in the pipeline: the HDF5 'genes' dataset in
@@ -62,7 +62,8 @@ import h5py
 import numpy as np
 import pandas as pd
 
-from mosaiqtl.genotype.founders import STRAIN_ORDER
+from mosaiqtl.genotype.cc import STRAIN_ORDER
+from mosaiqtl.io.covariates import encode_sex as _encode_sex
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s  %(message)s')
 log = logging.getLogger(__name__)
@@ -201,35 +202,20 @@ _CELLTYPE_COL_CHOICES = ('subtype', 'celltype', 'general_celltype')
 def _detect_celltype_col(obs: pd.DataFrame, override: str | None = None) -> str:
     """Return the obs column holding cell type labels at pseudobulk resolution.
 
-    override: explicit column name (one of _CELLTYPE_COL_CHOICES) — bypasses
-        auto-detection entirely. Must be present in obs; raises ValueError otherwise.
-        Only 'subtype' carries the one-row-per-(sample,label) guarantee pseudobulk
-        resolution requires — 'celltype' and 'general_celltype' are coarser groupings
-        that can map several subtype rows for the same mouse onto one label, which
-        breaks that guarantee. A warning is logged whenever override selects either.
+    Pseudobulks are keyed on 'celltype' (obs index is {sample}_{celltype}), so it is
+    the default. 'subtype', where an h5ad carries it, is a per-row label that can vary
+    within one pseudobulk and is informational only.
 
-    Auto-detect (override=None) prefers 'subtype' because pseudobulks are built at
-    subtype resolution; falls back to 'celltype' for h5ads that lack a subtype column
-    (e.g. gastroc bulk). Raises ValueError if neither is present.
+    override: explicit column name (one of _CELLTYPE_COL_CHOICES). Must be present in
+        obs; raises ValueError otherwise. Raises ValueError for the default too when
+        'celltype' is absent.
     """
-    if override is not None:
-        if override not in obs.columns:
-            raise ValueError(
-                f'celltype_col={override!r} not found in obs. '
-                f'Available columns: {list(obs.columns)}')
-        if override != 'subtype':
-            log.warning(
-                '  celltype_col=%r is coarser than subtype — it may map multiple '
-                'subtype rows for the same mouse onto one label, breaking the '
-                'one-obs-per-(sample,label) assumption pseudobulk conversion relies on',
-                override)
-        return override
-    for col in ('subtype', 'celltype'):
-        if col in obs.columns:
-            return col
-    raise ValueError(
-        f'no cell type column found in obs; expected "subtype" or "celltype". '
-        f'Available columns: {list(obs.columns)}')
+    col = override if override is not None else 'celltype'
+    if col not in obs.columns:
+        raise ValueError(
+            f'celltype_col={col!r} not found in obs. '
+            f'Available columns: {list(obs.columns)}')
+    return col
 
 
 def _metadata_cols(obs: pd.DataFrame) -> list[str]:
@@ -414,6 +400,7 @@ def init_celltypes(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str,
                          .sort_values(['_sort', 'sample_id'])
                          .drop(columns='_sort')
                          .reset_index(drop=True))
+    obs_unique['sex'] = _encode_sex(obs_unique['sex'])
     meta_path = out_dir / 'metadata.csv'
     log.info('writing %s  (%d samples, cols: %s)', meta_path, len(obs_unique),
              ', '.join(meta_cols))
@@ -471,6 +458,7 @@ def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str,
     obs = adata.obs[['sample_id', 'genotype', 'sex', 'dataset']].copy()
     obs['_sort'] = obs['genotype'].astype(str).map(_strain_sort_key)
     obs = obs.sort_values(['_sort', 'sample_id']).drop(columns='_sort')
+    obs['sex'] = _encode_sex(obs['sex'])
 
     X = adata.X if not hasattr(adata.X, 'toarray') else adata.X.toarray()
     lib_sizes = adata.obs['psbulk_counts'].values.astype(np.float32)
@@ -695,12 +683,10 @@ def main() -> None:
                         help='list available cell types in the cell-type h5ad and exit')
     parser.add_argument('--celltype_col', type=str, default=None,
                         choices=list(_CELLTYPE_COL_CHOICES),
-                        help='obs column to subset cell types on (default: auto-detect, '
-                             'preferring "subtype" over "celltype"). "celltype" and '
-                             '"general_celltype" are coarser groupings that can map '
-                             'several subtype rows for the same mouse onto one label — '
-                             'only "subtype" carries the one-obs-per-(sample,label) '
-                             'guarantee pseudobulk conversion relies on')
+                        help='obs column to subset cell types on (default: "celltype", '
+                             'the column the pseudobulks are keyed on). "subtype" is a '
+                             'per-row informational label that can vary within one '
+                             'pseudobulk')
     args = parser.parse_args()
 
     if args.out is not None:
@@ -721,12 +707,15 @@ def main() -> None:
             print(f'  {ct!r:50s}  {n} obs{flag}')
         return
 
+    # output root: subtypes/ when keying on the subtype obs column, celltypes/ otherwise
+    _ct_root_name = 'subtypes' if args.celltype_col == 'subtype' else 'celltypes'
+
     if args.all_celltypes:
         adata_full = anndata.read_h5ad(args.h5ad)
         ct_col = _detect_celltype_col(adata_full.obs, override=args.celltype_col)
-        log.info('cell type column: %r', ct_col)
+        log.info('cell type column: %r  → output root: %s/', ct_col, _ct_root_name)
         all_cts = sorted(adata_full.obs[ct_col].unique())
-        ct_root = out / 'celltypes'
+        ct_root = out / _ct_root_name
         # init shared outputs from the CT pb h5ad (deduplicated metadata + gene set)
         # do NOT call convert() here — that expects one obs per sample (bulk h5ad)
         init_celltypes(args.h5ad, out, args.tissue, celltype_col=args.celltype_col)
@@ -741,7 +730,7 @@ def main() -> None:
                              min_valid_samples=args.min_valid_samples,
                              celltype_col=args.celltype_col)
     elif args.celltype is not None:
-        ct_root = out / 'celltypes'
+        ct_root = out / _ct_root_name
         convert_celltype(args.h5ad, args.celltype, ct_root, args.tissue,
                          min_cells=args.min_cells,
                          min_counts=args.min_counts,

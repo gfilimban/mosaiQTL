@@ -85,7 +85,7 @@ def _load_cache_from_probs_csv(
 
     Each CSV has columns: locus, pos_mb, strain, A, B, C, D, E, F, G, H
     """
-    from mosaiqtl.genotype.founders import FOUNDER_ORDER, FOUNDER_CODE
+    from mosaiqtl.genotype.cc import FOUNDER_ORDER, FOUNDER_CODE
 
     founder_cols: list[str] = [FOUNDER_CODE[name] for name in FOUNDER_ORDER]
 
@@ -313,7 +313,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
             if founders_r_path.exists():
                 founders_r = pd.read_csv(founders_r_path)['founder'].tolist()
                 # R exports single-letter codes; Python uses full names
-                from mosaiqtl.genotype.founders import FOUNDER_CODE
+                from mosaiqtl.genotype.cc import FOUNDER_CODE
                 letters = list(FOUNDER_CODE.values())
                 r_set = set(founders_r)
                 py_set = set(letters)
@@ -350,7 +350,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
             log.info('\nS2: haplotype prob concordance...')
             hap_r_path = r_data / 'haplotype_vals_r.csv'
             if hap_r_path.exists():
-                from mosaiqtl.genotype.founders import FOUNDER_CODE
+                from mosaiqtl.genotype.cc import FOUNDER_CODE
                 letter_to_idx = {v: i for i, v in enumerate(FOUNDER_CODE.values())}
 
                 hap_r = pd.read_csv(hap_r_path)
@@ -390,7 +390,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 results['P2-S2'] = _check('haplotype argmax concordance', concordance, 0.95)
 
                 # haplotype prob scatter: R prob vs Python prob at all spot-check loci
-                from mosaiqtl.genotype.founders import FOUNDER_CODE as _FC2
+                from mosaiqtl.genotype.cc import FOUNDER_CODE as _FC2
                 rows_plot: list[dict] = []
                 first_locus_for_heatmap: 'tuple | None' = None
                 for locus_id, grp in hap_r.groupby('locus'):
@@ -730,7 +730,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 lod_r_df = pd.read_csv(lod_r_path)
                 lod_r_df['chr'] = lod_r_df['chr'].astype(str)
 
-                from mosaiqtl.genotype.founders import FOUNDER_ORDER as _FO, FOUNDER_CODE as _FC
+                from mosaiqtl.genotype.cc import FOUNDER_ORDER as _FO, FOUNDER_CODE as _FC
 
                 py_rows   = []
                 r2_rows   = []
@@ -989,7 +989,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                     if len(ae_cmp) > 1:
                         ae_r_val = float(
                             np.corrcoef(ae_cmp['beta_py'], ae_cmp['beta_r'])[0, 1])
-                        from mosaiqtl.genotype.founders import FOUNDER_COLORS as _FC_COLORS
+                        from mosaiqtl.genotype.cc import FOUNDER_COLORS as _FC_COLORS
                         fig_ae, ax_ae = plt.subplots(figsize=(4, 4), dpi=300)
                         for _, row in ae_cmp.iterrows():
                             col = _FC_COLORS.get(row['founder'], '#888888')
@@ -1074,7 +1074,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
 
                 # full diplotype model vs additive LOD (CC outer-product approx)
                 if 1 in sim_ys:
-                    from mosaiqtl.genotype.founders import (
+                    from mosaiqtl.genotype.cc import (
                         FOUNDER_COLORS as _FC_D,
                         COLOR_NEUTRAL_DARK as _CND,
                     )
@@ -1126,7 +1126,7 @@ def run(r_data: Path, out_dir: Path, sections: 'set[int]', force: bool) -> dict:
                 # ranef (BLUP) vs fixef allele effects at peak locus (sim.y.1)
                 if betas_sim1_at_peak is not None and peak_locus_sim1 and peak_chrom_sim1:
                     from mosaiqtl.qtl.effects import get_allele_effects
-                    from mosaiqtl.genotype.founders import (
+                    from mosaiqtl.genotype.cc import (
                         FOUNDER_COLORS as _FC_EFF,
                         COLOR_NEUTRAL_DARK as _CND2,
                         COLOR_CC_FALLBACK as _CCF,

@@ -4,7 +4,7 @@ The colors defined here stand for the package itself — used for scan data,
 significance thresholds, reference lines, info boxes, and chromosome bands.
 They are never used to represent a specific founder strain.
 
-Founder-strain colors are a separate palette (genotype/founders.py) and are
+Founder-strain colors are a separate palette (genotype/cc.py) and are
 only used where the plot is specifically about founder identity — coefficient
 profiles, effect bars, caterpillar plots, probability heatmaps, PxG plots,
 and epistasis grids.
@@ -15,7 +15,7 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from ..genotype.founders import (
+from ..genotype.cc import (
     COLOR_CC_FALLBACK,
     COLOR_NEUTRAL_DARK,
     COLOR_NEUTRAL_LIGHT,

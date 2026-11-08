@@ -1,8 +1,8 @@
 # gastroc_miqtl_scan.R — full miQTL workflow on gastroc whole-tissue pseudobulk
 #
 # prerequisite: run validation/convert_gastroc_h5ad.py first to produce
-#   validation/gastroc_data/counts_lognorm.h5
-#   validation/gastroc_data/metadata.csv
+#   validation/gastroc_data/next/counts_lognorm.h5
+#   validation/gastroc_data/next/metadata.csv
 #
 # sections:
 #   1.  cache info              → cache_info.csv, founders.csv, sample_ids.csv
@@ -175,7 +175,7 @@ if (hpc_mode) {
   genomecache <- local_gc
 }
 
-out_dir      <- 'validation/gastroc_data'
+out_dir      <- 'validation/gastroc_data/next'
 pheno_rds    <- file.path(out_dir, 'gastroc_pheno.rds')
 # r_data_dir/s4_out_dir/plot_dir (scan_tag-scoped) are constructed below, after the
 # gene_info fallback resolves the FINAL scan_type — scan_type can silently downgrade

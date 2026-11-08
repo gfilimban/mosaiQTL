@@ -11,7 +11,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 pkg_dir  <- Sys.getenv('MOSAIQTL_DIR',
              unset = '/Users/ghassan/Documents/journey/learning/graduate/lab/projects/igvf/analysis/qtl/mosaiqtl')
-out_dir  <- file.path(pkg_dir, 'validation', 'gastroc_data')
+out_dir  <- file.path(pkg_dir, 'validation', 'gastroc_data', 'next', 'C')
 r_data   <- file.path(out_dir, 'r_data')
 
 chrs <- c(as.character(1:19), 'X')

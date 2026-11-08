@@ -4,7 +4,7 @@ build-backend = 'setuptools.build_meta'
 
 [project]
 name = 'mosaiqtl'
-version = '0.6.4'
+version = '0.6.7'
 description = 'Haplotype-based QTL mapping for multiparent populations; NB-GLMM primary, Gaussian LMM port, LOCO kinship'
 license = { text = 'GPL-3.0-or-later' }
 readme = 'README.md'
@@ -49,6 +49,7 @@ where = ['src']
 [tool.pytest.ini_options]
 testpaths   = ['tests']
 addopts     = '-q'
+markers     = ['slow: marks tests that are slow or require external tools (deselect with -m "not slow")']
 
 # ── coverage ──────────────────────────────────────────────────────────────────
 [tool.coverage.run]
