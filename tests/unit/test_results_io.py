@@ -416,7 +416,7 @@ class TestBuildEqtlFinemappingDf:
         df = build_eqtl_finemapping_df(
             _fm_df(), "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2
         )
-        assert (df["PIP_method"] == "ABF").all()
+        assert (df["pip_method"] == "ABF").all()
         assert (df["CS"] == "T").all()
 
     def test_pos_column_when_pos_mb_present(self):

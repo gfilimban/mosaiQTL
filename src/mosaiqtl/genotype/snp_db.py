@@ -290,6 +290,11 @@ def build_founder_allele_gm(
             )
             alleles = chr_snps[fcols].to_numpy(dtype=object)
             grp.create_dataset("alleles", data=alleles, dtype=str_dt)
+            grp.create_dataset(
+                "rsid",
+                data=np.array([""] * len(chr_snps), dtype=object),
+                dtype=str_dt,
+            )
 
             n_chr = len(chr_snps)
             per_chr[chrom] = n_chr
