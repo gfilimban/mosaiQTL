@@ -208,6 +208,7 @@ from mosaiqtl.qtl.scan import scan_multi_gene_lmm as _scan_multi_gene_lmm
 from mosaiqtl.pipeline import (
     calibrate_egenes_storey, cap_egene_ci,
     call_egenes, finalize_egene_summary, finemap_egenes,
+    prepare_egenes_for_finemap,
     LOD_COLS, ALLELE_EFFECTS_BASE_COLS, PEAK_LOD_COLS, EGENE_SUMMARY_COLS,
 )
 from mosaiqtl.utils import build_z_matrix, rint, get_rss_mb, git_hash
@@ -3553,16 +3554,9 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                     _eff_path = py_dir / 'core' / f'allele_effects_{_run_sfx}.csv'
                     if _eff_path.exists():
                         _eff_fm = pd.read_csv(_eff_path, dtype={'gene_id': str})
-                        if 'n_valid' in _eff_fm.columns:
-                            _eff_fm['n_sample'] = _eff_fm['n_valid']
-                        if 'h2' in _eff_fm.columns:
-                            _eff_fm['h2_null_chr'] = _eff_fm['h2']
-                        if 'rss0' in _eff_fm.columns and 'n_valid' in _eff_fm.columns:
-                            _eff_fm['sd_phenotype'] = np.sqrt(
-                                _eff_fm['rss0'] / (_eff_fm['n_valid'] - 1).clip(lower=1)
-                            )
                         _eff_want = (
-                            ['n_sample', 'sd_phenotype', 'h2_null_chr']
+                            ['h2', 'n_valid', 'rss0',
+                             'h2_null_chr', 'n_sample', 'sd_phenotype']
                             + [f'beta_{f}' for f in ['AJ', 'B6J', '129S1J', 'NODJ',
                                                       'NZOJ', 'CASTJ', 'PWKJ', 'WSBJ']]
                         )
@@ -3571,6 +3565,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                             egene_peak_df = egene_peak_df.merge(
                                 _eff_fm[['gene_id'] + _eff_avail], on='gene_id', how='left',
                             )
+                    egene_peak_df = prepare_egenes_for_finemap(egene_peak_df)
                     h5_path = data_dir / 'counts_lognorm.h5'
                     _fm_ids = list(egene_peak_df['gene_id'])
                     _fm_counts, _fm_loaded, _fm_sids = _load_expression_h5(h5_path, _fm_ids)
