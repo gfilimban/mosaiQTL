@@ -15,6 +15,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
+import pandas as pd
+
 from mosaiqtl.pipeline import (
     DiscoveryResult,
     CharacterizationResult,
@@ -527,3 +529,23 @@ class TestStoreyFdrEndToEnd:
             f"signal gene q-value ({fdr_signal:.3f}) should be ≤ "
             f"null gene q-value ({fdr_null:.3f})"
         )
+
+
+class TestImputation:
+    def test_concat_with_array_attrs_does_not_raise(self):
+        """Regression: pd.concat raises ValueError when DataFrame.attrs contains
+        numpy arrays — impute_egenes must clear attrs before concat."""
+        rng = np.random.default_rng(0)
+        frames = []
+        for _ in range(3):
+            df = pd.DataFrame({'a': rng.random(5)})
+            df.attrs['_ld'] = {'r2_matrix': rng.random((4, 4)), 'rep_patterns': []}
+            df.attrs['_snp_patterns'] = rng.random((5, 4))
+            # simulate what impute_egenes does: extract, clear, then append
+            _ = df.attrs.pop('_ld', None)
+            _ = df.attrs.pop('_snp_patterns', None)
+            df.attrs.clear()
+            frames.append(df)
+        # must not raise
+        result = pd.concat(frames, ignore_index=True)
+        assert len(result) == 15

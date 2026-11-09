@@ -1269,11 +1269,11 @@ def impute_egenes(
                 gene_symbol="" if pd.isna(sym) else str(sym),
             )
             if result is not None and not result.empty:
-                # extract LD payload before concat drops attrs
                 _ld = result.attrs.get("_ld")
                 _sp = result.attrs.get("_snp_patterns")
                 if _ld is not None and _sp is not None:
                     ld_by_gene[gid] = {"ld": _ld, "snp_patterns": _sp}
+                result.attrs.clear()
                 frames.append(result)
 
     if not frames:
