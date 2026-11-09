@@ -19,15 +19,17 @@ process FINEMAP {
 
     script:
     def sanger = sanger_alleles.name != 'NO_SANGER' ? sanger_alleles.name : ''
+    def tis    = params.tissue ?: 'run'
+    def ct_log = celltype.replaceAll(/\s+/, '_')
     def tag    = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
     set -o pipefail
-    mkdir -p ${params.output_dir}/logs
+    mkdir -p ${params.output_dir}/logs/${tis}/${scan_tag}/${ct_log}
     python ${projectDir}/scripts/run_finemap.py \\
         ${eqtl_summary} ${genomecache} ${kinship_loco} ${phenotypes} ${metadata} \\
         '${celltype}' ${scan_tag} '${params.covariates}' \\
         . ${sanger} ${peak_lod} ${params.tissue} \\
-        2>&1 | tee ${params.output_dir}/logs/${tag}_finemap.log
+        2>&1 | tee ${params.output_dir}/logs/${tis}/${scan_tag}/${ct_log}/finemap.log
     """
 
     stub:

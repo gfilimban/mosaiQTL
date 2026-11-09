@@ -20,14 +20,16 @@ process LMM_SCAN {
           path("timing_chr${chrom}.json")
 
     script:
-    def cov     = params.covariates ?: ''
-    def stype   = params.scan_type  ?: 'L'
-    def wmb     = params.window_mb  ?: 1.0
-    def rint    = (params.use_rint != null && !params.use_rint) ? 0 : 1
-    def ct_log  = celltype.replaceAll(/\s+/, '_')
+    def cov      = params.covariates ?: ''
+    def stype    = params.scan_type  ?: 'L'
+    def wmb      = params.window_mb  ?: 1.0
+    def rint     = (params.use_rint != null && !params.use_rint) ? 0 : 1
+    def ct_log   = celltype.replaceAll(/\s+/, '_')
+    def tis      = params.tissue ?: 'run'
+    def stag_val = stype == 'L' ? "Lw${(wmb as float).toInteger()}" : stype
     """
     set -o pipefail
-    mkdir -p ${params.output_dir}/logs
+    mkdir -p ${params.output_dir}/logs/${tis}/${stag_val}/${ct_log}
     python ${projectDir}/scripts/run_lmm_scan_chr.py \\
         ${genomecache} \\
         ${kinship_loco} \\
@@ -40,7 +42,7 @@ process LMM_SCAN {
         '${cov}' \\
         . \\
         ${rint} \\
-        2>&1 | tee ${params.output_dir}/logs/${ct_log}_lmm_scan_chr${chrom}.log
+        2>&1 | tee ${params.output_dir}/logs/${tis}/${stag_val}/${ct_log}/lmm_scan_chr${chrom}.log
     """
 
     stub:

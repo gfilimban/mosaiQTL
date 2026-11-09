@@ -20,13 +20,14 @@ process KINSHIP_LOCO {
     path 'igvf_kinship_loco.h5', emit: kinship_h5
 
     script:
+    def tis = params.tissue ?: 'run'
     """
     set -o pipefail
-    mkdir -p ${params.output_dir}/logs
+    mkdir -p ${params.output_dir}/logs/${tis}
     python ${projectDir}/scripts/build_kinship_loco.py \\
         ${genomecache} \\
         igvf_kinship_loco.h5 \\
-        2>&1 | tee ${params.output_dir}/logs/kinship_loco.log
+        2>&1 | tee ${params.output_dir}/logs/${tis}/kinship_loco.log
     """
 
     stub:

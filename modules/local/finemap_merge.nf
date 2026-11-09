@@ -16,10 +16,13 @@ process FINEMAP_MERGE {
           path('*_eqtl_finemapping_peak.csv')
 
     script:
-    def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
+    def tis    = params.tissue ?: 'run'
+    def ct_log = celltype.replaceAll(/\s+/, '_')
+    def tag    = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
     set -o pipefail
-    python - <<'PYEOF'
+    mkdir -p ${params.output_dir}/logs/${tis}/${scan_tag}/${ct_log}
+    python - <<'PYEOF' 2>&1 | tee ${params.output_dir}/logs/${tis}/${scan_tag}/${ct_log}/finemap_merge.log
 import glob, pandas as pd
 from pathlib import Path
 
