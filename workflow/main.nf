@@ -31,8 +31,8 @@ def ct_channel(gi_global, meta) {
                      .map { it.parent.name }
         return cts.map { ct ->
             def pheno = file("${params.celltypes_dir}/${ct}/counts_lognorm.h5")
-            def gi_ct = file("${params.celltypes_dir}/${ct}/gene_info.csv").exists()
-                ? file("${params.celltypes_dir}/${ct}/gene_info.csv")
+            def gi_ct = file("${params.celltypes_dir}/${ct}/exp_gene_info_${ct}.csv").exists()
+                ? file("${params.celltypes_dir}/${ct}/exp_gene_info_${ct}.csv")
                 : gi_global
             if (!pheno.exists()) error "counts_lognorm.h5 missing for '${ct}'"
             [ct, pheno, gi_ct, meta]
