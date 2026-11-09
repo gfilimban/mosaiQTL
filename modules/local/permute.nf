@@ -21,13 +21,13 @@ process PERMUTE {
     def tag     = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
     set -o pipefail
-    mkdir -p ${launchDir}/${params.output_dir}/logs
+    mkdir -p ${params.output_dir}/logs
     python ${projectDir}/scripts/run_permute.py \\
         ${genomecache} ${kinship_loco} ${phenotypes} ${peak_lod} ${metadata} \\
         '${celltype}' ${scan_tag} '${params.covariates}' \\
         ${params.n_perms} ${params.seed} ${params.perm_method} . \\
         '${params.scan_type ?: 'G'}' ${params.window_mb ?: 0} '${params.tissue ?: ''}' ${tss_arg} \\
-        2>&1 | tee ${launchDir}/${params.output_dir}/logs/${tag}_permute.log
+        2>&1 | tee ${params.output_dir}/logs/${tag}_permute.log
     """
 
     stub:

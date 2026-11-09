@@ -22,11 +22,11 @@ process KINSHIP_LOCO {
     script:
     """
     set -o pipefail
-    mkdir -p ${launchDir}/${params.output_dir}/logs
+    mkdir -p ${params.output_dir}/logs
     python ${projectDir}/scripts/build_kinship_loco.py \\
         ${genomecache} \\
         igvf_kinship_loco.h5 \\
-        2>&1 | tee ${launchDir}/${params.output_dir}/logs/kinship_loco.log
+        2>&1 | tee ${params.output_dir}/logs/kinship_loco.log
     """
 
     stub:

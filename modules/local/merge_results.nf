@@ -20,10 +20,10 @@ process MERGE_RESULTS {
     def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
     set -o pipefail
-    mkdir -p ${launchDir}/${params.output_dir}/logs
+    mkdir -p ${params.output_dir}/logs
     python ${projectDir}/scripts/run_merge.py \\
         . ${gene_info} '${celltype}' ${scan_tag} . ${params.tissue} \\
-        2>&1 | tee ${launchDir}/${params.output_dir}/logs/${tag}_merge.log
+        2>&1 | tee ${params.output_dir}/logs/${tag}_merge.log
     """
 
     stub:

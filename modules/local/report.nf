@@ -48,12 +48,12 @@ process REPORT {
     def tag     = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
     set -o pipefail
-    mkdir -p ${launchDir}/${params.output_dir}/logs
+    mkdir -p ${params.output_dir}/logs
     python ${projectDir}/scripts/run_report.py \\
         ${peak_lod} ${eqtl_summary} ${pval_perm_json} ${perm_max_lods} \\
         ${gene_info} ${lod_genome} ${kinship_loco} ${genomecache} \\
         '${celltype}' ${scan_tag} . ${gtf_arg} ${params.tissue} \\
-        2>&1 | tee ${launchDir}/${params.output_dir}/logs/${tag}_report.log
+        2>&1 | tee ${params.output_dir}/logs/${tag}_report.log
     """
 
     stub:

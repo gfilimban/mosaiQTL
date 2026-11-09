@@ -22,13 +22,13 @@ process FINEMAP_CHR {
     def tag     = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
     set -o pipefail
-    mkdir -p ${launchDir}/${params.output_dir}/logs
+    mkdir -p ${params.output_dir}/logs
     python ${projectDir}/scripts/run_finemap.py \\
         ${eqtl_summary} ${genomecache} ${kinship_loco} ${phenotypes} ${metadata} \\
         '${celltype}' ${scan_tag} '${params.covariates}' \\
         . ${sanger} ${peak_lod} ${params.tissue} ${chrom} \\
         '${params.scan_type ?: 'C'}' ${params.window_mb ?: 0.0} ${tss_arg} \\
-        2>&1 | tee ${launchDir}/${params.output_dir}/logs/${tag}_chr${chrom}_finemap.log
+        2>&1 | tee ${params.output_dir}/logs/${tag}_chr${chrom}_finemap.log
     """
 
     stub:
