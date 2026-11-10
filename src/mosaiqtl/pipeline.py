@@ -263,12 +263,23 @@ EQTL_FINEMAPPING_COLS: list[str] = [
     "h2_null_chr", "sd_phenotype", "n_sample",
 ]
 
+# Lead SNP PIP below this value indicates the locus did not resolve to a credible
+# causal SNP — the haplotype signal is real but no Sanger SNP in the CI window
+# captures it (missing variant, complex allele pattern, or low LD in CC strains).
+CS_RESOLVED_PIP_THRESHOLD: float = 0.10
+
 # Sanger fine-mapping peak — one row per eGene (highest-PIP CS member).
-# lead_snp dropped (redundant for a single-row-per-gene file); founder betas
-# added here (haplotype-peak property, not per-SNP, so excluded from EQTL_FINEMAPPING_COLS).
-EQTL_FINEMAPPING_PEAK_COLS: list[str] = [
-    c for c in EQTL_FINEMAPPING_COLS if c != "lead_snp"
-] + _FOUNDER_EFFECT_COLS
+# lead_snp dropped (redundant for a single-row-per-gene file); cs_resolved flags
+# whether the locus resolved to a credible SNP candidate (lead pip >= threshold);
+# founder betas added here (haplotype-peak property, not per-SNP).
+_FM_PEAK_BASE: list[str] = [c for c in EQTL_FINEMAPPING_COLS if c != "lead_snp"]
+_pip_idx = _FM_PEAK_BASE.index("pip") + 1
+EQTL_FINEMAPPING_PEAK_COLS: list[str] = (
+    _FM_PEAK_BASE[:_pip_idx]
+    + ["cs_resolved"]
+    + _FM_PEAK_BASE[_pip_idx:]
+    + _FOUNDER_EFFECT_COLS
+)
 
 # Imputed SNP association scan inside each eGene's LOD-drop CI — the input to
 # Sanger fine-mapping.  Haplotype-peak context columns, then the per-SNP scan
@@ -334,6 +345,7 @@ __all__ = [
     "CI_COLS",
     "EQTL_SCAN_COLS",
     "EQTL_PEAK_COLS",
+    "CS_RESOLVED_PIP_THRESHOLD",
     "EQTL_FINEMAPPING_COLS",
     "EQTL_FINEMAPPING_PEAK_COLS",
     "EQTL_STATS_COLS",

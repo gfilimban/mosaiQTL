@@ -15,6 +15,7 @@ from mosaiqtl.pipeline import (
     _FOUNDER_EFFECT_COLS,
     _SCAN_COLS,
     _SIG_COLS,
+    CS_RESOLVED_PIP_THRESHOLD,
     EQTL_FINEMAPPING_COLS,
     EQTL_FINEMAPPING_PEAK_COLS,
     EQTL_PEAK_COLS,
@@ -671,7 +672,10 @@ def build_eqtl_finemapping_peak_df(
     DataFrame with columns given by ``pipeline.EQTL_FINEMAPPING_PEAK_COLS``,
     in order (one row).
     """
-    lead = fm_df[fm_df["lead_snp"] == "T"].drop(columns="lead_snp").reset_index(drop=True)
+    lead = fm_df[fm_df["lead_snp"] == "T"].drop(columns="lead_snp").copy().reset_index(drop=True)
+    lead["cs_resolved"] = np.where(
+        lead["pip"].ge(CS_RESOLVED_PIP_THRESHOLD), "T", "F"
+    )
     return lead.reindex(columns=EQTL_FINEMAPPING_PEAK_COLS).reset_index(drop=True)
 
 
