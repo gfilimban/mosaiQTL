@@ -121,7 +121,11 @@ def scan_result_to_df(
     return pd.DataFrame({col: values[col] for col in LOD_COLS})
 
 
-def _atomic_write_csv(df: pd.DataFrame, path: "Path | str") -> None:
+def _atomic_write_csv(
+    df: pd.DataFrame,
+    path: "Path | str",
+    float_format: "str | None" = None,
+) -> None:
     """Write ``df`` to ``path`` atomically: temp file in the same dir, then rename.
 
     Parameters
@@ -130,6 +134,11 @@ def _atomic_write_csv(df: pd.DataFrame, path: "Path | str") -> None:
         DataFrame to write (no index column).
     path:
         Destination CSV path. Parent directory must already exist.
+    float_format:
+        Optional format string passed to ``DataFrame.to_csv``.  Pass
+        ``'%.6g'`` for tables that contain very small floats (e.g.
+        heritability estimates) so they are written in scientific notation
+        rather than rounded to zero.
     """
     dest = Path(path)
     fd, tmp_name = tempfile.mkstemp(
@@ -137,7 +146,7 @@ def _atomic_write_csv(df: pd.DataFrame, path: "Path | str") -> None:
     )
     try:
         with os.fdopen(fd, "w") as fh:
-            df.to_csv(fh, index=False)
+            df.to_csv(fh, index=False, float_format=float_format)
         os.replace(tmp_name, dest)
     except Exception:
         if os.path.exists(tmp_name):
@@ -228,7 +237,7 @@ def write_eqtl_peak(
     The DataFrame that was written (``pipeline.EQTL_PEAK_COLS`` schema).
     """
     df = build_eqtl_peak_df(effects_egenes_df, founder_names)
-    _atomic_write_csv(df, out_path)
+    _atomic_write_csv(df, out_path, float_format='%.6g')
     return df
 
 
@@ -311,7 +320,7 @@ def write_eqtl_stats(
     The DataFrame that was written (``pipeline.EQTL_STATS_COLS`` schema).
     """
     df = build_eqtl_stats_df(chrom_stats, genome_stats)
-    _atomic_write_csv(df, out_path)
+    _atomic_write_csv(df, out_path, float_format='%.6g')
     return df
 
 

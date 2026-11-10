@@ -3,7 +3,7 @@ process MERGE_RESULTS {
     label 'process_single'
     tag   "${celltype}"
 
-    publishDir { "${params.output_dir}/${celltype}/${scan_tag}" }, mode: 'copy'
+    publishDir { "${params.output_dir}/${celltype.replaceAll(/\s+/, '_')}/${scan_tag}/core" }, mode: 'copy'
 
     input:
     tuple val(celltype), val(scan_tag),

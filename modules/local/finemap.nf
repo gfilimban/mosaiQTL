@@ -3,7 +3,7 @@ process FINEMAP {
     label 'process_long'
     tag   "${celltype}"
 
-    publishDir { "${params.output_dir}/${celltype}/${scan_tag}" }, mode: 'copy'
+    publishDir { "${params.output_dir}/${celltype.replaceAll(/\s+/, '_')}/${scan_tag}/finemap" }, mode: 'copy'
 
     input:
     path  genomecache

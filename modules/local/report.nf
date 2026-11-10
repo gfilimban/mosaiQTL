@@ -3,7 +3,8 @@ process REPORT {
     label 'process_single'
     tag   "${celltype}"
 
-    publishDir { "${params.output_dir}/${celltype}/${scan_tag}" }, mode: 'copy'
+    publishDir { "${params.output_dir}/${celltype.replaceAll(/\s+/, '_')}/${scan_tag}/core"  }, mode: 'copy', pattern: '*.csv'
+    publishDir { "${params.output_dir}/${celltype.replaceAll(/\s+/, '_')}/${scan_tag}/plots" }, mode: 'copy', pattern: '*.png'
 
     input:
     path  genomecache
