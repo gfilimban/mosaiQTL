@@ -21,7 +21,7 @@ process FINEMAP_MERGE {
     def tag    = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
     set -o pipefail
-    mkdir -p ${params.output_dir}/logs/${tis}/${scan_tag}/${ct_log}
+    mkdir -p ${params.output_dir}/logs/${scan_tag}/${ct_log}
     {
     for pat in '*_eqtl_finemapping.csv' '*_eqtl_finemapping_peak.csv'; do
         base=\${pat#\\*_}
@@ -35,7 +35,7 @@ process FINEMAP_MERGE {
         fi
         echo "merged \${#files[@]} files -> \${out}"
     done
-    } 2>&1 | tee ${params.output_dir}/logs/${tis}/${scan_tag}/${ct_log}/finemap_merge.log
+    } 2>&1 | tee ${params.output_dir}/logs/${scan_tag}/${ct_log}/finemap_merge.log
     """
 
     stub:

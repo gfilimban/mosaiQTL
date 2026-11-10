@@ -25,13 +25,13 @@ process CALL_EGENES {
     def rint   = (params.use_rint != null && !params.use_rint) ? 0 : 1
     """
     set -o pipefail
-    mkdir -p ${params.output_dir}/logs/${tis}/${scan_tag}/${ct_log}
+    mkdir -p ${params.output_dir}/logs/${scan_tag}/${ct_log}
     python ${projectDir}/scripts/run_call_egenes.py \\
         ${peak_lod} ${perm_max_lods} ${phenotypes} ${gene_info} \\
         ${genomecache} ${kinship_loco} ${metadata} \\
         '${celltype}' ${scan_tag} '${params.covariates}' \\
         ${params.fdr_threshold} ${params.n_perms_cal} ${params.seed} . ${params.tissue} ${rint} \\
-        2>&1 | tee ${params.output_dir}/logs/${tis}/${scan_tag}/${ct_log}/call_egenes.log
+        2>&1 | tee ${params.output_dir}/logs/${scan_tag}/${ct_log}/call_egenes.log
     """
 
     stub:

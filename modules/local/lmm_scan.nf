@@ -29,7 +29,7 @@ process LMM_SCAN {
     def stag_val = stype == 'L' ? "Lw${(wmb as float).toInteger()}" : stype
     """
     set -o pipefail
-    mkdir -p ${params.output_dir}/logs/${tis}/${stag_val}/${ct_log}
+    mkdir -p ${params.output_dir}/logs/${stag_val}/${ct_log}
     python ${projectDir}/scripts/run_lmm_scan_chr.py \\
         ${genomecache} \\
         ${kinship_loco} \\
@@ -42,7 +42,7 @@ process LMM_SCAN {
         '${cov}' \\
         . \\
         ${rint} \\
-        2>&1 | tee ${params.output_dir}/logs/${tis}/${stag_val}/${ct_log}/lmm_scan_chr${chrom}.log
+        2>&1 | tee ${params.output_dir}/logs/${stag_val}/${ct_log}/lmm_scan_chr${chrom}.log
     """
 
     stub:
