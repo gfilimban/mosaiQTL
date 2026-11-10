@@ -22,24 +22,20 @@ process FINEMAP_MERGE {
     """
     set -o pipefail
     mkdir -p ${params.output_dir}/logs/${tis}/${scan_tag}/${ct_log}
-    python - <<'PYEOF' 2>&1 | tee ${params.output_dir}/logs/${tis}/${scan_tag}/${ct_log}/finemap_merge.log
-import glob, pandas as pd
-from pathlib import Path
-
-tag = '${tag}'
-
-for suffix, out_name in [('*_eqtl_finemapping.csv', f'{tag}_eqtl_finemapping.csv'),
-                          ('*_eqtl_finemapping_peak.csv', f'{tag}_eqtl_finemapping_peak.csv')]:
-    files = sorted(glob.glob(suffix))
-    if not files:
-        open(out_name, 'w').close()
-        continue
-    # stream one chr at a time so peak memory is O(1 chr) not O(20 chr) + concat copy
-    for i, f in enumerate(files):
-        df = pd.read_csv(f, dtype={'gene_id': str, 'chr': str})
-        df.to_csv(out_name, mode='a', header=(i == 0), index=False)
-        del df
-PYEOF
+    {
+    for pat in '*_eqtl_finemapping.csv' '*_eqtl_finemapping_peak.csv'; do
+        base=\${pat#\\*_}
+        out="${tag}_\${base}"
+        files=( \$(ls \${pat} 2>/dev/null | sort -V) )
+        if [ \${#files[@]} -eq 0 ]; then
+            touch "\${out}"
+        else
+            head -1 "\${files[0]}" > "\${out}"
+            for f in "\${files[@]}"; do tail -n +2 "\${f}"; done >> "\${out}"
+        fi
+        echo "merged \${#files[@]} files -> \${out}"
+    done
+    } 2>&1 | tee ${params.output_dir}/logs/${tis}/${scan_tag}/${ct_log}/finemap_merge.log
     """
 
     stub:
