@@ -34,8 +34,11 @@ for suffix, out_name in [('*_eqtl_finemapping.csv', f'{tag}_eqtl_finemapping.csv
     if not files:
         open(out_name, 'w').close()
         continue
-    frames = [pd.read_csv(f, dtype={'gene_id': str, 'chr': str}) for f in files]
-    pd.concat(frames, ignore_index=True).to_csv(out_name, index=False)
+    # stream one chr at a time so peak memory is O(1 chr) not O(20 chr) + concat copy
+    for i, f in enumerate(files):
+        df = pd.read_csv(f, dtype={'gene_id': str, 'chr': str})
+        df.to_csv(out_name, mode='a', header=(i == 0), index=False)
+        del df
 PYEOF
     """
 
