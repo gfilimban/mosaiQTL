@@ -33,6 +33,7 @@ docs/superpowers/
 .nextflow/
 .nextflow.log
 .nextflow.log.*
+.nf_cache/
 work/
 
 # pytest / coverage

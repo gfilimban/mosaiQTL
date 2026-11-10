@@ -1,4 +1,5 @@
 # mosaiQTL NF — gastroc nova all-subtypes HPC params (UCI DFS9)
+# Run: NXF_CACHE_DIR=.nf_cache/gastroc/subtypes nextflow run workflow/main.nf -profile slurm,gastroc_st -params-file config/gastroc_hpc_params_subtype.yaml -resume
 # Run: nextflow run workflow/main.nf -profile slurm -params-file config/gastroc_hpc_params_subtype.yaml -resume
 
 genomecache:    '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/igvf_cache.h5'

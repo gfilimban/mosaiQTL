@@ -1,4 +1,5 @@
 # mosaiQTL NF — ctxhipp nova all-subtypes HPC params (UCI DFS9)
+# Run: NXF_CACHE_DIR=.nf_cache/ctxhipp/subtypes nextflow run workflow/main.nf -profile slurm,ctxhipp_st -params-file config/ctxhipp_hpc_params_subtype.yaml -resume
 # Run: nextflow run workflow/main.nf -profile slurm -params-file config/ctxhipp_hpc_params_subtype.yaml -resume
 
 genomecache:    '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/igvf_cache.h5'
