@@ -1,7 +1,6 @@
 # mosaiQTL NF — gastroc nova all-celltypes HPC params (UCI DFS9)
 # Run: NXF_CACHE_DIR=.nf_cache/gastroc/celltypes nextflow run workflow/main.nf -profile slurm,gastroc_ct -params-file config/gastroc_hpc_params.yaml -resume
 # Run: nextflow run workflow/main.nf -profile slurm -params-file config/gastroc_hpc_params.yaml -resume
-# NOT COMMITTED — copy to HPC manually
 
 genomecache:    '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/igvf_cache.h5'
 gene_info:      null          # per-CT gene_info resolved from celltypes_dir subdirs
