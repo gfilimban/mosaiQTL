@@ -32,4 +32,4 @@ gtf:            '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/IGVFFI4777RDZK.gt
 output_dir:     '/dfs9/seyedam-lab/share/igvf_qtl/output/gastroc/nova/celltypes'
 
 # bump to force FINEMAP rerun without invalidating scan/permute/call_egenes cache
-finemap_schema_ver:  '2'
+finemap_schema_ver:  '3'

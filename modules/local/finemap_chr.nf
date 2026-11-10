@@ -24,6 +24,7 @@ process FINEMAP_CHR {
     def tag     = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
     set -o pipefail
+    # schema_ver=${params.finemap_schema_ver ?: '1'}
     mkdir -p ${params.output_dir}/logs/${scan_tag}/${ct_log}
     python ${projectDir}/scripts/run_finemap.py \\
         ${eqtl_summary} ${genomecache} ${kinship_loco} ${phenotypes} ${metadata} \\
