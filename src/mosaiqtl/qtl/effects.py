@@ -159,15 +159,39 @@ def get_allele_effects(
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((len(y), 1)), x])
 
-    # when replicates exist, collapse them to per-strain means first
+    # when replicates exist, collapse them to per-strain means first.
+    # a strain with r_counts==0 contributed no cells for this gene; dividing
+    # by zero produces NaN in y/x, which then propagates into G and causes SVD
+    # failure in matrix_rank.  drop those strains before collapse, then
+    # restrict the kinship to the same set.  the eigenvectors of a principal
+    # submatrix are not the corresponding rows of the full eigenvectors, so
+    # re-eigendecompose K_sub rather than slicing evc.
+    _valid_strains: np.ndarray | None = None
     if z_sub is not None:
         r_counts = z_sub.sum(axis=0)
+        valid_s = r_counts > 0
+        if not valid_s.all():
+            logger.warning(
+                'get_allele_effects: %d strain(s) have no replicates for this gene '
+                'at locus %s — excluded from effect estimation',
+                int((~valid_s).sum()),
+                locus_id,
+            )
+            z_sub = z_sub[:, valid_s]
+            r_counts = r_counts[valid_s]
+            _valid_strains = valid_s
         y = (z_sub.T @ y) / r_counts
         x = (z_sub.T @ x) / r_counts[:, None]
 
     # kinship eigendecomposition for this chromosome (already at strain level)
-    ev = kinship_decomp[chrom]["values"]
-    evc = kinship_decomp[chrom]["vectors"]
+    ev = kinship_decomp[chrom]['values']
+    evc = kinship_decomp[chrom]['vectors']
+
+    if _valid_strains is not None:
+        K_full = evc @ (ev[:, None] * evc.T)
+        K_sub = K_full[np.ix_(_valid_strains, _valid_strains)]
+        ev, evc = np.linalg.eigh(K_sub)
+        ev = np.maximum(ev, 0.0)
 
     # estimate the null heritability if the caller didn't already supply one
     if h2 is None:
@@ -179,6 +203,8 @@ def get_allele_effects(
     if len(matches) == 0:
         raise ValueError(f"locus {locus_id!r} not found on chr {chrom!r}")
     h = probs_chr[int(matches[0])]
+    if _valid_strains is not None:
+        h = h[_valid_strains]
 
     c, G, rss0 = _locus_fwl(y, x, h, ev, evc, h2)
     n = len(y)
