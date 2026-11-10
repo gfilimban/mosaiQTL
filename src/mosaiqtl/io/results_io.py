@@ -556,7 +556,7 @@ def build_eqtl_finemapping_df(
 
     out = pd.DataFrame({
         "variant": cs["snp"].to_numpy(),
-        "chr": chr_,
+        "chr": f'chr{chr_}' if not str(chr_).startswith('chr') else str(chr_),
         "pos": pos_col,
         "gene_id": gene_id,
         "gene_symbol": gene_symbol,
