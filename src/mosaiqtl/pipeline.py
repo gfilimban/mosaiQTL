@@ -1138,10 +1138,7 @@ def impute_egene(
             ref_allele = str(arow.get(ref_f, ""))
             f_alleles = {f: str(arow.get(f, "")) for f in f_order}
             valid = {f: a for f, a in f_alleles.items() if a and a != "N"}
-            n_total = len(valid)
-            n_alt = sum(1 for a in valid.values() if a != ref_allele)
             alt_set = {a for a in valid.values() if a != ref_allele}
-            _af = n_alt / n_total if n_total > 0 else float("nan")
             alt_allele = next(iter(alt_set), "")
             ann_rows.append(
                 {
@@ -1160,12 +1157,22 @@ def impute_egene(
                     "alt_founders": ",".join(
                         f for f in f_order if valid.get(f) != ref_allele and f in valid
                     ),
-                    "af": _af,
-                    "maf": min(_af, 1.0 - _af) if not np.isnan(_af) else float("nan"),
                 }
             )
         ann_df = pd.DataFrame(ann_rows)
         _snp_idx = snp_df.set_index("snp")
+        # af/maf/mac/ma_sample: mean haplotype-probability-weighted dosage
+        # across the CC sample, giving the realized ALT allele frequency in
+        # this cohort at each SNP position.
+        _dosage_mean = ann_df["snp"].map(_snp_idx["dosage_mean"])
+        _maf_col = _dosage_mean.apply(
+            lambda x: min(x, 1.0 - x) if pd.notna(x) else float("nan")
+        )
+        _n_col = ann_df["snp"].map(_snp_idx["n"])
+        ann_df["af"]        = _dosage_mean
+        ann_df["maf"]       = _maf_col
+        ann_df["mac"]       = (_maf_col * _n_col).round().astype("Int64")
+        ann_df["ma_sample"] = ann_df["mac"]
         ann_df["effect_size"] = ann_df["snp"].map(_snp_idx["beta_dosage"])
         # Wald inversion: se = |beta| / |z|, z = sqrt(2·ln10·lod)
         _beta_abs = ann_df["snp"].map(_snp_idx["beta_dosage"]).abs()
@@ -1177,7 +1184,7 @@ def impute_egene(
         snp_df = snp_df.merge(ann_df, on="snp", how="left")
     else:
         for col in ("ref", "alt", "ref_founders", "alt_founders", "af", "maf",
-                    "effect_size", "se_effect_size"):
+                    "mac", "ma_sample", "effect_size", "se_effect_size"):
             snp_df[col] = pd.NA
 
     result_df = snp_df[IMPUTED_SNP_COLS].copy()

@@ -246,6 +246,7 @@ def imputed_snp_scan_h2lmm(
                     "rss0": res.rss_null,
                     "rss1": res.rss_alt,
                     "beta_dosage": float(res.betas[0]),
+                    "dosage_mean": float(dosage.mean()),
                     "_founder_pattern": _pat,
                 }
             )
