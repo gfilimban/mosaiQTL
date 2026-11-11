@@ -12,6 +12,8 @@ and epistasis grids.
 
 from __future__ import annotations
 
+import logging as _logging
+
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -71,6 +73,10 @@ FONT_STACK: list[str] = ["Carlito", "Calibri", "DejaVu Sans"]
 
 def set_style() -> None:
     """Apply package-wide plot style. Call once at the start of every plotting function."""
+    # Carlito/Calibri are preferred but not installed on every system; DejaVu Sans
+    # is the guaranteed fallback. Suppress the font-not-found warning so it does
+    # not pollute logs on HPC nodes where only DejaVu is available.
+    _logging.getLogger('matplotlib.font_manager').setLevel(_logging.ERROR)
     sns.set_style("ticks")
     plt.rcParams.update(
         {

@@ -73,6 +73,7 @@ def main() -> None:
     out            = Path(sys.argv[11])
     gtf_arg        = sys.argv[12] if len(sys.argv) > 12 else '-'
     tissue         = sys.argv[13] if len(sys.argv) > 13 else ''
+    finemap_arg    = sys.argv[14] if len(sys.argv) > 14 else '-'
 
     tag = f'{tissue}_{celltype}_{stag}' if tissue else f'{celltype}_{stag}'
     out.mkdir(parents=True, exist_ok=True)
@@ -331,12 +332,17 @@ def main() -> None:
         except Exception as exc:
             log.warning('locus_panel_grid: %s', exc)
 
+    # shared state for sections 19 and 20
+    _lw_m    = re.match(r'^Lw([0-9.]+)$', stag)
+    _zoom_mb = float(_lw_m.group(1)) if _lw_m else 5.0
+    _gtf_path = gtf_arg if gtf_arg != '-' else None
+    gi_full   = pd.read_csv(gene_info_path, dtype={'gene_id': str, 'chr': str})
+    _genes_df = (gi_full if {'chr', 'start', 'gene_symbol'}.issubset(gi_full.columns)
+                 else None)
+
     # ── 19. per-chr locus panels with optional gene track (GTF) ───────────────
     if not lod_df.empty and 'gene_symbol' in lod_df.columns:
         try:
-            _lw_m = re.match(r'^Lw([0-9.]+)$', stag)
-            _zoom_mb = float(_lw_m.group(1)) if _lw_m else 5.0
-            _gtf_path = gtf_arg if gtf_arg != '-' else None
             _tss_col = next((c for c in ('tss_mb', 'start_mb') if c in peak_df.columns), None)
             _tss_map = (dict(zip(peak_df['gene_symbol'], peak_df[_tss_col]))
                         if _tss_col and 'gene_symbol' in peak_df.columns else None)
@@ -346,9 +352,6 @@ def main() -> None:
                  if pd.notna(t)}
                 if has_effects and _near_tss_col in egenes_df.columns else None
             )
-            gi_full = pd.read_csv(gene_info_path, dtype={'gene_id': str, 'chr': str})
-            _genes_df = (gi_full if {'chr', 'start', 'gene_symbol'}.issubset(gi_full.columns)
-                         else None)
             lp_figs = locus_panels_per_chr(
                 lod_df,
                 egenes_df if has_effects else None,
@@ -364,6 +367,41 @@ def main() -> None:
                 _savefig(fig, f'{tag}_locus_panel_chr{chrom}', out)
         except Exception as exc:
             log.warning('locus_panels_per_chr: %s', exc)
+
+    # ── 20. finemap locus panels per eGene (requires merged eqtl_finemapping.csv) ──
+    if finemap_arg != '-' and Path(finemap_arg).exists() and len(egenes_df) > 0:
+        try:
+            from mosaiqtl.viz.finemap import locus_finemap_panel
+            fm_df = pd.read_csv(finemap_arg, dtype={'gene_id': str, 'chr': str})
+            lod_df_chr = lod_df.copy()
+            lod_df_chr['chr'] = lod_df_chr['chr'].astype(str)
+            for _, er in egenes_df.iterrows():
+                gid   = str(er['gene_id'])
+                chrom = str(er['chr'])
+                gene_fm = fm_df[fm_df['gene_id'] == gid]
+                if gene_fm.empty:
+                    continue
+                chr_lod = lod_df_chr[lod_df_chr['chr'] == chrom]
+                gene_lod = chr_lod[chr_lod['gene_id'].astype(str) == gid]
+                if gene_lod.empty:
+                    gene_lod = chr_lod.drop_duplicates(subset=['pos_mb'])
+                lod_pos = gene_lod['pos_mb'].to_numpy(dtype=float)
+                lod_sc  = gene_lod['lod'].to_numpy(dtype=float)
+                if len(lod_pos) == 0:
+                    continue
+                peak_mb = float(er['peak_mb']) if pd.notna(er.get('peak_mb')) else None
+                sym     = str(er.get('gene_symbol', gid))
+                thr     = thr_by_chr.get(chrom)
+                fig = locus_finemap_panel(
+                    gene_fm, gid, lod_pos, lod_sc,
+                    chrom=chrom, peak_pos_mb=peak_mb,
+                    genes_df=_genes_df, highlight_gene=sym,
+                    window_mb=_zoom_mb, threshold=thr,
+                )
+                safe_sym = sym.replace('/', '_').replace(' ', '_')
+                _savefig(fig, f'{tag}_finemap_panel_{safe_sym}_chr{chrom}', out)
+        except Exception as exc:
+            log.warning('finemap_panel: %s', exc)
 
     # ── run_metadata.json ─────────────────────────────────────────────────────
     metadata = {

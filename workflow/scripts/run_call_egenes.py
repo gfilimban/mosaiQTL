@@ -55,12 +55,12 @@ def main() -> None:
     from mosaiqtl.io.anndata_io import load_expression_h5
     from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
     from mosaiqtl.pipeline import (
-        EGENE_SUMMARY_COLS, call_egenes, calibrate_egenes_storey, finalize_egene_summary,
+        EGENE_SUMMARY_COLS, normalize_gene_ids, call_egenes,
+        calibrate_egenes_storey, finalize_egene_summary,
     )
     from mosaiqtl.qtl.effects import get_allele_effects
-    from mosaiqtl.qtl.fdr import calibrate_gene_pvalue
     from mosaiqtl.qtl.thresholds import get_gev_thresholds
-    from mosaiqtl.utils import build_z_matrix, reduce_to_strain_means
+    from mosaiqtl.utils import build_z_matrix
 
     peak_out    = out / f'{tag}_peak_lod.csv'
     pval_out    = out / f'{tag}_pval_perm.json'
@@ -82,8 +82,14 @@ def main() -> None:
         log.warning('GEV fit failed — empirical 95th: %.3f', threshold)
     log.info('LOD threshold: %.3f', threshold)
 
+    # ── gene info (symbol map + TSS for calibration window) ───────────────────
+    gene_info_df = pd.read_csv(gene_info_path, dtype={'gene_id': str})
+    if 'gene' in gene_info_df.columns and 'gene_id' not in gene_info_df.columns:
+        gene_info_df = gene_info_df.rename(columns={'gene': 'gene_id'})
+
     # ── Stage-1 gate ───────────────────────────────────────────────────────────
     peak_df   = pd.read_csv(peak_lod_csv, dtype={'gene_id': str, 'chr': str})
+    peak_df   = normalize_gene_ids(peak_df)
     egenes_df = call_egenes(peak_df, threshold)
     log.info('Stage-1: %d / %d eGenes', len(egenes_df), len(peak_df))
     if len(egenes_df) == 0:
@@ -110,16 +116,13 @@ def main() -> None:
     cov_cols = [c for c in covariates.split(',') if c.strip()]
     cov_arr  = build_cov_array(meta_df, sample_ids, cov_cols)
 
-    # calibrate_gene_pvalue operates at strain level; reduce sample phenotype/covariates
     strain_ids_ordered = list(gc.sample_ids)
     Z, valid_mask = build_z_matrix(geno_ids, strain_ids_ordered)
 
-    cov_strain: 'np.ndarray | None' = None
-    if cov_arr is not None:
-        cov_strain = np.stack(
-            [reduce_to_strain_means(cov_arr[:, j], Z, valid_mask)
-             for j in range(cov_arr.shape[1])], axis=1
-        )
+    sym_lookup: dict[str, str] = {}
+    if 'gene_symbol' in gene_info_df.columns:
+        sym_lookup = dict(zip(gene_info_df['gene_id'].astype(str),
+                              gene_info_df['gene_symbol'].astype(str)))
 
     # ── allele effects at peak locus ───────────────────────────────────────────
     log.info('allele effects: %d eGenes', len(egenes_df))
@@ -128,7 +131,8 @@ def main() -> None:
         gid   = str(row['gene_id'])
         chrom = str(row['chr'])
         locus = str(row.get('peak_locus', ''))
-        log.info('  effects [%d/%d] %s chr%s', _eff_i, len(egenes_df), gid, chrom)
+        sym   = sym_lookup.get(gid, str(row.get('gene_symbol', gid)))
+        log.info('  effects [%d/%d] %s chr%s', _eff_i, len(egenes_df), sym, chrom)
         if gid not in gene_idx or not locus:
             continue
         fxe = get_allele_effects(
@@ -152,36 +156,30 @@ def main() -> None:
         egenes_df = egenes_df.merge(eff_df[merge_cols], on='gene_id', how='left')
 
     # ── per-gene Beta calibration → Storey FDR ────────────────────────────────
-    log.info('Beta calibration: %d eGenes  n_perms_cal=%d', len(egenes_df), n_perms_cal)
-    pval_perm: dict[str, float] = {}
-    for _cal_i, (_, row) in enumerate(egenes_df.iterrows(), 1):
-        gid   = str(row['gene_id'])
-        chrom = str(row['chr'])
-        log.info('  calibrate [%d/%d] %s chr%s', _cal_i, len(egenes_df), gid, chrom)
-        if gid not in gene_idx:
-            continue
-        try:
-            y_strain = reduce_to_strain_means(pheno_mat_eg[gene_idx[gid]], Z, valid_mask)
-            p_adj, _, _, _ = calibrate_gene_pvalue(
-                y_gene=y_strain,
-                genomecache=gc,
-                chrom=chrom,
-                peak_lod=float(row['peak_lod']),
-                covariates=cov_strain,
-                kinship_decomp=kinship_decomp,
-                kinship_loco=kinship_loco,
-                n_perms=n_perms_cal,
-                seed=seed,
-            )
-            pval_perm[gid] = float(p_adj)
-        except Exception as exc:
-            log.warning('calibrate_gene_pvalue failed for %s: %s', gid, exc)
+    log.info('Beta calibration: %d eGenes  n_perms_cal=%d  stag=%s',
+             len(egenes_df), n_perms_cal, stag)
+    egenes_df = calibrate_egenes_storey(
+        egenes_df,
+        fdr_threshold=fdr_threshold,
+        genomecache=gc,
+        pheno_mat=pheno_mat_eg,
+        gene_idx=gene_idx,
+        covariates=cov_arr,
+        kinship_decomp=kinship_decomp,
+        kinship_loco=kinship_loco,
+        stag=stag,
+        gene_info_df=gene_info_df,
+        n_perms=n_perms_cal,
+        use_rint=use_rint,
+        z_mat=Z,
+        valid_mask=valid_mask,
+        seed=seed,
+    )
 
     # ── write pval_perm.json ───────────────────────────────────────────────────
+    pval_perm = dict(zip(egenes_df['gene_id'].astype(str),
+                         egenes_df['pval_perm'].astype(float)))
     pval_out.write_text(json.dumps(pval_perm, indent=2))
-
-    if pval_perm:
-        egenes_df = calibrate_egenes_storey(egenes_df, pval_perm, fdr_threshold=fdr_threshold)
 
     # ── annotate full peak_lod with is_egene flag → updated peak_lod.csv ─────
     egene_ids = set(egenes_df['gene_id'].astype(str))

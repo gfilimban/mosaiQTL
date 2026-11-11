@@ -136,8 +136,10 @@ workflow {
         .join(PERMUTE.out.map { ct, stag, perm, perm_chrs, gev -> [ct, perm, perm_chrs] })
         .join(MERGE_RESULTS.out.map { ct, stag, lod, peak, stats -> [ct, lod] })
         .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, gi] })
-        .map { ct, stag, peak, summary, pval, perm, perm_chrs, lod_genome, gi ->
-               [ct, stag, peak, summary, pval, perm, perm_chrs, gi, lod_genome] }
+        .join(FINEMAP_MERGE.out.map { ct, stag, fm, fm_peak -> [ct, fm] }, remainder: true)
+        .map { ct, stag, peak, summary, pval, perm, perm_chrs, lod_genome, gi, fm ->
+               [ct, stag, peak, summary, pval, perm, perm_chrs, gi, lod_genome,
+                fm ?: file('NO_FINEMAP')] }
 
     REPORT(gc, kinship, gtf_ch, report_in)
 }

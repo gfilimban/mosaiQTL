@@ -14,7 +14,8 @@ process REPORT {
           path(peak_lod), path(eqtl_summary),
           path(pval_perm_json), path(perm_max_lods),
           path(perm_max_lods_chrs),
-          path(gene_info), path(lod_genome)
+          path(gene_info), path(lod_genome),
+          path(finemap_csv)
 
     output:
     tuple val(celltype), val(scan_tag),
@@ -43,9 +44,11 @@ process REPORT {
     path '*_manhattan*.png',           optional: true
     path '*_locus_panel_grid*.png',    optional: true
     path '*_locus_panel_chr*.png',     optional: true
+    path '*_finemap_panel*.png',       optional: true
 
     script:
     def gtf_arg = gtf.name != 'NO_GTF' ? gtf.name : '-'
+    def fm_arg  = finemap_csv.name != 'NO_FINEMAP' ? finemap_csv.name : '-'
     def tis     = params.tissue ?: 'run'
     def ct_log  = celltype.replaceAll(/\s+/, '_')
     def tag     = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
@@ -55,7 +58,7 @@ process REPORT {
     python ${projectDir}/scripts/run_report.py \\
         ${peak_lod} ${eqtl_summary} ${pval_perm_json} ${perm_max_lods} \\
         ${gene_info} ${lod_genome} ${kinship_loco} ${genomecache} \\
-        '${celltype}' ${scan_tag} . ${gtf_arg} ${params.tissue} \\
+        '${celltype}' ${scan_tag} . ${gtf_arg} ${params.tissue} ${fm_arg} \\
         2>&1 | tee ${params.output_dir}/logs/${scan_tag}/${ct_log}/report.log
     """
 
@@ -71,5 +74,6 @@ process REPORT {
           ${tag}_haplotype_heatmap.png ${tag}_haplotype_heatmap_share.png \\
           ${tag}_locus_panel_grid.png ${tag}_locus_panel_grid_share.png \\
           run_metadata.json
+    touch ${tag}_finemap_panel_stub.png
     """
 }

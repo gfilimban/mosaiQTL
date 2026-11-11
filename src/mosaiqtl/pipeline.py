@@ -29,6 +29,7 @@ quick start:
                 conditional_scan_kwargs={'n_signals': 3})
 """
 
+import re
 import numpy as np
 import logging
 from dataclasses import dataclass, field
@@ -350,6 +351,7 @@ __all__ = [
     "EQTL_FINEMAPPING_PEAK_COLS",
     "EQTL_STATS_COLS",
     "IMPUTED_SNP_COLS",
+    "normalize_gene_ids",
     "call_egenes",
     "calibrate_egenes_storey",
     "cap_egene_ci",
@@ -550,6 +552,42 @@ def cap_egene_ci(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def normalize_gene_ids(
+    peak_df: pd.DataFrame,
+    gene_col: str = "gene_id",
+    lod_col: str = "peak_lod",
+) -> pd.DataFrame:
+    """Strip Ensembl version suffixes and collapse multi-versioned rows.
+
+    RNA-seq quantification tools may emit versioned gene IDs
+    (``ENSMUSG00000001234.3``).  This strips the trailing ``.N`` to give the
+    stable base ID, then keeps only the highest-LOD row when multiple
+    versioned IDs map to the same base ID.
+
+    Parameters
+    ----------
+    peak_df  : DataFrame with a gene_id column and optionally peak_lod.
+    gene_col : name of the gene identifier column.
+    lod_col  : name of the LOD column; used to pick the representative row
+               when multiple versions exist.  Rows are kept as-is when this
+               column is absent.
+
+    Returns
+    -------
+    DataFrame with the same columns, version suffixes stripped, and at most
+    one row per base gene ID.
+    """
+    out = peak_df.copy()
+    out[gene_col] = out[gene_col].astype(str).str.rsplit('.', n=1).str[0]
+    if lod_col in out.columns and out[gene_col].duplicated().any():
+        out = (
+            out.sort_values(lod_col, ascending=False)
+               .drop_duplicates(subset=[gene_col])
+               .reset_index(drop=True)
+        )
+    return out
+
+
 def call_egenes(
     peak_lod_df: pd.DataFrame,
     threshold: float,
@@ -640,6 +678,198 @@ def calibrate_egenes_storey(
         pi0,
         fdr_threshold,
         int((out["significance"] == "T").sum()),
+    )
+    return out
+
+
+_LOCAL_TAG_RE = re.compile(r'^Lw(\d+(?:\.\d+)?)$')
+
+
+def _calibrate_pvalues_loop(
+    egenes_df: pd.DataFrame,
+    genomecache: "GenomeCache",
+    pheno_mat: np.ndarray,
+    gene_idx: "dict[str, int]",
+    cov_strain: "np.ndarray | None",
+    kinship_decomp: dict,
+    kinship_loco: dict,
+    tss_map: "dict[str, float]",
+    sym_map: "dict[str, str]",
+    scan_local: bool,
+    window_mb: float,
+    n_perms: int,
+    use_rint: bool,
+    z_mat: "np.ndarray | None",
+    valid_mask: "np.ndarray | None",
+    seed: int,
+) -> "dict[str, float]":
+    from .qtl.fdr import calibrate_gene_pvalue as _cal
+    from .utils import reduce_to_strain_means
+
+    pval_perm: dict[str, float] = {}
+    n_total = len(egenes_df)
+    for _i, (_, row) in enumerate(egenes_df.iterrows(), 1):
+        gid   = str(row['gene_id'])
+        chrom = str(row['chr'])
+        sym   = sym_map.get(gid, gid)
+        logger.info('  calibrate [%d/%d] %s chr%s', _i, n_total, sym, chrom)
+        if gid not in gene_idx:
+            continue
+        try:
+            y_s = pheno_mat[gene_idx[gid]]
+            y_strain = (reduce_to_strain_means(y_s, z_mat, valid_mask)
+                        if z_mat is not None and valid_mask is not None else y_s)
+            gene_pos_mb = tss_map.get(gid) if scan_local else None
+            wmb        = window_mb if scan_local else None
+            p_adj, _, _, _ = _cal(
+                y_gene=y_strain,
+                genomecache=genomecache,
+                chrom=chrom,
+                peak_lod=float(row['peak_lod']),
+                covariates=cov_strain,
+                kinship_decomp=kinship_decomp,
+                kinship_loco=kinship_loco,
+                n_perms=n_perms,
+                gene_pos_mb=gene_pos_mb,
+                window_mb=wmb,
+                use_rint=use_rint,
+                seed=seed,
+            )
+            pval_perm[gid] = float(p_adj)
+        except Exception as exc:
+            logger.warning('calibrate_gene_pvalue failed for %s: %s', sym, exc)
+    return pval_perm
+
+
+def calibrate_egenes_storey(
+    egenes_df: pd.DataFrame,
+    pval_perm: "dict[str, float] | pd.Series | None" = None,
+    gene_col: str = "gene_id",
+    fdr_threshold: float = 0.05,
+    *,
+    genomecache: "GenomeCache | None" = None,
+    pheno_mat: "np.ndarray | None" = None,
+    gene_idx: "dict[str, int] | None" = None,
+    covariates: "np.ndarray | None" = None,
+    kinship_decomp: "dict | None" = None,
+    kinship_loco: "dict | None" = None,
+    stag: str = "C",
+    gene_info_df: "pd.DataFrame | None" = None,
+    n_perms: int = 200,
+    use_rint: bool = True,
+    z_mat: "np.ndarray | None" = None,
+    valid_mask: "np.ndarray | None" = None,
+    seed: int = 1,
+) -> pd.DataFrame:
+    """Stage-2 eGene calling: per-gene Beta calibration + Storey q-value FDR.
+
+    Accepts either pre-computed per-gene p-values (``pval_perm``) or the scan
+    inputs needed to compute them on the fly.  When computing on the fly the
+    null scan for each gene is restricted to the same locus window used for the
+    real scan — decoded from the scan tag ``stag`` — so the null and real
+    distributions are always comparable.
+
+    The scan tag encodes the window policy: ``'Lw<N>'`` (e.g. ``'Lw1'``) is a
+    local ±N Mb window; anything else uses the whole chromosome.  Drawing the
+    null over a wider window than the real scan inflates null max-LODs and
+    drives calibrated p-values toward 1, collapsing FDR power.
+
+    Parameters
+    ----------
+    egenes_df      : DataFrame from call_egenes — must contain gene_col and
+                     chr, peak_lod columns.
+    pval_perm      : pre-computed {gene_id: p_adj} dict or Series.  When
+                     ``None``, the remaining keyword arguments must supply
+                     the scan inputs for on-the-fly calibration.
+    gene_col       : join key in egenes_df (default ``'gene_id'``).
+    fdr_threshold  : q-value cutoff (default 0.05).
+    genomecache    : GenomeCache; required when pval_perm is None.
+    pheno_mat      : (n_genes, n_samples) expression matrix; required when
+                     pval_perm is None.
+    gene_idx       : {gene_id: row_index_in_pheno_mat}; required when
+                     pval_perm is None.
+    covariates     : (n_samples, p) covariate matrix, or None.
+    kinship_decomp : {chrom: {'values', 'vectors'}} eigendecomposition.
+    kinship_loco   : {chrom: np.ndarray} LOCO kinship matrices.
+    stag           : scan tag used to derive the window restriction.
+    gene_info_df   : annotation table (gene_id, start, end, chr) for TSS
+                     lookup; used when stag is a local-window tag.
+    n_perms        : parametric null permutations per gene.
+    use_rint       : apply RINT to y_gene before scanning.
+    z_mat          : (n_samples, n_strains) design matrix.
+    valid_mask     : (n_strains,) bool mask.
+    seed           : RNG seed.
+
+    Returns
+    -------
+    DataFrame — egenes_df with pval_perm, fdr, fdr_method, significance added.
+    """
+    from .qtl import fdr as fdr_module
+    from .utils import build_tss_lookup, reduce_to_strain_means
+
+    if pval_perm is None:
+        if genomecache is None or pheno_mat is None or gene_idx is None:
+            raise ValueError(
+                'genomecache, pheno_mat, and gene_idx are required '
+                'when pval_perm is not pre-computed'
+            )
+
+        _m = _LOCAL_TAG_RE.match(str(stag))
+        _scan_local = _m is not None
+        _window_mb  = float(_m.group(1)) if _m else 0.0
+
+        tss_map: dict[str, float] = {}
+        if _scan_local:
+            if gene_info_df is not None:
+                try:
+                    tss_map = build_tss_lookup(gene_info_df)
+                except Exception as exc:
+                    logger.warning('build_tss_lookup failed: %s', exc)
+            for _col in ('tss_mb', 'near_tss_mb', 'start_mb'):
+                if _col in egenes_df.columns:
+                    for _, _r in egenes_df.iterrows():
+                        _gid, _v = str(_r[gene_col]), _r[_col]
+                        if pd.notna(_v) and _gid not in tss_map:
+                            tss_map[_gid] = float(_v)
+                    break
+
+        sym_map: dict[str, str] = {}
+        if 'gene_symbol' in egenes_df.columns:
+            sym_map = dict(zip(egenes_df[gene_col].astype(str),
+                               egenes_df['gene_symbol'].astype(str)))
+        elif gene_info_df is not None and 'gene_symbol' in gene_info_df.columns:
+            sym_map = dict(zip(gene_info_df['gene_id'].astype(str),
+                               gene_info_df['gene_symbol'].astype(str)))
+
+        cov_strain: np.ndarray | None = None
+        if covariates is not None and z_mat is not None and valid_mask is not None:
+            cov_strain = np.stack(
+                [reduce_to_strain_means(covariates[:, j], z_mat, valid_mask)
+                 for j in range(covariates.shape[1])],
+                axis=1,
+            )
+        elif covariates is not None and z_mat is None:
+            cov_strain = covariates
+
+        pval_perm = _calibrate_pvalues_loop(
+            egenes_df, genomecache, pheno_mat, gene_idx,
+            cov_strain, kinship_decomp, kinship_loco,
+            tss_map, sym_map, _scan_local, _window_mb,
+            n_perms, use_rint, z_mat, valid_mask, seed,
+        )
+
+    out = egenes_df.copy()
+    pv = pval_perm if isinstance(pval_perm, pd.Series) else pd.Series(pval_perm)
+    out["pval_perm"] = out[gene_col].map(pv)
+
+    q_values, pi0 = fdr_module.storey_qvalue(out["pval_perm"].to_numpy())
+    out["fdr"] = q_values
+    out["fdr_method"] = "qvalue"
+    out["significance"] = np.where(out["fdr"] <= fdr_threshold, "T", "F")
+
+    logger.info(
+        "calibrate_egenes_storey: n_genes=%d  pi0=%.4f  n_egenes(fdr<=%.2f)=%d",
+        len(out), pi0, fdr_threshold, int((out["significance"] == "T").sum()),
     )
     return out
 
