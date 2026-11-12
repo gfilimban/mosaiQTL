@@ -175,6 +175,13 @@ def main() -> None:
     if 'significance' in egenes_df.columns and egenes_df['significance'].notna().any():
         egenes_df = egenes_df[egenes_df['significance'] == 'T']
 
+    # founder betas live in peak_lod.csv; the eGene summary schema carries none
+    _beta_extra = [c for c in peak_df.columns
+                   if c.startswith('beta_') and c not in egenes_df.columns]
+    if _beta_extra:
+        egenes_df = egenes_df.merge(peak_df[['gene_id'] + _beta_extra],
+                                    on='gene_id', how='left')
+
     # Plots draw the top gene per chromosome (by peak LOD, over all genes and over
     # eGenes) and the fine-mapped eGenes; only those genes' LOD rows are loaded.
     want_ids = set()
@@ -190,6 +197,10 @@ def main() -> None:
                        .groupby('chr', sort=False).head(FINEMAP_PANELS_PER_CHR))
         want_ids.update(fm_panel_df['gene_id'])
     lod_df, n_loci_by_chr = _load_lod_subset(lod_genome_csv, want_ids)
+    # gene_symbol is a per-gene attribute; take it from peak_df so the LOD table
+    # need not carry it
+    lod_df['gene_symbol'] = lod_df['gene_id'].astype(str).map(
+        dict(zip(peak_df['gene_id'], peak_df['gene_symbol'])))
     log.info('LOD rows kept: %d for %d genes', len(lod_df), len(want_ids))
 
     egene_ids = set(egenes_df['gene_id'])
