@@ -1,6 +1,6 @@
 process REPORT {
 
-    label 'process_medium'
+    label 'process_high'
     tag   "${celltype}"
 
     publishDir { "${params.output_dir}/${celltype.replaceAll(/\s+/, '_')}/${scan_tag}/core"  }, mode: 'copy', pattern: '*.csv'
@@ -55,7 +55,7 @@ process REPORT {
     """
     set -o pipefail
     mkdir -p ${params.output_dir}/logs/${scan_tag}/${ct_log}
-    python ${projectDir}/scripts/run_report.py \\
+    python -u ${projectDir}/scripts/run_report.py \\
         ${peak_lod} ${eqtl_summary} ${pval_perm_json} ${perm_max_lods} \\
         ${gene_info} ${lod_genome} ${kinship_loco} ${genomecache} \\
         '${celltype}' ${scan_tag} . ${gtf_arg} ${params.tissue} ${fm_arg} \\

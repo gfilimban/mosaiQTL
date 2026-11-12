@@ -44,6 +44,9 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# eGenes drawn as fine-mapping locus panels per chromosome, ranked by peak LOD
+FINEMAP_PANELS_PER_CHR = 3
+
 # matplotlib reports font fallbacks (findfont) and per-glyph misses as one
 # message per label per figure; they bury the run log without changing output.
 logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
@@ -148,9 +151,13 @@ def main() -> None:
         _ok = _df.dropna(subset=['peak_lod'])
         if not _ok.empty:
             want_ids.update(_ok.loc[_ok.groupby('chr')['peak_lod'].idxmax(), 'gene_id'])
+    fm_panel_df = egenes_df.iloc[0:0]
     if finemap_arg != '-' and Path(finemap_arg).exists():
         _fm_ids = pd.read_csv(finemap_arg, usecols=['gene_id'], dtype={'gene_id': str})['gene_id']
-        want_ids.update(set(_fm_ids) & set(egenes_df['gene_id']))
+        _fm_eg = egenes_df[egenes_df['gene_id'].isin(set(_fm_ids))].dropna(subset=['peak_lod'])
+        fm_panel_df = (_fm_eg.sort_values('peak_lod', ascending=False)
+                       .groupby('chr', sort=False).head(FINEMAP_PANELS_PER_CHR))
+        want_ids.update(fm_panel_df['gene_id'])
     lod_df, n_loci_by_chr = _load_lod_subset(lod_genome_csv, want_ids)
     log.info('LOD rows kept: %d for %d genes', len(lod_df), len(want_ids))
 
@@ -415,13 +422,13 @@ def main() -> None:
             log.warning('locus_panels_per_chr: %s', exc)
 
     # ── 20. finemap locus panels per eGene (requires merged eqtl_finemapping.csv) ──
-    if finemap_arg != '-' and Path(finemap_arg).exists() and len(egenes_df) > 0:
+    if finemap_arg != '-' and Path(finemap_arg).exists() and len(fm_panel_df) > 0:
         try:
             from mosaiqtl.viz.finemap import locus_finemap_panel
             fm_df = pd.read_csv(finemap_arg, dtype={'gene_id': str, 'chr': str})
             fm_df['chr'] = strip_chr_prefix(fm_df['chr'])
             lod_df_chr = lod_df
-            for _, er in egenes_df.iterrows():
+            for _, er in fm_panel_df.iterrows():
                 gid   = str(er['gene_id'])
                 chrom = str(er['chr'])
                 gene_fm = fm_df[fm_df['gene_id'] == gid]
