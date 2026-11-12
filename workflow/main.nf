@@ -123,7 +123,7 @@ workflow {
     finemap_chr_in = finemap_base
         .flatMap { ct, stag, summary, peak_lod, pheno, m ->
             def rows = summary.size() > 0 ? summary.splitCsv(header: true) : []
-            def chrs = rows.collect { it.chr.toString() }.unique()
+            def chrs = rows.collect { it.chr.toString().replaceFirst(/^chr/, '') }.unique()
             chr_list().findAll { it in chrs }.collect { chrom ->
                 [ct, stag, chrom, summary, peak_lod, pheno, m]
             }
