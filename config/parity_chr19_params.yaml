@@ -14,6 +14,7 @@ scan_type:      'L'
 window_mb:      1.0
 chroms:         '19'
 covariates:     'sex,dataset'
+use_rint:       true
 
 n_perms:        1000
 n_perms_cal:    1000
