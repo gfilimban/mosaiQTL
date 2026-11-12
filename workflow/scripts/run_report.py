@@ -98,6 +98,37 @@ def _load_lod_subset(
     return lod_df, {c: len(s) for c, s in loci_by_chr.items()}
 
 
+def _finemap_gene_ids(path: Path, chunksize: int = 1_000_000) -> set:
+    """Distinct gene_ids in the fine-mapping table, read as a stream of chunks."""
+    ids: set = set()
+    for chunk in pd.read_csv(path, usecols=['gene_id'], dtype={'gene_id': str},
+                             chunksize=chunksize):
+        ids.update(chunk['gene_id'].unique())
+    return ids
+
+
+def _load_finemap_subset(
+    path: Path, want_ids: set, chunksize: int = 1_000_000,
+) -> pd.DataFrame:
+    """Stream the fine-mapping table once, keeping only the rows of *want_ids*.
+
+    Memory is bounded by one chunk plus the retained rows, independent of how
+    many eGenes were fine-mapped.
+    """
+    from mosaiqtl.utils import strip_chr_prefix
+    kept = []
+    for chunk in pd.read_csv(path, dtype={'gene_id': str, 'chr': str}, chunksize=chunksize):
+        sel = chunk[chunk['gene_id'].isin(want_ids)]
+        if not sel.empty:
+            kept.append(sel)
+        del chunk, sel
+    if not kept:
+        return pd.DataFrame(columns=list(pd.read_csv(path, nrows=0).columns))
+    fm_df = pd.concat(kept, ignore_index=True)
+    fm_df['chr'] = strip_chr_prefix(fm_df['chr'])
+    return fm_df
+
+
 def main() -> None:
     peak_lod_csv   = Path(sys.argv[1])
     egene_csv      = Path(sys.argv[2])
@@ -153,8 +184,8 @@ def main() -> None:
             want_ids.update(_ok.loc[_ok.groupby('chr')['peak_lod'].idxmax(), 'gene_id'])
     fm_panel_df = egenes_df.iloc[0:0]
     if finemap_arg != '-' and Path(finemap_arg).exists():
-        _fm_ids = pd.read_csv(finemap_arg, usecols=['gene_id'], dtype={'gene_id': str})['gene_id']
-        _fm_eg = egenes_df[egenes_df['gene_id'].isin(set(_fm_ids))].dropna(subset=['peak_lod'])
+        _fm_ids = _finemap_gene_ids(Path(finemap_arg))
+        _fm_eg = egenes_df[egenes_df['gene_id'].isin(_fm_ids)].dropna(subset=['peak_lod'])
         fm_panel_df = (_fm_eg.sort_values('peak_lod', ascending=False)
                        .groupby('chr', sort=False).head(FINEMAP_PANELS_PER_CHR))
         want_ids.update(fm_panel_df['gene_id'])
@@ -425,8 +456,10 @@ def main() -> None:
     if finemap_arg != '-' and Path(finemap_arg).exists() and len(fm_panel_df) > 0:
         try:
             from mosaiqtl.viz.finemap import locus_finemap_panel
-            fm_df = pd.read_csv(finemap_arg, dtype={'gene_id': str, 'chr': str})
-            fm_df['chr'] = strip_chr_prefix(fm_df['chr'])
+            fm_df = _load_finemap_subset(
+                Path(finemap_arg), set(fm_panel_df['gene_id'].astype(str)))
+            log.info('fine-mapping rows kept: %d for %d genes',
+                     len(fm_df), len(fm_panel_df))
             lod_df_chr = lod_df
             for _, er in fm_panel_df.iterrows():
                 gid   = str(er['gene_id'])
