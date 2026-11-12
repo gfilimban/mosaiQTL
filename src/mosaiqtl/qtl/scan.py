@@ -296,14 +296,10 @@ def scan_h2lmm(
             h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, evals, method="ml")
         h2_null_dict[chrom] = h2
 
-        cd = lmm_module.precompute_chromosome(
-            genomecache, chrom, evals, evecs, z_sub, model
-        )
-        chr_res = lmm_module.scan_chromosome(y, cd, x, evals, evecs, h2)
-
+        loci_mask = None
         if scan_window == "local":
-            mask = np.abs(chr_res["positions"] - gene_pos_mb) <= window_mb
-            if not mask.any():
+            loci_mask = np.abs(genomecache.get_chromosome(chrom)[1] - gene_pos_mb) <= window_mb
+            if not loci_mask.any():
                 logger.debug(
                     "scan_h2lmm: %s  no loci within %.1fMb of %.3f on chr%s — skipped",
                     phenotype_id,
@@ -312,10 +308,10 @@ def scan_h2lmm(
                     chrom,
                 )
                 continue
-            chr_res = {
-                k: (v[mask] if isinstance(v, np.ndarray) and len(v) == len(mask) else v)
-                for k, v in chr_res.items()
-            }
+        cd = lmm_module.precompute_chromosome(
+            genomecache, chrom, evals, evecs, z_sub, model, loci_mask
+        )
+        chr_res = lmm_module.scan_chromosome(y, cd, x, evals, evecs, h2)
 
         n_loci = len(chr_res["locus_ids"])
         all_lids.append(chr_res["locus_ids"])
@@ -520,12 +516,12 @@ def scan_multi_gene(
             h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, evals, method="ml")
             acc[gid]["h2"][chrom] = h2
 
-            chr_res = lmm_module.scan_chromosome(y_g, chr_data, x, evals, evecs, h2)
-
+            gene_cd = chr_data
             if scan_window == "local":
-                tss = float(gene_pos_mb_map[gid])  # type: ignore[index]
-                mask = np.abs(chr_res["positions"] - tss) <= window_mb
-                if not mask.any():
+                gene_cd = lmm_module.window_chromosome_data(
+                    chr_data, float(gene_pos_mb_map[gid]), window_mb  # type: ignore[index]
+                )
+                if gene_cd is None:
                     logger.debug(
                         "scan_multi_gene: %s  no loci within %.1fMb on chr%s",
                         gid,
@@ -533,14 +529,7 @@ def scan_multi_gene(
                         chrom,
                     )
                     continue
-                chr_res = {
-                    k: (
-                        v[mask]
-                        if isinstance(v, np.ndarray) and len(v) == len(mask)
-                        else v
-                    )
-                    for k, v in chr_res.items()
-                }
+            chr_res = lmm_module.scan_chromosome(y_g, gene_cd, x, evals, evecs, h2)
 
             n_loci_g = len(chr_res["locus_ids"])
             acc[gid]["lids"].append(chr_res["locus_ids"])
@@ -759,8 +748,21 @@ def scan_multi_gene_lmm(
             x_rot = evecs.T @ x
             h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, evals, method="ml")
 
+            gene_cd = chr_data
+            if scan_window == "local" and gene_pos_mb_map is not None:
+                gene_cd = lmm_module.window_chromosome_data(
+                    chr_data, float(gene_pos_mb_map[gene_id]), window_mb
+                )
+                if gene_cd is None:
+                    logger.debug(
+                        "scan_multi_gene_lmm: %s  no loci within %.1fMb on chr%s",
+                        gene_id,
+                        window_mb,
+                        chrom,
+                    )
+                    continue
             try:
-                chr_res = lmm_module.scan_chromosome(y_g, chr_data, x, evals, evecs, h2)
+                chr_res = lmm_module.scan_chromosome(y_g, gene_cd, x, evals, evecs, h2)
             except Exception as exc:
                 logger.warning(
                     "scan_multi_gene_lmm: %s on chr%s failed — %s",
@@ -776,25 +778,6 @@ def scan_multi_gene_lmm(
             rss0 = chr_res.get("rss0", float("nan"))
             rss1_arr = chr_res.get("rss1", None)
             betas_all = chr_res.get("betas", None)
-
-            if scan_window == "local" and gene_pos_mb_map is not None:
-                tss = float(gene_pos_mb_map[gene_id])
-                mask = np.abs(pos_arr - tss) <= window_mb
-                if not mask.any():
-                    logger.debug(
-                        "scan_multi_gene_lmm: %s  no loci within %.1fMb on chr%s",
-                        gene_id,
-                        window_mb,
-                        chrom,
-                    )
-                    continue
-                lod_arr = lod_arr[mask]
-                pos_arr = pos_arr[mask]
-                lid_arr = lid_arr[mask]
-                if rss1_arr is not None:
-                    rss1_arr = rss1_arr[mask]
-                if betas_all is not None:
-                    betas_all = betas_all[mask]
 
             if len(lod_arr) == 0:
                 continue

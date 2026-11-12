@@ -378,3 +378,30 @@ class TestLoadFounderAlleles:
         lid = df["locus_id"].iloc[0]
         assert isinstance(lid, str) and len(lid) > 0
         assert lid.startswith("rs1_")  # matches _make_cache naming: 'rs{chrom}_{i:03d}'
+
+
+class TestBuildFounderAlleleMgpCoordinates:
+    """VCF POS is 1-based; SPDI positions are 0-based."""
+
+    def test_spdi_is_zero_based_and_pos_bp_is_one_based(self, tmp_path):
+        pysam = pytest.importorskip("pysam")
+        from mosaiqtl.genotype.snp_db import build_founder_allele_mgp
+
+        vcf = tmp_path / "t.vcf"
+        vcf.write_text(
+            "##fileformat=VCFv4.2\n"
+            "##contig=<ID=1,length=200000000>\n"
+            '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tAJ\tPWK\n"
+            "1\t10000001\trs1\tA\tG\t.\t.\t.\tGT\t0/0\t1/1\n"
+        )
+        gz = tmp_path / "t.vcf.gz"
+        pysam.tabix_compress(str(vcf), str(gz), force=True)
+        out = tmp_path / "alleles.h5"
+        cache = _make_cache(founders=["A", "B"])
+        build_founder_allele_mgp(
+            gz, cache, out, vcf_sample_map={"AJ": "AJ", "PWK": "PWK"}
+        )
+        df = load_founder_alleles(out)
+        assert df["marker"].iloc[0] == "NC_000067.7:10000000:A:G"
+        assert int(df["pos_bp"].iloc[0]) == 10000001

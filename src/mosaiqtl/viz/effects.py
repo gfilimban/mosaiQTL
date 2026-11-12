@@ -19,17 +19,18 @@ from ..genotype.cc import (
     FOUNDER_ORDER,
     strip_j,
 )
+from ._theme import FONT_STACK
 
 _CHR_ORDER: list[str] = [str(i) for i in range(1, 20)] + ["X"]
 _CHR_GAP_MB: float = 10.0
 
 
 def _set_font(ax: plt.Axes) -> None:
-    """Apply Carlito/Calibri to all text elements of ax."""
+    """Apply the package font stack to all text elements of ax."""
     for item in (
         [ax.xaxis.label, ax.yaxis.label] + ax.get_xticklabels() + ax.get_yticklabels()
     ):
-        item.set_fontfamily(["Carlito", "Calibri", "DejaVu Sans"])
+        item.set_fontfamily(FONT_STACK)
 
 
 def founder_legend(

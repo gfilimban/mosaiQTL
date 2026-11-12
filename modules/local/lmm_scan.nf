@@ -11,7 +11,7 @@ process LMM_SCAN {
     input:
     path  genomecache
     path  kinship_loco
-    tuple val(celltype), val(chrom), path(phenotypes), path(gene_info), path(metadata)
+    tuple val(celltype), val(scan_tag), val(chrom), path(phenotypes), path(gene_info), path(metadata)
 
     output:
     tuple val(celltype), val(chrom),
@@ -21,15 +21,13 @@ process LMM_SCAN {
 
     script:
     def cov      = params.covariates ?: ''
-    def stype    = params.scan_type  ?: 'L'
-    def wmb      = params.window_mb  ?: 1.0
+    def stype    = params.scan_type
+    def wmb      = params.window_mb
     def rint     = (params.use_rint != null && !params.use_rint) ? 0 : 1
     def ct_log   = celltype.replaceAll(/\s+/, '_')
-    def tis      = params.tissue ?: 'run'
-    def stag_val = stype == 'L' ? "Lw${(wmb as float).toInteger()}" : stype
     """
     set -o pipefail
-    mkdir -p ${params.output_dir}/logs/${stag_val}/${ct_log}
+    mkdir -p ${params.output_dir}/logs/${scan_tag}/${ct_log}
     python ${projectDir}/scripts/run_lmm_scan_chr.py \\
         ${genomecache} \\
         ${kinship_loco} \\
@@ -42,7 +40,7 @@ process LMM_SCAN {
         '${cov}' \\
         . \\
         ${rint} \\
-        2>&1 | tee ${params.output_dir}/logs/${stag_val}/${ct_log}/lmm_scan_chr${chrom}.log
+        2>&1 | tee ${params.output_dir}/logs/${scan_tag}/${ct_log}/lmm_scan_chr${chrom}.log
     """
 
     stub:

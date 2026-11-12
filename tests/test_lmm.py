@@ -79,6 +79,7 @@ class TestLMMResultDataclass:
             h2=0.3,
             f_stat=4.2,
             betas=np.zeros(7),
+            se_betas=np.ones(7),
             sigma2_g=0.2,
             sigma2_e=0.5,
             rss_null=10.0,
@@ -103,6 +104,7 @@ class TestLMMResultDataclass:
                 h2=0.0,
                 f_stat=0.0,
                 betas=np.zeros(7),
+                se_betas=np.ones(7),
                 sigma2_g=0.0,
                 sigma2_e=0.0,
                 rss_null=0.0,
@@ -182,3 +184,36 @@ class TestScanChromosome:
         h2, _ = estimate_h2_null(self.evc.T @ y_signal, self.evc.T @ self.x, self.ev)
         res = scan_chromosome(y_signal, self.cd, self.x, self.ev, self.evc, h2)
         assert int(np.argmax(res["lod"])) == j_signal
+
+
+class TestWaldStandardError:
+    """se_betas is the Wald SE of each fixed-effect coefficient."""
+
+    def test_matches_closed_form_ols_se(self):
+        # h2 = 0 gives unit weights, so the LMM reduces to OLS
+        rng = np.random.default_rng(11)
+        n = 60
+        dosage = rng.standard_normal((n, 1))
+        x = np.ones((n, 1))
+        y = 0.7 * dosage[:, 0] + rng.standard_normal(n)
+        res = fit_lmm_at_locus(y, dosage, x, np.ones(n), 0.0)
+
+        design = np.hstack([dosage, x])
+        coef = np.linalg.lstsq(design, y, rcond=None)[0]
+        resid = y - design @ coef
+        sigma2 = resid @ resid / (n - 2)
+        expected = np.sqrt(sigma2 * np.linalg.inv(design.T @ design)[0, 0])
+
+        assert res.se_betas.shape == (1,)
+        assert res.se_betas[0] == pytest.approx(expected, rel=1e-8)
+
+    def test_wald_z_squared_tracks_lod(self):
+        # for one predictor, (beta/SE)^2 equals the F statistic
+        rng = np.random.default_rng(5)
+        n = 80
+        dosage = rng.standard_normal((n, 1))
+        y = 0.5 * dosage[:, 0] + rng.standard_normal(n)
+        res = fit_lmm_at_locus(y, dosage, np.ones((n, 1)), np.ones(n), 0.0)
+        assert (res.betas[0] / res.se_betas[0]) ** 2 == pytest.approx(
+            res.f_stat, rel=1e-6
+        )

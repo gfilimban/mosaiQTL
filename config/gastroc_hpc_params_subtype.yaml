@@ -30,7 +30,3 @@ n_bootstrap:    1000
 gtf:            '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/IGVFFI4777RDZK.gtf.gz'
 
 output_dir:     '/dfs9/seyedam-lab/share/igvf_qtl/output/gastroc/nova/subtypes'
-
-# bump to force FINEMAP rerun without invalidating scan/permute/call_egenes cache
-call_egenes_schema_ver: '1'
-finemap_schema_ver:  '4'

@@ -12,10 +12,10 @@ and epistasis grids.
 
 from __future__ import annotations
 
-import logging as _logging
-
+import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib import font_manager
 
 from ..genotype.cc import (
     COLOR_CC_FALLBACK,
@@ -68,15 +68,18 @@ KW_BOX: dict = dict(
     alpha=0.90,
 )
 
-FONT_STACK: list[str] = ["Carlito", "Calibri", "DejaVu Sans"]
+_PREFERRED_FONTS: tuple[str, ...] = ("Carlito", "Calibri", "Helvetica")
+_INSTALLED_FONTS: frozenset[str] = frozenset(f.name for f in font_manager.fontManager.ttflist)
+
+# Preferred families that matplotlib can resolve on this machine, in preference
+# order; when none is installed, matplotlib's own default sans-serif list applies.
+FONT_STACK: list[str] = [f for f in _PREFERRED_FONTS if f in _INSTALLED_FONTS] or list(
+    matplotlib.rcParamsDefault["font.sans-serif"]
+)
 
 
 def set_style() -> None:
     """Apply package-wide plot style. Call once at the start of every plotting function."""
-    # Carlito/Calibri are preferred but not installed on every system; DejaVu Sans
-    # is the guaranteed fallback. Suppress the font-not-found warning so it does
-    # not pollute logs on HPC nodes where only DejaVu is available.
-    _logging.getLogger('matplotlib.font_manager').setLevel(_logging.ERROR)
     sns.set_style("ticks")
     plt.rcParams.update(
         {

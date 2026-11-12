@@ -156,6 +156,7 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null):
             h2=h2_null,
             f_stat=0.0,
             betas=np.zeros(q),
+            se_betas=np.full(q, np.nan),
             sigma2_g=0.0,
             sigma2_e=0.0,
             rss_null=np.inf,
@@ -198,12 +199,18 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null):
         p_value = 1.0
 
     sigma2_total = rss_alt / max(n - p - q_eff, 1)
+
+    # Wald covariance of the fixed effects under the fixed-h² weighting:
+    # sigma² (Z'WZ)^-1, with the pseudo-inverse covering rank-deficient H
+    gram_inv = np.linalg.pinv(zw.T @ zw, rcond=1e-10)
+    se_alt = np.sqrt(np.maximum(sigma2_total * np.diag(gram_inv), 0.0))
     return LMMResult(
         lod=lod,
         p_value=p_value,
         h2=h2_null,
         f_stat=f_stat,
         betas=beta_alt[:q],  # first q cols = founder betas (J)
+        se_betas=se_alt[:q],
         sigma2_g=h2_null * sigma2_total,
         sigma2_e=(1 - h2_null) * sigma2_total,
         rss_null=rss_null,
@@ -218,6 +225,7 @@ def precompute_chromosome(
     eigvecs: np.ndarray,
     z_mat: "np.ndarray | None" = None,
     model: str = "additive",
+    loci_mask: "np.ndarray | None" = None,
 ) -> dict:
     """precompute the chromosome-level H rotation shared across all genes.
 
@@ -234,12 +242,18 @@ def precompute_chromosome(
     eigvecs     : np.ndarray (n, n)  corresponding eigenvectors
     z_mat       : np.ndarray (n, m) or None
     model       : 'additive' or 'full'
+    loci_mask   : np.ndarray (n_loci_chrom,) bool or None
+        when given, only the True-marked loci are rotated; None keeps all loci.
 
     returns
     -------
     dict with keys: locus_ids, positions, H_t_raw (n_loci, n, J), n_founders
     """
     locus_ids, positions, probs = genomecache.get_chromosome(chrom)
+    if loci_mask is not None:
+        locus_ids = np.asarray(locus_ids)[loci_mask]
+        positions = positions[loci_mask]
+        probs = probs[loci_mask]
     nf = genomecache.n_founders
 
     logger.debug(
@@ -270,6 +284,24 @@ def precompute_chromosome(
         "positions": positions,
         "H_t_raw": H_t_raw,
         "n_founders": nf,
+    }
+
+
+def window_chromosome_data(
+    chr_data: dict, center_mb: float, window_mb: float
+) -> "dict | None":
+    """restrict precomputed chromosome data to loci within window_mb of center_mb.
+
+    returns None when no locus falls inside the window.
+    """
+    mask = np.abs(chr_data["positions"] - center_mb) <= window_mb
+    if not mask.any():
+        return None
+    return {
+        "locus_ids": np.asarray(chr_data["locus_ids"])[mask],
+        "positions": chr_data["positions"][mask],
+        "H_t_raw": chr_data["H_t_raw"][mask],
+        "n_founders": chr_data["n_founders"],
     }
 
 
@@ -425,6 +457,7 @@ def scan_chromosome_batch(
     batch_size: int = 500,
     return_peak_positions: bool = False,
     loci_mask: "np.ndarray | None" = None,
+    chr_data: "dict | None" = None,
 ) -> "np.ndarray | tuple[np.ndarray, np.ndarray]":
     """scan one chromosome for a batch of permuted phenotypes.
 
@@ -459,46 +492,58 @@ def scan_chromosome_batch(
         when given, restricts the scan to the True-marked loci on this
         chromosome (e.g. a gene's cis window) before any precomputation.
         None (default) scans every locus on the chromosome.
+    chr_data   : dict or None
+        output of precompute_chromosome for this chromosome, eigvecs and z_mat.
+        when given, its rotated H is reused instead of being recomputed from the
+        genotype probabilities (z_mat and model are then taken from that
+        precompute call and the arguments here are ignored for H).
 
     returns
     -------
     np.ndarray (N_perms,)  per-permutation max LOD over the scanned loci, or
     tuple (max_lods, peak_positions) when return_peak_positions=True
     """
-    locus_ids, positions_c, probs = genomecache.get_chromosome(chrom)
-    if loci_mask is not None:
-        probs = probs[loci_mask]
-        positions_c = positions_c[loci_mask]
     nf = genomecache.n_founders
     n = eigvals.shape[0]
     n_perms = Y_mat.shape[1]
 
-    if model == "full":
-        J = nf
-        _ii, _jj = np.triu_indices(J)
-        probs = probs[:, :, _ii] * probs[:, :, _jj]
-        nf = len(_ii)
-
-    # ── genotype-only precomputation (same for every permutation) ─────────────
     w_sqrt = 1.0 / np.sqrt(h2_null * eigvals + (1.0 - h2_null))  # (n,)
 
     xt = (eigvecs.T @ x_covariates) * w_sqrt[:, None]  # (n, p)
     xtwx = xt.T @ xt  # (p, p)
     xt_pinv = np.linalg.solve(xtwx, xt.T)  # (p, n)
 
-    H = probs  # (n_loci, m, J)
-    if z_mat is not None:
-        # fuse Z expansion + eigvec rotation: same optimisation as scan_chromosome
-        _z_rot = eigvecs.T @ z_mat  # (n, m)
-        H_t = np.einsum("ks,lsj->lkj", _z_rot, H, optimize=True)  # (n_loci, n, J)
-        del _z_rot
+    if chr_data is not None:
+        positions_c = chr_data["positions"]
+        H_raw = chr_data["H_t_raw"]
+        if loci_mask is not None:
+            positions_c = positions_c[loci_mask]
+            H_raw = H_raw[loci_mask]
+        H_t = H_raw * w_sqrt[None, :, None]  # (n_loci, n, J), new array
+        del H_raw
     else:
-        H_t = np.einsum("nk,lnj->lkj", eigvecs, H, optimize=True)  # (n_loci, n, J)
-    H_t *= w_sqrt[None, :, None]
+        locus_ids, positions_c, probs = genomecache.get_chromosome(chrom)
+        if loci_mask is not None:
+            probs = probs[loci_mask]
+            positions_c = positions_c[loci_mask]
+        if model == "full":
+            J = nf
+            _ii, _jj = np.triu_indices(J)
+            probs = probs[:, :, _ii] * probs[:, :, _jj]
+        H = probs  # (n_loci, m, J)
+        if z_mat is not None:
+            # fuse Z expansion + eigvec rotation: same optimisation as scan_chromosome
+            _z_rot = eigvecs.T @ z_mat  # (n, m)
+            H_t = np.einsum("ks,lsj->lkj", _z_rot, H, optimize=True)
+            del _z_rot
+        else:
+            H_t = np.einsum("nk,lnj->lkj", eigvecs, H, optimize=True)
+        del H
+        H_t *= w_sqrt[None, :, None]
 
     proj = np.einsum("pn,lnj->lpj", xt_pinv, H_t, optimize=True)  # (n_loci, p, J)
     H_perp = H_t - np.einsum("np,lpj->lnj", xt, proj, optimize=True)  # (n_loci, n, J)
-    del H, H_t, proj
+    del H_t, proj
     gc.collect()
 
     G_all = np.einsum("lnj,lnk->ljk", H_perp, H_perp, optimize=True)  # (n_loci, J, J)

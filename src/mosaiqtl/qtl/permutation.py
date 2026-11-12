@@ -176,8 +176,10 @@ def draw_parametric_null_batch(
     E_mat = rng.normal(0.0, np.sqrt(max(sigma2_e, 0.0)), size=(len(y), n_perms))
     Y_null = (x @ beta)[:, None] + U_mat + E_mat
 
-    # each column's rank order gives one null permutation of the real phenotype
-    return y[np.argsort(Y_null, axis=0)]
+    # sample i takes the y value whose rank equals the rank of Y_null[i], so each
+    # column keeps the null draw's kinship-induced ordering of the real values
+    ranks = np.argsort(np.argsort(Y_null, axis=0), axis=0)
+    return np.sort(y)[ranks]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -219,11 +221,17 @@ def run_threshold_scans(
     phenotype      : np.ndarray (n,)  required; used to estimate h² per chromosome.
     covariates     : np.ndarray (n, p) or None
     kinship_decomp : dict or None  {chrom: {'values':, 'vectors':}}
-        if None, computed from genomecache (loco).
+        primary kinship input: eigendecomposition of the strain-level LOCO
+        kinship.  supplies the eigenvectors for the h² estimate and the scan,
+        and, with z_mat, the K_m that is expanded to K_n.  if None, computed
+        from genomecache (loco).
     kinship_loco   : dict or None  {chrom: np.ndarray (m, m)}
-        raw LOCO kinship matrices (not decomposed).  used when
-        permutation_method='parametric'; if None, reconstructed from
-        kinship_decomp automatically.  ignored for 'plain'.
+        optional pre-built raw form of the same LOCO kinship that
+        kinship_decomp factors; it must describe the same matrices.  used
+        only for the strain-level parametric draw, where it avoids rebuilding
+        K from kinship_decomp.  if None, rebuilt from kinship_decomp.
+        ignored for 'plain' and whenever z_mat is given (K_n is formed from
+        kinship_decomp).
     chrom          : str or None
         if given, restrict scans to this chromosome only (validation mode).
         if None, scan all chromosomes (full-genome threshold).
@@ -426,7 +434,9 @@ def run_threshold_scans(
                 evc.T @ y0, evc.T @ x_scan, ev, method="ml"
             )
 
-    _ref_chr_used = next(iter(h2_fixed)) if h2_fixed else "none"
+    _ref_chr_used = (
+        ref_chrom if ref_chrom in h2_fixed else next(iter(h2_fixed), "none")
+    )
     _ref_h2 = h2_fixed.get(_ref_chr_used, float("nan"))
     logger.info(
         "run_threshold_scans: h² estimated on %d chromosomes — ref_chr=%s  h2=%.4f",
@@ -454,7 +464,10 @@ def run_threshold_scans(
     # kinship, then reuse the same draw for every chromosome (see ref_chrom above).
     if permutation_method == "parametric":
         null_mat_gw = None
-        for c in chrs:
+        ref_order = ([ref_chrom] if ref_chrom in chrs else []) + [
+            c for c in chrs if c != ref_chrom
+        ]
+        for c in ref_order:
             try:
                 ev_r, evc_r = _ev_evc(c)
                 null_mat_gw = draw_parametric_null_batch(

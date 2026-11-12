@@ -20,6 +20,12 @@ from mosaiqtl.qtl.imputation import (
 _LOG10_TO_LN = np.log(10.0)
 
 
+def _se_from_lod(lod, beta):
+    """Per-SNP SE whose Wald z = beta/SE has z² = 2·ln(10)·LOD."""
+    lod = np.asarray(lod, dtype=float)
+    return np.abs(beta) / np.sqrt(2.0 * _LOG10_TO_LN * np.maximum(lod, 1e-12))
+
+
 # ── wakefield_abf ─────────────────────────────────────────────────────────────
 
 
@@ -128,7 +134,7 @@ class TestAbfPip:
         # A NaN LOD row must not produce a valid PIP through fine_map_region.
         lod = np.array([5.0, np.nan, 1.0, 0.5])
         beta = np.array([0.3, 0.1, 0.2, -0.1])
-        df = fine_map_region(lod, beta, n=418)
+        df = fine_map_region(lod, beta, _se_from_lod(lod, beta))
         # NaN-LOD SNP gets near-zero pip — not in the 95% CS
         nan_row = df[df["snp"] == 1]  # index 1 has NaN lod
         assert len(nan_row) == 0 or float(nan_row["pip"].iloc[0]) < 1e-6
@@ -224,24 +230,24 @@ class TestFineMapRegion:
 
     def test_output_columns_default(self, region):
         lod, beta = region
-        df = fine_map_region(lod, beta, n=50)
+        df = fine_map_region(lod, beta, _se_from_lod(lod, beta))
         assert list(df.columns) == ["snp", "lod", "z", "abf", "pip", "in_cs"]
 
     def test_output_columns_with_pos_mb(self, region):
         lod, beta = region
         pos = np.linspace(1.0, 5.0, len(lod))
-        df = fine_map_region(lod, beta, n=50, pos_mb=pos)
+        df = fine_map_region(lod, beta, _se_from_lod(lod, beta), pos_mb=pos)
         assert "pos_mb" in df.columns
         assert df.columns.tolist().index("pos_mb") == 1
 
     def test_sorted_by_pip_descending(self, region):
         lod, beta = region
-        df = fine_map_region(lod, beta, n=50)
+        df = fine_map_region(lod, beta, _se_from_lod(lod, beta))
         assert list(df["pip"]) == sorted(df["pip"], reverse=True)
 
     def test_in_cs_count_matches_credible_set(self, region):
         lod, beta = region
-        df = fine_map_region(lod, beta, n=50, coverage=0.95)
+        df = fine_map_region(lod, beta, _se_from_lod(lod, beta), coverage=0.95)
         cs_size = int(df["in_cs"].sum())
         pip = df["pip"].to_numpy()
         pip_sorted = np.sort(pip)[::-1]
@@ -251,18 +257,18 @@ class TestFineMapRegion:
 
     def test_pip_sums_to_one(self, region):
         lod, beta = region
-        df = fine_map_region(lod, beta, n=50)
+        df = fine_map_region(lod, beta, _se_from_lod(lod, beta))
         assert float(df["pip"].sum()) == pytest.approx(1.0, abs=1e-10)
 
     def test_snp_ids_used_when_provided(self, region):
         lod, beta = region
         ids = np.array([f"rs{i}" for i in range(len(lod))])
-        df = fine_map_region(lod, beta, n=50, snp_ids=ids)
+        df = fine_map_region(lod, beta, _se_from_lod(lod, beta), snp_ids=ids)
         assert set(df["snp"]) == set(ids)
 
     def test_n_row_count(self, region):
         lod, beta = region
-        df = fine_map_region(lod, beta, n=50)
+        df = fine_map_region(lod, beta, _se_from_lod(lod, beta))
         assert len(df) == len(lod)
 
 
@@ -352,7 +358,7 @@ class TestFineMapRegionLdAware:
         lod[3] = 7.0
         beta = np.ones(n_snps)
         ld_groups = {i: i // 2 for i in range(n_snps)}  # pairs
-        df = fine_map_region(lod, beta, n=100, ld_groups=ld_groups)
+        df = fine_map_region(lod, beta, _se_from_lod(lod, beta), ld_groups=ld_groups)
         assert float(df['pip'].sum()) == pytest.approx(1.0, abs=1e-8)
 
     def test_all_same_group_distributes_evenly(self):
@@ -360,7 +366,7 @@ class TestFineMapRegionLdAware:
         lod = np.array([1.0, 1.0, 8.0, 1.0, 1.0])
         beta = np.ones(n_snps)
         ld_groups = {i: 0 for i in range(n_snps)}  # all one group
-        df = fine_map_region(lod, beta, n=200, ld_groups=ld_groups)
+        df = fine_map_region(lod, beta, _se_from_lod(lod, beta), ld_groups=ld_groups)
         # one group, mass=1 split equally => each PIP = 1/n_snps
         np.testing.assert_allclose(
             sorted(df['pip'].tolist()),
@@ -375,7 +381,9 @@ class TestFineMapRegionLdAware:
         lod = np.array([5.0, 5.0, 5.0, 5.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0])
         beta = np.ones(n_snps)
         ld_groups = {i: 0 if i < 5 else 1 for i in range(n_snps)}
-        df = fine_map_region(lod, beta, n=100, ld_groups=ld_groups, coverage=0.90)
+        df = fine_map_region(
+            lod, beta, _se_from_lod(lod, beta), ld_groups=ld_groups, coverage=0.90
+        )
         cs_snps = set(df.loc[df['in_cs'], 'snp'].tolist())
         # signal group (0–4) must be in CS
         assert cs_snps.issuperset({0, 1, 2, 3, 4}), f'signal group missing: CS={cs_snps}'
@@ -388,7 +396,7 @@ class TestFineMapRegionLdAware:
         beta = np.ones(n_snps)
         # Group 0: SNPs 4+5 (signal), Group 1: remainder
         ld_groups = {4: 0, 5: 0, 0: 1, 1: 1, 2: 1, 3: 1, 6: 1, 7: 1}
-        df = fine_map_region(lod, beta, n=100, ld_groups=ld_groups)
+        df = fine_map_region(lod, beta, _se_from_lod(lod, beta), ld_groups=ld_groups)
         cs_snps = set(df.loc[df['in_cs'], 'snp'].tolist())
         # SNPs 4 and 5 are the signal group; they should be in the CS
         assert 4 in cs_snps and 5 in cs_snps
@@ -399,7 +407,9 @@ class TestFineMapRegionLdAware:
         lod = rng.uniform(1.0, 8.0, n_snps)
         beta = np.ones(n_snps)
         ld_groups = {i: i // 3 for i in range(n_snps)}  # groups of 3
-        df = fine_map_region(lod, beta, n=150, ld_groups=ld_groups, coverage=0.95)
+        df = fine_map_region(
+            lod, beta, _se_from_lod(lod, beta), ld_groups=ld_groups, coverage=0.95
+        )
         cs_pip_sum = float(df.loc[df['in_cs'], 'pip'].sum())
         assert cs_pip_sum >= 0.95 - 1e-8
 
@@ -408,5 +418,180 @@ class TestFineMapRegionLdAware:
         lod = np.ones(n_snps) * 2.0
         beta = np.ones(n_snps)
         ld_groups = {i: i % 3 for i in range(n_snps)}
-        df = fine_map_region(lod, beta, n=100, ld_groups=ld_groups)
+        df = fine_map_region(lod, beta, _se_from_lod(lod, beta), ld_groups=ld_groups)
         assert len(df) == n_snps
+
+
+# ── simulation checks ─────────────────────────────────────────────────────────
+
+
+def _ols_beta_se(d_std, y):
+    """Per-SNP simple-regression slope and SE for standardized dosages (n, m)."""
+    n = len(y)
+    yc = y - y.mean()
+    beta = d_std.T @ yc / n
+    rss = ((yc[:, None] - d_std * beta) ** 2).sum(axis=0)
+    se = np.sqrt(rss / (n - 2) / n)
+    return beta, se
+
+
+class TestFineMappingSimulation:
+    def test_credible_set_coverage_matches_nominal(self):
+        rng = np.random.default_rng(11)
+        n, n_snps, n_rep = 300, 40, 200
+        hits = 0
+        for _ in range(n_rep):
+            shared = rng.normal(size=(n, n_snps // 4))
+            noise = rng.normal(size=(n, n_snps))
+            d = np.repeat(shared, 4, axis=1) * 0.8 + noise * 0.6
+            d = (d - d.mean(axis=0)) / d.std(axis=0)
+            causal = int(rng.integers(n_snps))
+            y = 0.4 * d[:, causal] + rng.normal(size=n)
+            beta, se = _ols_beta_se(d, y)
+            lod = (n / 2.0) * np.log10(1.0 + (beta / se) ** 2 / (n - 2))
+            df = fine_map_region(
+                lod, beta, se, snp_ids=np.arange(n_snps), coverage=0.95
+            )
+            cs = set(df.loc[df["in_cs"], "snp"].tolist())
+            hits += causal in cs
+        assert hits / n_rep >= 0.90
+
+    def test_null_phenotype_calls_nothing_at_fdr(self):
+        from scipy import stats
+
+        from mosaiqtl.qtl.fdr import storey_qvalue
+
+        rng = np.random.default_rng(5)
+        n, n_genes = 100, 600
+        geno = rng.normal(size=(n, 1))
+        geno = (geno - geno.mean()) / geno.std()
+        pvals = np.empty(n_genes)
+        for g in range(n_genes):
+            y = rng.permutation(rng.normal(size=n))
+            beta, se = _ols_beta_se(geno, y)
+            pvals[g] = 2 * stats.t.sf(abs(beta[0] / se[0]), df=n - 2)
+        q, pi0 = storey_qvalue(pvals)
+        assert pi0 > 0.85
+        assert int((q < 0.05).sum()) <= 2
+
+
+# ── missing founder alleles in the SNP scan ───────────────────────────────────
+
+
+class TestMissingFounderAlleles:
+    @pytest.fixture
+    def scan_inputs(self, tiny_cache, tiny_kinship, strain_ids):
+        import pandas as pd
+
+        from mosaiqtl.genotype.kinship import decomp_kinship
+
+        founders = list(tiny_cache.founders)
+        rng = np.random.default_rng(3)
+        rows = {}
+        for i, pos in enumerate((20.0, 40.0)):
+            g = rng.integers(0, 2, size=len(founders)).astype(float)
+            g[0], g[1] = 0.0, 1.0
+            rows[f'full{i}'] = {'chr': '1', 'pos_mb': pos, **dict(zip(founders, g))}
+        withheld = {'chr': '1', 'pos_mb': 60.0}
+        withheld.update(
+            {f: (np.nan if j == 2 else float(j % 2)) for j, f in enumerate(founders)}
+        )
+        rows['missing'] = withheld
+        pheno = rng.normal(size=len(strain_ids))
+        return (
+            pheno,
+            pd.DataFrame.from_dict(rows, orient='index'),
+            decomp_kinship(tiny_kinship),
+        )
+
+    def test_snp_with_missing_founder_is_skipped(self, tiny_cache, scan_inputs):
+        from mosaiqtl.qtl.snp_scan import imputed_snp_scan_h2lmm
+
+        pheno, snp_genos, kd = scan_inputs
+        df = imputed_snp_scan_h2lmm(
+            pheno, tiny_cache, snp_genos, kinship_decomp=kd, use_rint=False
+        )
+        assert 'missing' not in set(df['snp'])
+        assert {'full0', 'full1'} <= set(df['snp'])
+
+    def test_missing_call_is_not_treated_as_ref(self, tiny_cache, scan_inputs):
+        from mosaiqtl.qtl import snp_scan
+
+        pheno, snp_genos, kd = scan_inputs
+        founders = list(tiny_cache.founders)
+        as_ref = snp_genos.copy()
+        as_ref[founders] = as_ref[founders].fillna(0.0)
+        df_missing = snp_scan.imputed_snp_scan_h2lmm(
+            pheno, tiny_cache, snp_genos, kinship_decomp=kd, use_rint=False
+        )
+        df_ref = snp_scan.imputed_snp_scan_h2lmm(
+            pheno, tiny_cache, as_ref, kinship_decomp=kd, use_rint=False
+        )
+        assert 'missing' in set(df_ref['snp'])
+        assert 'missing' not in set(df_missing['snp'])
+
+
+# ── end-to-end fine-mapping simulation (real scan → real fine-mapping) ────────
+
+
+class TestFineMappingEndToEnd:
+    """Phenotypes simulated from a planted SNP run through the actual SNP scan
+    and Bayesian fine-mapping, not through hand-built z-scores."""
+
+    N_REPS = 20
+    CAUSAL = 7
+
+    @pytest.fixture
+    def region(self, tiny_cache, tiny_kinship):
+        import pandas as pd
+
+        from mosaiqtl.genotype.kinship import decomp_kinship
+
+        founders = list(tiny_cache.founders)
+        _, pos, probs = tiny_cache.get_chromosome('1')
+        rng = np.random.default_rng(11)
+        rows = {}
+        for i, p in enumerate(pos):
+            g = rng.integers(0, 2, size=len(founders)).astype(float)
+            g[0], g[1] = 0.0, 1.0
+            rows[f'snp{i}'] = {'chr': '1', 'pos_mb': float(p), **dict(zip(founders, g))}
+        snp_genos = pd.DataFrame.from_dict(rows, orient='index')
+        causal_geno = snp_genos.loc[f'snp{self.CAUSAL}', founders].to_numpy(dtype=float)
+        dosage = probs[self.CAUSAL] @ causal_geno
+        return snp_genos, dosage, decomp_kinship(tiny_kinship)
+
+    def _fine_map(self, tiny_cache, snp_genos, kd, y):
+        from mosaiqtl.qtl.snp_scan import imputed_snp_scan_h2lmm
+
+        scan = imputed_snp_scan_h2lmm(
+            y, tiny_cache, snp_genos, kinship_decomp=kd, use_rint=False
+        )
+        return fine_map_region(
+            scan['lod'].to_numpy(),
+            scan['beta_dosage'].to_numpy(),
+            scan['se_dosage'].to_numpy(),
+            snp_ids=scan['snp'].to_numpy(),
+        )
+
+    def test_planted_snp_recovered_in_credible_set(self, tiny_cache, region):
+        snp_genos, dosage, kd = region
+        z = (dosage - dosage.mean()) / dosage.std()
+        hits = 0
+        for r in range(self.N_REPS):
+            noise = np.random.default_rng(100 + r).normal(scale=0.3, size=len(z))
+            fm = self._fine_map(tiny_cache, snp_genos, kd, 3.0 * z + noise)
+            hits += f'snp{self.CAUSAL}' in set(fm.loc[fm['in_cs'], 'snp'])
+        assert hits / self.N_REPS >= 0.8
+
+    def test_null_phenotype_gives_diffuse_posterior(self, tiny_cache, region):
+        snp_genos, dosage, kd = region
+        z = (dosage - dosage.mean()) / dosage.std()
+        null_top, planted_top = [], []
+        for r in range(self.N_REPS):
+            y_null = np.random.default_rng(500 + r).standard_normal(len(z))
+            noise = np.random.default_rng(900 + r).normal(scale=0.3, size=len(z))
+            null_top.append(self._fine_map(tiny_cache, snp_genos, kd, y_null)['pip'].max())
+            planted_top.append(
+                self._fine_map(tiny_cache, snp_genos, kd, 3.0 * z + noise)['pip'].max()
+            )
+        assert np.median(null_top) < np.median(planted_top)

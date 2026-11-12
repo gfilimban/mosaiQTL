@@ -20,6 +20,7 @@ from ._theme import (
     COLOR_UTR,
     CMAP_MAGNITUDE,
     CMAP_SIGNED as _CMAP_EFFECT,
+    FONT_STACK,
     KW_THRESHOLD,
     KW_REFERENCE,
     KW_DOT_MUTED,
@@ -3342,7 +3343,7 @@ def genome_diagnostic(
         fontsize=10,
         va="top",
         ha="left",
-        fontfamily=["Carlito", "Calibri", "DejaVu Sans"],
+        fontfamily=FONT_STACK,
         bbox=dict(
             boxstyle="round,pad=0.5",
             facecolor="white",

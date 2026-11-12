@@ -228,7 +228,7 @@ def merge_ld_groups(
 def fine_map_region(
     lod: np.ndarray,
     beta_dosage: np.ndarray,
-    n: int,
+    se_dosage: np.ndarray,
     snp_ids: np.ndarray | None = None,
     pos_mb: np.ndarray | None = None,
     ld_groups: "dict[int, int] | None" = None,
@@ -253,9 +253,11 @@ def fine_map_region(
     lod : np.ndarray
         Shape ``(n_snps,)``.  LOD scores at each SNP.
     beta_dosage : np.ndarray
-        Shape ``(n_snps,)``.  Dosage effect (sign only used for z-direction).
-    n : int
-        Sample size; SE estimated as ``1 / √n``.
+        Shape ``(n_snps,)``.  Per-SNP dosage effect from the association scan.
+    se_dosage : np.ndarray
+        Shape ``(n_snps,)``.  Wald standard error of each ``beta_dosage``.
+        The Wald z-score is ``beta_dosage / se_dosage``; SNPs with a
+        non-finite or non-positive SE are excluded from the posterior.
     snp_ids : np.ndarray or None, optional
         String SNP identifiers.  Defaults to integer indices.
     pos_mb : np.ndarray or None, optional
@@ -265,7 +267,7 @@ def fine_map_region(
         When provided, ABF is run on group representatives; all members of a
         group receive equal share of the group's posterior PIP.
     prior_var : float, optional
-        Wakefield prior effect variance (default 0.04).
+        Wakefield prior effect variance *W*, in the units of ``beta_dosage``.
     coverage : float, optional
         Credible-set coverage level (default 0.95).
 
@@ -277,18 +279,22 @@ def fine_map_region(
     """
     lod = np.asarray(lod, dtype=np.float64)
     beta_dosage = np.asarray(beta_dosage, dtype=np.float64)
+    se_dosage = np.asarray(se_dosage, dtype=np.float64)
     n_snps = len(lod)
-    se = 1.0 / np.sqrt(max(n, 1))
 
-    # SNPs that failed the association scan (NaN LOD or NaN dosage effect) cannot
-    # contribute a valid z-score; they are excluded from the posterior by receiving
-    # z=0 → ABF handled as absent evidence in abf_pip.
-    valid_mask = np.isfinite(lod) & np.isfinite(beta_dosage)
-    lod_valid = np.where(valid_mask, lod, 0.0)
+    # SNPs without a finite LOD, effect, or positive SE have no valid Wald
+    # statistic; they get a placeholder (z=0, SE=1) here and NaN ABF below.
+    valid_mask = (
+        np.isfinite(lod)
+        & np.isfinite(beta_dosage)
+        & np.isfinite(se_dosage)
+        & (se_dosage > 0)
+    )
     beta_valid = np.where(valid_mask, beta_dosage, 0.0)
+    se_valid = np.where(valid_mask, se_dosage, 1.0)
 
-    z = lod_beta_to_z(lod_valid, beta_valid)
-    abf = wakefield_abf(z, se, prior_var=prior_var)
+    z = beta_valid / se_valid
+    abf = wakefield_abf(z, se_valid, prior_var=prior_var)
     # ABF for invalid SNPs is set to NaN so abf_pip assigns them near-zero weight.
     abf = np.where(valid_mask, abf, np.nan)
 
