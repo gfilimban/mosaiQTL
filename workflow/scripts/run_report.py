@@ -65,6 +65,36 @@ def _gev_row(chrom: str, max_lods: np.ndarray) -> dict:
     return build_gev_row(chrom, max_lods)
 
 
+def _load_lod_subset(
+    path: Path, want_ids: set, chunksize: int = 500_000,
+) -> 'tuple[pd.DataFrame, dict[str, int]]':
+    """Stream the genome LOD table once, keeping only the rows of *want_ids*.
+
+    Returns the retained rows and the number of distinct loci per chromosome
+    (bare chromosome strings). Memory is bounded by one chunk plus the retained
+    rows, independent of the number of genes or loci scanned.
+    """
+    from mosaiqtl.utils import strip_chr_prefix
+    cols = list(pd.read_csv(path, nrows=0).columns)
+    locus_col = 'locus' if 'locus' in cols else 'pos_mb'
+    loci_by_chr: dict[str, set] = {}
+    kept = []
+    for chunk in pd.read_csv(
+        path,
+        dtype={'gene_id': str, 'chr': str, 'pos_mb': 'float32', 'lod': 'float32'},
+        chunksize=chunksize,
+    ):
+        chunk['chr'] = strip_chr_prefix(chunk['chr'])
+        for c, loci in chunk.groupby('chr')[locus_col]:
+            loci_by_chr.setdefault(c, set()).update(loci.unique())
+        sel = chunk[chunk['gene_id'].isin(want_ids)]
+        if not sel.empty:
+            kept.append(sel)
+        del chunk, sel
+    lod_df = pd.concat(kept, ignore_index=True) if kept else pd.DataFrame(columns=cols)
+    return lod_df, {c: len(s) for c, s in loci_by_chr.items()}
+
+
 def main() -> None:
     peak_lod_csv   = Path(sys.argv[1])
     egene_csv      = Path(sys.argv[2])
@@ -105,15 +135,24 @@ def main() -> None:
     # ── load dataframes ────────────────────────────────────────────────────────
     peak_df   = pd.read_csv(peak_lod_csv,   dtype={'gene_id': str, 'chr': str})
     egenes_df = pd.read_csv(egene_csv,      dtype={'gene_id': str, 'chr': str})
-    lod_df    = pd.read_csv(
-        lod_genome_csv,
-        dtype={'gene_id': str, 'chr': str, 'pos_mb': 'float32', 'lod': 'float32'},
-    )
-    for _df in (peak_df, egenes_df, lod_df):
+    for _df in (peak_df, egenes_df):
         _df['chr'] = strip_chr_prefix(_df['chr'])
 
     if 'significance' in egenes_df.columns and egenes_df['significance'].notna().any():
         egenes_df = egenes_df[egenes_df['significance'] == 'T']
+
+    # Plots draw the top gene per chromosome (by peak LOD, over all genes and over
+    # eGenes) and the fine-mapped eGenes; only those genes' LOD rows are loaded.
+    want_ids = set()
+    for _df in (peak_df, egenes_df):
+        _ok = _df.dropna(subset=['peak_lod'])
+        if not _ok.empty:
+            want_ids.update(_ok.loc[_ok.groupby('chr')['peak_lod'].idxmax(), 'gene_id'])
+    if finemap_arg != '-' and Path(finemap_arg).exists():
+        _fm_ids = pd.read_csv(finemap_arg, usecols=['gene_id'], dtype={'gene_id': str})['gene_id']
+        want_ids.update(set(_fm_ids) & set(egenes_df['gene_id']))
+    lod_df, n_loci_by_chr = _load_lod_subset(lod_genome_csv, want_ids)
+    log.info('LOD rows kept: %d for %d genes', len(lod_df), len(want_ids))
 
     egene_ids = set(egenes_df['gene_id'])
     is_egene  = peak_df['gene_id'].isin(egene_ids).to_numpy()
@@ -201,12 +240,8 @@ def main() -> None:
     _savefig(fig, f'{tag}_genome_diagnostic', out)
 
     # ── 3. loci_per_chr ───────────────────────────────────────────────────────
-    lod_chr_s = lod_df['chr'].astype(str)
-    chrs_ord  = sorted(lod_chr_s.unique(), key=chr_sort_key)
-    locus_col = 'locus' if 'locus' in lod_df.columns else 'pos_mb'
-    n_loci    = np.array(
-        [int(lod_df.loc[lod_chr_s == c, locus_col].nunique()) for c in chrs_ord], dtype=float
-    )
+    chrs_ord = sorted(n_loci_by_chr, key=chr_sort_key)
+    n_loci   = np.array([n_loci_by_chr[c] for c in chrs_ord], dtype=float)
     if n_loci.sum() > 0:
         ax  = loci_per_chr(chrs_ord, n_loci)
         fig = ax.figure
@@ -385,8 +420,7 @@ def main() -> None:
             from mosaiqtl.viz.finemap import locus_finemap_panel
             fm_df = pd.read_csv(finemap_arg, dtype={'gene_id': str, 'chr': str})
             fm_df['chr'] = strip_chr_prefix(fm_df['chr'])
-            lod_df_chr = lod_df.copy()
-            lod_df_chr['chr'] = lod_df_chr['chr'].astype(str)
+            lod_df_chr = lod_df
             for _, er in egenes_df.iterrows():
                 gid   = str(er['gene_id'])
                 chrom = str(er['chr'])
