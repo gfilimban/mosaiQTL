@@ -30,7 +30,7 @@ Writes:
 """
 import gc
 import re
-import sys, json, logging, datetime
+import sys, json, logging, datetime, warnings
 import numpy as np
 import pandas as pd
 import h5py
@@ -43,6 +43,12 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 log = logging.getLogger(__name__)
+
+# matplotlib reports font fallbacks (findfont) and per-glyph misses as one
+# message per label per figure; they bury the run log without changing output.
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
+warnings.filterwarnings('ignore', message=r'Glyph \d+ .* missing from font')
+warnings.filterwarnings('ignore', message=r'.*findfont.*')
 
 
 def _savefig(fig: 'plt.Figure', stem: str, out: Path) -> None:
@@ -85,7 +91,7 @@ def main() -> None:
     from mosaiqtl import __version__
     from mosaiqtl.genotype.cc import FOUNDER_ORDER, display_founders as _display_founders
     from mosaiqtl.io.results_io import write_eqtl_stats
-    from mosaiqtl.utils import chr_sort_key, git_hash
+    from mosaiqtl.utils import chr_sort_key, git_hash, strip_chr_prefix
     from mosaiqtl.viz.effects import effects_per_chr, genome_effects_grid
     from mosaiqtl.viz.genome import (
         cis_distance_histogram, cis_distance_panel, egene_lod_distribution,
@@ -99,7 +105,12 @@ def main() -> None:
     # ── load dataframes ────────────────────────────────────────────────────────
     peak_df   = pd.read_csv(peak_lod_csv,   dtype={'gene_id': str, 'chr': str})
     egenes_df = pd.read_csv(egene_csv,      dtype={'gene_id': str, 'chr': str})
-    lod_df    = pd.read_csv(lod_genome_csv, dtype={'gene_id': str, 'chr': str})
+    lod_df    = pd.read_csv(
+        lod_genome_csv,
+        dtype={'gene_id': str, 'chr': str, 'pos_mb': 'float32', 'lod': 'float32'},
+    )
+    for _df in (peak_df, egenes_df, lod_df):
+        _df['chr'] = strip_chr_prefix(_df['chr'])
 
     if 'significance' in egenes_df.columns and egenes_df['significance'].notna().any():
         egenes_df = egenes_df[egenes_df['significance'] == 'T']
@@ -373,6 +384,7 @@ def main() -> None:
         try:
             from mosaiqtl.viz.finemap import locus_finemap_panel
             fm_df = pd.read_csv(finemap_arg, dtype={'gene_id': str, 'chr': str})
+            fm_df['chr'] = strip_chr_prefix(fm_df['chr'])
             lod_df_chr = lod_df.copy()
             lod_df_chr['chr'] = lod_df_chr['chr'].astype(str)
             for _, er in egenes_df.iterrows():

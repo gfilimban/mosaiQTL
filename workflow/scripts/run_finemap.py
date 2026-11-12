@@ -61,8 +61,10 @@ def main() -> None:
         cap_egene_ci, EQTL_FINEMAPPING_COLS, EQTL_FINEMAPPING_PEAK_COLS,
         prepare_egenes_for_finemap,
     )
+    from mosaiqtl.utils import strip_chr_prefix
 
     egenes_df = pd.read_csv(egene_csv, dtype={'gene_id': str, 'chr': str})
+    egenes_df['chr'] = strip_chr_prefix(egenes_df['chr'])
     if chrom_filter:
         egenes_df = egenes_df[egenes_df['chr'] == chrom_filter].reset_index(drop=True)
         log.info('chr filter: %s  →  %d eGenes', chrom_filter, len(egenes_df))

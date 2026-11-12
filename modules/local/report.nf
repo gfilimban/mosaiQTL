@@ -1,6 +1,6 @@
 process REPORT {
 
-    label 'process_single'
+    label 'process_medium'
     tag   "${celltype}"
 
     publishDir { "${params.output_dir}/${celltype.replaceAll(/\s+/, '_')}/${scan_tag}/core"  }, mode: 'copy', pattern: '*.csv'

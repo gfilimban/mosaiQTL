@@ -708,6 +708,12 @@ def scan_multi_gene_lmm(
     if lod_path is not None:
         Path(lod_path).unlink(missing_ok=True)
 
+    _sym_map: "dict[str, str] | None" = None
+    if gene_meta is not None and "gene_symbol" in gene_meta.columns:
+        _sym_map = dict(
+            zip(gene_meta["gene_id"], gene_meta["gene_symbol"].fillna("").astype(str))
+        )
+
     peak_rows: "list[dict]" = []
     _lod_first = True
     t_total = time.perf_counter()
@@ -820,10 +826,12 @@ def scan_multi_gene_lmm(
             peak_rows.append(row)
 
             if lod_path is not None:
+                _sym = {} if _sym_map is None else {"gene_symbol": _sym_map.get(gene_id, "")}
                 for _i in range(len(lod_arr)):
                     _lod_rows.append(
                         {
                             "gene_id": gene_id,
+                            **_sym,
                             "chr": str(chrom),
                             "locus": str(lid_arr[_i]),
                             "pos_mb": float(pos_arr[_i]),

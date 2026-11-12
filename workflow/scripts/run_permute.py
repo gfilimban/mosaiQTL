@@ -57,14 +57,17 @@ def main() -> None:
     from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
     from mosaiqtl.qtl.permutation import generate_null_outcomes, pick_rep_gene, run_threshold_scans
     from mosaiqtl.qtl.thresholds import get_gev_thresholds
-    from mosaiqtl.utils import build_z_matrix
+    from mosaiqtl.utils import build_z_matrix, strip_chr_prefix
 
     log.info('START permute: tag=%s  n_perms=%d  seed=%d  method=%s  scan_type=%s',
              tag, n_perms, seed, perm_method, scan_type)
     t0 = time.perf_counter()
 
     peak_df     = pd.read_csv(peak_lod_csv, dtype={'chr': str})
+    peak_df['chr'] = strip_chr_prefix(peak_df['chr'])
     gene_tss_df = pd.read_csv(gene_tss_path, dtype={'chr': str}) if gene_tss_path else None
+    if gene_tss_df is not None:
+        gene_tss_df['chr'] = strip_chr_prefix(gene_tss_df['chr'])
 
     rep_id, rep_chr, rep_tss_mb, h2_med = pick_rep_gene(
         peak_df, chrom=None, gene_tss_df=gene_tss_df,

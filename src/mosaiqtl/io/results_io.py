@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats as _sp_stats
 
+from mosaiqtl.utils import add_chr_prefix
+
 from mosaiqtl.pipeline import (
     _FOUNDER_EFFECT_COLS,
     _SCAN_COLS,
@@ -190,7 +192,7 @@ def build_eqtl_peak_df(
     out = pd.DataFrame(index=effects_egenes_df.index)
     src = effects_egenes_df
 
-    out["chr"] = src.get("chr")
+    out["chr"] = add_chr_prefix(src["chr"]) if "chr" in src else None
     out["pos"] = (
         (src["peak_mb"] * 1e6).round().astype("Int64") if "peak_mb" in src else pd.NA
     )
@@ -276,6 +278,8 @@ def build_eqtl_stats_df(
         genome_row.setdefault("chr", "genome")
         rows.append(genome_row)
     out = pd.DataFrame(rows)
+    if "chr" in out.columns:
+        out["chr"] = add_chr_prefix(out["chr"])
     for col in EQTL_STATS_COLS:
         if col not in out.columns:
             out[col] = pd.NA
@@ -436,7 +440,9 @@ def build_eqtl_scan_df(
         peak_flag[int(np.argmax(lod_arr))] = "T"
 
         gene_frames.append(pd.DataFrame({
-            "chr": [locus_chr.get(lid, str(sr.chr)) for lid in sr.loci],
+            "chr": add_chr_prefix(
+                pd.Series([locus_chr.get(lid, str(sr.chr)) for lid in sr.loci])
+            ),
             "pos": pos_bp,
             "gene_id": gene_id,
             "gene_symbol": sym_map.get(gene_id, ""),

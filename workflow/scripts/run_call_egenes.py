@@ -61,9 +61,9 @@ def main() -> None:
         EGENE_SUMMARY_COLS, call_significant_egenes, finalize_egene_summary,
     )
     from mosaiqtl.qtl.thresholds import get_gev_thresholds
-    from mosaiqtl.utils import build_z_matrix
+    from mosaiqtl.utils import add_chr_prefix, build_z_matrix, strip_chr_prefix
 
-    peak_out    = out / f'{tag}_peak_lod.csv'
+    peak_out   = out / f'{tag}_peak_lod.csv'
     pval_out    = out / f'{tag}_pval_perm.json'
     summary_out = out / f'{tag}_eqtl_summary.csv'
     if peak_out.resolve() == peak_lod_csv.resolve():
@@ -90,10 +90,13 @@ def main() -> None:
 
     # ── tested genes: every gene with a peak enters calibration ───────────────
     peak_df   = pd.read_csv(peak_lod_csv, dtype={'gene_id': str, 'chr': str})
+    peak_df['chr'] = strip_chr_prefix(peak_df['chr'])
     tested_df = peak_df.dropna(subset=['gene_id', 'chr', 'peak_lod'])
     log.info('%d / %d genes tested', len(tested_df), len(peak_df))
     if len(tested_df) == 0:
-        peak_df.assign(is_egene=False).to_csv(peak_out, index=False)
+        empty_peak = peak_df.assign(is_egene=False)
+        empty_peak['chr'] = add_chr_prefix(empty_peak['chr'])
+        empty_peak.to_csv(peak_out, index=False)
         pval_out.write_text(json.dumps({}))
         pd.DataFrame(columns=EGENE_SUMMARY_COLS).to_csv(summary_out, index=False)
         log.info('no tested genes — wrote empty %s outputs', tag)
@@ -151,12 +154,17 @@ def main() -> None:
     significant_ids = set(significant_df['gene_id'].astype(str))
     peak_df = peak_df.copy()
     peak_df['is_egene'] = peak_df['gene_id'].astype(str).isin(significant_ids)
-    peak_df.to_csv(peak_out, index=False)
+    peak_out_df = peak_df.copy()
+    peak_out_df['chr'] = add_chr_prefix(peak_out_df['chr'])
+    peak_out_df.to_csv(peak_out, index=False)
     log.info('wrote %s (%d genes, %d eGenes)', peak_out, len(peak_df),
              peak_df['is_egene'].sum())
 
     final_df = finalize_egene_summary(significant_df, n_founders=len(gc.founders))
-    final_df.to_csv(summary_out, index=False)
+    summary_df = final_df.copy()
+    if 'chr' in summary_df.columns:
+        summary_df['chr'] = add_chr_prefix(summary_df['chr'])
+    summary_df.to_csv(summary_out, index=False)
     log.info('wrote %s (%d eGenes)', summary_out, len(final_df))
 
 
