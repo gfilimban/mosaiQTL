@@ -4,7 +4,7 @@ build-backend = 'setuptools.build_meta'
 
 [project]
 name = 'mosaiqtl'
-version = '0.6.7'
+version = '0.7.0'
 description = 'Haplotype-based QTL mapping for multiparent populations; NB-GLMM primary, Gaussian LMM port, LOCO kinship'
 license = { text = 'GPL-3.0-or-later' }
 readme = 'README.md'
