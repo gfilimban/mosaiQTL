@@ -21,8 +21,9 @@ from ..genotype.cc import (
     COLOR_NEUTRAL_DARK,
     COLOR_CC_FALLBACK,
 )
+from ._theme import FONT_STACK
 
-logger = logging.getLogger("mosaiqtl")
+logger =logging.getLogger("mosaiqtl")
 
 # semantic aliases for validation scatter convention (R=red x-axis, Python=blue y-axis)
 _COLOR_PY = FOUNDER_COLORS["NODJ"]  # python points — blue
@@ -40,7 +41,7 @@ def set_style():
     plt.rcParams.update(
         {
             "font.family": "sans-serif",
-            "font.sans-serif": ["Carlito", "DejaVu Sans", "Arial"],
+            "font.sans-serif": FONT_STACK,
             "font.size": 11,
             "axes.titlesize": 13,
             "axes.labelsize": 12,

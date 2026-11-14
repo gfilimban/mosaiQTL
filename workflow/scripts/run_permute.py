@@ -57,13 +57,17 @@ def main() -> None:
     from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
     from mosaiqtl.qtl.permutation import generate_null_outcomes, pick_rep_gene, run_threshold_scans
     from mosaiqtl.qtl.thresholds import get_gev_thresholds
+    from mosaiqtl.utils import build_z_matrix, strip_chr_prefix
 
     log.info('START permute: tag=%s  n_perms=%d  seed=%d  method=%s  scan_type=%s',
              tag, n_perms, seed, perm_method, scan_type)
     t0 = time.perf_counter()
 
     peak_df     = pd.read_csv(peak_lod_csv, dtype={'chr': str})
+    peak_df['chr'] = strip_chr_prefix(peak_df['chr'])
     gene_tss_df = pd.read_csv(gene_tss_path, dtype={'chr': str}) if gene_tss_path else None
+    if gene_tss_df is not None:
+        gene_tss_df['chr'] = strip_chr_prefix(gene_tss_df['chr'])
 
     rep_id, rep_chr, rep_tss_mb, h2_med = pick_rep_gene(
         peak_df, chrom=None, gene_tss_df=gene_tss_df,
@@ -79,8 +83,13 @@ def main() -> None:
     elif scan_type == 'C':
         perm_chrom = rep_chr
         log.info('C-mode chr-wide null: chr%s', perm_chrom)
-    else:
+    elif scan_type == 'G':
         log.info('G-mode genome-wide null')
+    else:
+        raise ValueError(
+            f"scan_type must be 'C', 'G', or 'L' with window_mb > 0; "
+            f'got scan_type={scan_type!r} window_mb={window_mb}'
+        )
 
     counts, _, sample_ids = load_expression_h5(pheno_path, [rep_id])
     y = counts[0].astype(np.float64)
@@ -95,6 +104,8 @@ def main() -> None:
     cov_cols = [c for c in covariates.split(',') if c.strip()]
     cov_arr  = build_cov_array(meta_df, sample_ids, cov_cols)
 
+    Z, _ = build_z_matrix(geno_ids, list(gc.sample_ids))
+
     log.info('generating %d null outcomes …', n_perms)
     null_outcomes = generate_null_outcomes(y, n_perms=n_perms, seed=seed)
     log.info('running threshold scans …')
@@ -104,7 +115,8 @@ def main() -> None:
         covariates=cov_arr,
         kinship_decomp=kinship_decomp,
         permutation_method=perm_method,
-        sample_ids=geno_ids,
+        z_mat=Z,
+        ref_chrom=rep_chr,
         chrom=perm_chrom,
         gene_pos_mb=perm_tss_mb,
         window_mb=window_mb if perm_chrom is not None else None,

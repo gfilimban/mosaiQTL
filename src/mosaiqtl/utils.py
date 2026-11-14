@@ -42,6 +42,31 @@ def chr_sort_key(c: str) -> int:
     return {"X": 20, "Y": 21}.get(s.upper(), 99)
 
 
+def add_chr_prefix(values: "pd.Series") -> "pd.Series":
+    """Return chromosome labels as ``'chr{N}'`` strings.
+
+    Labels that already start with ``'chr'`` and non-chromosome labels
+    (e.g. ``'genome'``) pass through unchanged, so the call is idempotent.
+
+    Parameters
+    ----------
+    values : pd.Series
+        Chromosome labels such as ``'1'``, ``'19'``, ``'X'``.
+
+    Returns
+    -------
+    pd.Series of str
+    """
+    s = values.astype(str)
+    skip = s.str.startswith("chr") | (s == "genome") | (s == "nan")
+    return s.where(skip, "chr" + s)
+
+
+def strip_chr_prefix(values: "pd.Series") -> "pd.Series":
+    """Return chromosome labels without a leading ``'chr'`` (``'chr19'`` → ``'19'``)."""
+    return values.astype(str).str.replace(r"^chr", "", regex=True)
+
+
 def rint(x):
     """rank-based inverse normal transformation (Blom formula).
 

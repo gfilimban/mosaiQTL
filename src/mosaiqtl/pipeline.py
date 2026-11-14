@@ -29,6 +29,7 @@ quick start:
                 conditional_scan_kwargs={'n_signals': 3})
 """
 
+import re
 import numpy as np
 import logging
 from dataclasses import dataclass, field
@@ -263,12 +264,23 @@ EQTL_FINEMAPPING_COLS: list[str] = [
     "h2_null_chr", "sd_phenotype", "n_sample",
 ]
 
+# Lead SNP PIP below this value indicates the locus did not resolve to a credible
+# causal SNP — the haplotype signal is real but no Sanger SNP in the CI window
+# captures it (missing variant, complex allele pattern, or low LD in CC strains).
+CS_RESOLVED_PIP_THRESHOLD: float = 0.10
+
 # Sanger fine-mapping peak — one row per eGene (highest-PIP CS member).
-# lead_snp dropped (redundant for a single-row-per-gene file); founder betas
-# added here (haplotype-peak property, not per-SNP, so excluded from EQTL_FINEMAPPING_COLS).
-EQTL_FINEMAPPING_PEAK_COLS: list[str] = [
-    c for c in EQTL_FINEMAPPING_COLS if c != "lead_snp"
-] + _FOUNDER_EFFECT_COLS
+# lead_snp dropped (redundant for a single-row-per-gene file); cs_resolved flags
+# whether the locus resolved to a credible SNP candidate (lead pip >= threshold);
+# founder betas added here (haplotype-peak property, not per-SNP).
+_FM_PEAK_BASE: list[str] = [c for c in EQTL_FINEMAPPING_COLS if c != "lead_snp"]
+_pip_idx = _FM_PEAK_BASE.index("pip") + 1
+EQTL_FINEMAPPING_PEAK_COLS: list[str] = (
+    _FM_PEAK_BASE[:_pip_idx]
+    + ["cs_resolved"]
+    + _FM_PEAK_BASE[_pip_idx:]
+    + _FOUNDER_EFFECT_COLS
+)
 
 # Imputed SNP association scan inside each eGene's LOD-drop CI — the input to
 # Sanger fine-mapping.  Haplotype-peak context columns, then the per-SNP scan
@@ -334,12 +346,14 @@ __all__ = [
     "CI_COLS",
     "EQTL_SCAN_COLS",
     "EQTL_PEAK_COLS",
+    "CS_RESOLVED_PIP_THRESHOLD",
     "EQTL_FINEMAPPING_COLS",
     "EQTL_FINEMAPPING_PEAK_COLS",
     "EQTL_STATS_COLS",
     "IMPUTED_SNP_COLS",
     "call_egenes",
     "calibrate_egenes_storey",
+    "call_significant_egenes",
     "cap_egene_ci",
     "enrich_peak_lod",
     "finalize_egene_summary",
@@ -582,36 +596,213 @@ def call_egenes(
     return egenes.reset_index(drop=True)
 
 
+_LOCAL_TAG_RE = re.compile(r'^Lw(\d+(?:\.\d+)?)$')
+
+
+def _calibrate_pvalues_loop(
+    egenes_df: pd.DataFrame,
+    genomecache: "GenomeCache",
+    pheno_mat: np.ndarray,
+    gene_idx: "dict[str, int]",
+    covariates: "np.ndarray | None",
+    kinship_loco: dict,
+    tss_map: "dict[str, float]",
+    sym_map: "dict[str, str]",
+    scan_local: bool,
+    window_mb: float,
+    n_perms: int,
+    use_rint: bool,
+    z_mat: "np.ndarray | None",
+    valid_mask: "np.ndarray | None",
+    seed: int,
+) -> "dict[str, float]":
+    """per-gene calibrated p-values from a null built the way the real scan is built.
+
+    phenotype, covariates and kinship are at sample level: y and x are restricted
+    to genotyped samples, K_n = Z K_m Z^T is eigendecomposed once per chromosome
+    (genes are grouped by chromosome), and each gene's null reuses its own
+    heritability, RINT setting and locus window. each gene draws from its own
+    seed stream so results do not depend on gene order. genes whose calibration
+    cannot be computed get NaN and are counted in one summary warning.
+    """
+    import zlib
+
+    from .qtl import lmm as lmm_module
+    from .qtl.fdr import calibrate_gene_pvalue as _cal
+    from .qtl.permutation import KinshipSingularError
+
+    valid = (valid_mask if valid_mask is not None
+             else np.ones(pheno_mat.shape[1], dtype=bool))
+    z_sub = z_mat[valid] if z_mat is not None else None
+    x = (covariates[valid] if covariates is not None
+         else np.ones((int(valid.sum()), 1)))
+    if not np.allclose(x[:, 0], 1.0):
+        x = np.hstack([np.ones((len(x), 1)), x])
+
+    pval_perm: dict[str, float] = {}
+    n_failed = 0
+    n_total = len(egenes_df)
+    n_done = 0
+    for chrom, grp in egenes_df.groupby(egenes_df['chr'].astype(str), sort=False):
+        k_m = kinship_loco[chrom]
+        k_n = z_sub @ k_m @ z_sub.T if z_sub is not None else k_m
+        ev, evc = np.linalg.eigh(k_n)
+        decomp = {chrom: {'values': ev, 'vectors': evc}}
+        loco = {chrom: k_n}
+        chr_data = lmm_module.precompute_chromosome(
+            genomecache, chrom, ev, evc, z_sub, 'additive')
+        for _, row in grp.iterrows():
+            n_done += 1
+            gid = str(row['gene_id'])
+            sym = sym_map.get(gid, gid)
+            logger.info('  calibrate [%d/%d] %s chr%s', n_done, n_total, sym, chrom)
+            if gid not in gene_idx:
+                pval_perm[gid] = float('nan')
+                n_failed += 1
+                continue
+            gene_seed = int(np.random.SeedSequence(
+                [seed, zlib.crc32(gid.encode())]).generate_state(1)[0])
+            try:
+                p_adj, _, _, _ = _cal(
+                    y_gene=pheno_mat[gene_idx[gid]][valid],
+                    genomecache=genomecache,
+                    chrom=chrom,
+                    peak_lod=float(row['peak_lod']),
+                    covariates=x,
+                    kinship_decomp=decomp,
+                    kinship_loco=loco,
+                    n_perms=n_perms,
+                    gene_pos_mb=tss_map.get(gid) if scan_local else None,
+                    window_mb=window_mb if scan_local else None,
+                    use_rint=use_rint,
+                    z_mat=z_sub,
+                    seed=gene_seed,
+                    chr_data=chr_data,
+                )
+                pval_perm[gid] = float(p_adj)
+            except (ValueError, np.linalg.LinAlgError, KinshipSingularError) as exc:
+                logger.debug('calibration failed for %s: %s', sym, exc)
+                pval_perm[gid] = float('nan')
+                n_failed += 1
+        del k_n, ev, evc, decomp, loco, chr_data
+    if n_failed:
+        logger.warning('calibration produced no p-value for %d / %d genes',
+                       n_failed, n_total)
+    return pval_perm
+
+
 def calibrate_egenes_storey(
     egenes_df: pd.DataFrame,
-    pval_perm: "dict[str, float] | pd.Series",
+    pval_perm: "dict[str, float] | pd.Series | None" = None,
     gene_col: str = "gene_id",
     fdr_threshold: float = 0.05,
+    *,
+    genomecache: "GenomeCache | None" = None,
+    pheno_mat: "np.ndarray | None" = None,
+    gene_idx: "dict[str, int] | None" = None,
+    covariates: "np.ndarray | None" = None,
+    kinship_loco: "dict | None" = None,
+    stag: str = "C",
+    gene_info_df: "pd.DataFrame | None" = None,
+    n_perms: int = 200,
+    use_rint: bool = True,
+    z_mat: "np.ndarray | None" = None,
+    valid_mask: "np.ndarray | None" = None,
+    seed: int = 1,
 ) -> pd.DataFrame:
-    """Populate the significance block (_SIG_COLS) via per-gene Beta + Storey.
+    """eGene calling: per-gene Beta calibration + Storey q-value FDR.
 
-    Stage-2 of eGene calling: takes genes that already cleared call_egenes'
-    Stage-1 threshold gate, attaches their per-gene Beta-calibrated
-    permutation p-value (produced upstream, one call to
-    qtl.permutation.calibrate_gene_pvalue per gene), estimates π₀ and
-    q-values across them via Storey's method, and gates the final
-    significance call on q ≤ fdr_threshold rather than the raw LOD.
+    Accepts either pre-computed per-gene p-values (``pval_perm``) or the scan
+    inputs needed to compute them on the fly.  The q-value is estimated over
+    every row of ``egenes_df``, so the frame should hold all tested genes.
+    When computing on the fly, each gene's null is simulated at sample level
+    from its own heritability and the per-chromosome LOCO kinship expanded
+    through ``z_mat``, and is restricted to the same locus window as the real
+    scan — decoded from the scan tag ``stag`` — so the null and real
+    distributions share one LOD scale.
+
+    The scan tag encodes the window policy: ``'Lw<N>'`` (e.g. ``'Lw1'``) is a
+    local ±N Mb window; anything else uses the whole chromosome.  Drawing the
+    null over a wider window than the real scan inflates null max-LODs and
+    drives calibrated p-values toward 1, collapsing FDR power.
 
     Parameters
     ----------
-    egenes_df     : DataFrame from call_egenes — must contain gene_col.
-    pval_perm     : dict or Series {gene_col value: p_adj} — the calibrated
-        p-value for each gene, as returned by
-        qtl.permutation.calibrate_gene_pvalue.
-    gene_col      : join key present in both egenes_df and pval_perm.
-    fdr_threshold : q-value cutoff for significance (default 0.05).
+    egenes_df      : tested-gene table — must contain gene_col and chr,
+                     peak_lod columns.
+    pval_perm      : pre-computed {gene_id: p_adj} dict or Series.  When
+                     ``None``, the remaining keyword arguments must supply
+                     the scan inputs for on-the-fly calibration.
+    gene_col       : join key in egenes_df (default ``'gene_id'``).
+    fdr_threshold  : q-value cutoff (default 0.05).
+    genomecache    : GenomeCache; required when pval_perm is None.
+    pheno_mat      : (n_genes, n_samples) expression matrix; required when
+                     pval_perm is None.
+    gene_idx       : {gene_id: row_index_in_pheno_mat}; required when
+                     pval_perm is None.
+    covariates     : (n_samples, p) covariate matrix, or None.
+    kinship_loco   : {chrom: np.ndarray} strain-level LOCO kinship matrices.
+    stag           : scan tag used to derive the window restriction.
+    gene_info_df   : annotation table (gene_id, start, end, chr) for TSS
+                     lookup; used when stag is a local-window tag.
+    n_perms        : parametric null permutations per gene.
+    use_rint       : apply RINT to y_gene before scanning.
+    z_mat          : (n_samples, n_strains) sample-to-strain design matrix.
+    valid_mask     : (n_strains,) bool mask.
+    seed           : base RNG seed; each gene derives its own stream.
 
     Returns
     -------
-    DataFrame — egenes_df with pval_perm, fdr, fdr_method, significance
-    columns added/overwritten (_SIG_COLS).
+    DataFrame — egenes_df with pval_perm, fdr, fdr_method, significance added.
     """
     from .qtl import fdr as fdr_module
+    from .utils import build_tss_lookup
+
+    if pval_perm is None:
+        if genomecache is None or pheno_mat is None or gene_idx is None:
+            raise ValueError(
+                'genomecache, pheno_mat, and gene_idx are required '
+                'when pval_perm is not pre-computed'
+            )
+
+        _m = _LOCAL_TAG_RE.match(str(stag))
+        _scan_local = _m is not None
+        _window_mb  = float(_m.group(1)) if _m else 0.0
+        if not _scan_local and str(stag) != 'C':
+            raise ValueError(
+                f"calibration supports C (cis) and L (local, tag 'Lw<window>') scans; "
+                f"got {stag!r}"
+            )
+
+        tss_map: dict[str, float] = {}
+        if _scan_local:
+            if gene_info_df is not None:
+                try:
+                    tss_map = build_tss_lookup(gene_info_df)
+                except Exception as exc:
+                    logger.warning('build_tss_lookup failed: %s', exc)
+            for _col in ('tss_mb', 'near_tss_mb', 'start_mb'):
+                if _col in egenes_df.columns:
+                    for _, _r in egenes_df.iterrows():
+                        _gid, _v = str(_r[gene_col]), _r[_col]
+                        if pd.notna(_v) and _gid not in tss_map:
+                            tss_map[_gid] = float(_v)
+                    break
+
+        sym_map: dict[str, str] = {}
+        if 'gene_symbol' in egenes_df.columns:
+            sym_map = dict(zip(egenes_df[gene_col].astype(str),
+                               egenes_df['gene_symbol'].astype(str)))
+        elif gene_info_df is not None and 'gene_symbol' in gene_info_df.columns:
+            sym_map = dict(zip(gene_info_df['gene_id'].astype(str),
+                               gene_info_df['gene_symbol'].astype(str)))
+
+        pval_perm = _calibrate_pvalues_loop(
+            egenes_df, genomecache, pheno_mat, gene_idx,
+            covariates, kinship_loco,
+            tss_map, sym_map, _scan_local, _window_mb,
+            n_perms, use_rint, z_mat, valid_mask, seed,
+        )
 
     out = egenes_df.copy()
     pv = pval_perm if isinstance(pval_perm, pd.Series) else pd.Series(pval_perm)
@@ -624,12 +815,109 @@ def calibrate_egenes_storey(
 
     logger.info(
         "calibrate_egenes_storey: n_genes=%d  pi0=%.4f  n_egenes(fdr<=%.2f)=%d",
-        len(out),
-        pi0,
-        fdr_threshold,
-        int((out["significance"] == "T").sum()),
+        len(out), pi0, fdr_threshold, int((out["significance"] == "T").sum()),
     )
     return out
+
+
+def call_significant_egenes(
+    peak_df: pd.DataFrame,
+    *,
+    genomecache: "GenomeCache",
+    pheno_mat: np.ndarray,
+    gene_idx: "dict[str, int]",
+    covariates: "np.ndarray | None",
+    kinship_decomp: dict,
+    kinship_loco: dict,
+    sample_ids: "list[str]",
+    stag: str,
+    gene_info_df: "pd.DataFrame | None",
+    fdr_threshold: float,
+    n_perms: int,
+    use_rint: bool,
+    z_mat: "np.ndarray | None",
+    valid_mask: "np.ndarray | None",
+    seed: int,
+) -> pd.DataFrame:
+    """Call eGenes over every tested gene: Beta calibration, Storey q-value, effects.
+
+    The q-value is estimated from the p-values of all genes with a peak, because
+    its pi0 estimate and rank-based error count assume null p-values are uniform
+    over the full tested set. Selecting genes by their peak LOD first would
+    concentrate the surviving null p-values near zero. Founder effects are
+    computed afterwards, only for genes called significant.
+
+    Parameters
+    ----------
+    peak_df        : per-gene peak table with gene_id, chr, peak_lod, peak_locus.
+        Rows missing gene_id, chr or peak_lod are not tested.
+    genomecache    : GenomeCache holding the haplotype probabilities.
+    pheno_mat      : (n_genes, n_samples) expression matrix.
+    gene_idx       : {gene_id: row index in pheno_mat}.
+    covariates     : (n_samples, p) covariate matrix, or None.
+    kinship_decomp : {chrom: {'values', 'vectors'}} strain-level decomposition.
+    kinship_loco   : {chrom: ndarray} strain-level LOCO kinship.
+    sample_ids     : genotype-level ID of each column of pheno_mat.
+    stag           : scan tag giving the locus window (C or Lw<window>).
+    gene_info_df   : annotation table with gene_id and gene_symbol / coordinates.
+    fdr_threshold  : q-value cutoff.
+    n_perms        : parametric null draws per gene.
+    use_rint       : apply RINT to the phenotype before scanning.
+    z_mat, valid_mask : sample-to-strain design matrix and strain validity mask.
+    seed           : base seed; each gene derives its own stream from it.
+
+    Returns
+    -------
+    DataFrame with one row per tested gene: the peak columns plus pval_perm,
+    fdr, fdr_method, significance, and beta_<founder> columns filled for
+    significant genes.
+    """
+    from .qtl.effects import get_allele_effects
+
+    tested = (peak_df.dropna(subset=["gene_id", "chr", "peak_lod"])
+              .reset_index(drop=True))
+    called = calibrate_egenes_storey(
+        tested,
+        fdr_threshold=fdr_threshold,
+        genomecache=genomecache,
+        pheno_mat=pheno_mat,
+        gene_idx=gene_idx,
+        covariates=covariates,
+        kinship_loco=kinship_loco,
+        stag=stag,
+        gene_info_df=gene_info_df,
+        n_perms=n_perms,
+        use_rint=use_rint,
+        z_mat=z_mat,
+        valid_mask=valid_mask,
+        seed=seed,
+    )
+
+    significant = called[called["significance"] == "T"]
+    logger.info("allele effects: %d significant eGenes", len(significant))
+    rows: list[dict] = []
+    for i, (_, row) in enumerate(significant.iterrows(), 1):
+        gid, chrom = str(row["gene_id"]), str(row["chr"])
+        locus = str(row.get("peak_locus", ""))
+        if gid not in gene_idx or not locus or locus == "nan":
+            continue
+        logger.info("  effects [%d/%d] %s chr%s", i, len(significant), gid, chrom)
+        effects = get_allele_effects(
+            phenotype=pheno_mat[gene_idx[gid]],
+            genomecache=genomecache,
+            locus_id=locus,
+            chrom=chrom,
+            kinship_decomp=kinship_decomp,
+            covariates=covariates,
+            sample_ids=sample_ids,
+            use_rint=use_rint,
+        )
+        rows.append({"gene_id": gid,
+                     **{f"beta_{fe.founder}": fe.estimate for fe in effects}})
+    if rows:
+        eff_df = pd.DataFrame(rows)
+        called = called.merge(eff_df, on="gene_id", how="left")
+    return called
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1126,10 +1414,7 @@ def impute_egene(
             ref_allele = str(arow.get(ref_f, ""))
             f_alleles = {f: str(arow.get(f, "")) for f in f_order}
             valid = {f: a for f, a in f_alleles.items() if a and a != "N"}
-            n_total = len(valid)
-            n_alt = sum(1 for a in valid.values() if a != ref_allele)
             alt_set = {a for a in valid.values() if a != ref_allele}
-            _af = n_alt / n_total if n_total > 0 else float("nan")
             alt_allele = next(iter(alt_set), "")
             ann_rows.append(
                 {
@@ -1148,12 +1433,22 @@ def impute_egene(
                     "alt_founders": ",".join(
                         f for f in f_order if valid.get(f) != ref_allele and f in valid
                     ),
-                    "af": _af,
-                    "maf": min(_af, 1.0 - _af) if not np.isnan(_af) else float("nan"),
                 }
             )
         ann_df = pd.DataFrame(ann_rows)
         _snp_idx = snp_df.set_index("snp")
+        # af/maf/mac/ma_sample: mean haplotype-probability-weighted dosage
+        # across the CC sample, giving the realized ALT allele frequency in
+        # this cohort at each SNP position.
+        _dosage_mean = ann_df["snp"].map(_snp_idx["dosage_mean"])
+        _maf_col = _dosage_mean.apply(
+            lambda x: min(x, 1.0 - x) if pd.notna(x) else float("nan")
+        )
+        _n_col = ann_df["snp"].map(_snp_idx["n"])
+        ann_df["af"]        = _dosage_mean
+        ann_df["maf"]       = _maf_col
+        ann_df["mac"]       = (_maf_col * _n_col).round().astype("Int64")
+        ann_df["ma_sample"] = ann_df["mac"]
         ann_df["effect_size"] = ann_df["snp"].map(_snp_idx["beta_dosage"])
         # Wald inversion: se = |beta| / |z|, z = sqrt(2·ln10·lod)
         _beta_abs = ann_df["snp"].map(_snp_idx["beta_dosage"]).abs()
@@ -1165,7 +1460,7 @@ def impute_egene(
         snp_df = snp_df.merge(ann_df, on="snp", how="left")
     else:
         for col in ("ref", "alt", "ref_founders", "alt_founders", "af", "maf",
-                    "effect_size", "se_effect_size"):
+                    "mac", "ma_sample", "effect_size", "se_effect_size"):
             snp_df[col] = pd.NA
 
     result_df = snp_df[IMPUTED_SNP_COLS].copy()
@@ -1269,11 +1564,11 @@ def impute_egenes(
                 gene_symbol="" if pd.isna(sym) else str(sym),
             )
             if result is not None and not result.empty:
-                # extract LD payload before concat drops attrs
                 _ld = result.attrs.get("_ld")
                 _sp = result.attrs.get("_snp_patterns")
                 if _ld is not None and _sp is not None:
                     ld_by_gene[gid] = {"ld": _ld, "snp_patterns": _sp}
+                result.attrs.clear()
                 frames.append(result)
 
     if not frames:
@@ -1361,7 +1656,7 @@ def finemap_imputed(
         fm_df = fine_map_region(
             lod=g["lod"].to_numpy(dtype=float),
             beta_dosage=g["beta_dosage"].to_numpy(dtype=float),
-            n=int(first["n"]),
+            se_dosage=g["se_dosage"].to_numpy(dtype=float),
             snp_ids=g["snp"].to_numpy(),
             pos_mb=g["pos_mb"].to_numpy(dtype=float),
             ld_groups=_ld_groups,

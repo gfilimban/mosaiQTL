@@ -1,0 +1,32 @@
+# mosaiQTL NF — gastroc nova all-subtypes HPC params (UCI DFS9)
+# Run: NXF_CACHE_DIR=.nf_cache/gastroc/subtypes nextflow run workflow/main.nf -profile slurm,gastroc_st -params-file config/gastroc_hpc_params_subtype.yaml -resume
+# Run: nextflow run workflow/main.nf -profile slurm -params-file config/gastroc_hpc_params_subtype.yaml -resume
+
+genomecache:    '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/igvf_cache.h5'
+gene_info:      null          # per-subtype gene_info resolved from celltypes_dir subdirs
+gene_tss:       '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/gene_tss.vm36.csv'
+metadata:       '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/igvf_sample_metadata.csv'
+sanger_alleles: '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/sanger_alleles.h5'
+
+# multi-subtype mode — one subdir per subtype, each containing counts_lognorm.h5
+celltypes_dir:  '/dfs9/seyedam-lab/share/igvf_qtl/output/gastroc/nova/subtypes'
+celltypes:      'all'
+
+tissue:         'gastroc'
+
+scan_type:      'L'
+window_mb:      1.0
+chroms:         'all'
+covariates:     'sex,dataset'
+use_rint:       true
+
+n_perms:        1000
+n_perms_cal:    1000
+perm_method:    'parametric'
+fdr_threshold:  0.05
+seed:           42
+
+n_bootstrap:    1000
+gtf:            '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/IGVFFI4777RDZK.gtf.gz'
+
+output_dir:     '/dfs9/seyedam-lab/share/igvf_qtl/output/gastroc/nova/subtypes'

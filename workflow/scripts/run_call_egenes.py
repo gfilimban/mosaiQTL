@@ -11,13 +11,16 @@ estimated on the same transformed phenotype so betas remain on the scan scale.
 Set to 0 when the scan ran without RINT (Gaussian phenotypes).  NB-GLMM path
 does not use this flag.
 
-<perm_max_lods.csv> is the genome-wide max-LOD null written by PERMUTE.
+<perm_max_lods.csv> is the genome-wide max-LOD null written by PERMUTE; it
+supplies the reference LOD threshold that is logged for QC.
 <peak_lod.csv> is read only; outputs are always new files.
+Every gene with a peak is calibrated and enters the Storey q-value; founder
+effects are computed for significant genes only.
 Writes:
-  {tag}_peak_lod.csv     — all genes with is_egene flag added
+  {tag}_peak_lod.csv     — all tested genes with is_egene flag added
   {tag}_pval_perm.json   — per-gene calibrated p-values {gene_id: float}
-  {tag}_eqtl_summary.csv — eGenes only, with founder effects + Storey q-value
-All three are written (empty / header-only) when no gene clears Stage-1.
+  {tag}_eqtl_summary.csv — significant eGenes only, with founder effects + q-value
+All three are written (empty / header-only) when no gene has a peak.
 """
 import sys, json, logging
 import numpy as np
@@ -55,14 +58,12 @@ def main() -> None:
     from mosaiqtl.io.anndata_io import load_expression_h5
     from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
     from mosaiqtl.pipeline import (
-        EGENE_SUMMARY_COLS, call_egenes, calibrate_egenes_storey, finalize_egene_summary,
+        EGENE_SUMMARY_COLS, call_significant_egenes, finalize_egene_summary,
     )
-    from mosaiqtl.qtl.effects import get_allele_effects
-    from mosaiqtl.qtl.fdr import calibrate_gene_pvalue
     from mosaiqtl.qtl.thresholds import get_gev_thresholds
-    from mosaiqtl.utils import build_z_matrix, reduce_to_strain_means
+    from mosaiqtl.utils import add_chr_prefix, build_z_matrix, strip_chr_prefix
 
-    peak_out    = out / f'{tag}_peak_lod.csv'
+    peak_out   = out / f'{tag}_peak_lod.csv'
     pval_out    = out / f'{tag}_pval_perm.json'
     summary_out = out / f'{tag}_eqtl_summary.csv'
     if peak_out.resolve() == peak_lod_csv.resolve():
@@ -80,17 +81,25 @@ def main() -> None:
     if threshold is None:
         threshold = float(np.quantile(max_lods[np.isfinite(max_lods)], 0.95))
         log.warning('GEV fit failed — empirical 95th: %.3f', threshold)
-    log.info('LOD threshold: %.3f', threshold)
+    log.info('reference genome-wide LOD threshold (QC only): %.3f', threshold)
 
-    # ── Stage-1 gate ───────────────────────────────────────────────────────────
+    # ── gene info (symbol map + TSS for calibration window) ───────────────────
+    gene_info_df = pd.read_csv(gene_info_path, dtype={'gene_id': str})
+    if 'gene' in gene_info_df.columns and 'gene_id' not in gene_info_df.columns:
+        gene_info_df = gene_info_df.rename(columns={'gene': 'gene_id'})
+
+    # ── tested genes: every gene with a peak enters calibration ───────────────
     peak_df   = pd.read_csv(peak_lod_csv, dtype={'gene_id': str, 'chr': str})
-    egenes_df = call_egenes(peak_df, threshold)
-    log.info('Stage-1: %d / %d eGenes', len(egenes_df), len(peak_df))
-    if len(egenes_df) == 0:
-        peak_df.assign(is_egene=False).to_csv(peak_out, index=False)
+    peak_df['chr'] = strip_chr_prefix(peak_df['chr'])
+    tested_df = peak_df.dropna(subset=['gene_id', 'chr', 'peak_lod'])
+    log.info('%d / %d genes tested', len(tested_df), len(peak_df))
+    if len(tested_df) == 0:
+        empty_peak = peak_df.assign(is_egene=False)
+        empty_peak['chr'] = add_chr_prefix(empty_peak['chr'])
+        empty_peak.to_csv(peak_out, index=False)
         pval_out.write_text(json.dumps({}))
         pd.DataFrame(columns=EGENE_SUMMARY_COLS).to_csv(summary_out, index=False)
-        log.info('no eGenes — wrote empty %s outputs', tag)
+        log.info('no tested genes — wrote empty %s outputs', tag)
         return
 
     # ── shared objects ─────────────────────────────────────────────────────────
@@ -98,10 +107,10 @@ def main() -> None:
     kinship_decomp = load_kinship_decomp(kinship_path)
     kinship_loco   = {c: kinship_from_decomp(d) for c, d in kinship_decomp.items()}
 
-    egene_ids = egenes_df['gene_id'].astype(str).tolist()
-    pheno_mat_eg, gene_ids_eg, sample_ids = load_expression_h5(pheno_path, egene_ids)
-    pheno_mat_eg = pheno_mat_eg.astype(np.float64)
-    gene_idx = {g: i for i, g in enumerate(gene_ids_eg)}
+    tested_ids = tested_df['gene_id'].astype(str).tolist()
+    pheno_mat, gene_ids_loaded, sample_ids = load_expression_h5(pheno_path, tested_ids)
+    pheno_mat = pheno_mat.astype(np.float64)
+    gene_idx = {g: i for i, g in enumerate(gene_ids_loaded)}
 
     meta_df  = pd.read_csv(meta_path)
     geno_map = build_sample_geno_map(meta_df)
@@ -110,88 +119,52 @@ def main() -> None:
     cov_cols = [c for c in covariates.split(',') if c.strip()]
     cov_arr  = build_cov_array(meta_df, sample_ids, cov_cols)
 
-    # calibrate_gene_pvalue operates at strain level; reduce sample phenotype/covariates
     strain_ids_ordered = list(gc.sample_ids)
     Z, valid_mask = build_z_matrix(geno_ids, strain_ids_ordered)
 
-    cov_strain: 'np.ndarray | None' = None
-    if cov_arr is not None:
-        cov_strain = np.stack(
-            [reduce_to_strain_means(cov_arr[:, j], Z, valid_mask)
-             for j in range(cov_arr.shape[1])], axis=1
-        )
+    # ── calibrate all tested genes → Storey q-value → effects for significant ─
+    log.info('calibration: %d tested genes  n_perms_cal=%d  stag=%s',
+             len(tested_df), n_perms_cal, stag)
+    called_df = call_significant_egenes(
+        tested_df,
+        genomecache=gc,
+        pheno_mat=pheno_mat,
+        gene_idx=gene_idx,
+        covariates=cov_arr,
+        kinship_decomp=kinship_decomp,
+        kinship_loco=kinship_loco,
+        sample_ids=geno_ids,
+        stag=stag,
+        gene_info_df=gene_info_df,
+        fdr_threshold=fdr_threshold,
+        n_perms=n_perms_cal,
+        use_rint=use_rint,
+        z_mat=Z,
+        valid_mask=valid_mask,
+        seed=seed,
+    )
+    significant_df = called_df[called_df['significance'] == 'T']
 
-    # ── allele effects at peak locus ───────────────────────────────────────────
-    log.info('allele effects: %d eGenes', len(egenes_df))
-    effects_rows: list[dict] = []
-    for _eff_i, (_, row) in enumerate(egenes_df.iterrows(), 1):
-        gid   = str(row['gene_id'])
-        chrom = str(row['chr'])
-        locus = str(row.get('peak_locus', ''))
-        log.info('  effects [%d/%d] %s chr%s', _eff_i, len(egenes_df), gid, chrom)
-        if gid not in gene_idx or not locus:
-            continue
-        fxe = get_allele_effects(
-            phenotype=pheno_mat_eg[gene_idx[gid]],
-            genomecache=gc,
-            locus_id=locus,
-            chrom=chrom,
-            kinship_decomp=kinship_decomp,
-            covariates=cov_arr,
-            sample_ids=geno_ids,
-            use_rint=use_rint,
-        )
-        erow: dict = {'gene_id': gid, 'gene_symbol': row.get('gene_symbol', '')}
-        for fe in fxe:
-            erow[f'beta_{fe.founder}'] = fe.estimate
-        effects_rows.append(erow)
-
-    if effects_rows:
-        eff_df    = pd.DataFrame(effects_rows)
-        merge_cols = [c for c in eff_df.columns if c not in egenes_df.columns or c == 'gene_id']
-        egenes_df = egenes_df.merge(eff_df[merge_cols], on='gene_id', how='left')
-
-    # ── per-gene Beta calibration → Storey FDR ────────────────────────────────
-    log.info('Beta calibration: %d eGenes  n_perms_cal=%d', len(egenes_df), n_perms_cal)
-    pval_perm: dict[str, float] = {}
-    for _cal_i, (_, row) in enumerate(egenes_df.iterrows(), 1):
-        gid   = str(row['gene_id'])
-        chrom = str(row['chr'])
-        log.info('  calibrate [%d/%d] %s chr%s', _cal_i, len(egenes_df), gid, chrom)
-        if gid not in gene_idx:
-            continue
-        try:
-            y_strain = reduce_to_strain_means(pheno_mat_eg[gene_idx[gid]], Z, valid_mask)
-            p_adj, _, _, _ = calibrate_gene_pvalue(
-                y_gene=y_strain,
-                genomecache=gc,
-                chrom=chrom,
-                peak_lod=float(row['peak_lod']),
-                covariates=cov_strain,
-                kinship_decomp=kinship_decomp,
-                kinship_loco=kinship_loco,
-                n_perms=n_perms_cal,
-                seed=seed,
-            )
-            pval_perm[gid] = float(p_adj)
-        except Exception as exc:
-            log.warning('calibrate_gene_pvalue failed for %s: %s', gid, exc)
-
-    # ── write pval_perm.json ───────────────────────────────────────────────────
+    # ── write pval_perm.json (every tested gene) ──────────────────────────────
+    pval_perm = dict(zip(called_df['gene_id'].astype(str),
+                         called_df['pval_perm'].astype(float)))
     pval_out.write_text(json.dumps(pval_perm, indent=2))
 
-    if pval_perm:
-        egenes_df = calibrate_egenes_storey(egenes_df, pval_perm, fdr_threshold=fdr_threshold)
-
     # ── annotate full peak_lod with is_egene flag → updated peak_lod.csv ─────
-    egene_ids = set(egenes_df['gene_id'].astype(str))
-    peak_df   = peak_df.copy()
-    peak_df['is_egene'] = peak_df['gene_id'].astype(str).isin(egene_ids)
-    peak_df.to_csv(peak_out, index=False)
-    log.info('wrote %s (%d genes, %d eGenes)', peak_out, len(peak_df), peak_df['is_egene'].sum())
+    significant_ids = set(significant_df['gene_id'].astype(str))
+    peak_df = peak_df.copy()
+    peak_df['is_egene'] = peak_df['gene_id'].astype(str).isin(significant_ids)
+    peak_out_df = peak_df.copy()
+    peak_out_df['chr'] = add_chr_prefix(peak_out_df['chr'])
+    peak_out_df.to_csv(peak_out, index=False)
+    log.info('wrote %s (%d genes, %d eGenes)', peak_out, len(peak_df),
+             peak_df['is_egene'].sum())
 
-    final_df = finalize_egene_summary(egenes_df)
-    final_df.to_csv(summary_out, index=False)
+    final_df = finalize_egene_summary(significant_df, n_founders=len(gc.founders))
+    summary_df = final_df.copy()
+    if 'chr' in summary_df.columns:
+        summary_df['chr'] = add_chr_prefix(summary_df['chr'])
+    summary_df.to_csv(summary_out, index=False)
     log.info('wrote %s (%d eGenes)', summary_out, len(final_df))
 
 

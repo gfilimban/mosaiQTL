@@ -29,7 +29,7 @@ from ..genotype.cc import (
     FOUNDER_COLORS,
     strip_j,
 )
-from ._theme import WASH
+from ._theme import FONT_STACK, WASH
 
 # Default comparison colors — series A (blue) vs series B (red).
 _COLOR_A: str = FOUNDER_COLORS["NODJ"]  # series A: blue (#4F6EAF)
@@ -45,7 +45,7 @@ def _set_style() -> None:
     plt.rcParams.update(
         {
             "font.family": "sans-serif",
-            "font.sans-serif": ["Carlito", "Calibri", "DejaVu Sans"],
+            "font.sans-serif": FONT_STACK,
             "font.size": 11,
         }
     )

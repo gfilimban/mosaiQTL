@@ -19,6 +19,10 @@ from ..utils import _build_gm_idx, _enrich_scan_df
 
 logger = logging.getLogger("mosaiqtl")
 
+# Largest per-strain haplotype probability a founder with no allele call may carry
+# before the SNP is dropped; below it the dosage is renormalised over called founders.
+MAX_MISSING_HAP_MASS: float = 0.05
+
 SNP_SCAN_COLS: list[str] = [
     "gene_id",
     "snp",
@@ -32,6 +36,7 @@ SNP_SCAN_COLS: list[str] = [
     "rss0",
     "rss1",
     "beta_dosage",
+    "se_dosage",
 ]
 
 
@@ -112,7 +117,7 @@ def imputed_snp_scan_h2lmm(
     returns
     -------
     pd.DataFrame  columns: gene_id, snp, chr, pos_mb, lod, p_value, f_stat,
-                           h2, n, rss0, rss1, beta_dosage
+                           h2, n, rss0, rss1, beta_dosage, se_dosage
         NOT a ScanResult — SNP scan output is per-SNP dosage effects, not
         per-founder haplotype effects.  Do not pass to _scan_to_df or any
         ScanResult consumer.
@@ -178,6 +183,7 @@ def imputed_snp_scan_h2lmm(
 
     results: list = []
     _pat_best_dosage: dict = {}  # pattern → (dosage_vec, best_lod)
+    n_skipped_missing = 0
 
     # normalize snp_genos chr col once: strip leading 'chr' to match cache format
     _snp_chr_norm = snp_genos["chr"].astype(str).str.replace(r"^chr", "", regex=True)
@@ -217,9 +223,19 @@ def imputed_snp_scan_h2lmm(
                     return np.nan
 
             geno_f = np.array([_to_float(row.get(f, np.nan)) for f in founders_cache])
-            if np.any(np.isnan(geno_f)):
-                geno_f = np.where(np.isnan(geno_f), 0.0, geno_f)
-            dosage = h_locus @ geno_f  # (n_valid,)
+            known = ~np.isnan(geno_f)
+            if not known.any():
+                continue
+            if not known.all():
+                # a founder without a call has an unknown allele; strains carrying
+                # appreciable haplotype mass on it have no defined dosage
+                if h_locus[:, ~known].sum(axis=1).max() > MAX_MISSING_HAP_MASS:
+                    n_skipped_missing += 1
+                    continue
+                known_mass = h_locus[:, known].sum(axis=1)
+                dosage = (h_locus[:, known] @ geno_f[known]) / known_mass
+            else:
+                dosage = h_locus @ geno_f  # (n_valid,)
 
             # skip monomorphic snps
             if dosage.std() < 1e-8:
@@ -231,7 +247,7 @@ def imputed_snp_scan_h2lmm(
 
             res = lmm_module.fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2)
 
-            _pat = tuple(int(round(x)) for x in geno_f.tolist())
+            _pat = tuple(-1 if np.isnan(x) else int(round(x)) for x in geno_f.tolist())
             results.append(
                 {
                     "gene_id": phenotype_id,
@@ -246,6 +262,8 @@ def imputed_snp_scan_h2lmm(
                     "rss0": res.rss_null,
                     "rss1": res.rss_alt,
                     "beta_dosage": float(res.betas[0]),
+                    "se_dosage": float(res.se_betas[0]),
+                    "dosage_mean": float(dosage.mean()),
                     "_founder_pattern": _pat,
                 }
             )
@@ -254,6 +272,14 @@ def imputed_snp_scan_h2lmm(
             # SNP. memory stays O(n_patterns × n_valid) regardless of window.
             if _pat not in _pat_best_dosage or res.lod > _pat_best_dosage[_pat][1]:
                 _pat_best_dosage[_pat] = (dosage, res.lod)
+
+    if n_skipped_missing:
+        logger.debug(
+            "imputed_snp_scan_h2lmm: skipped %d SNPs with missing founder alleles "
+            "carrying haplotype mass > %.2f",
+            n_skipped_missing,
+            MAX_MISSING_HAP_MASS,
+        )
 
     df = pd.DataFrame(results)
     if df.empty:
@@ -320,7 +346,7 @@ def imputed_snp_scan_from_db(
     returns
     -------
     pd.DataFrame  columns: gene_id, snp, chr, pos_mb, lod, p_value, f_stat,
-                           h2, n, rss0, rss1, beta_dosage
+                           h2, n, rss0, rss1, beta_dosage, se_dosage
         NOT a ScanResult — use the DataFrame directly; do not pass to
         _scan_to_df or any ScanResult consumer.
     """
@@ -342,6 +368,7 @@ def imputed_snp_scan_from_db(
                 "rss0",
                 "rss1",
                 "beta_dosage",
+                "se_dosage",
             ]
         )
 
@@ -370,7 +397,10 @@ def imputed_snp_scan_from_db(
         alt = distinct[-1]
         geno_row = {"chr": row["chr"], "pos_mb": float(row["pos_mb"])}
         for f in overlap:
-            geno_row[f] = 1.0 if calls[f] == alt else 0.0
+            if calls[f] in ("N", "H", "", "nan"):
+                geno_row[f] = np.nan
+            else:
+                geno_row[f] = 1.0 if calls[f] == alt else 0.0
         snp_ids.append(row["marker"])
         rows.append(geno_row)
 
@@ -389,6 +419,7 @@ def imputed_snp_scan_from_db(
                 "rss0",
                 "rss1",
                 "beta_dosage",
+                "se_dosage",
             ]
         )
 
@@ -447,7 +478,7 @@ def snp_scan_multi_gene(
     -------
     peak_only=True  — gene_id, chr, snp [+ gene_meta cols], peak_mb, peak_lod, beta_dosage
     peak_only=False — gene_id, chr [+ gene_meta cols], snp, pos_mb, lod, p_value,
-                      f_stat, h2, n, rss0, rss1, beta_dosage
+                      f_stat, h2, n, rss0, rss1, beta_dosage, se_dosage
     """
     _gm_idx = _build_gm_idx(gene_meta)
     if peak_only:
@@ -466,6 +497,7 @@ def snp_scan_multi_gene(
             "rss0",
             "rss1",
             "beta_dosage",
+            "se_dosage",
         ]
     _first = True
     _buf: "list[pd.DataFrame]" = []

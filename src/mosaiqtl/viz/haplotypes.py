@@ -16,14 +16,15 @@ from ..genotype.cc import (
     FOUNDER_ORDER,
     strip_j,
 )
+from ._theme import FONT_STACK
 
 
 def _set_font(ax: plt.Axes) -> None:
-    """Apply Carlito/Calibri to all text elements of ax."""
+    """Apply the package font stack to all text elements of ax."""
     for item in (
         [ax.xaxis.label, ax.yaxis.label] + ax.get_xticklabels() + ax.get_yticklabels()
     ):
-        item.set_fontfamily(["Carlito", "Calibri", "DejaVu Sans"])
+        item.set_fontfamily(FONT_STACK)
 
 
 def prob_heatmap(
@@ -528,7 +529,7 @@ def kinship_heatmap(
                 va="center",
                 fontsize=6,
                 color=COLOR_NEUTRAL_DARK,
-                fontfamily=["Carlito", "Calibri", "DejaVu Sans"],
+                fontfamily=FONT_STACK,
             )
 
     if sample_labels is not None and n <= 40:

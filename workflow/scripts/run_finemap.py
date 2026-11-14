@@ -3,7 +3,10 @@
 Usage: python run_finemap.py <eqtl_summary.csv> <cache.h5> <kinship.h5>
            <phenotypes.h5> <metadata.csv> <celltype>
            <scan_tag> <covariates> <output_dir>
-           [sanger_alleles.h5] [peak_lod.csv] [tissue]
+           <sanger_alleles.h5|-> <peak_lod.csv|-> <tissue|-> <chrom|->
+           <scan_type> <window_mb> <gene_tss.csv|->
+
+A '-' marks an absent optional argument.
 
 Each eGene's chromosome is rescanned to obtain its 1.5-LOD support interval;
 SNPs inside that interval are imputed from founder alleles and fine-mapped
@@ -34,30 +37,19 @@ def main() -> None:
     covariates   = sys.argv[8]
     out          = Path(sys.argv[9])
 
-    sanger_path: 'Path | None' = None
-    peak_lod_path: 'Path | None' = None
-    gene_tss_path: 'Path | None' = None
-    tissue = ''
-    chrom_filter = ''
-    scan_type = 'C'
-    window_mb = 0.0
-    import re as _re
-    for extra in sys.argv[10:]:
-        p = Path(extra)
-        if p.suffix == '.h5':
-            sanger_path = p
-        elif p.suffix == '.csv' and 'tss' in p.name.lower():
-            gene_tss_path = p
-        elif p.suffix == '.csv':
-            peak_lod_path = p
-        elif _re.fullmatch(r'\d{1,2}|X|Y|M', extra):
-            chrom_filter = extra
-        elif extra in ('L', 'C', 'G'):
-            scan_type = extra
-        elif _re.fullmatch(r'\d+\.\d*', extra):
-            window_mb = float(extra)
-        else:
-            tissue = extra
+    def _opt(i: int) -> 'str | None':
+        return None if sys.argv[i] == '-' else sys.argv[i]
+
+    sanger_arg, peak_lod_arg, tissue_arg, chrom_arg = (_opt(i) for i in range(10, 14))
+    scan_type = sys.argv[14]
+    window_mb = float(sys.argv[15])
+    gene_tss_arg = _opt(16)
+
+    sanger_path = Path(sanger_arg) if sanger_arg else None
+    peak_lod_path = Path(peak_lod_arg) if peak_lod_arg else None
+    gene_tss_path = Path(gene_tss_arg) if gene_tss_arg else None
+    tissue = tissue_arg or ''
+    chrom_filter = chrom_arg or ''
 
     tag      = f'{tissue}_{celltype}_{stag}' if tissue else f'{celltype}_{stag}'
     chr_sfx  = f'_chr{chrom_filter}' if chrom_filter else ''
@@ -69,8 +61,10 @@ def main() -> None:
         cap_egene_ci, EQTL_FINEMAPPING_COLS, EQTL_FINEMAPPING_PEAK_COLS,
         prepare_egenes_for_finemap,
     )
+    from mosaiqtl.utils import strip_chr_prefix
 
     egenes_df = pd.read_csv(egene_csv, dtype={'gene_id': str, 'chr': str})
+    egenes_df['chr'] = strip_chr_prefix(egenes_df['chr'])
     if chrom_filter:
         egenes_df = egenes_df[egenes_df['chr'] == chrom_filter].reset_index(drop=True)
         log.info('chr filter: %s  →  %d eGenes', chrom_filter, len(egenes_df))

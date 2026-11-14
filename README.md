@@ -4,7 +4,7 @@
 Maps molecular phenotypes to 8 founder haplotypes using a Gaussian LMM or NB-GLMM with LOCO
 kinship correction. Designed for CC/DO mice (mm39); extensible to other MPPs.
 
-> **Current status (v0.6.7):** The **Gaussian LMM** (`--model lmm`) is the validated,
+> **Current status (v0.7.0):** The **Gaussian LMM** (`--model lmm`) is the validated,
 > production-ready model — Phase 1–3 gates pass, full gastroc scan complete, Sanger
 > fine-mapping with IGVF-schema outputs wired end-to-end. The **NB-GLMM** (`--model nb`) is
 > the intended long-term primary model for raw pseudobulk counts but has not yet passed

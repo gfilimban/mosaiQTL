@@ -34,7 +34,7 @@ def main() -> None:
     from mosaiqtl.genotype.kinship import load_kinship_decomp
     from mosaiqtl.io.anndata_io import load_expression_h5
     from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
-    from mosaiqtl.pipeline import ALLELE_EFFECTS_BASE_COLS, PEAK_LOD_COLS, SCAN_TYPE_TO_WINDOW
+    from mosaiqtl.pipeline import ALLELE_EFFECTS_BASE_COLS, LOD_COLS, PEAK_LOD_COLS, SCAN_TYPE_TO_WINDOW
     from mosaiqtl.qtl.scan import scan_multi_gene_lmm
     from mosaiqtl.utils import build_tss_lookup, get_rss_mb
 
@@ -61,7 +61,7 @@ def main() -> None:
 
     if len(gene_ids) == 0:
         log.warning('no genes for chr%s', chrom)
-        pd.DataFrame(columns=['gene_id', 'chr', 'locus', 'pos_mb', 'lod']).to_csv(lod_csv, index=False)
+        pd.DataFrame(columns=LOD_COLS).to_csv(lod_csv, index=False)
         pd.DataFrame(columns=PEAK_LOD_COLS).to_csv(peak_csv, index=False)
         (out / f'timing_chr{chrom}.json').write_text(json.dumps({'chr': chrom, 'n_genes': 0, 'elapsed_s': 0.0}))
         return

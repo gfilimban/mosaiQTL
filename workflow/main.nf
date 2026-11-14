@@ -13,7 +13,9 @@ include { REPORT        } from '../modules/local/report'
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 def stag() {
-    params.scan_type == 'L' ? "Lw${(params.window_mb as float).toInteger()}" : params.scan_type
+    params.scan_type == 'L'
+        ? "Lw${new BigDecimal(params.window_mb.toString()).stripTrailingZeros().toPlainString()}"
+        : params.scan_type
 }
 
 def chr_list() {
@@ -31,8 +33,8 @@ def ct_channel(gi_global, meta) {
                      .map { it.parent.name }
         return cts.map { ct ->
             def pheno = file("${params.celltypes_dir}/${ct}/counts_lognorm.h5")
-            def gi_ct = file("${params.celltypes_dir}/${ct}/gene_info.csv").exists()
-                ? file("${params.celltypes_dir}/${ct}/gene_info.csv")
+            def gi_ct = file("${params.celltypes_dir}/${ct}/exp_gene_info_${ct}.csv").exists()
+                ? file("${params.celltypes_dir}/${ct}/exp_gene_info_${ct}.csv")
                 : gi_global
             if (!pheno.exists()) error "counts_lognorm.h5 missing for '${ct}'"
             [ct, pheno, gi_ct, meta]
@@ -77,14 +79,14 @@ workflow {
     // ── LMM scan (CT × chr) ───────────────────────────────────────────────────
     lmm_in = ct_ch
         .combine(Channel.from(chr_list()))
-        .map { ct, stag, pheno, gi, m, chrom -> [ct, chrom, pheno, gi, m] }
+        .map { ct, stag, pheno, gi, m, chrom -> [ct, stag, chrom, pheno, gi, m] }
 
     LMM_SCAN(gc, kinship, lmm_in)
 
     // ── Merge per-chr → genome-wide (per CT) ─────────────────────────────────
     merge_in = LMM_SCAN.out
         .map { ct, chrom, lod, peak, timing -> [ct, lod, peak, timing] }
-        .groupTuple()
+        .groupTuple(size: chr_list().size())
         .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, stag, gi] })
         .map { ct, lods, peaks, timings, stag, gi -> [ct, stag, lods, peaks, timings, gi] }
 
@@ -93,7 +95,7 @@ workflow {
     // ── Permutation (per CT, after merge — needs peak_lod for rep gene) ───────
     perm_in = MERGE_RESULTS.out
         .map { ct, stag, lod, peak, stats -> [ct, stag, peak] }
-        .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, pheno, m] })
+        .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, stag, pheno, m] }, by: [0, 1])
         .combine(gene_tss)
         .map { ct, stag, peak, pheno, m, tss -> [ct, stag, pheno, peak, m, tss] }
 
@@ -102,8 +104,8 @@ workflow {
     // ── eGene calling + FDR ───────────────────────────────────────────────────
     call_in = MERGE_RESULTS.out
         .map { ct, stag, lod, peak, stats -> [ct, stag, peak] }
-        .join(PERMUTE.out.map { ct, stag, perm, perm_chrs, gev -> [ct, perm] })
-        .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, pheno, gi, m] })
+        .join(PERMUTE.out.map { ct, stag, perm, perm_chrs, gev -> [ct, stag, perm] }, by: [0, 1])
+        .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, stag, pheno, gi, m] }, by: [0, 1])
         .map { ct, stag, peak, perm, pheno, gi, m -> [ct, stag, peak, perm, pheno, gi, m] }
 
     CALL_EGENES(gc, kinship, call_in)
@@ -114,13 +116,18 @@ workflow {
     finemap_base = CALL_EGENES.out
         .map { ct, stag, peak, pval, summary -> [ct, stag, summary] }
         .join(MERGE_RESULTS.out.map { ct, stag, lod, peak_lod, stats -> [ct, stag, peak_lod] }, by: [0, 1])
-        .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, pheno, m] })
+        .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, stag, pheno, m] }, by: [0, 1])
         .map { ct, stag, summary, peak_lod, pheno, m -> [ct, stag, summary, peak_lod, pheno, m] }
 
+    // one job per chromosome that carries at least one significant eGene
     finemap_chr_in = finemap_base
-        .combine(Channel.from(chr_list()))
-        .map { ct, stag, summary, peak_lod, pheno, m, chrom ->
-               [ct, stag, chrom, summary, peak_lod, pheno, m] }
+        .flatMap { ct, stag, summary, peak_lod, pheno, m ->
+            def rows = summary.size() > 0 ? summary.splitCsv(header: true) : []
+            def chrs = rows.collect { it.chr.toString().replaceFirst(/^chr/, '') }.unique()
+            chr_list().findAll { it in chrs }.collect { chrom ->
+                [ct, stag, chrom, summary, peak_lod, pheno, m]
+            }
+        }
 
     FINEMAP_CHR(gc, kinship, sanger_h5, gene_tss, finemap_chr_in)
 
@@ -133,11 +140,14 @@ workflow {
     // ── Report (all scan visualisations) ─────────────────────────────────────
     report_in = CALL_EGENES.out
         .map { ct, stag, peak, pval, summary -> [ct, stag, peak, summary, pval] }
-        .join(PERMUTE.out.map { ct, stag, perm, perm_chrs, gev -> [ct, perm, perm_chrs] })
-        .join(MERGE_RESULTS.out.map { ct, stag, lod, peak, stats -> [ct, lod] })
-        .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, gi] })
-        .map { ct, stag, peak, summary, pval, perm, perm_chrs, lod_genome, gi ->
-               [ct, stag, peak, summary, pval, perm, perm_chrs, gi, lod_genome] }
+        .join(PERMUTE.out.map { ct, stag, perm, perm_chrs, gev -> [ct, stag, perm, perm_chrs] }, by: [0, 1])
+        .join(MERGE_RESULTS.out.map { ct, stag, lod, peak, stats -> [ct, stag, lod] }, by: [0, 1])
+        .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, stag, gi] }, by: [0, 1])
+        .join(FINEMAP_MERGE.out.map { ct, stag, fm, fm_peak -> [ct, stag, fm] }, by: [0, 1], remainder: true)
+        .filter { it[2] != null }
+        .map { ct, stag, peak, summary, pval, perm, perm_chrs, lod_genome, gi, fm ->
+               [ct, stag, peak, summary, pval, perm, perm_chrs, gi, lod_genome,
+                fm ?: file('NO_FINEMAP')] }
 
     REPORT(gc, kinship, gtf_ch, report_in)
 }

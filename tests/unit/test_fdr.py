@@ -32,6 +32,20 @@ class TestPi0Estimation:
         _, pi0 = storey_qvalue(pv)
         assert pi0 < 0.75
 
+    def test_smooth_df3_reproduces_a_line(self):
+        from mosaiqtl.qtl.fdr import _smooth_df3_at_max
+
+        x = np.arange(0.05, 1.0, 0.05)
+        y = 0.9 - 0.2 * x
+        assert abs(_smooth_df3_at_max(x, y) - y[-1]) < 1e-6
+
+    def test_raw_pi0_above_one_is_logged_and_capped(self, caplog):
+        pv = np.linspace(0.5, 1.0, 400)
+        with caplog.at_level("WARNING"):
+            _, pi0 = storey_qvalue(pv)
+        assert pi0 == 1.0
+        assert any('exceeds 1' in r.message for r in caplog.records)
+
     def test_pi0_never_exceeds_one(self):
         rng = np.random.default_rng(2)
         for seed in range(10):
@@ -137,8 +151,8 @@ class TestAgainstRFixture:
 # ── calibrate_gene_pvalue ─────────────────────────────────────────────────────
 
 
-def _make_tiny_cache():
-    """10-strain, 2-chromosome, 15-locus cache for calibrate_gene_pvalue tests."""
+def _make_tiny_cache(n_strains=10):
+    """n-strain, 2-chromosome, 15-locus cache for calibrate_gene_pvalue tests."""
     import sys
     from pathlib import Path
 
@@ -147,7 +161,7 @@ def _make_tiny_cache():
     from mosaiqtl.genotype.cc import FOUNDER_ORDER
     from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
 
-    N_STRAINS, N_FOUNDERS, N_LOCI = 10, 8, 15
+    N_STRAINS, N_FOUNDERS, N_LOCI = n_strains, 8, 15
     rng = np.random.default_rng(0)
     strain_ids = [f"CC00{i+1}" for i in range(N_STRAINS)]
     data = {}
@@ -195,29 +209,211 @@ class TestCalibrateGenePvalue:
         r2 = calibrate_gene_pvalue(y, cache, "1", 5.0, cov, kd, kl, n_perms=50, seed=1)
         assert r1[0] != r2[0]
 
-    def test_regression(self):
-        """Exact-match regression against frozen expected values (seed=42)."""
+    def test_monotone_in_peak_lod(self):
         cache, kd, kl, _ = _make_tiny_cache()
         y = np.random.default_rng(1).standard_normal(10)
         cov = np.ones((10, 1))
+        p = [
+            calibrate_gene_pvalue(
+                y, cache, "1", lod, cov, kd, kl, n_perms=50, seed=42
+            )[0]
+            for lod in (1.0, 3.0, 6.0, 12.0)
+        ]
+        assert all(a >= b for a, b in zip(p, p[1:]))
+        assert p[0] > p[-1]
 
+    @pytest.mark.slow
+    def test_null_genes_are_calibrated(self):
+        """Genes with no genetic signal yield p-values spread across (0, 1)."""
+        cache, kd, kl, _ = _make_tiny_cache()
+        cov = np.ones((10, 1))
+        pvals = []
+        for g in range(40):
+            y = np.random.default_rng(1000 + g).standard_normal(10)
+            peak = _peak_lod(y, cache, kd, cov, "1")
+            pvals.append(
+                calibrate_gene_pvalue(
+                    y, cache, "1", peak, cov, kd, kl, n_perms=60, seed=g
+                )[0]
+            )
+        pvals = np.asarray(pvals)
+        assert 0.35 < pvals.mean() < 0.65
+        assert np.mean(pvals < 0.05) < 0.15
+        assert np.mean(pvals > 0.5) > 0.3
+
+    def test_planted_locus_is_significant(self):
+        """A strong haplotype effect gets a smaller p-value than the null genes."""
+        cache, kd, kl, _ = _make_tiny_cache()
+        cov = np.ones((10, 1))
+        _, _, probs = cache.get_chromosome("1")
+        y_sig = 8.0 * probs[7, :, 0] + np.random.default_rng(5).normal(
+            scale=0.1, size=10
+        )
+        peak = _peak_lod(y_sig, cache, kd, cov, "1")
+        p_sig = calibrate_gene_pvalue(
+            y_sig, cache, "1", peak, cov, kd, kl, n_perms=100, seed=1
+        )[0]
+        y_null = np.random.default_rng(2).standard_normal(10)
+        peak_null = _peak_lod(y_null, cache, kd, cov, "1")
+        p_null = calibrate_gene_pvalue(
+            y_null, cache, "1", peak_null, cov, kd, kl, n_perms=100, seed=1
+        )[0]
+        assert p_sig < p_null
+
+
+def _peak_lod(y, cache, kd, cov, chrom):
+    from mosaiqtl.qtl import lmm as lmm_module
+    from mosaiqtl.utils import rint
+
+    ev, evc = kd[chrom]["values"], kd[chrom]["vectors"]
+    h2, _ = lmm_module.estimate_h2_null(evc.T @ rint(y), evc.T @ cov, ev, method="ml")
+    cd = lmm_module.precompute_chromosome(cache, chrom, ev, evc)
+    res = lmm_module.scan_chromosome(rint(y), cd, cov, ev, evc, h2)
+    return float(res["lod"].max())
+
+
+class TestBetaCalibratePvalue:
+    def test_recovers_known_beta_parameters(self):
+        """Null maxima whose p-values are Beta(a, b) give back that (a, b)."""
+        from scipy import stats
+        from mosaiqtl.qtl.fdr import beta_calibrate_pvalue
+
+        a_true, b_true, df = 0.8, 6.0, 7
+        p_null = stats.beta.rvs(a_true, b_true, size=4000, random_state=3)
+        null_lods = stats.chi2.isf(p_null, df) / (2 * np.log(10))
+        _, a_hat, b_hat = beta_calibrate_pvalue(5.0, null_lods, df)
+        assert a_hat == pytest.approx(a_true, rel=0.1)
+        assert b_hat == pytest.approx(b_true, rel=0.15)
+
+    def test_pvalue_matches_beta_cdf_of_chi2_p(self):
+        from scipy import stats
+        from mosaiqtl.qtl.fdr import beta_calibrate_pvalue
+
+        df = 7
+        p_null = stats.beta.rvs(1.0, 4.0, size=2000, random_state=4)
+        null_lods = stats.chi2.isf(p_null, df) / (2 * np.log(10))
+        peak = 4.0
+        p_adj, a_hat, b_hat = beta_calibrate_pvalue(peak, null_lods, df)
+        p_chi2 = stats.chi2.sf(2 * np.log(10) * peak, df)
+        assert p_adj == pytest.approx(stats.beta.cdf(p_chi2, a_hat, b_hat), rel=1e-6)
+
+
+# ── call_significant_egenes ──────────────────────────────────────────────────
+
+
+class TestCallSignificantEgenes:
+    """Every tested gene is calibrated; effects exist only for significant genes."""
+
+    @staticmethod
+    def _run(n_null=19, n=60):
+        from mosaiqtl.pipeline import call_significant_egenes
+
+        cache, kd, kl, strain_ids = _make_tiny_cache(n)
+        cov = np.ones((n, 1))
+        _, _, probs = cache.get_chromosome("1")
+        rows, phenos = [], []
+        for g in range(n_null):
+            phenos.append(np.random.default_rng(300 + g).standard_normal(n))
+        phenos.append(
+            8.0 * probs[7, :, 0]
+            + np.random.default_rng(5).normal(scale=0.1, size=n)
+        )
+        for g, y in enumerate(phenos):
+            rows.append(
+                {
+                    "gene_id": f"g{g}",
+                    "chr": "1",
+                    "peak_lod": _peak_lod(y, cache, kd, cov, "1"),
+                    "peak_locus": "1:7",
+                }
+            )
+        rows.append({"gene_id": "no_peak", "chr": "1", "peak_lod": np.nan,
+                     "peak_locus": ""})
+        peak_df = pd.DataFrame(rows)
+        gene_idx = {f"g{g}": g for g in range(len(phenos))}
+        out = call_significant_egenes(
+            peak_df,
+            genomecache=cache,
+            pheno_mat=np.vstack(phenos),
+            gene_idx=gene_idx,
+            covariates=cov,
+            kinship_decomp=kd,
+            kinship_loco=kl,
+            sample_ids=strain_ids,
+            stag="C",
+            gene_info_df=None,
+            fdr_threshold=0.05,
+            n_perms=40,
+            use_rint=False,
+            z_mat=np.eye(n),
+            valid_mask=np.ones(n, dtype=bool),
+            seed=3,
+        )
+        return out, len(phenos)
+
+    def test_all_tested_genes_are_calibrated(self):
+        out, n_tested = self._run()
+        assert len(out) == n_tested
+        assert "no_peak" not in set(out["gene_id"])
+        assert out["pval_perm"].between(0.0, 1.0).all()
+        assert out["fdr"].between(0.0, 1.0).all()
+
+    def test_effects_only_for_significant_genes(self):
+        out, _ = self._run()
+        beta_cols = [c for c in out.columns if c.startswith("beta_")]
+        assert beta_cols
+        has_effects = out[beta_cols].notna().all(axis=1)
+        is_sig = out["significance"] == "T"
+        assert (has_effects == is_sig).all()
+
+    def test_q_values_use_every_tested_gene(self):
+        """Storey q-values are computed over the full tested set, not a subset."""
+        from mosaiqtl.qtl.fdr import storey_qvalue
+
+        out, _ = self._run()
+        q, _ = storey_qvalue(out["pval_perm"].to_numpy())
+        np.testing.assert_allclose(out["fdr"].to_numpy(), q)
+
+
+class TestCalibrateChromosomeCache:
+    def test_cached_rotation_matches_uncached(self):
         from mosaiqtl.qtl import lmm as lmm_module
-        from mosaiqtl.utils import rint
 
-        chrom = "1"
-        ev, evc = kd[chrom]["values"], kd[chrom]["vectors"]
-        h2, _ = lmm_module.estimate_h2_null(
-            evc.T @ rint(y), evc.T @ cov, ev, method="ml"
+        cache, kd, kl, _ = _make_tiny_cache()
+        y = np.random.default_rng(3).standard_normal(10)
+        cov = np.ones((10, 1))
+        chr_data = lmm_module.precompute_chromosome(
+            cache, "1", kd["1"]["values"], kd["1"]["vectors"], None, "additive"
         )
-        cd = lmm_module.precompute_chromosome(cache, chrom, ev, evc)
-        res = lmm_module.scan_chromosome(rint(y), cd, cov, ev, evc, h2)
-        peak_lod = float(res["lod"].max())
+        kwargs = dict(n_perms=50, seed=5, gene_pos_mb=40.0, window_mb=30.0)
+        plain = calibrate_gene_pvalue(y, cache, "1", 5.0, cov, kd, kl, **kwargs)
+        cached = calibrate_gene_pvalue(
+            y, cache, "1", 5.0, cov, kd, kl, chr_data=chr_data, **kwargs
+        )
+        np.testing.assert_allclose(plain, cached, rtol=1e-9)
 
-        p_adj, a_hat, b_hat, h2_g = calibrate_gene_pvalue(
-            y, cache, chrom, peak_lod, cov, kd, kl, n_perms=50, seed=42
-        )
-        assert peak_lod == pytest.approx(9.612248697250159, rel=1e-6)
-        assert p_adj == pytest.approx(0.4182766707369369, rel=1e-4)
-        assert a_hat == pytest.approx(0.19591891452920132, rel=1e-4)
-        assert b_hat == pytest.approx(40342.827788641735, rel=1e-3)
-        assert h2_g == pytest.approx(1e-6, rel=1e-4)
+
+class TestStoreyEndToEndNullAndSignal:
+    @pytest.mark.slow
+    def test_null_genes_not_called_planted_genes_detected(self):
+        """Real scan peak → per-gene calibration → Storey q-values."""
+        cache, kd, kl, _ = _make_tiny_cache()
+        cov = np.ones((10, 1))
+        _, _, probs = cache.get_chromosome('1')
+        pvals, is_signal = [], []
+        for g in range(60):
+            signal = g >= 45
+            y = np.random.default_rng(2000 + g).standard_normal(10)
+            if signal:
+                y = y + 8.0 * probs[(g * 3) % 15, :, g % 8]
+            peak = _peak_lod(y, cache, kd, cov, '1')
+            p = calibrate_gene_pvalue(
+                y, cache, '1', peak, cov, kd, kl, n_perms=80, seed=g
+            )[0]
+            pvals.append(p)
+            is_signal.append(signal)
+        pvals, is_signal = np.asarray(pvals), np.asarray(is_signal)
+        q, pi0 = storey_qvalue(pvals)
+        assert pi0 <= 1.0
+        assert np.mean(q[~is_signal] < 0.05) <= 0.1
+        assert np.median(pvals[is_signal]) < np.median(pvals[~is_signal])

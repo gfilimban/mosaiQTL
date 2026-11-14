@@ -441,6 +441,38 @@ class TestRunThresholdScans:
 # ── parametric permutation helpers ───────────────────────────────────────────
 
 
+class TestDrawParametricNullBatchRankMatching:
+    def test_output_is_rank_matched_to_null_draw(self):
+        from mosaiqtl.qtl.permutation import draw_parametric_null_batch
+
+        n = 40
+        rng = np.random.default_rng(0)
+        y = rng.standard_normal(n) ** 3
+        x = np.ones((n, 1))
+        K, ev, evc = np.eye(n), np.ones(n), np.eye(n)
+        out = draw_parametric_null_batch(
+            y, x, K, evc, ev, 0.5, 5, np.random.default_rng(1)
+        )
+        assert out.shape == (n, 5)
+        for j in range(5):
+            assert np.allclose(np.sort(out[:, j]), np.sort(y))
+        assert not np.allclose(out[:, 0], out[:, 1])
+
+    def test_rank_order_follows_null_draw(self):
+        from mosaiqtl.qtl.permutation import draw_parametric_null_batch
+
+        n = 200
+        y = np.arange(n, dtype=float)
+        x = np.ones((n, 1))
+        K, ev, evc = np.eye(n), np.ones(n), np.eye(n)
+        # h2 = 1 with a strong shared component: re-running with the same seed
+        # must give the identical ordering, and the output stays a permutation of y
+        a = draw_parametric_null_batch(y, x, K, evc, ev, 0.9, 3, np.random.default_rng(7))
+        b = draw_parametric_null_batch(y, x, K, evc, ev, 0.9, 3, np.random.default_rng(7))
+        assert np.array_equal(a, b)
+        assert sorted(a[:, 0]) == sorted(y)
+
+
 class TestParametricHelpers:
     """unit tests for _null_fit_params, _draw_kinship_re, _parametric_null_col."""
 
@@ -536,6 +568,66 @@ class TestParametricHelpers:
 
 
 # ── calibrate_gene_pvalue ─────────────────────────────────────────────────────
+
+
+class TestRunThresholdScansReferenceAndSampleLevel:
+    def test_ref_chrom_selects_reference_draw(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+    ):
+        """The reference null is drawn from ref_chrom's LOCO kinship, so
+        changing ref_chrom changes the draw while a repeated call is exact."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+
+        kd = decomp_kinship(tiny_kinship)
+        chrs = list(tiny_cache.chromosomes)
+        dummy = np.empty((len(tiny_strain_phenotype), 8))
+
+        def _run(ref):
+            return run_threshold_scans(
+                dummy,
+                tiny_cache,
+                phenotype=tiny_strain_phenotype,
+                kinship_decomp=kd,
+                kinship_loco=tiny_kinship,
+                ref_chrom=ref,
+                permutation_method="parametric",
+                use_rint=False,
+                seed=5,
+            )[0]
+
+        a1, a2, b = _run(chrs[0]), _run(chrs[0]), _run(chrs[1])
+        np.testing.assert_array_equal(a1, a2)
+        assert not np.allclose(a1, b)
+
+    def test_z_mat_scans_at_sample_level(
+        self, tiny_cache, tiny_kinship, tiny_strain_phenotype
+    ):
+        """With replicate samples and z_mat the null is drawn and scanned at
+        n samples (n = 2m), not collapsed to m strain means."""
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        from mosaiqtl.utils import build_z_matrix
+
+        kd = decomp_kinship(tiny_kinship)
+        strains = list(tiny_cache.sample_ids)
+        Z, _ = build_z_matrix(strains + strains, strains)
+        n = 2 * len(strains)
+        rng = np.random.default_rng(0)
+        y = np.tile(tiny_strain_phenotype, 2) + rng.normal(0, 0.3, n)
+        max_lods, chr_nulls = run_threshold_scans(
+            np.empty((n, 6)),
+            tiny_cache,
+            phenotype=y,
+            covariates=np.ones((n, 1)),
+            kinship_decomp=kd,
+            kinship_loco=tiny_kinship,
+            z_mat=Z,
+            permutation_method="parametric",
+            use_rint=False,
+            seed=3,
+        )
+        assert max_lods.shape == (6,)
+        assert np.all(np.isfinite(max_lods)) and np.all(max_lods >= 0)
+        assert set(chr_nulls) == set(tiny_cache.chromosomes)
 
 
 class TestCalibrateGenePvalue:

@@ -31,7 +31,7 @@ def main() -> None:
     t0 = time.perf_counter()
 
     from mosaiqtl.pipeline import PEAK_LOD_COLS, enrich_peak_lod
-    from mosaiqtl.utils import chr_sort_key
+    from mosaiqtl.utils import add_chr_prefix, chr_sort_key
 
     gi = pd.read_csv(gene_info_path)
 
@@ -44,7 +44,7 @@ def main() -> None:
     chrs = [p.stem.replace('lod_chr', '') for p in lod_files]
     log.info('START merge: tag=%s  %d chrs: %s', tag, len(chrs), ' '.join(chrs))
     lod_genome = pd.concat([pd.read_csv(f) for f in lod_files], ignore_index=True)
-    lod_genome['chr'] = lod_genome['chr'].astype(str)
+    lod_genome['chr'] = add_chr_prefix(lod_genome['chr'])
     lod_genome.to_csv(out / f'{tag}_lod_genome.csv', index=False)
     log.info('%s_lod_genome.csv: %d loci', tag, len(lod_genome))
 
@@ -62,7 +62,9 @@ def main() -> None:
     # beta_{founder} cols come through from run_lmm_scan_chr.py peak_stats write
     _base = [c for c in PEAK_LOD_COLS if c in peak_lod.columns]
     _beta = [c for c in peak_lod.columns if c.startswith('beta_')]
-    peak_lod[_base + _beta].to_csv(out / f'{tag}_peak_lod.csv', index=False)
+    peak_out = peak_lod[_base + _beta].copy()
+    peak_out['chr'] = add_chr_prefix(peak_out['chr'])
+    peak_out.to_csv(out / f'{tag}_peak_lod.csv', index=False)
     log.info('%s_peak_lod.csv: %d genes  %d beta cols', tag, len(peak_lod), len(_beta))
 
     # ── timing_chr*.json → {tag}_scan_stats.csv ───────────────────────────────

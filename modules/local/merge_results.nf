@@ -3,7 +3,8 @@ process MERGE_RESULTS {
     label 'process_single'
     tag   "${celltype}"
 
-    publishDir { "${params.output_dir}/${celltype}/${scan_tag}" }, mode: 'copy'
+    publishDir { "${params.output_dir}/${celltype.replaceAll(/\s+/, '_')}/${scan_tag}/core" }, mode: 'copy',
+               saveAs: { fn -> fn.endsWith('_peak_lod.csv') ? null : fn }
 
     input:
     tuple val(celltype), val(scan_tag),
@@ -17,13 +18,15 @@ process MERGE_RESULTS {
           path('*_scan_stats.csv')
 
     script:
-    def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
+    def tis    = params.tissue ?: 'run'
+    def ct_log = celltype.replaceAll(/\s+/, '_')
+    def tag    = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
     set -o pipefail
-    mkdir -p ${launchDir}/${params.output_dir}/logs
+    mkdir -p ${params.output_dir}/logs/${scan_tag}/${ct_log}
     python ${projectDir}/scripts/run_merge.py \\
         . ${gene_info} '${celltype}' ${scan_tag} . ${params.tissue} \\
-        2>&1 | tee ${launchDir}/${params.output_dir}/logs/${tag}_merge.log
+        2>&1 | tee ${params.output_dir}/logs/${scan_tag}/${ct_log}/merge.log
     """
 
     stub:

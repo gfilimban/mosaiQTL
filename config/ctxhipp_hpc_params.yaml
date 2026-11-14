@@ -1,6 +1,6 @@
 # mosaiQTL NF — ctxhipp nova all-celltypes HPC params (UCI DFS9)
+# Run: NXF_CACHE_DIR=.nf_cache/ctxhipp/celltypes nextflow run workflow/main.nf -profile slurm,ctxhipp_ct -params-file config/ctxhipp_hpc_params.yaml -resume
 # Run: nextflow run workflow/main.nf -profile slurm -params-file config/ctxhipp_hpc_params.yaml -resume
-# NOT COMMITTED — copy to HPC manually
 
 genomecache:    '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/igvf_cache.h5'
 gene_info:      null          # per-CT gene_info resolved from celltypes_dir subdirs
@@ -27,6 +27,6 @@ fdr_threshold:  0.05
 seed:           42
 
 n_bootstrap:    1000
-gtf:            null
+gtf:            '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/IGVFFI4777RDZK.gtf.gz'
 
 output_dir:     '/dfs9/seyedam-lab/share/igvf_qtl/output/ctxhipp/nova/celltypes'

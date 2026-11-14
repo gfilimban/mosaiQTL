@@ -69,12 +69,16 @@ def _nf_script_tokens(module_name: str) -> int:
         if not content or content.startswith('#'):
             continue
 
-        if re.search(r'\bpython\b.*workflow/scripts/', content):
+        if re.search(r'\bpython\b.*\bscripts/', content):
             past_cmd = True
             continue
 
         if past_cmd:
             toks = re.findall(r"'[^']*'|\S+", content)
+            if '2>&1' in toks:
+                tokens.extend(toks[:toks.index('2>&1')])
+                past_cmd = False
+                continue
             tokens.extend(toks)
             if not continued:
                 past_cmd = False
@@ -202,12 +206,13 @@ def _suffix_covered(writes_pattern: str, nf_globs: list[str]) -> bool:
 _ARGC_TABLE = [
     ('build_cache.py',        'build_cache.nf',      2),
     ('build_kinship_loco.py', 'kinship_loco.nf',     2),
-    ('run_lmm_scan_chr.py',   'lmm_scan.nf',        10),
+    ('run_lmm_scan_chr.py',   'lmm_scan.nf',        11),
     ('run_merge.py',          'merge_results.nf',     6),
-    ('run_permute.py',        'permute.nf',          13),
-    ('run_call_egenes.py',    'call_egenes.nf',      15),
+    ('run_permute.py',        'permute.nf',          16),
+    ('run_call_egenes.py',    'call_egenes.nf',      16),
     ('run_finemap.py',        'finemap.nf',          11),
-    ('run_report.py',         'report.nf',           13),
+    ('run_report.py',         'report.nf',           14),
+    ('run_finemap.py',        'finemap_chr.nf',      16),
 ]
 
 
@@ -280,7 +285,7 @@ def test_lmm_scan_output_parity(writes_pat: str, nf_glob: str) -> None:
 
 # lmm_scan intentionally omits publishDir: per-chr outputs are transient
 # intermediates collected by MERGE_RESULTS, which owns the publishDir.
-_NO_PUBDIR = {'lmm_scan.nf'}
+_NO_PUBDIR = {'lmm_scan.nf', 'finemap_chr.nf'}
 
 _ALL_MODULES = sorted(p.name for p in MODULES.glob('*.nf'))
 

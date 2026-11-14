@@ -449,10 +449,9 @@ def build_founder_allele_mgp(
                             row.append("N")
 
                     # SPDI: {RefSeq_accession}:{pos_0based}:{ref}:{alt}
-                    # rec.pos is already 0-based; seq_id from _MM39_REFSEQ
-                    markers_list.append(f"{seq_id}:{rec.pos}:{ref_nuc}:{alt_nuc}")
+                    markers_list.append(f"{seq_id}:{rec.start}:{ref_nuc}:{alt_nuc}")
                     rsid_list.append(rec.id if (rec.id and rec.id != ".") else "")
-                    pos_bp_list.append(rec.pos + 1)
+                    pos_bp_list.append(rec.pos)
                     allele_rows.append(row)
                     n_raw += 1
             except ValueError:

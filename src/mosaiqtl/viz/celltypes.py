@@ -14,7 +14,6 @@ from typing import Optional
 import matplotlib
 
 matplotlib.use("Agg")
-matplotlib.rcParams["font.family"] = "Carlito"
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import numpy as np
@@ -23,7 +22,7 @@ import pandas as pd
 import seaborn as sns
 
 from ..genotype.cc import FOUNDER_ORDER
-from ._theme import INK, MUTED
+from ._theme import FONT_STACK, INK, MUTED
 from .compare import (
     lod_scatter as _cmp_scatter,
     lod_density_comparison as _cmp_lod_density,
@@ -1445,7 +1444,7 @@ def ct_eqtl_summary(
             + ax.get_xticklabels()
             + ax.get_yticklabels()
         ):
-            item.set_fontfamily(["Carlito", "Calibri", "DejaVu Sans"])
+            item.set_fontfamily(FONT_STACK)
         sns.despine(ax=ax)
     fig.text(
         0.01,
@@ -1455,7 +1454,7 @@ def ct_eqtl_summary(
         f"{n_distinct_egenes:,} distinct eGenes",
         fontsize=14,
         fontweight="bold",
-        fontfamily=["Carlito", "Calibri", "DejaVu Sans"],
+        fontfamily=FONT_STACK,
         color=INK,
     )
     fig.tight_layout()

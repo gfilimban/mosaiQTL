@@ -30,7 +30,7 @@ Writes:
 """
 import gc
 import re
-import sys, json, logging, datetime
+import sys, json, logging, datetime, warnings
 import numpy as np
 import pandas as pd
 import h5py
@@ -43,6 +43,15 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 log = logging.getLogger(__name__)
+
+# eGenes drawn as fine-mapping locus panels per chromosome, ranked by peak LOD
+FINEMAP_PANELS_PER_CHR = 3
+
+# matplotlib reports font fallbacks (findfont) and per-glyph misses as one
+# message per label per figure; they bury the run log without changing output.
+logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
+warnings.filterwarnings('ignore', message=r'Glyph \d+ .* missing from font')
+warnings.filterwarnings('ignore', message=r'.*findfont.*')
 
 
 def _savefig(fig: 'plt.Figure', stem: str, out: Path) -> None:
@@ -59,6 +68,67 @@ def _gev_row(chrom: str, max_lods: np.ndarray) -> dict:
     return build_gev_row(chrom, max_lods)
 
 
+def _load_lod_subset(
+    path: Path, want_ids: set, chunksize: int = 500_000,
+) -> 'tuple[pd.DataFrame, dict[str, int]]':
+    """Stream the genome LOD table once, keeping only the rows of *want_ids*.
+
+    Returns the retained rows and the number of distinct loci per chromosome
+    (bare chromosome strings). Memory is bounded by one chunk plus the retained
+    rows, independent of the number of genes or loci scanned.
+    """
+    from mosaiqtl.utils import strip_chr_prefix
+    cols = list(pd.read_csv(path, nrows=0).columns)
+    locus_col = 'locus' if 'locus' in cols else 'pos_mb'
+    loci_by_chr: dict[str, set] = {}
+    kept = []
+    for chunk in pd.read_csv(
+        path,
+        dtype={'gene_id': str, 'chr': str, 'pos_mb': 'float32', 'lod': 'float32'},
+        chunksize=chunksize,
+    ):
+        chunk['chr'] = strip_chr_prefix(chunk['chr'])
+        for c, loci in chunk.groupby('chr')[locus_col]:
+            loci_by_chr.setdefault(c, set()).update(loci.unique())
+        sel = chunk[chunk['gene_id'].isin(want_ids)]
+        if not sel.empty:
+            kept.append(sel)
+        del chunk, sel
+    lod_df = pd.concat(kept, ignore_index=True) if kept else pd.DataFrame(columns=cols)
+    return lod_df, {c: len(s) for c, s in loci_by_chr.items()}
+
+
+def _finemap_gene_ids(path: Path, chunksize: int = 1_000_000) -> set:
+    """Distinct gene_ids in the fine-mapping table, read as a stream of chunks."""
+    ids: set = set()
+    for chunk in pd.read_csv(path, usecols=['gene_id'], dtype={'gene_id': str},
+                             chunksize=chunksize):
+        ids.update(chunk['gene_id'].unique())
+    return ids
+
+
+def _load_finemap_subset(
+    path: Path, want_ids: set, chunksize: int = 1_000_000,
+) -> pd.DataFrame:
+    """Stream the fine-mapping table once, keeping only the rows of *want_ids*.
+
+    Memory is bounded by one chunk plus the retained rows, independent of how
+    many eGenes were fine-mapped.
+    """
+    from mosaiqtl.utils import strip_chr_prefix
+    kept = []
+    for chunk in pd.read_csv(path, dtype={'gene_id': str, 'chr': str}, chunksize=chunksize):
+        sel = chunk[chunk['gene_id'].isin(want_ids)]
+        if not sel.empty:
+            kept.append(sel)
+        del chunk, sel
+    if not kept:
+        return pd.DataFrame(columns=list(pd.read_csv(path, nrows=0).columns))
+    fm_df = pd.concat(kept, ignore_index=True)
+    fm_df['chr'] = strip_chr_prefix(fm_df['chr'])
+    return fm_df
+
+
 def main() -> None:
     peak_lod_csv   = Path(sys.argv[1])
     egene_csv      = Path(sys.argv[2])
@@ -73,6 +143,7 @@ def main() -> None:
     out            = Path(sys.argv[11])
     gtf_arg        = sys.argv[12] if len(sys.argv) > 12 else '-'
     tissue         = sys.argv[13] if len(sys.argv) > 13 else ''
+    finemap_arg    = sys.argv[14] if len(sys.argv) > 14 else '-'
 
     tag = f'{tissue}_{celltype}_{stag}' if tissue else f'{celltype}_{stag}'
     out.mkdir(parents=True, exist_ok=True)
@@ -84,7 +155,7 @@ def main() -> None:
     from mosaiqtl import __version__
     from mosaiqtl.genotype.cc import FOUNDER_ORDER, display_founders as _display_founders
     from mosaiqtl.io.results_io import write_eqtl_stats
-    from mosaiqtl.utils import chr_sort_key, git_hash
+    from mosaiqtl.utils import chr_sort_key, git_hash, strip_chr_prefix
     from mosaiqtl.viz.effects import effects_per_chr, genome_effects_grid
     from mosaiqtl.viz.genome import (
         cis_distance_histogram, cis_distance_panel, egene_lod_distribution,
@@ -98,10 +169,39 @@ def main() -> None:
     # ── load dataframes ────────────────────────────────────────────────────────
     peak_df   = pd.read_csv(peak_lod_csv,   dtype={'gene_id': str, 'chr': str})
     egenes_df = pd.read_csv(egene_csv,      dtype={'gene_id': str, 'chr': str})
-    lod_df    = pd.read_csv(lod_genome_csv, dtype={'gene_id': str, 'chr': str})
+    for _df in (peak_df, egenes_df):
+        _df['chr'] = strip_chr_prefix(_df['chr'])
 
     if 'significance' in egenes_df.columns and egenes_df['significance'].notna().any():
         egenes_df = egenes_df[egenes_df['significance'] == 'T']
+
+    # founder betas live in peak_lod.csv; the eGene summary schema carries none
+    _beta_extra = [c for c in peak_df.columns
+                   if c.startswith('beta_') and c not in egenes_df.columns]
+    if _beta_extra:
+        egenes_df = egenes_df.merge(peak_df[['gene_id'] + _beta_extra],
+                                    on='gene_id', how='left')
+
+    # Plots draw the top gene per chromosome (by peak LOD, over all genes and over
+    # eGenes) and the fine-mapped eGenes; only those genes' LOD rows are loaded.
+    want_ids = set()
+    for _df in (peak_df, egenes_df):
+        _ok = _df.dropna(subset=['peak_lod'])
+        if not _ok.empty:
+            want_ids.update(_ok.loc[_ok.groupby('chr')['peak_lod'].idxmax(), 'gene_id'])
+    fm_panel_df = egenes_df.iloc[0:0]
+    if finemap_arg != '-' and Path(finemap_arg).exists():
+        _fm_ids = _finemap_gene_ids(Path(finemap_arg))
+        _fm_eg = egenes_df[egenes_df['gene_id'].isin(_fm_ids)].dropna(subset=['peak_lod'])
+        fm_panel_df = (_fm_eg.sort_values('peak_lod', ascending=False)
+                       .groupby('chr', sort=False).head(FINEMAP_PANELS_PER_CHR))
+        want_ids.update(fm_panel_df['gene_id'])
+    lod_df, n_loci_by_chr = _load_lod_subset(lod_genome_csv, want_ids)
+    # gene_symbol is a per-gene attribute; take it from peak_df so the LOD table
+    # need not carry it
+    lod_df['gene_symbol'] = lod_df['gene_id'].astype(str).map(
+        dict(zip(peak_df['gene_id'], peak_df['gene_symbol'])))
+    log.info('LOD rows kept: %d for %d genes', len(lod_df), len(want_ids))
 
     egene_ids = set(egenes_df['gene_id'])
     is_egene  = peak_df['gene_id'].isin(egene_ids).to_numpy()
@@ -189,12 +289,8 @@ def main() -> None:
     _savefig(fig, f'{tag}_genome_diagnostic', out)
 
     # ── 3. loci_per_chr ───────────────────────────────────────────────────────
-    lod_chr_s = lod_df['chr'].astype(str)
-    chrs_ord  = sorted(lod_chr_s.unique(), key=chr_sort_key)
-    locus_col = 'locus' if 'locus' in lod_df.columns else 'pos_mb'
-    n_loci    = np.array(
-        [int(lod_df.loc[lod_chr_s == c, locus_col].nunique()) for c in chrs_ord], dtype=float
-    )
+    chrs_ord = sorted(n_loci_by_chr, key=chr_sort_key)
+    n_loci   = np.array([n_loci_by_chr[c] for c in chrs_ord], dtype=float)
     if n_loci.sum() > 0:
         ax  = loci_per_chr(chrs_ord, n_loci)
         fig = ax.figure
@@ -331,12 +427,17 @@ def main() -> None:
         except Exception as exc:
             log.warning('locus_panel_grid: %s', exc)
 
+    # shared state for sections 19 and 20
+    _lw_m    = re.match(r'^Lw([0-9.]+)$', stag)
+    _zoom_mb = float(_lw_m.group(1)) if _lw_m else 5.0
+    _gtf_path = gtf_arg if gtf_arg != '-' else None
+    gi_full   = pd.read_csv(gene_info_path, dtype={'gene_id': str, 'chr': str})
+    _genes_df = (gi_full if {'chr', 'start', 'gene_symbol'}.issubset(gi_full.columns)
+                 else None)
+
     # ── 19. per-chr locus panels with optional gene track (GTF) ───────────────
     if not lod_df.empty and 'gene_symbol' in lod_df.columns:
         try:
-            _lw_m = re.match(r'^Lw([0-9.]+)$', stag)
-            _zoom_mb = float(_lw_m.group(1)) if _lw_m else 5.0
-            _gtf_path = gtf_arg if gtf_arg != '-' else None
             _tss_col = next((c for c in ('tss_mb', 'start_mb') if c in peak_df.columns), None)
             _tss_map = (dict(zip(peak_df['gene_symbol'], peak_df[_tss_col]))
                         if _tss_col and 'gene_symbol' in peak_df.columns else None)
@@ -346,9 +447,6 @@ def main() -> None:
                  if pd.notna(t)}
                 if has_effects and _near_tss_col in egenes_df.columns else None
             )
-            gi_full = pd.read_csv(gene_info_path, dtype={'gene_id': str, 'chr': str})
-            _genes_df = (gi_full if {'chr', 'start', 'gene_symbol'}.issubset(gi_full.columns)
-                         else None)
             lp_figs = locus_panels_per_chr(
                 lod_df,
                 egenes_df if has_effects else None,
@@ -364,6 +462,43 @@ def main() -> None:
                 _savefig(fig, f'{tag}_locus_panel_chr{chrom}', out)
         except Exception as exc:
             log.warning('locus_panels_per_chr: %s', exc)
+
+    # ── 20. finemap locus panels per eGene (requires merged eqtl_finemapping.csv) ──
+    if finemap_arg != '-' and Path(finemap_arg).exists() and len(fm_panel_df) > 0:
+        try:
+            from mosaiqtl.viz.finemap import locus_finemap_panel
+            fm_df = _load_finemap_subset(
+                Path(finemap_arg), set(fm_panel_df['gene_id'].astype(str)))
+            log.info('fine-mapping rows kept: %d for %d genes',
+                     len(fm_df), len(fm_panel_df))
+            lod_df_chr = lod_df
+            for _, er in fm_panel_df.iterrows():
+                gid   = str(er['gene_id'])
+                chrom = str(er['chr'])
+                gene_fm = fm_df[fm_df['gene_id'] == gid]
+                if gene_fm.empty:
+                    continue
+                chr_lod = lod_df_chr[lod_df_chr['chr'] == chrom]
+                gene_lod = chr_lod[chr_lod['gene_id'].astype(str) == gid]
+                if gene_lod.empty:
+                    gene_lod = chr_lod.drop_duplicates(subset=['pos_mb'])
+                lod_pos = gene_lod['pos_mb'].to_numpy(dtype=float)
+                lod_sc  = gene_lod['lod'].to_numpy(dtype=float)
+                if len(lod_pos) == 0:
+                    continue
+                peak_mb = float(er['peak_mb']) if pd.notna(er.get('peak_mb')) else None
+                sym     = str(er.get('gene_symbol', gid))
+                thr     = thr_by_chr.get(chrom)
+                fig = locus_finemap_panel(
+                    gene_fm, gid, lod_pos, lod_sc,
+                    chrom=chrom, peak_pos_mb=peak_mb,
+                    genes_df=_genes_df, highlight_gene=sym,
+                    window_mb=_zoom_mb, threshold=thr,
+                )
+                safe_sym = sym.replace('/', '_').replace(' ', '_')
+                _savefig(fig, f'{tag}_finemap_panel_{safe_sym}_chr{chrom}', out)
+        except Exception as exc:
+            log.warning('finemap_panel: %s', exc)
 
     # ── run_metadata.json ─────────────────────────────────────────────────────
     metadata = {

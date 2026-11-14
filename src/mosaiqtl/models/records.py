@@ -50,6 +50,9 @@ class LMMResult:
     h2       : float  heritability fixed from null model
     f_stat   : float  F statistic
     betas    : np.ndarray (J,)    haplotype effects at this locus (sum ≈ 0)
+    se_betas : np.ndarray (J,)    Wald standard error of each beta from the
+               fitted covariance; for a single predictor (J=1) it is the
+               standard error of that coefficient
     sigma2_g : float  genetic variance component
     sigma2_e : float  residual variance component
     rss_null : float  weighted RSS under null
@@ -61,6 +64,7 @@ class LMMResult:
     h2: float
     f_stat: float
     betas: np.ndarray
+    se_betas: np.ndarray
     sigma2_g: float
     sigma2_e: float
     rss_null: float

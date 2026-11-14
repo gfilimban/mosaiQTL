@@ -288,3 +288,75 @@ class TestGetAlleleEffectsRanef:
         b_rn = np.array([e.estimate for e in rn])
         # ridge shrinks toward zero; exact match would indicate λ≈0 (degenerate)
         assert not np.allclose(b_rn, b_fx, atol=1e-6)
+
+
+class TestGetAlleleEffectsZeroReplicateStrains:
+    """regression: strains with no valid replicates for a gene must not cause SVD failure.
+
+    when sample_ids is provided (replicate-aware mode) and all samples for a strain
+    are NaN in the phenotype, that strain has r_counts==0 after the Z-matrix collapse.
+    dividing by zero produces NaN in y/x → NaN in G → np.linalg.matrix_rank SVD failure.
+    the fix drops those strains, re-eigendecomposes the kinship submatrix, and subsets h.
+    """
+
+    def test_zero_replicate_strain_does_not_raise(
+        self,
+        tiny_cache,
+        tiny_kinship,
+        tiny_phenotype,
+        sample_ids,
+    ):
+        from mosaiqtl.genotype.kinship import decomp_kinship
+
+        kd = decomp_kinship(tiny_kinship)
+        chrom = tiny_cache.chromosomes[0]
+        locus_id = str(tiny_cache._data[chrom]['locus_ids'][0])
+
+        # NaN out the first 4 samples (all replicates for strain CC001)
+        # so that strain 0 has r_counts==0 after Z-matrix collapse
+        pheno = tiny_phenotype.copy().astype(float)
+        pheno[:4] = np.nan
+
+        effects = get_allele_effects(
+            pheno,
+            tiny_cache,
+            locus_id,
+            chrom,
+            kd,
+            sample_ids=list(sample_ids),
+            use_rint=False,
+            method='fixef',
+        )
+        assert isinstance(effects, list)
+        assert len(effects) == tiny_cache.n_founders
+        assert all(isinstance(e, FounderEffect) for e in effects)
+
+    def test_zero_replicate_strain_effects_finite(
+        self,
+        tiny_cache,
+        tiny_kinship,
+        tiny_phenotype,
+        sample_ids,
+    ):
+        from mosaiqtl.genotype.kinship import decomp_kinship
+
+        kd = decomp_kinship(tiny_kinship)
+        chrom = tiny_cache.chromosomes[0]
+        locus_id = str(tiny_cache._data[chrom]['locus_ids'][0])
+
+        pheno = tiny_phenotype.copy().astype(float)
+        pheno[:4] = np.nan
+
+        effects = get_allele_effects(
+            pheno,
+            tiny_cache,
+            locus_id,
+            chrom,
+            kd,
+            sample_ids=list(sample_ids),
+            use_rint=False,
+            method='fixef',
+        )
+        for e in effects:
+            assert np.isfinite(e.estimate), f'non-finite estimate for {e.founder}'
+            assert np.isfinite(e.se), f'non-finite SE for {e.founder}'

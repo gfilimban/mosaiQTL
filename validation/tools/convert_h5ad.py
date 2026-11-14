@@ -18,25 +18,25 @@ Cell-type mode (--celltype / --all_celltypes):
     --all_celltypes converts every celltype in the h5ad in one pass.
     --exclude_celltypes skips named celltypes (default: low-quality).
 
-gene_id (versioned Ensembl ID, e.g. 'ENSMUSG00000051951.6') is the identity key
+gene_id (version-free Ensembl ID, e.g. 'ENSMUSG00000051951') is the identity key
 for every gene, everywhere in the pipeline: the HDF5 'genes' dataset in
 counts_lognorm.h5, the join key in every exp_gene_info_*.csv, and the key
 convert_celltype() uses to intersect against the whole-tissue gene universe.
-adata.var_names is NOT used for gene identity anywhere downstream — it is
-cohort-dependent (some cohorts index var by gene symbol, others by the same
-versioned Ensembl ID as gene_id) and was the root cause of a stale, ambiguous
-'gene_name' column mirroring whatever var_names happened to be per cohort; that
-column has been removed. adata.var must carry a 'gene_id' column — this is
-required, not optional, and conversion raises if it is absent.
+adata.var_names is NOT used for gene identity — it is cohort-dependent (some
+cohorts index var by gene symbol, others by Ensembl ID). adata.var must carry a
+'gene_id' column — this is required, and conversion raises if it is absent.
+
+Ensembl version suffixes are removed from gene_id once, right after the h5ad is
+read (see _collapse_gene_versions): var rows whose IDs differ only by version
+are merged into one gene by summing their pseudobulk counts.
 
 Gene coordinates (chr, start, end, strand) are read directly from adata.var
 when present. If adata.var lacks them entirely (e.g. a pseudobulk h5ad built
 from an annotated h5ad whose var carried no coordinates), they are filled from
 the external vM36 reference at sibling qtl/input/gene_info.vm36.csv, matched on
-gene_id — an exact (versioned) match first, falling back to a version-stripped
-match, then to gene_name (the reference file's own column, unrelated to the
-identity key above). gene_id itself is never modified: the versioned form is
-preserved exactly as sourced in every output. tss_bp is derived from those
+gene_id — an exact match first, falling back to a match on the reference's
+version-stripped IDs, then to gene_name (the reference file's own column,
+unrelated to the identity key above). tss_bp is derived from those
 columns (start for + strand, end for - strand) and written to
 exp_gene_info_*.csv for use downstream as cis_dist_mb = (locus_pos - tss_bp) / 1e6.
 gene_symbol is the real display name (adata.var['gene_name'] when the cohort
@@ -61,6 +61,7 @@ import anndata
 import h5py
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 
 from mosaiqtl.genotype.cc import STRAIN_ORDER
 from mosaiqtl.io.covariates import encode_sex as _encode_sex
@@ -314,6 +315,37 @@ def _order_exp_gene_cols(df: pd.DataFrame) -> pd.DataFrame:
     return df[base + rest]
 
 
+def _collapse_gene_versions(adata: anndata.AnnData) -> anndata.AnnData:
+    """Strip Ensembl version suffixes from var['gene_id'] and merge duplicates.
+
+    Var rows whose gene_id differs only by version suffix become one gene:
+    pseudobulk counts in X are summed across the versions, and var annotations
+    are taken from the first row of each group (file order is preserved).
+    """
+    if 'gene_id' not in adata.var.columns:
+        raise ValueError(
+            "adata.var has no 'gene_id' column — gene_id is the required identity "
+            'key; var_names is cohort-dependent and is never used for gene identity')
+    base = adata.var['gene_id'].astype(str).str.replace(r'\.\d+$', '', regex=True)
+    if not base.duplicated().any():
+        adata.var['gene_id'] = base.values
+        return adata
+
+    codes, uniques = pd.factorize(base)
+    log.info('  gene versions: merging %d var rows into %d version-free genes '
+             '(summing counts)', adata.n_vars, len(uniques))
+    group = sp.csr_matrix(
+        (np.ones(adata.n_vars, dtype=np.float32), (np.arange(adata.n_vars), codes)),
+        shape=(adata.n_vars, len(uniques)))
+    X = adata.X @ group
+    if sp.issparse(X) and not sp.issparse(adata.X):
+        X = X.toarray()
+    var = adata.var.loc[~base.duplicated().values].copy()
+    var['gene_id'] = uniques.to_numpy()
+    var.index = var['gene_id'].values
+    return anndata.AnnData(X=X, obs=adata.obs.copy(), var=var)
+
+
 def _write_counts_h5(adata: anndata.AnnData, sorted_idx: 'pd.Index',
                      out_path: pathlib.Path) -> None:
     if 'gene_id' not in adata.var.columns:
@@ -373,7 +405,7 @@ def init_celltypes(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str,
     out_dir.mkdir(parents=True, exist_ok=True)
 
     log.info('reading %s', h5ad_path)
-    adata = anndata.read_h5ad(h5ad_path)
+    adata = _collapse_gene_versions(anndata.read_h5ad(h5ad_path))
     log.info('  shape: %d obs × %d genes  (%d unique samples)',
              adata.n_obs, adata.n_vars, adata.obs['sample_id'].nunique())
 
@@ -452,7 +484,7 @@ def convert(h5ad_path: pathlib.Path, out_dir: pathlib.Path, tissue: str,
     out_dir.mkdir(parents=True, exist_ok=True)
 
     log.info('reading %s', h5ad_path)
-    adata = anndata.read_h5ad(h5ad_path)
+    adata = _collapse_gene_versions(anndata.read_h5ad(h5ad_path))
     log.info('  shape: %d samples × %d genes', adata.n_obs, adata.n_vars)
 
     obs = adata.obs[['sample_id', 'genotype', 'sex', 'dataset']].copy()
@@ -540,7 +572,7 @@ def convert_celltype(h5ad_path: pathlib.Path, celltype: str,
     log.info('  whole-tissue gene universe: %d genes', len(passing_genes))
 
     log.info('reading %s', h5ad_path)
-    adata_full = anndata.read_h5ad(h5ad_path)
+    adata_full = _collapse_gene_versions(anndata.read_h5ad(h5ad_path))
     ct_col = _detect_celltype_col(adata_full.obs, override=celltype_col)
 
     # ── subset to this cell type ──────────────────────────────────────────────

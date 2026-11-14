@@ -13,8 +13,8 @@ import logging
 
 import numpy as np
 from scipy import stats
-from scipy.interpolate import UnivariateSpline
-from scipy.optimize import minimize
+from scipy.interpolate import make_smoothing_spline
+from scipy.optimize import brentq, minimize
 
 logger = logging.getLogger("mosaiqtl")
 
@@ -103,6 +103,33 @@ def beta_calibrate_pvalue(
     return p_adj, a_hat, b_hat
 
 
+def _smooth_df3_at_max(x: np.ndarray, y: np.ndarray) -> float:
+    """Fit a cubic smoothing spline with 3 effective df and evaluate at max(x).
+
+    The smoothing penalty is chosen so that the trace of the spline's linear
+    smoother matrix equals 3.
+
+    Args:
+        x: Strictly increasing tuning values, at least 5.
+        y: Raw pi0 estimate at each tuning value.
+
+    Returns:
+        The smoothed pi0 at the largest tuning value.
+    """
+    n = len(x)
+    eye = np.eye(n)
+
+    def _trace_minus_three(log10_pen: float) -> float:
+        pen = 10.0 ** log10_pen
+        return (
+            sum(make_smoothing_spline(x, eye[i], lam=pen)(x[i]) for i in range(n))
+            - 3.0
+        )
+
+    log10_pen = brentq(_trace_minus_three, -8.0, 4.0)
+    return float(make_smoothing_spline(x, y, lam=10.0 ** log10_pen)(x.max()))
+
+
 def storey_qvalue(
     pvalues: np.ndarray,
     lambda_range: np.ndarray | None = None,
@@ -150,24 +177,28 @@ def storey_qvalue(
 
     # keep only tuning values where the estimate came out finite and positive
     ok = np.isfinite(pi0_hat) & (pi0_hat > 0)
-    if ok.sum() >= 4:
+    if ok.sum() >= 5:
         try:
-            # known limitations, not yet addressed:
-            # - the smoothing spline used here is a simpler variant than the
-            #   flat-curvature-at-the-ends spline this method is meant to use
-            # - the smoothing amount is looser than typical default tuning
-            # - values above 1 are silently capped below rather than flagged;
-            #   they would otherwise signal that the p-values feeding this
-            #   function are miscalibrated
-            spl = UnivariateSpline(lam[ok], pi0_hat[ok], k=3, s=len(lam[ok]))
-            pi0 = float(spl(lam[ok].max()))
-        except Exception:
+            # cubic smoothing spline over the tuning grid, penalty chosen so the
+            # fit uses 3 effective degrees of freedom, read at the largest
+            # tuning value
+            pi0 = _smooth_df3_at_max(lam[ok], pi0_hat[ok])
+        except (ValueError, np.linalg.LinAlgError):
             pi0 = float(pi0_hat[ok].min())
     else:
         # too few usable tuning values to fit a spline — use the smallest estimate instead
         pi0 = float(pi0_hat[ok].min()) if ok.any() else 1.0
 
-    # pi0 is a proportion, so cap it at 1; a fitted value above 1 just means noise
+    # pi0 is a proportion, so it is capped at 1. A fitted value above 1 means the
+    # p-values pile up near 1 (a null that is too conservative or too narrow),
+    # so it is reported before the cap hides it.
+    if pi0 > 1.0:
+        logger.warning(
+            "storey_qvalue: raw pi0=%.4f exceeds 1 (m=%d) — p-values are skewed "
+            "toward 1; the calibration null is likely miscalibrated",
+            pi0,
+            m,
+        )
     pi0 = min(pi0, 1.0)
     pi0 = max(pi0, 1e-6)  # keep pi0 above zero so every q-value stays finite
     logger.debug("storey_qvalue: m=%d  pi0=%.4f", m, pi0)
@@ -207,6 +238,7 @@ def calibrate_gene_pvalue(
     use_rint: bool = True,
     z_mat: "np.ndarray | None" = None,
     seed: int = 1,
+    chr_data: "dict | None" = None,
 ) -> "tuple[float, float, float, float]":
     """calibrate one gene's peak LOD into a Beta-adjusted, genome-comparable p-value.
 
@@ -244,6 +276,9 @@ def calibrate_gene_pvalue(
                      for n-level scanning; when provided, kinship_decomp must
                      hold eigdecomp of K_n = Z K_m Z^T.
     seed           : int  rng seed for the null draw.
+    chr_data       : dict or None  lmm.precompute_chromosome output for chrom built
+                     from kinship_decomp[chrom] and z_mat; reuses the rotated
+                     genotype array across genes on the same chromosome.
 
     returns
     -------
@@ -282,6 +317,7 @@ def calibrate_gene_pvalue(
         h2_g,
         z_mat=z_mat,
         loci_mask=loci_mask,
+        chr_data=chr_data,
     )
 
     df = (n_founders if n_founders is not None else genomecache.n_founders) - 1
