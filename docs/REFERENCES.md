@@ -128,7 +128,7 @@ See `docs/DATA_SOURCES.md` for the complete derivation chain from these files to
 | Ewels PA et al. The nf-core framework. *Nat Biotechnol* 2020 | 10.1038/s41587-020-0439-x | DSL2 patterns; module structure; stub-run CI |
 | Kurtzer GM et al. Singularity: scientific containers for mobility of compute. *PLOS ONE* 2017 | 10.1371/journal.pone.0177459 | Singularity/Apptainer — HPC container runtime |
 | Amdahl GM. Validity of the single-processor approach. *AFIPS* 1967 | 10.1145/1465482.1465560 | Amdahl's law — ~5.5× ceiling with serial fraction 0.15 |
-| Gustafson JL. Reevaluating Amdahl's law. *Commun ACM* 1988 | 10.1145/42411.42415 | Weak scaling — R²>0.95 target (1→8 cores) |
+| Gustafson JL. Reevaluating Amdahl's law. *Commun ACM* 1988 | 10.1145/42411.42415 | Weak scaling — $R^2 > 0.95$ target (1→8 cores) |
 
 ---
 

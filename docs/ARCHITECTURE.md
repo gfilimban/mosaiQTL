@@ -1,7 +1,7 @@
 # docs/ARCHITECTURE.md — mosaiQTL v0.7.0
 # Multiomics haplotype-based QTL mapping for CC/DO mice (mm39)
-# Statistical model: LMM scan (primary) | NB-GLMM (planned Stage-2)
-# Full citations: docs/references.md
+# Statistical model: LMM scan (primary) | NB-GLMM (experimental; not in CLI/Nextflow)
+# Full citations: docs/REFERENCES.md
 
 ---
 
@@ -14,8 +14,10 @@ one per founder strain (J=8 for CC/DO), computed by HMM forward-backward over
 the GigaMUGA array [Morgan 2016].
 
 The scan tests each locus using a Linear Mixed Model with LOCO kinship (see §4), producing
-a LOD score per gene × locus. Significance is established by parametric permutation [Churchill
-1994] with GEV tail extrapolation; FDR across eGenes uses Storey q-values [Storey 2002].
+a LOD score per gene × locus. Significance is established per gene by a Beta-calibrated
+parametric-permutation p-value [Churchill 1994], and FDR across all tested genes uses Storey
+q-values [Storey 2002]; a genome-wide permutation threshold with GEV tail extrapolation is
+kept as a QC reference.
 Sanger SNP fine-mapping collapses the haplotype signal to a credible set of imputed SNPs
 per eGene via approximate Bayes factors [Wakefield 2009].
 
@@ -23,8 +25,9 @@ per eGene via approximate Bayes factors [Wakefield 2009].
 **Out of scope:** pseudobulk aggregation, proteomics, human GWAS, single-cell-level testing.
 
 **Primary model:** LMM haplotype scan, validated against miQTL [Keele 2019] and R/qtl2
-[Broman 2019]. NB-GLMM (nb.py) is fully implemented but not yet wired into the scan
-pipeline; LMM runs in production today.
+[Broman 2019]. NB-GLMM (nb.py) is implemented but experimental: it is reachable only from
+the Python API (`pipeline.discover(model='nb')`) and is not wired into the CLI or Nextflow;
+LMM runs in production today.
 
 ---
 
@@ -34,39 +37,51 @@ pipeline; LMM runs in production today.
 src/mosaiqtl/
   genotype/
     genomecache.py     HDF5-backed haplotype prob store; lazy per-chr I/O
+    cache_builder.py   build-cache console script; collapse_genomecache
     hmm.py             Forward-backward HMM (n_gen=1 for CC inbred)
-    kinship.py         LOCO kinship build + eigendecomposition
-    founders.py        ALL color/strain constants (CCPopulation singleton)
-    snp_db.py          Sanger MGP VCF → alleles HDF5 (build_founder_allele_mgp)
-    interpolation.py   Linear interpolation of haplotype probs to SNP positions
+    kinship.py         LOCO kinship build + eigendecomposition; load_kinship_decomp
+    cc.py              CC strain/color constants (FOUNDER_ORDER, FOUNDER_COLORS); CCPopulation
+    colors.py          OKLab color blending helpers
+    snp_db.py          Sanger MGP VCF → alleles HDF5 (build_founder_allele_mgp); load_founder_alleles
+    interpolation.py   Linear interpolation of haplotype probs to SNP positions (not on the pipeline path)
   qtl/
     lmm.py             Gaussian LMM — scan engine (validated port of miQTL)
-    nb.py              NB-GLMM Stages 1+2 — PQL+Woodbury; primary future path
-    scan.py            replicate-aware, MI, instability, fixef wrappers
-    permutation.py     Parametric null + GEV threshold; fix_h2=True
-    fdr.py             beta_calibrate_pvalue + storey_qvalue
-    effects.py         Per-founder allele effects (fixef / ranef / BLUP)
+    nb.py              NB-GLMM Stages 1+2 — PQL+Woodbury; experimental
+    scan.py            scan_h2lmm, scan_multi_gene, scan_multi_gene_lmm (replicate-aware); ScanResult
+    mi.py              Multiple-imputation scan (scan_h2lmm_mi, scan_multi_gene_mi)
+    instability.py     fixef / subsampling-instability scans
+    peaks.py           Peak finding, LOD-drop CI on a ScanResult
+    permutation.py     Parametric null + threshold scans (h² fixed); pick_rep_gene
+    thresholds.py      GEV fit (get_gev_thresholds); per-chr threshold loading
+    fdr.py             beta_calibrate_pvalue + storey_qvalue + calibrate_gene_pvalue
+    effects.py         Per-founder allele effects (fixef / ranef)
     ci.py              LOD-drop support interval; ci_scan_multi_gene
-    imputation.py      Haplotype → SNP dosage; ABF credible sets; SuSiE-RSS stub
+    snp_scan.py        Imputed SNP scan (haplotype probs × founder alleles → dosage)
+    imputation.py      Wakefield ABF, PIP, credible sets, LD-group merging (fine_map_region)
     mediation.py       QR-based mediation scan; Woodbury rank-1 update
     epistasis.py       Pairwise GxG; conditional scan
-    vqtl.py            Dispersion QTL (vQTL); VQTLResult
+    vqtl.py            Dispersion QTL (vQTL); returns VQTLResult (defined in models/records.py)
   io/
-    anndata_io.py      AnnData read (backed=True; adata.raw.X for counts)
+    anndata_io.py      load_expression_h5 (gene subset of an expression HDF5)
+    annotation_io.py   GTF exon loading for gene tracks
     covariates.py      build_covariate_matrix; build_cov_array; build_sample_geno_map
-    results_io.py      CSV writers with provenance headers (ProvenanceRecord)
+    results_io.py      Table builders/atomic writers for eqtl_peak, eqtl_stats, eqtl_finemapping[_peak]
   models/
-    records.py         ScanResult, VQTLResult, QTLResult, FounderEffect
+    records.py         LMMResult, ScanResult, FounderEffect, VQTLResult, ProvenanceRecord, QTLResult
     config.py          Population (frozen Pydantic), ScanConfig, PipelineConfig
   viz/
-    genome.py          LOD profiles, Manhattan plots
+    genome.py          LOD profiles, Manhattan plots, genome_summary
     effects.py         Founder effect bars, coef_profile
     haplotypes.py      Haplotype heatmaps, epistasis grids
     celltypes.py       Cross-cell-type comparison plots
-  pipeline.py          End-to-end: discover → characterize → resolve → call_egenes
-                        → calibrate_egenes_storey → cap_egene_ci → finemap_egenes
+    compare.py, finemap.py, locus.py, validation.py   R-vs-Python, fine-mapping, locus, validation plots
+  pipeline.py          Output schemas (*_COLS); discover → characterize → resolve;
+                       call_egenes, calibrate_egenes_storey, call_significant_egenes,
+                       cap_egene_ci, impute_egenes, finemap_imputed, finemap_egenes
   utils.py             RINT, Z-matrix, align_samples, chr_sort_key, build_tss_lookup
-  cli.py               Click CLI (scan, merge, permute, call-egenes, finemap, report)
+  cli.py               Click CLI (build-kinship, inspect-cache, scan-chr, merge-scan, permute,
+                       calibrate, call-egenes, characterise, impute, finemap, report,
+                       scan-mi, mediate, assess-stability)
 ```
 
 Key non-obvious locations:
@@ -81,69 +96,80 @@ Key non-obvious locations:
 
 ### 3.1 LMM formulation
 
-For each gene g and each locus ℓ, mosaiQTL tests:
+For each gene $g$ and each locus $\ell$, mosaiQTL tests:
 
-**Null (H₀):**
-```
-  y = Xβ + u + ε
-  u ~ N(0, τ²K_loco[c])
-  ε ~ N(0, σ²I)
-```
+**Null ($H_0$):**
 
-**Alternative (H₁):**
-```
-  y = Hα + Xβ + u + ε
-```
+$$
+y = X\beta + u + \varepsilon, \qquad u \sim N\!\left(0, \tau^2 K_{\mathrm{loco}}^{(c)}\right), \qquad \varepsilon \sim N(0, \sigma^2 I)
+$$
+
+**Alternative ($H_1$):**
+
+$$
+y = H\alpha + X\beta + u + \varepsilon
+$$
 
 Where:
-- y is the RINT-transformed pseudobulk expression vector (n_samples × 1)
-- H is the (n_samples × J) haplotype probability matrix at locus ℓ
-- X is the covariate matrix (intercept + sex + batch + ...)
-- K_loco[c] is the LOCO kinship for chromosome c (§4)
-- τ², σ² are variance components estimated once per gene under H₀
+- $y$ is the RINT-transformed pseudobulk expression vector ($n_{\mathrm{samples}} \times 1$; RINT when `use_rint=True`, the default)
+- $H$ is the ($n_{\mathrm{samples}} \times J$) haplotype probability matrix at locus $\ell$
+  (strain probabilities expanded to samples, $ZH$, when strains have replicates)
+- $X$ is the covariate matrix (intercept + the `--covariates` columns, default sex + dataset)
+- $K_{\mathrm{loco}}^{(c)}$ is the LOCO kinship for chromosome $c$ (§4), expanded to
+  $Z K_{\mathrm{loco}}^{(c)} Z^\top$ for replicated samples
+- $\tau^2, \sigma^2$ are variance components estimated once per gene per chromosome under $H_0$
 
-The LOD score follows [Broman 2019]'s ML convention (denominator n, not n−p):
-```
-  LOD = (n/2) × log₁₀(RSS₀ / RSS₁)
-```
+The LOD score follows [Broman 2019]'s ML convention (denominator $n$, not $n-p$):
+
+$$
+\mathrm{LOD} = \frac{n}{2} \log_{10}\!\left(\frac{\mathrm{RSS}_0}{\mathrm{RSS}_1}\right)
+$$
 
 This matches miQTL [Keele 2019] and R/qtl2 [Broman 2019]; deviating breaks the
-Phase 1 validation gate (P1-S1 r²≥0.990).
+Phase 1 validation gate (P1-S1 $r^2 \ge 0.990$).
 
 ### 3.2 Kinship rotation (spectral trick)
 
-Eigendecomposition K = UΛUᵀ [Kang 2008] diagonalises the LMM covariance, converting it
-to WLS with per-sample weights w_i = (σ² + τ²λᵢ)⁻¹ [Lippert 2011].
-After rotating y, H, X by Uᵀ, all O(n³) inversions reduce to element-wise operations.
-h² = τ²/(τ²+σ²) is estimated by Brent's method on the REML profile likelihood — once per
-gene per chromosome, then fixed for permutations (§5).
+Eigendecomposition $K = U\Lambda U^\top$ [Kang 2008] diagonalises the LMM covariance, converting it
+to WLS with per-sample weights $w_i = (\sigma^2 + \tau^2\lambda_i)^{-1} \propto \left(h^2\lambda_i + 1 - h^2\right)^{-1}$ [Lippert 2011].
+After rotating $y, H, X$ by $U^\top$, all $O(n^3)$ inversions reduce to element-wise operations.
+$h^2 = \tau^2/(\tau^2+\sigma^2)$ is estimated on the ML (not REML) profile likelihood
+(`lmm.estimate_h2_null`): a 20-point grid on $[0.01, 0.99]$, bounded Brent refinement
+(`minimize_scalar`) around the best grid point, and a final comparison against $h^2 \approx 0$ —
+once per gene per chromosome, then fixed for permutations (§5). Before 2026-05-31
+(commit 11a4b68e) $h^2$ was estimated by REML.
 
 ### 3.3 FWL vectorization
 
 Frisch-Waugh-Lovell theorem [FWL, in Lippert 2011]: partial regression of y on H after
 projecting out X yields the same residual sum of squares as the full model. mosaiQTL
-precomputes H_t = UᵀZH and the null residual e₀ = ỹ − X̃β̂ once per chromosome in
-`precompute_chromosome`, then reuses them for every locus on that chromosome. This
-amortizes the O(n×p²) covariate fit across all L loci — the key algorithmic advantage
+precomputes the rotated haplotype array $H_t = U^\top Z H$ once per chromosome in
+`precompute_chromosome` and reuses it for every gene on that chromosome; per gene, the null
+residual $e_0 = \tilde{y} - \tilde{X}\hat{\beta}$ is computed once and reused for every locus.
+This amortizes the $O(n p^2)$ covariate fit across all $L$ loci — the key algorithmic advantage
 over miQTL's per-gene loop [Keele 2019].
 
-Resulting scan complexity: O(L × J²) per gene (Gram matrix G = H_perp^T H_perp + LOD),
-compared to O(L × n²) in a naive per-locus LMM.
+Resulting scan complexity: $O(L\,n\,J^2)$ per gene (weighting $H_t$ and forming the Gram
+matrix $G = H_\perp^\top H_\perp$ per locus), versus $O(L\,n\,m\,J)$ when the rotation is
+recomputed for every gene.
 
-### 3.4 NB-GLMM (implemented; not yet in scan pipeline)
+### 3.4 NB-GLMM (implemented, experimental; not in CLI or Nextflow)
 
 For overdispersed count data (snRNA-seq), the LMM Gaussian assumption inflates false
 positives for lowly-expressed genes [Squair 2021]. `qtl/nb.py` implements a two-stage
 approach informed by NEBULA-LN [He 2021]:
 
 **Stage 1** (NEBULA-LN null): fit per-gene NB-GLMM null with per-subject random effects
-using PQL [Breslow 1993]. Outputs Pearson residuals and per-gene dispersion φ.
+using PQL [Breslow 1993]. Outputs Pearson residuals and per-gene dispersion $\phi$.
 
 **Stage 2** (PQL scan): scan haplotype effects on the working response using the
-Woodbury identity to keep operations at the m×m kinship scale (m = n_strains ≪ n_cells).
+Woodbury identity to keep operations at the $m \times m$ kinship scale ($m = n_{\mathrm{strains}} \ll n_{\mathrm{cells}}$).
 
 nb.py uses ThreadPoolExecutor for n_cores>1; each thread opens its own HDF5 handle via
 `GenomeCache._h5_path` to avoid handle sharing across threads.
+
+Known issue: `pipeline.discover(model='nb')` never passes `kinship_loco`, so the LOCO/Woodbury
+path is reachable only by calling `scan_nb` directly.
 
 ---
 
@@ -151,21 +177,27 @@ nb.py uses ThreadPoolExecutor for n_cores>1; each thread opens its own HDF5 hand
 
 Kinship measures polygenic background — shared ancestry across the genome. Including
 test-chromosome loci in the kinship estimate causes proximal contamination: the
-test-locus haplotype signal leaks into the random effect, inflating τ² and suppressing
+test-locus haplotype signal leaks into the random effect, inflating $\tau^2$ and suppressing
 LOD [Listgarten 2012]. LOCO recomputes K excluding each chromosome under test.
 
-```
-K_loco[c]_{ij} = (1/L_{-c}) × Σ_{ℓ ∉ chr c} Σ_f H_{iℓf} H_{jℓf}
-```
+$$
+\tilde{K}^{(c)}_{ij} = \frac{1}{L_{-c}} \sum_{\ell \notin c} \sum_{f} H_{i\ell f} H_{j\ell f},
+\qquad
+K_{\mathrm{loco}}^{(c)} = \frac{\tilde{K}^{(c)}}{\overline{\operatorname{diag}}\big(\tilde{K}^{(c)}\big)}
+$$
 
-The eigendecomposition of K_loco[c] is computed once per chromosome in `decomp_kinship`
-and stored as `{chrom: {'values': eigvals, 'vectors': eigvecs}}`. Every scan call
-receives this precomputed decomposition — never recompute it inside a gene loop.
+(`calc_kinship` rescales each matrix so its mean diagonal equals 1.)
 
-**PSD guard:** Floating-point accumulation over ~17,000 loci can push the smallest
-eigenvalue slightly negative (e.g. −10⁻¹⁶). The guard uses a scaled tolerance
-`psd_tol = max_eig × n² × machine_eps`; noise-level negativity passes, structural
-singularity raises `KinshipSingularError` and the chromosome is skipped in permutation.
+The eigendecomposition of $K_{\mathrm{loco}}^{(c)}$ is computed once per chromosome in `decomp_kinship`
+and stored as `{chrom: {'values': eigvals, 'vectors': eigvecs}}` (eigenvalues descending). Every scan call
+receives this precomputed decomposition — never recompute it inside a gene loop. (Replicate-aware
+scans form $Z K Z^\top$ from it and re-decompose once per chromosome.)
+
+**PSD guard:** Floating-point accumulation over many loci can push the smallest
+eigenvalue slightly negative (e.g. $-10^{-16}$). `decomp_kinship` floors negative eigenvalues
+at 0. The parametric-null draw (`qtl/permutation.py`) projects $K$ onto the PSD cone and raises
+`KinshipSingularError` only when the smallest eigenvalue is below $-10^{-4}$; that chromosome
+is then skipped in permutation (its null max-LODs are set to 0).
 
 ---
 
@@ -175,42 +207,53 @@ singularity raises `KinshipSingularError` and the chromosome is skipped in permu
 
 Under non-zero kinship, shuffling phenotype labels between strains produces an
 anti-conservative null: the shuffled phenotype still shares polygenic background with
-the genotype [Churchill 1994]. mosaiQTL uses a parametric null:
+the genotype [Churchill 1994]. mosaiQTL uses a parametric null
+(`permutation.draw_parametric_null_batch`, `--perm-method parametric`, the default):
 
-```
-  y_null ~ N(0, τ²K_loco[c] + σ²I)
-```
+$$
+y^{*} = X\hat{\beta} + u + \varepsilon, \qquad u \sim N\!\left(0, \hat{\tau}^2 K_{\mathrm{loco}}^{(c)}\right), \qquad \varepsilon \sim N(0, \hat{\sigma}^2 I)
+$$
 
-where τ², σ² are the null variance components of the real phenotype. This generates null
-draws that preserve the kinship structure while removing the QTL signal.
+where $\hat{\beta}, \hat{\tau}^2, \hat{\sigma}^2$ are the null-model estimates of the real phenotype at
+its fixed $h^2$. Each null phenotype is then the real $y$ rank-permuted to follow the ordering
+of one draw $y^{*}$, so the null keeps the observed marginal distribution and the kinship
+structure while removing the QTL signal. In `run_threshold_scans` the draws are made once from
+one reference chromosome's kinship and reused for every chromosome. `plain` is an
+unconditional shuffle.
 
-### 5.2 fix_h2=True — mandatory
+### 5.2 Fixed $h^2$ — mandatory
 
-h² is fixed at the real phenotype's null estimate for all permutations. Re-estimating
-h² per permutation is statistically invalid under kinship (Abney 2015, cited in Keele
-2019): the null h² estimate conflates polygenic signal with the scan signal. With
-fix_h2=True, the same LOCO eigendecomposition is shared across all n_perms permutations,
-enabling the vectorized `scan_chromosome_batch` path: one precomputation, all permutations
-in a single pass.
+$h^2$ is fixed at the real phenotype's null (ML) estimate, per chromosome, for all permutations;
+`run_threshold_scans` has no option to re-estimate it (an explicit `h2=` overrides the estimate).
+Re-estimating $h^2$ per permutation is statistically invalid under kinship (Abney 2015, cited in Keele
+2019): the null $h^2$ estimate conflates polygenic signal with the scan signal. With
+$h^2$ fixed, the same LOCO eigendecomposition is shared across all n_perms permutations,
+enabling the vectorized `scan_chromosome_batch` path (used for both `parametric` and `plain`):
+one precomputation, all permutations in mini-batches.
 
 ### 5.3 Representative gene selection
 
-Permutations use a single representative gene whose h² (null heritability) is closest to
-the median across all scanned genes. This representative must be selected **globally**
+Permutations use a single representative gene whose $h^2$ (null heritability) is closest to
+the median across all scanned genes (`pick_rep_gene` in Nextflow; `--allele-effects` or a
+200-gene sample in CLI `permute`). This representative must be selected **globally**
 (chrom=None), not chromosome-restricted: restricting to the scan chromosome biases the
-h² median and makes the null non-representative for the multi-gene population. The
-representative gene's chromosome naturally determines `perm_chrom` in L/C modes —
-this is correct downstream, not a bug.
+$h^2$ median and makes the null non-representative for the multi-gene population. The
+representative gene's chromosome naturally determines `perm_chrom` in L/C modes
+(CLI `permute`: L mode only) — this is correct downstream, not a bug.
 
 ### 5.4 GEV tail fitting
 
 With n_perms=1000, the max-LOD null distribution is well-approximated by a Generalised
-Extreme Value (GEV) distribution. `get_gev_thresholds` fits GEV parameters (shape ξ,
-location μ, scale σ) and extrapolates thresholds at α=0.05 beyond the observed quantile
-range. Returns (None, None) on failure; callers fall back to empirical quantile.
+Extreme Value (GEV) distribution. `get_gev_thresholds` (`qtl/thresholds.py`) fits GEV
+parameters (shape $\xi$, location $\mu$, scale $\sigma$; scipy `genextreme`) and returns the
+0.95 quantile ($\alpha = 0.05$), extrapolating beyond the observed quantile range. Returns
+(None, None) with fewer than 10 finite values or on fit failure; `run_call_egenes.py` then
+falls back to the empirical 0.95 quantile. This threshold is a QC reference; eGene
+significance comes from §6.
 
 Per-chromosome GEV params are written to `{tag}_perm_gev_params.json` by `run_permute.py`
-and used in eqtl_stats.csv construction via `get_gev_thresholds` per chr file.
+(not read downstream); `eqtl_stats.csv` refits `get_gev_thresholds` on each
+`perm_max_lods_chr{c}.csv` (`results_io.build_gev_row`).
 
 ---
 
@@ -218,21 +261,33 @@ and used in eqtl_stats.csv construction via `get_gev_thresholds` per chr file.
 
 ### 6.1 Two-stage eGene calling
 
-**Stage 1 — `call_egenes`:** Coarse gate. Each gene's observed peak LOD is compared
-against the genome-wide (or per-chromosome) GEV threshold. Genes above threshold proceed
-to Stage 2.
+**Production (Nextflow, `pipeline.call_significant_egenes`):** every gene with a peak
+(non-missing `gene_id`, `chr`, `peak_lod`) is calibrated — there is no LOD pre-filter, and the
+genome-wide GEV threshold (§5.4) is logged as a QC reference only. Founder effects
+(`beta_{founder}`) are then computed for significant genes only.
 
-**Stage 2 — `calibrate_egenes_storey`:** Per-gene p-values from `beta_calibrate_pvalue`
-(per-gene Beta-approximated null, FastQTL-style) are fed into `storey_qvalue` [Storey
-2002] to estimate π₀ (proportion of true null genes) and compute q-values:
+**Stage 1 — `call_egenes`:** Coarse LOD gate (`peak_lod >= threshold`). Used by CLI
+`call-egenes` (CLI `calibrate` likewise calibrates only genes above the genome-wide threshold);
+not used by the Nextflow path.
 
-```
-  q(i) = π₀ × m × p(i) / rank(p(i))   (monotone enforced)
-```
+**Stage 2 — `calibrate_egenes_storey`:** Per-gene p-values from `calibrate_gene_pvalue`
+→ `beta_calibrate_pvalue` (per-gene Beta-approximated null, FastQTL-style) are fed into
+`storey_qvalue` [Storey 2002] over every row passed in, to estimate $\pi_0$ (proportion of
+true null genes; $\lambda$ grid 0.05–0.95, df-3 smoothing spline evaluated at the largest
+$\lambda$, clipped to $[10^{-6}, 1]$) and compute q-values:
 
-Under complete null, π₀→1 and q≈BH-q. When real signal is present, π₀<1 and q-values
-are less conservative than BH [Benjamini 1995], recovering power. This fixes the earlier
-invalid shared-null approach where π₀ climbed past 1 (observed: 2.58).
+$$
+q_{(i)} = \min_{k \ge i} \min\!\left(1,\; \frac{\hat{\pi}_0\, m\, p_{(k)}}{k}\right)
+$$
+
+with $p_{(k)}$ the $k$-th smallest p-value. `significance = 'T'` when $q \le$ `fdr_threshold`
+(default 0.05). Under complete null, $\pi_0 \to 1$ and $q \approx$ BH-q. When real signal is
+present, $\pi_0 < 1$ and q-values are less conservative than BH [Benjamini 1995], recovering
+power. Before per-gene calibration, an invalid shared-null approach let $\pi_0$ climb past 1
+(observed: 2.58).
+
+Known issue: in the CLI the q-value is estimated only over the LOD-gated genes, which the
+library documents as invalid ($\pi_0$ biased downward); the Nextflow path uses all tested genes.
 
 ### 6.2 Per-gene calibration
 
