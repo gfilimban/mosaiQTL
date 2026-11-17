@@ -146,3 +146,4 @@ ref/*
 !ref/igvf_sample_metadata.csv
 !ref/igvf_kinship_loco.h5
 !ref/gene_tss.vm36.csv
+docs/build/

@@ -9,7 +9,7 @@
         validate-tissue validate-tissue-scan validate-tissue-full \
         validate-tissue-plots validate-tissue-compare \
         validate-tissue-all-cts \
-        clean clean-phase3
+        clean clean-phase3 bench bench-trace docs-math
 
 # ── lint ──────────────────────────────────────────────────────────────────────
 lint:
@@ -106,3 +106,20 @@ clean-phase3:
 
 # ── aliases ───────────────────────────────────────────────────────────────────
 validate: validate-phase1
+
+# ── benchmarks (benchmarks/README.md) ────────────────────────────────────────
+# make bench [ARGS='-k scan']               run tests/benchmarks, append to benchmarks/history.csv
+# make bench-trace TRACE=<trace.txt> LABEL=<run>   append a Nextflow run to benchmarks/pipeline_history.csv
+bench:
+	python benchmarks/record.py bench $(ARGS)
+
+bench-trace:
+	@test -n "$(TRACE)" -a -n "$(LABEL)" || { echo 'usage: make bench-trace TRACE=<trace.txt> LABEL=<run>'; exit 2; }
+	python benchmarks/record.py trace $(TRACE) $(LABEL)
+
+# ── math documents: LaTeX math in Typst (docs/math/_setup.typ) → docs/build/*.pdf ──
+docs-math:
+	@mkdir -p docs/build
+	for f in docs/math/[0-9]*.typ docs/METHODS.typ; do \
+	    typst compile --root docs "$$f" "docs/build/$$(basename "$${f%.typ}").pdf" || exit 1; \
+	done
