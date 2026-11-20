@@ -56,6 +56,8 @@ import argparse
 import logging
 import pathlib
 import re
+import sys
+import time
 
 import anndata
 import h5py
@@ -65,9 +67,57 @@ import scipy.sparse as sp
 
 from mosaiqtl.genotype.cc import STRAIN_ORDER
 from mosaiqtl.io.covariates import encode_sex as _encode_sex
+from mosaiqtl.utils import git_hash
 
-logging.basicConfig(level=logging.INFO, format='%(levelname)s  %(message)s')
+_LOG_FORMAT = '%(asctime)s,%(msecs)03d %(levelname)-5s %(message)s'
+_LOG_DATEFMT = '%Y-%m-%d %H:%M:%S'
+_LOG_NAME = 'convert_h5ad.log'
+
+logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, datefmt=_LOG_DATEFMT)
 log = logging.getLogger(__name__)
+
+
+def _attach_file_log(out: pathlib.Path) -> pathlib.Path:
+    """Mirror every log record to ``out/convert_h5ad.log`` (appended across runs).
+
+    Parameters
+    ----------
+    out :
+        Output root; created if absent.
+
+    Returns
+    -------
+    pathlib.Path
+        Path of the log file.
+    """
+    out.mkdir(parents=True, exist_ok=True)
+    log_path = out / _LOG_NAME
+    handler = logging.FileHandler(log_path, mode='a')
+    handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+    logging.getLogger().addHandler(handler)
+    return log_path
+
+
+def _log_run_header(args: argparse.Namespace, out: pathlib.Path) -> None:
+    """Record the command line, parameters, git hash, and output root."""
+    log.info('=' * 72)
+    log.info('convert_h5ad run  git=%s  python=%s', git_hash(), sys.version.split()[0])
+    log.info('command: %s', ' '.join(sys.argv))
+    for key, val in sorted(vars(args).items()):
+        log.info('  param %-18s %s', key, val)
+    log.info('output root: %s', out)
+
+
+def _log_manifest(out: pathlib.Path, t0: float) -> None:
+    """List every file under *out* written or modified since *t0*, with sizes."""
+    written = sorted(
+        p for p in out.rglob('*')
+        if p.is_file() and p.name != _LOG_NAME and p.stat().st_mtime >= t0
+    )
+    log.info('output manifest: %d files written under %s', len(written), out)
+    for p in written:
+        log.info('  %10.2f MB  %s', p.stat().st_size / 1e6, p.relative_to(out))
+    log.info('finished in %.1f s', time.time() - t0)
 
 _NON_CC_ORDER: list[str] = list(STRAIN_ORDER)
 
@@ -736,8 +786,13 @@ def main() -> None:
         for ct in sorted(adata.obs[ct_col].unique()):
             n = (adata.obs[ct_col] == ct).sum()
             flag = '  [excluded]' if ct.lower() in exclude else ''
-            print(f'  {ct!r:50s}  {n} obs{flag}')
+            log.info('  %-50r  %d obs%s', ct, n, flag)
         return
+
+    t0 = time.time()
+    log_path = _attach_file_log(out)
+    _log_run_header(args, out)
+    log.info('log file: %s', log_path)
 
     # output root: subtypes/ when keying on the subtype obs column, celltypes/ otherwise
     _ct_root_name = 'subtypes' if args.celltype_col == 'subtype' else 'celltypes'
@@ -771,6 +826,8 @@ def main() -> None:
                          celltype_col=args.celltype_col)
     else:
         convert(args.h5ad, out, args.tissue, min_count=args.min_count)
+
+    _log_manifest(out, t0)
 
 
 if __name__ == '__main__':
