@@ -3,6 +3,8 @@ Format: [Keep a Changelog](https://keepachangelog.com). One line per user-visibl
 Fixed or Removed, written in the PR that makes it. Releases follow pyproject.toml and are tagged vX.Y.Z.
 
 ## [Unreleased]
+
+## [0.7.2] — 2026-11-22
 ### Added
 - `fdr.bh`; `call_rule` (`'qvalue'` default, `'bh'`) on `calibrate_egenes_storey` and
   `call_significant_egenes`, CLI `call-egenes --call-rule`, Nextflow `params.call_rule`. `qval_storey`, `qval_bh`
@@ -61,6 +63,8 @@ Fixed or Removed, written in the PR that makes it. Releases follow pyproject.tom
   versioned and unversioned tables match. `MERGE_RESULTS` and `run_merge.py` take `gene_tss` (`-` when absent).
 - claude-review.yml had a duplicated `jobs:` key; benchmark commands in benchmarks/README.md were invalid.
 ### Changed
+- Version 0.7.2 across pyproject.toml, the Nextflow manifest and docs; README rewritten as a short user guide
+  (install, Nextflow run, outputs, documentation map).
 - docs/math/*.md and docs/METHODS.md → `.typ`: LaTeX math typeset by Typst via mitex (docs/math/_setup.typ).
 - PR template: documentation and compute checks; Claude review workflow migrated to claude-code-action v1 inputs.
 ### Removed

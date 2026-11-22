@@ -1,4 +1,4 @@
-# docs/ARCHITECTURE.md — mosaiQTL v0.7.0
+# docs/ARCHITECTURE.md — mosaiQTL v0.7.2
 # Multiomics haplotype-based QTL mapping for CC/DO mice (mm39)
 # Statistical model: LMM scan (primary) | NB-GLMM (experimental; not in CLI/Nextflow)
 # Full citations: docs/REFERENCES.md
