@@ -11,7 +11,7 @@ normal (e.g. body weight), or when comparing against a reference that did not
 apply RINT.  The NB-GLMM path does not use this flag at all — RINT on raw
 counts invalidates the negative-binomial likelihood.
 """
-import sys, json, logging, time, tracemalloc
+import sys, logging, time, tracemalloc
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -33,6 +33,7 @@ def main() -> None:
     from mosaiqtl.genotype.genomecache import GenomeCache
     from mosaiqtl.genotype.kinship import load_kinship_decomp
     from mosaiqtl.io.anndata_io import load_expression_h5
+    from mosaiqtl.io.atomic import atomic_write_csv, atomic_write_json
     from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
     from mosaiqtl.pipeline import ALLELE_EFFECTS_BASE_COLS, LOD_COLS, PEAK_LOD_COLS, SCAN_TYPE_TO_WINDOW
     from mosaiqtl.qtl.scan import scan_multi_gene_lmm
@@ -54,6 +55,7 @@ def main() -> None:
     pheno_mat, gene_ids, sample_ids = load_expression_h5(pheno_path, genes_wanted)
 
     lod_csv  = out / f'lod_chr{chrom}.csv'
+    lod_part = out / f'.lod_chr{chrom}.csv.part'
     peak_csv = out / f'peak_stats_chr{chrom}.csv'
 
     log.info('START chr%s: %d genes  scan=%s  window_mb=%.1f  samples=%d',
@@ -61,9 +63,9 @@ def main() -> None:
 
     if len(gene_ids) == 0:
         log.warning('no genes for chr%s', chrom)
-        pd.DataFrame(columns=LOD_COLS).to_csv(lod_csv, index=False)
-        pd.DataFrame(columns=PEAK_LOD_COLS).to_csv(peak_csv, index=False)
-        (out / f'timing_chr{chrom}.json').write_text(json.dumps({'chr': chrom, 'n_genes': 0, 'elapsed_s': 0.0}))
+        atomic_write_csv(pd.DataFrame(columns=LOD_COLS), lod_csv)
+        atomic_write_csv(pd.DataFrame(columns=PEAK_LOD_COLS), peak_csv)
+        atomic_write_json({'chr': chrom, 'n_genes': 0, 'elapsed_s': 0.0}, out / f'timing_chr{chrom}.json')
         return
 
     meta     = pd.read_csv(meta_path)
@@ -98,25 +100,29 @@ def main() -> None:
         scan_window=scan_window,
         gene_pos_mb_map=gene_pos_mb_map,
         window_mb=window_mb,
-        lod_path=lod_csv,
+        lod_path=lod_part,
         gene_meta=gene_meta,
     )
+    if lod_part.exists():
+        lod_part.replace(lod_csv)
+    else:
+        atomic_write_csv(pd.DataFrame(columns=LOD_COLS), lod_csv)
 
     # include beta_{founder} cols alongside PEAK_LOD_COLS so run_finemap.py
     # can enrich egenes_df from peak_lod.csv without a separate file
     _beta_cols = [c for c in peak_stats.columns if c.startswith('beta_')]
     present = [c for c in PEAK_LOD_COLS if c in peak_stats.columns] + _beta_cols
-    peak_stats[present].to_csv(peak_csv, index=False)
+    atomic_write_csv(peak_stats[present], peak_csv)
 
     elapsed = time.perf_counter() - t0
     _, peak_heap = tracemalloc.get_traced_memory()
     tracemalloc.stop()
-    (out / f'timing_chr{chrom}.json').write_text(json.dumps({
+    atomic_write_json({
         'chr': chrom, 'n_genes': len(gene_ids),
         'elapsed_s': round(elapsed, 3),
         'peak_heap_mb': round(peak_heap / 1024 ** 2, 1),
         'peak_rss_mb': round(get_rss_mb(), 1),
-    }))
+    }, out / f'timing_chr{chrom}.json')
     log.info('DONE chr%s: %d genes  %.1fs  heap=%.1fMB  rss=%.1fMB',
              chrom, len(gene_ids), elapsed,
              round(peak_heap / 1024 ** 2, 1), round(get_rss_mb(), 1))

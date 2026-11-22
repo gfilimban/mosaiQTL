@@ -120,9 +120,7 @@ CCPopulation: Population = Population(
     f1_colors=F1_COLORS,
     has_sex_chromosomes=True,
     sex_chromosome='chrX',
-    x_donors=[],
     genotyping_error_prob=0.002,
-    n_gen=1,
     inbred=True,
     loco_sufficient=True,
 )

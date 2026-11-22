@@ -4,17 +4,21 @@ Usage: python run_finemap.py <eqtl_summary.csv> <cache.h5> <kinship.h5>
            <phenotypes.h5> <metadata.csv> <celltype>
            <scan_tag> <covariates> <output_dir>
            <sanger_alleles.h5|-> <peak_lod.csv|-> <tissue|-> <chrom|->
-           <scan_type> <window_mb> <gene_tss.csv|->
+           <scan_type> <window_mb> <use_rint 1|0>
 
 A '-' marks an absent optional argument.
 
-Each eGene's chromosome is rescanned to obtain its 1.5-LOD support interval;
+Each eGene's scan window (±window_mb of its strand-aware TSS, the eGene table's start_mb)
+is rescanned to obtain its contiguous 1.5-LOD support interval;
 SNPs inside that interval are imputed from founder alleles and fine-mapped
 with approximate Bayes factor credible sets.
-sanger_alleles.h5 is optional; header-only outputs are written when absent.
+sanger_alleles.h5 is optional; header-only fine-mapping outputs are written when absent.
 Writes:
   {tag}_eqtl_finemapping.csv      — credible-set SNPs per eGene
   {tag}_eqtl_finemapping_peak.csv — credible-set lead SNP per eGene
+  {tag}_eqtl_finemapping_groups.csv — one row per LD group per eGene (group PIP, credible-set flag)
+  {tag}_eqtl_ci.csv              — 1.5-LOD support interval per eGene (Mb, with ci_truncated);
+                                    written whether or not sanger_alleles.h5 is present
 """
 import sys, logging
 import numpy as np
@@ -27,41 +31,34 @@ log = logging.getLogger(__name__)
 
 
 def main() -> None:
-    egene_csv    = Path(sys.argv[1])
-    cache_path   = Path(sys.argv[2])
-    kinship_path = Path(sys.argv[3])
-    pheno_path   = Path(sys.argv[4])
-    meta_path    = Path(sys.argv[5])
-    celltype     = sys.argv[6]
-    stag         = sys.argv[7]
-    covariates   = sys.argv[8]
-    out          = Path(sys.argv[9])
+    (egene_arg, cache_arg, kinship_arg, pheno_arg, meta_arg, celltype, stag, covariates, out_arg,
+     sanger_arg, peak_lod_arg, tissue_arg, chrom_arg, scan_type, window_arg, rint_arg) = sys.argv[1:]
 
-    def _opt(i: int) -> 'str | None':
-        return None if sys.argv[i] == '-' else sys.argv[i]
-
-    sanger_arg, peak_lod_arg, tissue_arg, chrom_arg = (_opt(i) for i in range(10, 14))
-    scan_type = sys.argv[14]
-    window_mb = float(sys.argv[15])
-    gene_tss_arg = _opt(16)
-
-    sanger_path = Path(sanger_arg) if sanger_arg else None
-    peak_lod_path = Path(peak_lod_arg) if peak_lod_arg else None
-    gene_tss_path = Path(gene_tss_arg) if gene_tss_arg else None
-    tissue = tissue_arg or ''
-    chrom_filter = chrom_arg or ''
+    egene_csv, cache_path, kinship_path, pheno_path, meta_path, out = (
+        Path(a) for a in (egene_arg, cache_arg, kinship_arg, pheno_arg, meta_arg, out_arg)
+    )
+    sanger_path, peak_lod_path = (
+        None if a == '-' else Path(a) for a in (sanger_arg, peak_lod_arg)
+    )
+    tissue = '' if tissue_arg == '-' else tissue_arg
+    chrom_filter = '' if chrom_arg == '-' else chrom_arg
+    window_mb = float(window_arg)
+    use_rint = rint_arg != '0'
 
     tag      = f'{tissue}_{celltype}_{stag}' if tissue else f'{celltype}_{stag}'
     chr_sfx  = f'_chr{chrom_filter}' if chrom_filter else ''
     out.mkdir(parents=True, exist_ok=True)
     fm_out      = out / f'{tag}{chr_sfx}_eqtl_finemapping.csv'
     fm_peak_out = out / f'{tag}{chr_sfx}_eqtl_finemapping_peak.csv'
+    fm_group_out = out / f'{tag}{chr_sfx}_eqtl_finemapping_groups.csv'
+    ci_out     = out / f'{tag}{chr_sfx}_eqtl_ci.csv'
 
+    from mosaiqtl.io.atomic import atomic_write_csv
     from mosaiqtl.pipeline import (
-        cap_egene_ci, EQTL_FINEMAPPING_COLS, EQTL_FINEMAPPING_PEAK_COLS,
-        prepare_egenes_for_finemap,
+        CI_COLS, EQTL_FINEMAPPING_COLS, EQTL_FINEMAPPING_GROUP_COLS,
+        EQTL_FINEMAPPING_PEAK_COLS, prepare_egenes_for_finemap,
     )
-    from mosaiqtl.utils import strip_chr_prefix
+    from mosaiqtl.utils import add_chr_prefix, strip_chr_prefix
 
     egenes_df = pd.read_csv(egene_csv, dtype={'gene_id': str, 'chr': str})
     egenes_df['chr'] = strip_chr_prefix(egenes_df['chr'])
@@ -82,10 +79,12 @@ def main() -> None:
 
     log.info('START finemap: tag=%s  %d eGenes  sanger=%s',
              tag, len(egenes_df), sanger_path or 'none')
-    if len(egenes_df) == 0 or sanger_path is None:
-        log.info('no eGenes or no sanger_alleles.h5 — writing header-only outputs')
-        pd.DataFrame(columns=EQTL_FINEMAPPING_COLS).to_csv(fm_out, index=False)
-        pd.DataFrame(columns=EQTL_FINEMAPPING_PEAK_COLS).to_csv(fm_peak_out, index=False)
+    if len(egenes_df) == 0:
+        log.info('no eGenes on this chromosome — writing header-only outputs')
+        atomic_write_csv(pd.DataFrame(columns=CI_COLS), ci_out)
+        atomic_write_csv(pd.DataFrame(columns=EQTL_FINEMAPPING_COLS), fm_out)
+        atomic_write_csv(pd.DataFrame(columns=EQTL_FINEMAPPING_PEAK_COLS), fm_peak_out)
+        atomic_write_csv(pd.DataFrame(columns=EQTL_FINEMAPPING_GROUP_COLS), fm_group_out)
         return
 
     from mosaiqtl.genotype.genomecache import GenomeCache
@@ -118,6 +117,9 @@ def main() -> None:
 
     # ── 1.5-LOD support interval per eGene ────────────────────────────────────
     log.info('support intervals for %d eGenes', len(expr_cache))
+    windowed = scan_type == 'L' and window_mb > 0
+    if windowed and 'start_mb' not in egenes_df.columns:
+        raise ValueError('L-mode fine-mapping needs start_mb (strand-aware TSS) in the eGene table')
     ci_df = ci_scan_multi_gene(
         expr_cache,
         dict(zip(egenes_df['gene_id'], egenes_df['chr'])),
@@ -127,12 +129,21 @@ def main() -> None:
         covariates=cov_arr,
         kinship_decomp=kinship_decomp,
         sample_ids=geno_ids,
+        use_rint=use_rint,
+        gene_pos_mb_map=(
+            egenes_df.dropna(subset=['start_mb']).set_index('gene_id')['start_mb'].astype(float).to_dict()
+            if windowed else None
+        ),
+        window_mb=window_mb if windowed else None,
+        gene_meta=egenes_df[['gene_id', 'gene_symbol']],
     )
     del expr_cache
-    if ci_df.empty:
-        log.warning('no support intervals computed — writing header-only outputs')
-        pd.DataFrame(columns=EQTL_FINEMAPPING_COLS).to_csv(fm_out, index=False)
-        pd.DataFrame(columns=EQTL_FINEMAPPING_PEAK_COLS).to_csv(fm_peak_out, index=False)
+    atomic_write_csv(ci_df.assign(chr=add_chr_prefix(ci_df['chr'].astype(str)))[CI_COLS], ci_out)
+    if ci_df.empty or sanger_path is None:
+        log.warning('no support intervals or no sanger_alleles.h5 — writing header-only fine-mapping outputs')
+        atomic_write_csv(pd.DataFrame(columns=EQTL_FINEMAPPING_COLS), fm_out)
+        atomic_write_csv(pd.DataFrame(columns=EQTL_FINEMAPPING_PEAK_COLS), fm_peak_out)
+        atomic_write_csv(pd.DataFrame(columns=EQTL_FINEMAPPING_GROUP_COLS), fm_group_out)
         return
 
     _ci_mb = ci_df[['gene_id', 'ci_lo', 'ci_hi']].copy()
@@ -144,15 +155,13 @@ def main() -> None:
         )[['gene_id', 'ci_lo_bp', 'ci_hi_bp']],
         on='gene_id', how='left',
     )
-    _gtss = (pd.read_csv(gene_tss_path)
-             if gene_tss_path is not None and gene_tss_path.exists() else None)
-    _eg_capped = cap_egene_ci(_eg_with_ci, scan_type, window_mb, gene_tss_df=_gtss)
-    ci_bp = _eg_capped[['gene_id', 'ci_lo_bp', 'ci_hi_bp']].copy()
-    if scan_type == 'L' and window_mb > 0:
+    ci_bp = _eg_with_ci[['gene_id', 'ci_lo_bp', 'ci_hi_bp']].copy()
+    if windowed:
         log.info(
-            'L-mode CI cap ±%.1f Mb applied: %d eGenes  mean CI %.2f Mb',
+            'L-mode support intervals inside ±%.1f Mb of the TSS: %d eGenes  mean CI %.2f Mb  truncated by window %d',
             window_mb, len(ci_bp),
             float((ci_bp['ci_hi_bp'] - ci_bp['ci_lo_bp']).mean() / 1e6),
+            int(ci_df['ci_truncated'].sum()),
         )
 
     fm_in = egenes_df.assign(
@@ -173,10 +182,12 @@ def main() -> None:
         covariates=cov_arr,
         kinship_decomp=kinship_decomp,
         sample_ids=geno_ids,
+        use_rint=use_rint,
     )
     (out / 'eqtl_finemapping.csv').rename(fm_out)
     (out / 'eqtl_finemapping_peak.csv').rename(fm_peak_out)
-    log.info('wrote %s + %s (%d eGenes)', fm_out, fm_peak_out, len(fm_peak_df))
+    (out / 'eqtl_finemapping_groups.csv').rename(fm_group_out)
+    log.info('wrote %s + %s + %s (%d eGenes)', fm_out, fm_peak_out, fm_group_out, len(fm_peak_df))
 
 
 if __name__ == '__main__':

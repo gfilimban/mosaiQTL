@@ -38,12 +38,12 @@ src/mosaiqtl/
   genotype/
     genomecache.py     HDF5-backed haplotype prob store; lazy per-chr I/O
     cache_builder.py   build-cache console script; collapse_genomecache
-    hmm.py             Forward-backward HMM (n_gen=1 for CC inbred)
+    hmm.py             Forward-backward HMM (8 homozygous states, fixed-line funnel kernel, for inbred lines)
     kinship.py         LOCO kinship build + eigendecomposition; load_kinship_decomp
     cc.py              CC strain/color constants (FOUNDER_ORDER, FOUNDER_COLORS); CCPopulation
     colors.py          OKLab color blending helpers
     snp_db.py          Sanger MGP VCF → alleles HDF5 (build_founder_allele_mgp); load_founder_alleles
-    interpolation.py   Linear interpolation of haplotype probs to SNP positions (not on the pipeline path)
+    interpolation.py   bracket_weights (linear interpolation weights, used by snp_scan); interpolate_haplotype_probs and collapse_to_dosage (not on the pipeline path)
   qtl/
     lmm.py             Gaussian LMM — scan engine (validated port of miQTL)
     nb.py              NB-GLMM Stages 1+2 — PQL+Woodbury; experimental
@@ -53,7 +53,7 @@ src/mosaiqtl/
     peaks.py           Peak finding, LOD-drop CI on a ScanResult
     permutation.py     Parametric null + threshold scans (h² fixed); pick_rep_gene
     thresholds.py      GEV fit (get_gev_thresholds); per-chr threshold loading
-    fdr.py             beta_calibrate_pvalue + storey_qvalue + calibrate_gene_pvalue
+    fdr.py             beta_calibrate_pvalue + qvalue + bh + calibrate_gene_pvalue
     effects.py         Per-founder allele effects (fixef / ranef)
     ci.py              LOD-drop support interval; ci_scan_multi_gene
     snp_scan.py        Imputed SNP scan (haplotype probs × founder alleles → dosage)
@@ -77,7 +77,7 @@ src/mosaiqtl/
     compare.py, finemap.py, locus.py, validation.py   R-vs-Python, fine-mapping, locus, validation plots
   pipeline.py          Output schemas (*_COLS); discover → characterize → resolve;
                        call_egenes, calibrate_egenes_storey, call_significant_egenes,
-                       cap_egene_ci, impute_egenes, finemap_imputed, finemap_egenes
+                       impute_egenes, finemap_imputed, finemap_egenes
   utils.py             RINT, Z-matrix, align_samples, chr_sort_key, build_tss_lookup
   cli.py               Click CLI (build-kinship, inspect-cache, scan-chr, merge-scan, permute,
                        calibrate, call-egenes, characterise, impute, finemap, report,
@@ -272,7 +272,7 @@ not used by the Nextflow path.
 
 **Stage 2 — `calibrate_egenes_storey`:** Per-gene p-values from `calibrate_gene_pvalue`
 → `beta_calibrate_pvalue` (per-gene Beta-approximated null, FastQTL-style) are fed into
-`storey_qvalue` [Storey 2002] over every row passed in, to estimate $\pi_0$ (proportion of
+`qvalue` [Storey 2002] over every row passed in, to estimate $\pi_0$ (proportion of
 true null genes; $\lambda$ grid 0.05–0.95, df-3 smoothing spline evaluated at the largest
 $\lambda$, clipped to $[10^{-6}, 1]$) and compute q-values:
 
@@ -288,6 +288,31 @@ power. Before per-gene calibration, an invalid shared-null approach let $\pi_0$ 
 
 Known issue: in the CLI the q-value is estimated only over the LOD-gated genes, which the
 library documents as invalid ($\pi_0$ biased downward); the Nextflow path uses all tested genes.
+
+#### Call rules
+
+| | `qvalue` (Storey) | `lfdr` (Efron) | `bh` |
+|---|---|---|---|
+| Question answered | If this gene and every more extreme gene are called, what fraction of that list is false? | Given this gene's p-value, how likely is this gene to be null? | The same as `qvalue` with $\pi_0$ fixed at 1 |
+| Scope | The called set (tail area) | The single gene (local) | The called set |
+| Estimates | $\pi_0$ | $\pi_0$ and the density $f(p)$ near the gene's $p$ | nothing |
+| Relation | $q(p) = E[\mathrm{lfdr} \mid p' \le p]$, so the marginal called gene has lfdr $\ge q$ | | $q^{\mathrm{BH}} \ge q$ |
+| Sensitive to | $\hat\pi_0$ (a downward bias makes $q$ optimistic) | the tail density estimate, where $p$-values are sparse and extrapolated | nothing beyond independence or positive dependence |
+| Role | default call rule | reported per gene | conservative option |
+
+The Storey $q$-value and lfdr are the tail-area and local forms of the same posterior error rate [Storey 2003;
+Efron et al. 2001; Efron 2008]. Thresholding lfdr gives the largest number of discoveries at a fixed FDR
+[Sun and Cai 2007].
+
+#### Comparison across cell types and tissues
+
+$q$ and lfdr both depend on the dataset's $\hat\pi_0$, its number of tests and its power: the same $p$-value gets a
+smaller $q$ where many genes are significant. They rank genes within one table and set its cutoff; they are not
+evidence that can be compared between tables. Between cell types or tissues, compare the calibrated `pval_perm`
+(one null recipe everywhere), the LOD and the effect size. For sharing, estimate $\pi_1$ of one table's eGenes in
+the other's $p$-values [Storey 2002] or fit a joint model [Urbut et al. 2019]; a gene missing from one list is not
+evidence of absence. Calling per cell type, across all cell type × gene tests, or hierarchically [Peterson et al.
+2016] answer different questions, so the family is stated with the result.
 
 ### 6.2 Per-gene calibration
 
@@ -354,8 +379,9 @@ loads one chromosome's probabilities into RAM and returns them.
 constant-memory streaming requirement: at CC scale (n=418, 74k loci, 8 founders, float32)
 the array is ~940 MB; loading it once per gene would exhaust RAM on any multi-gene run.
 
-**Build pipeline:** GigaMUGA CSV → `from_gigamuga` (HMM forward-backward over n_gen=1
-consensus map) → `to_hdf5`. Source: JAX GRCm39 reference files
+**Build pipeline:** GigaMUGA CSV → `from_gigamuga` (HMM forward-backward over the
+single-meiosis consensus map, with the fixed-line eight-founder funnel kernel
+$H_{ff}=(1-r)/(1+6r)$, $H_{fg}=r/(1+6r)$) → `to_hdf5`. Source: JAX GRCm39 reference files
 (`gm_uwisc_v4.csv`, `GigaMUGA_genotypes.csv.gz`). See `docs/DATA_SOURCES.md` for the
 full derivation chain.
 
@@ -394,10 +420,8 @@ Stage 4 — call_egenes
                                 + pval_perm + storey_q + fdr_method)
 
 Stage 5 — bootstrap CI
-  → bootstrap_ci.csv         (LOD-drop support interval per eGene: ci_lo_mb/ci_hi_mb)
-
-Stage 5a — cap_egene_ci (L-mode only)
-  → cap_egene_ci() clips ci_lo_bp/ci_hi_bp to ±window_mb from strand-aware TSS
+  → bootstrap_ci.csv         (contiguous 1.5-LOD support interval per eGene: ci_lo/ci_hi, ci_truncated;
+                              L-mode: computed inside ±window_mb of the strand-aware TSS)
 
 Stage 6 — finemap_egenes
   → {tag}_eqtl_finemapping.csv       credible-set SNPs (EQTL_FINEMAPPING_COLS)
@@ -460,11 +484,12 @@ mosaiQTL is parametric on population structure. All population-specific configur
 lives in a `Population` instance (`models/config.py`); the scan engine, kinship builder,
 and HMM are population-agnostic.
 
-`Population` (frozen Pydantic model) encodes: `founders` list, `colors` dict (must cover
-all founders), `n_gen`, `inbred`, `chromosome_names`, `genotyping_error_prob`.
-`CCPopulation` in `genotype/founders.py` is the built-in CC default.
+`Population` (frozen Pydantic model) encodes: `name`, `founders` list, `colors` dict (must
+cover all founders), `f1_colors`, `chromosome_names`, `has_sex_chromosomes`,
+`sex_chromosome`, `genotyping_error_prob`, `inbred`, `loco_sufficient`.
+`CCPopulation` in `genotype/cc.py` is the built-in CC default.
 
-**Type A code (by design):** Population-specific constants like FOUNDER_COLORS, n_gen=1,
+**Type A code (by design):** Population-specific constants like FOUNDER_COLORS and
 genotyping_error_prob=0.002 — these live in `CCPopulation` and must never be inlined
 elsewhere in the engine.
 
@@ -559,10 +584,10 @@ Three scan window modes, controlled by `scan_window` parameter:
 Default for `scan_h2lmm`/`scan_h2lmm_mi`: `'cis'` (synonym for `'C'`).
 Default for `scan_multi_gene`: `'genome'` (`'G'`).
 
-**L-mode CI cap:** In L-mode, the support interval is capped to ±window_mb of the
-strand-aware TSS by `pipeline.cap_egene_ci()`. TSS source priority: `gene_tss_df`
-(GENCODE vM36 strand-aware) → `gene_info_df` start/end/strand → `start_mb` column
-→ `peak_mb` fallback.
+**L-mode support interval:** `qtl.ci.ci_scan_multi_gene(gene_pos_mb_map, window_mb)` restricts the
+interval scan to the loci within ±window_mb of the strand-aware TSS (the eGene table's `start_mb`),
+so the contiguous 1.5-LOD interval contains the peak and never exceeds the scan window.
+`ci_truncated` marks an interval that reaches a window edge.
 
 ---
 

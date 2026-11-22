@@ -3,8 +3,10 @@ fdr — turning per-gene LOD scores into genome-wide significance calls.
 
 beta_calibrate_pvalue: converts one gene's permutation results into a properly
 scaled p-value. this has to happen before genes can be compared to each other.
-storey_qvalue: Storey's q-value method for controlling the false discovery rate
+qvalue: Storey's q-value method for controlling the false discovery rate
 across all genes at once, estimating what fraction are truly null (pi0).
+bh: Benjamini-Hochberg adjusted p-values, the q-value with pi0 fixed at 1.
+lfdr: per-gene posterior probability of being null, from the p-value density.
 """
 
 from __future__ import annotations
@@ -18,9 +20,28 @@ from scipy.optimize import brentq, minimize
 
 logger = logging.getLogger("mosaiqtl")
 
-__all__ = ["beta_calibrate_pvalue", "storey_qvalue", "calibrate_gene_pvalue"]
+__all__ = [
+    "beta_calibrate_pvalue",
+    "bh",
+    "lfdr",
+    "qvalue",
+    "calibrate_gene_pvalue",
+]
 
-# Grid of tuning values used to estimate pi0, as recommended in Storey (2002).
+# lfdr density estimate: fewest p-values that give a usable kernel estimate, the
+# p-value range kept finite on the probit scale, and the bandwidth multiplier
+LFDR_MIN_GENES = 10
+_LFDR_P_FLOOR = 1e-300
+_LFDR_P_CEIL = 1e-16
+_LFDR_BW_SCALE = 1.5
+_LFDR_DENSITY_FLOOR = 1e-12
+
+# A null fraction below this value means the p-value distribution is almost
+# entirely concentrated near zero; the q-value cutoff then no longer separates
+# genes (q_(m) = pi0 * p_(m) <= pi0), so the estimate is reported.
+_PI0_SATURATION = 0.2
+
+# Grid of tuning values used to estimate pi0.
 _LAMBDA_DEFAULT = np.arange(0.05, 1.00, 0.05)
 
 
@@ -66,7 +87,7 @@ def beta_calibrate_pvalue(
     -----
     LOD is converted to a p-value via: test statistic = 2*ln(10)*LOD, which
     follows a chi-square distribution under the null. feed the p_adj values
-    from many genes into storey_qvalue() to get genome-wide significance calls.
+    from many genes into qvalue() to get genome-wide significance calls.
     """
     stat_null = null_max_lods * (2.0 * np.log(10.0))
     p_null = np.clip(stats.chi2.sf(stat_null, df), 1e-300, 1.0)
@@ -130,7 +151,7 @@ def _smooth_df3_at_max(x: np.ndarray, y: np.ndarray) -> float:
     return float(make_smoothing_spline(x, y, lam=10.0 ** log10_pen)(x.max()))
 
 
-def storey_qvalue(
+def qvalue(
     pvalues: np.ndarray,
     lambda_range: np.ndarray | None = None,
 ) -> tuple[np.ndarray, float]:
@@ -194,14 +215,23 @@ def storey_qvalue(
     # so it is reported before the cap hides it.
     if pi0 > 1.0:
         logger.warning(
-            "storey_qvalue: raw pi0=%.4f exceeds 1 (m=%d) — p-values are skewed "
+            "qvalue: raw pi0=%.4f exceeds 1 (m=%d) — p-values are skewed "
             "toward 1; the calibration null is likely miscalibrated",
             pi0,
             m,
         )
     pi0 = min(pi0, 1.0)
     pi0 = max(pi0, 1e-6)  # keep pi0 above zero so every q-value stays finite
-    logger.debug("storey_qvalue: m=%d  pi0=%.4f", m, pi0)
+    logger.debug("qvalue: m=%d  pi0=%.4f", m, pi0)
+    if pi0 < _PI0_SATURATION:
+        logger.warning(
+            "qvalue: pi0=%.4f (m=%d) — the largest q-value is pi0 * p_(m), "
+            "so a threshold at or above %.4f is passed by every gene; confirm the "
+            "null calibration before reading q-values per gene",
+            pi0,
+            m,
+            pi0,
+        )
 
     # standard multiple-testing correction, scaled by pi0.
     order = np.argsort(pv_fin)
@@ -221,6 +251,88 @@ def storey_qvalue(
     q_out = np.full_like(pv, np.nan)
     q_out[finite_mask] = q_fin
     return q_out, pi0
+
+
+def bh(pvalues: np.ndarray) -> np.ndarray:
+    r"""Benjamini-Hochberg adjusted p-values (q-values with $\hat\pi_0 = 1$).
+
+    With $p_{(1)} \le \dots \le p_{(m)}$ the adjusted value of the $i$-th
+    smallest is $\min_{j \ge i} \min(1,\, m\,p_{(j)}/j)$. It equals the Storey
+    q-value divided by $\hat\pi_0$, so it is never smaller than the Storey
+    q-value.
+
+    parameters
+    ----------
+    pvalues : np.ndarray (m,)  one p-value per gene, in [0, 1]; NaN skipped
+
+    returns
+    -------
+    np.ndarray (m,)  adjusted p-values in [0, 1]; NaN where input was NaN
+    """
+    pv = np.asarray(pvalues, dtype=float)
+    finite = np.isfinite(pv)
+    m = int(finite.sum())
+    out = np.full_like(pv, np.nan)
+    if m == 0:
+        return out
+    pv_fin = pv[finite]
+    order = np.argsort(pv_fin)
+    scaled = pv_fin[order] * m / np.arange(1, m + 1)
+    adjusted = np.minimum(np.minimum.accumulate(scaled[::-1])[::-1], 1.0)
+    q_fin = np.empty(m)
+    q_fin[order] = adjusted
+    out[finite] = q_fin
+    return out
+
+
+def lfdr(pvalues: np.ndarray, pi0: float | None = None) -> np.ndarray:
+    r"""Local false discovery rate, the posterior probability that a gene is null.
+
+    In the two-groups model $f(p) = \pi_0 f_0(p) + (1-\pi_0) f_1(p)$ with
+    $f_0$ uniform, the local rate is $\mathrm{lfdr}(p) = \pi_0 f_0(p)/f(p)$.
+    The density is estimated on the probit scale $z = \Phi^{-1}(p)$, where
+    uniform p-values become a standard normal $\varphi(z)$, so
+    $\mathrm{lfdr} = \pi_0\,\varphi(z)/\hat f_z(z)$ with $\hat f_z$ a Gaussian
+    kernel estimate. Its bandwidth is `_LFDR_BW_SCALE` times Scott's rule, wide
+    enough that the tail density does not follow individual genes. The result is
+    made non-decreasing in $p$ and capped at 1.
+
+    The Storey q-value is the mean lfdr over all genes at least as extreme, so
+    the gene at the margin of a q-value call has lfdr above its q-value.
+
+    parameters
+    ----------
+    pvalues : np.ndarray (m,)  one p-value per gene, in [0, 1]; NaN skipped
+    pi0     : float or None
+        null fraction; the Storey estimate from `qvalue` when None
+
+    returns
+    -------
+    np.ndarray (m,)  lfdr in [0, 1]; NaN where input was NaN, and everywhere when
+    all finite p-values are identical
+    """
+    pv = np.asarray(pvalues, dtype=float)
+    finite = np.isfinite(pv)
+    m = int(finite.sum())
+    if m < LFDR_MIN_GENES:
+        raise ValueError(
+            f"lfdr needs at least {LFDR_MIN_GENES} finite p-values to estimate a density, got {m}"
+        )
+    if pi0 is None:
+        _, pi0 = qvalue(pv)
+    pv_fin = pv[finite]
+    z = stats.norm.ppf(np.clip(pv_fin, _LFDR_P_FLOOR, 1.0 - _LFDR_P_CEIL))
+    if np.ptp(z) == 0.0:
+        logger.warning("lfdr: all %d p-values are identical, no density to estimate", m)
+        return np.full_like(pv, np.nan)
+    kde = stats.gaussian_kde(z, bw_method=lambda k: _LFDR_BW_SCALE * k.scotts_factor())
+    density = np.maximum(kde(z), _LFDR_DENSITY_FLOOR)
+    local = np.minimum(pi0 * stats.norm.pdf(z) / density, 1.0)
+    order = np.argsort(pv_fin)
+    local[order] = np.maximum.accumulate(local[order])
+    out = np.full_like(pv, np.nan)
+    out[finite] = local
+    return out
 
 
 def calibrate_gene_pvalue(
@@ -248,7 +360,7 @@ def calibrate_gene_pvalue(
     specific to this gene — same h² and same cis window used for its real scan —
     then calls beta_calibrate_pvalue() for the Beta-smoothed adjustment. the
     returned p-value is Uniform(0, 1) under the null for this gene specifically,
-    so p-values from many genes can be pooled and fed to storey_qvalue() for a
+    so p-values from many genes can be pooled and fed to qvalue() for a
     genome-wide q-value.
 
     parameters

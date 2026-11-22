@@ -16,10 +16,12 @@ from mosaiqtl.genotype.hmm import (
     build_emission_matrix,
     forward_backward,
     uniform_init,
-    cc_inbred_init,
+    haplotype_transition_matrix,
     _augmented_positions,
     interpolate_posteriors,
     calc_genoprob_cc,
+    x_haplotype_prior,
+    x_haplotype_transition_matrix,
 )
 
 N_FOUNDERS = 8
@@ -120,6 +122,156 @@ class TestTransitionMatrix:
         T = transition_matrix(0.0)
         np.testing.assert_allclose(T, np.eye(N_STATES), atol=1e-10)
 
+    def test_rows_sum_to_one_without_renormalisation(self):
+        for r in [1e-4, 0.005, 0.05, 0.2, 0.5]:
+            T = transition_matrix(r)
+            np.testing.assert_allclose(T.sum(axis=1), 1.0, atol=1e-12)
+
+    def test_homozygous_to_heterozygous_matches_ordered_outcomes(self):
+        r = 0.05
+        J = N_FOUNDERS
+        T = transition_matrix(r)
+        states, idx = build_diplotype_states(J)
+        H = haplotype_transition_matrix(r, J)
+        expected = 2 * H[0, 0] * H[0, 1]
+        np.testing.assert_allclose(T[idx[(0, 0)], idx[(0, 1)]], expected, rtol=1e-12)
+
+    def test_uniform_haplotype_mixture_is_stationary(self):
+        T = transition_matrix(0.3)
+        states, _ = build_diplotype_states(N_FOUNDERS)
+        pi = np.array([1.0 if a == b else 2.0 for a, b in states])
+        pi /= pi.sum()
+        np.testing.assert_allclose(pi @ T, pi, atol=1e-12)
+
+
+class TestHaplotypeTransitionMatrix:
+    def test_rows_sum_to_one_and_symmetric(self):
+        for r in [0.0, 0.01, 0.2, 0.5]:
+            H = haplotype_transition_matrix(r, N_FOUNDERS)
+            np.testing.assert_allclose(H.sum(axis=1), 1.0, atol=1e-12)
+            np.testing.assert_allclose(H, H.T, atol=1e-15)
+
+    def test_limits(self):
+        np.testing.assert_allclose(
+            haplotype_transition_matrix(0.0, N_FOUNDERS), np.eye(N_FOUNDERS)
+        )
+        np.testing.assert_allclose(
+            haplotype_transition_matrix(0.5, N_FOUNDERS),
+            np.full((N_FOUNDERS, N_FOUNDERS), 1.0 / N_FOUNDERS),
+            atol=1e-12,
+        )
+
+    def test_closed_form_entries(self):
+        r = 0.07
+        H = haplotype_transition_matrix(r, N_FOUNDERS)
+        np.testing.assert_allclose(H[0, 0], (1 - r) / (1 + 6 * r), rtol=1e-12)
+        np.testing.assert_allclose(H[0, 1], r / (1 + 6 * r), rtol=1e-12)
+
+    def test_small_r_switch_probability_is_sevenfold_expansion(self):
+        r = 1e-5
+        H = haplotype_transition_matrix(r, N_FOUNDERS)
+        np.testing.assert_allclose(1.0 - H[0, 0], 7 * r, rtol=1e-4)
+
+    def test_requires_eight_founders(self):
+        with pytest.raises(ValueError):
+            haplotype_transition_matrix(0.1, 4)
+
+
+def _simulate_sibmated_lines(r, n_lines, n_gen, rng):
+    """founder carried at two loci by lines inbred by sibling mating.
+
+    forward simulation of the eight-founder funnel followed by sibling
+    mating with Haldane gametes; a chromosome is a pair of founder labels
+    (locus 0, locus 1) and an individual is two chromosomes.
+    """
+
+    def gamete(ind):
+        first = rng.integers(0, 2, n_lines)
+        rec = rng.random(n_lines) < r
+        idx = np.arange(n_lines)
+        other = np.where(rec, 1 - first, first)
+        return np.stack([ind[idx, first, 0], ind[idx, other, 1]], axis=1)
+
+    def mate(p1, p2):
+        return np.stack([gamete(p1), gamete(p2)], axis=1)
+
+    order = np.argsort(rng.random((n_lines, N_FOUNDERS)), axis=1)
+    founders = [
+        np.broadcast_to(order[:, i, None, None], (n_lines, 2, 2)).copy()
+        for i in range(N_FOUNDERS)
+    ]
+    q1 = mate(mate(founders[0], founders[1]), mate(founders[2], founders[3]))
+    q2 = mate(mate(founders[4], founders[5]), mate(founders[6], founders[7]))
+    a, b = q1, q2
+    for _ in range(n_gen):
+        a, b = mate(a, b), mate(a, b)
+    return a[:, 0, :]
+
+
+class TestHaplotypeKernelAgainstSimulation:
+    @pytest.mark.parametrize('r', [0.01, 0.1, 0.3])
+    def test_same_founder_probability_matches_sibling_mating(self, r):
+        n_lines = 40_000
+        rng = np.random.default_rng(11)
+        hap = _simulate_sibmated_lines(r, n_lines, 80, rng)
+        observed = float(np.mean(hap[:, 0] == hap[:, 1]))
+        expected = haplotype_transition_matrix(r, N_FOUNDERS)[0, 0]
+        se = np.sqrt(expected * (1 - expected) / n_lines)
+        assert abs(observed - expected) < 4 * se
+
+
+class TestInbredHaplotypePath:
+    def _data(self, n_markers=30):
+        rng = np.random.default_rng(3)
+        fg = np.array(
+            [
+                [rng.choice(["A", "B"]) for _ in range(N_FOUNDERS)]
+                for _ in range(n_markers)
+            ],
+            dtype=object,
+        )
+        gmap = np.linspace(0, 20, n_markers)
+        truth = np.where(np.arange(n_markers) < 15, 2, 5)
+        geno = np.array([[fg[m, truth[m]]] for m in range(n_markers)], dtype=object)
+        return geno, fg, gmap, truth
+
+    def test_probs_sum_to_one_and_recover_founder(self):
+        geno, fg, gmap, truth = self._data()
+        probs = calc_genoprob_cc(geno, fg, gmap, n_founders=N_FOUNDERS)
+        np.testing.assert_allclose(probs.sum(axis=1), 1.0, atol=1e-9)
+        assert probs[0, 2, 3] > 0.5 and probs[0, 5, -3] > 0.5
+
+    def test_no_heterozygous_mass_far_from_markers_with_diplotype_output(self):
+        geno, fg, gmap, _ = self._data()
+        dip = calc_genoprob_cc(
+            geno, fg, gmap, n_founders=N_FOUNDERS, return_additive=False
+        )
+        states, _ = build_diplotype_states(N_FOUNDERS)
+        het = np.array([a != b for a, b in states])
+        assert dip[:, het, :].sum() == 0.0
+        np.testing.assert_allclose(dip.sum(axis=1), 1.0, atol=1e-9)
+
+    def test_pseudomarkers_sum_to_one(self):
+        geno, fg, gmap, _ = self._data()
+        probs, pos, is_real = calc_genoprob_cc(
+            geno, fg, gmap, n_founders=N_FOUNDERS, step_cM=0.5
+        )
+        assert probs.shape[1] == N_FOUNDERS
+        np.testing.assert_allclose(probs.sum(axis=1), 1.0, atol=1e-9)
+
+    def test_non_inbred_path_keeps_diplotype_states(self):
+        geno, fg, gmap, _ = self._data()
+        dip = calc_genoprob_cc(
+            geno,
+            fg,
+            gmap,
+            n_founders=N_FOUNDERS,
+            return_additive=False,
+            cc_inbred=False,
+        )
+        assert dip.shape[1] == N_STATES
+        np.testing.assert_allclose(dip.sum(axis=1), 1.0, atol=1e-9)
+
 
 class TestBuildEmissionMatrix:
     def _make_founder_genos(self, n_markers):
@@ -160,10 +312,18 @@ class TestBuildEmissionMatrix:
 # ── forward-backward ──────────────────────────────────────────────────────────
 
 
+def _homozygous_init(n_founders):
+    states, state_to_idx = build_diplotype_states(n_founders)
+    init = np.zeros(len(states))
+    for f in range(n_founders):
+        init[state_to_idx[(f, f)]] = 1.0 / n_founders
+    return init
+
+
 def _make_hmm_inputs(n_markers=10, seed=42):
     """Helper: build obs_seq, E, T_list, init for forward-backward tests."""
     rng = np.random.default_rng(seed)
-    init = cc_inbred_init(N_FOUNDERS)
+    init = _homozygous_init(N_FOUNDERS)
 
     fg = np.array(
         [[rng.choice(["A", "B"]) for _ in range(N_FOUNDERS)] for _ in range(n_markers)],
@@ -217,19 +377,6 @@ class TestInitDistributions:
     def test_uniform_equal(self):
         init = uniform_init(N_FOUNDERS)
         np.testing.assert_allclose(init, 1.0 / N_STATES)
-
-    def test_cc_inbred_sum_to_one(self):
-        init = cc_inbred_init(N_FOUNDERS)
-        assert init.sum() == pytest.approx(1.0)
-
-    def test_cc_inbred_only_homozygous(self):
-        states, idx = build_diplotype_states(N_FOUNDERS)
-        init = cc_inbred_init(N_FOUNDERS)
-        for i, (f1, f2) in enumerate(states):
-            if f1 != f2:
-                assert init[i] == pytest.approx(0.0)
-            else:
-                assert init[i] > 0.0
 
 
 # ── pseudomarker grid ─────────────────────────────────────────────────────────
@@ -328,3 +475,65 @@ class TestCalcGenoprobCC:
         assert probs.shape[0] == 2
         assert probs.shape[1] == N_FOUNDERS
         assert probs.shape[2] == len(aug_pos)
+
+
+class TestXChromosomeModel:
+    """X chromosome of a fixed eight-founder-funnel line: carriers at funnel positions 1, 2, 3, 5, 6."""
+
+    FUNNEL = np.array([3, 0, 5, 1, 7, 2, 4, 6])
+    CARRIERS = FUNNEL[[0, 1, 2, 4, 5]]
+    FAVOURED = FUNNEL[2]
+
+    def test_prior_weights(self):
+        prior = x_haplotype_prior(self.FUNNEL)
+        assert prior.sum() == pytest.approx(1.0)
+        assert prior[self.FAVOURED] == pytest.approx(1.0 / 3.0)
+        others = [f for f in self.CARRIERS if f != self.FAVOURED]
+        np.testing.assert_allclose(prior[others], 1.0 / 6.0)
+        assert prior[self.FUNNEL[[3, 6, 7]]].sum() == 0.0
+
+    @pytest.mark.parametrize("r", [0.0, 0.01, 0.2, 0.5])
+    def test_kernel_rows_sum_to_one(self, r):
+        H = x_haplotype_transition_matrix(r, self.FUNNEL)
+        np.testing.assert_allclose(H.sum(axis=1), 1.0)
+
+    @pytest.mark.parametrize("r", [0.01, 0.2, 0.5])
+    def test_kernel_reversible_wrt_prior(self, r):
+        H = x_haplotype_transition_matrix(r, self.FUNNEL)
+        prior = x_haplotype_prior(self.FUNNEL)
+        flow = prior[:, None] * H
+        np.testing.assert_allclose(flow, flow.T, atol=1e-12)
+
+    def test_kernel_limits(self):
+        np.testing.assert_allclose(
+            x_haplotype_transition_matrix(0.0, self.FUNNEL), np.eye(8)
+        )
+        H = x_haplotype_transition_matrix(0.5, self.FUNNEL)
+        prior = x_haplotype_prior(self.FUNNEL)
+        np.testing.assert_allclose(H[self.CARRIERS], np.tile(prior, (5, 1)))
+
+    def test_non_carriers_get_no_mass(self):
+        rng = np.random.default_rng(0)
+        n_m = 12
+        geno = np.array(
+            [[rng.choice(["A", "B"]) for _ in range(2)] for _ in range(n_m)],
+            dtype=object,
+        )
+        fg = np.array(
+            [[rng.choice(["A", "B"]) for _ in range(8)] for _ in range(n_m)],
+            dtype=object,
+        )
+        gmap = np.linspace(0.0, 30.0, n_m)
+        probs = calc_genoprob_cc(
+            geno, fg, gmap, n_founders=8, x_funnel=np.tile(self.FUNNEL, (2, 1))
+        )
+        np.testing.assert_allclose(probs.sum(axis=1), 1.0, atol=1e-9)
+        assert probs[:, self.FUNNEL[[3, 6, 7]], :].max() == 0.0
+
+    def test_funnel_shape_checked(self):
+        geno = np.array([["A"], ["B"]], dtype=object)
+        fg = np.array([["A"] * 8, ["B"] * 8], dtype=object)
+        with pytest.raises(ValueError):
+            calc_genoprob_cc(
+                geno, fg, np.array([0.0, 1.0]), n_founders=8, x_funnel=np.zeros((2, 8))
+            )

@@ -6,7 +6,7 @@ gigamuga_csv:   null          # path to GigaMUGA CSV (ref/GM_ccf1fo_mm39.csv); u
 genomecache:    null          # path to genome cache HDF5 (ref/igvf_cache.h5)
 phenotypes:     null          # path to counts HDF5 (counts_lognorm.h5 for single-CT)
 gene_info:      null          # path to gene info CSV (ref/gene_info.vm36.csv)
-gene_tss:       null          # path to strand-aware TSS CSV (gene_tss.vm36.csv); used to cap CI bounds in L mode
+gene_tss:       null          # path to strand-aware transcript TSS CSV (gene_tss.vm36.csv); gives near_tss_mb and cis_dist_mb
 metadata:       null          # path to sample metadata CSV (ref/igvf_sample_metadata.csv)
 sanger_alleles: null          # path to Sanger alleles HDF5 (ref/sanger_alleles.h5); null = skip FINEMAP SNP step
 
@@ -31,7 +31,9 @@ use_rint:       true          # rank-inverse normal transform before LMM scan; c
 n_perms:              1000    # genome-wide permutations for GEV threshold
 n_perms_cal:          1000    # per-eGene permutations for Beta-calibrated p-values (Storey FDR)
 perm_method:          'parametric'   # permutation method passed to run_threshold_scans
-fdr_threshold:        0.05    # Storey q-value FDR threshold for eGene calling
+fdr_threshold:        0.05    # FDR threshold for eGene calling
+submission_fdr:       0.1     # haplotype_peak_lod.csv keeps tested genes with fdr <= this; calibration and q-values use all tested genes
+call_rule:            'qvalue'  # 'qvalue' (Storey), 'bh' (Benjamini-Hochberg) or 'lfdr' (local FDR) over all tested genes
 seed:                 42
 
 # ── fine-mapping ─────────────────────────────────────────────────────────────

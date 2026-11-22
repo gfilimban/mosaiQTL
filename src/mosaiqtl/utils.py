@@ -67,6 +67,60 @@ def strip_chr_prefix(values: "pd.Series") -> "pd.Series":
     return values.astype(str).str.replace(r"^chr", "", regex=True)
 
 
+def strip_gene_version(values: "pd.Series") -> "pd.Series":
+    """Return Ensembl gene IDs without the version suffix (``'ENSMUSG1.2'`` → ``'ENSMUSG1'``).
+
+    IDs without a version pass through unchanged, so versioned and unversioned
+    tables join on the same key.
+    """
+    return values.astype(str).str.replace(r"\.\d+$", "", regex=True)
+
+
+def nearest_transcript_tss_mb(
+    peak_df: "pd.DataFrame",
+    gene_tss_df: "pd.DataFrame",
+) -> "pd.Series":
+    """Strand-aware transcript TSS (Mb) nearest each gene's peak, joined on unversioned gene_id.
+
+    Parameters
+    ----------
+    peak_df :
+        ``gene_id`` and ``peak_mb`` columns.
+    gene_tss_df :
+        One row per transcript: ``gene_id``, ``start``, ``end`` (bp) and ``strand``.
+        The TSS is ``start`` on ``+`` and ``end`` on ``-``.
+
+    Returns
+    -------
+    pd.Series
+        Indexed as ``peak_df``; ``NaN`` where the gene has no transcript row.
+    """
+    import numpy as np
+    import pandas as pd
+
+    tss = pd.DataFrame(
+        {
+            "key": strip_gene_version(gene_tss_df["gene_id"]),
+            "tss_mb": np.where(
+                gene_tss_df["strand"].astype(str) == "-",
+                gene_tss_df["end"],
+                gene_tss_df["start"],
+            ).astype(float)
+            / 1e6,
+        }
+    ).drop_duplicates()
+    left = pd.DataFrame(
+        {"key": strip_gene_version(peak_df["gene_id"]), "peak_mb": peak_df["peak_mb"].to_numpy()},
+        index=peak_df.index,
+    )
+    cand = left.reset_index(names="row").merge(tss, on="key", how="inner")
+    if cand.empty:
+        return pd.Series(np.nan, index=peak_df.index)
+    cand["gap"] = (cand["tss_mb"] - cand["peak_mb"]).abs()
+    best = cand.loc[cand.groupby("row")["gap"].idxmin()].set_index("row")["tss_mb"]
+    return best.reindex(peak_df.index)
+
+
 def rint(x):
     """rank-based inverse normal transformation (Blom formula).
 
@@ -216,17 +270,12 @@ def build_tss_lookup(genes_df: "pd.DataFrame") -> "dict[str, float]":
     dict[str, float]
         Mapping from gene_id to TSS position in Mb.
     """
-    lookup: dict[str, float] = {}
     if "start" not in genes_df.columns or "gene_id" not in genes_df.columns:
-        return lookup
-    has_strand = "strand" in genes_df.columns
-    has_end = "end" in genes_df.columns
-    for _, row in genes_df.iterrows():
-        if has_strand and has_end and row["strand"] == "-":
-            lookup[str(row["gene_id"])] = float(row["end"]) / 1e6
-        else:
-            lookup[str(row["gene_id"])] = float(row["start"]) / 1e6
-    return lookup
+        return {}
+    tss = genes_df["start"]
+    if {"strand", "end"} <= set(genes_df.columns):
+        tss = tss.where(genes_df["strand"] != "-", genes_df["end"])
+    return dict(zip(genes_df["gene_id"].astype(str), tss.astype(float) / 1e6))
 
 
 def reduce_to_strain_means(

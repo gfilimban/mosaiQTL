@@ -20,7 +20,6 @@ import time
 import numpy as np
 import pandas as pd
 import logging
-from pathlib import Path
 
 
 logger = logging.getLogger("mosaiqtl")
@@ -116,28 +115,6 @@ def _null_fit_params(
     wrss = float(resid @ (resid * w_inv))
     sigma2_total = wrss / n
     return beta, h2 * sigma2_total, (1.0 - h2) * sigma2_total
-
-
-def _draw_kinship_re(
-    K: np.ndarray,
-    sigma2_g: float,
-    rng: np.random.Generator,
-) -> np.ndarray:
-    """draw a random effect u ~ N(0, K·sigma2_g) via eigendecomposition.
-
-    projects K onto the PSD cone before drawing (clamps near-zero negative
-    eigenvalues that arise from floating-point error in rank-deficient LOCO
-    kinship matrices).  raises KinshipSingularError only when min_eig < -1e-4,
-    which indicates a genuine singularity rather than numerical noise.
-    """
-    ev, evc = np.linalg.eigh(K)
-    if float(ev.min()) < -1e-4:
-        raise KinshipSingularError(
-            f"LOCO kinship genuinely singular (min_eig={float(ev.min()):.2e})"
-        )
-    # project onto PSD cone; draw u = evc @ diag(sqrt(ev_+ * sigma2_g)) @ z
-    sqrt_ev = np.sqrt(np.maximum(ev, 0.0) * sigma2_g)
-    return evc @ (sqrt_ev * rng.standard_normal(len(ev)))
 
 
 def draw_parametric_null_batch(
@@ -539,31 +516,10 @@ def run_threshold_scans(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _strand_aware_tss_mb(gene_id: str, gene_tss_df: "pd.DataFrame") -> "float | None":
-    """Return the strand-aware TSS in Mb for gene_id, or None if not found.
-
-    Prefers a pre-computed tss_mb column when present (avoids re-derivation).
-    Otherwise derives from start/end + strand: TSS = start for + strand genes,
-    end for − strand genes.  gene_tss_df must carry gene_id plus either tss_mb
-    (Mb) or (start, end, strand) in bp.  Returns None when the gene is absent.
-    """
-    rows = gene_tss_df[gene_tss_df["gene_id"] == gene_id]
-    if rows.empty:
-        return None
-    row = rows.iloc[0]
-    if "tss_mb" in rows.columns and not pd.isna(row["tss_mb"]):
-        return float(row["tss_mb"])
-    has_strand = "strand" in rows.columns and not pd.isna(row["strand"])
-    if has_strand and str(row["strand"]) == "-":
-        return float(row["end"]) / 1e6
-    return float(row["start"]) / 1e6
-
-
 def pick_rep_gene(
     peak_lod_df: "pd.DataFrame",
     chrom: "str | None" = None,
-    gene_tss_df: "pd.DataFrame | None" = None,
-) -> "tuple[str, str, float | None, float]":
+) -> "tuple[str, str, float, float]":
     """Pick the gene whose h² is nearest the median as the permutation representative.
 
     The permutation threshold is drawn from a null parameterised by h² (via
@@ -575,14 +531,9 @@ def pick_rep_gene(
     start_mb, h2.  h² is written by the scan engine (scan_h2lmm /
     scan_multi_gene) and is present in every peak_lod.csv.
 
-    TSS resolution (used by L-mode local-window null):
-      - When gene_tss_df is provided (gene_tss.vm36.csv or gene_info.vm36.csv),
-        the strand-aware TSS is computed: end/1e6 for − strand, start/1e6 for +.
-        This is more accurate than start_mb for genes whose TSS is at the 3' end
-        of the chromosome coordinate.
-      - When gene_tss_df is None, start_mb from peak_lod_df is used as a proxy.
-        For ±1 Mb windows the error is at most one gene-body length (~0.05 Mb
-        typical), so this fallback is acceptable when gene_tss is unavailable.
+    The returned position is the gene's ``start_mb``, the strand-aware TSS the scan
+    itself anchored its window on, so the local null window coincides with the
+    window the representative gene was scanned in.
 
     The chrom argument also governs C-mode: for scan_type='C', pass the
     representative gene's chromosome to restrict the permutation null to that
@@ -597,19 +548,12 @@ def pick_rep_gene(
         chrom: restrict candidate genes to this chromosome when not None.  For
             L-mode pass the scan chromosome; for C-mode pass the representative
             gene's chromosome; for G-mode pass None.
-        gene_tss_df: optional table with gene_id, chr, start, end, strand
-            columns (bp coordinates) used to resolve the strand-aware TSS.
-            gene_tss.vm36.csv and gene_info.vm36.csv both satisfy this contract.
-            When None, tss_mb falls back to start_mb from peak_lod_df.
 
     Returns:
         Tuple (gene_id, chrom, tss_mb, h2_median).
         gene_id  : Ensembl ID of the representative gene.
         chrom    : chromosome of that gene (str).
-        tss_mb   : strand-aware TSS in Mb when gene_tss_df is provided, else
-                   start_mb from peak_lod_df (None only when gene_tss_df is
-                   provided but the gene is absent from it — callers that need a
-                   position should fall back to start_mb in that case).
+        tss_mb   : strand-aware TSS in Mb (the gene's start_mb).
         h2_median: median h² across the candidate gene set.
 
     Raises:
@@ -642,24 +586,11 @@ def pick_rep_gene(
 
     gene_id  = str(row["gene_id"])
     gene_chr = str(row["chr"])
-    start_mb = float(row["start_mb"])
-
-    tss_mb: "float | None"
-    if gene_tss_df is not None:
-        tss_mb = _strand_aware_tss_mb(gene_id, gene_tss_df)
-        if tss_mb is None:
-            logger.warning(
-                "pick_rep_gene: %s not found in gene_tss_df — using start_mb=%.3fMb",
-                gene_id, start_mb,
-            )
-            tss_mb = start_mb
-    else:
-        tss_mb = start_mb
+    tss_mb = float(row["start_mb"])
 
     logger.info(
         "pick_rep_gene: median h²=%.3f  gene=%s  chr%s  TSS=%.3fMb  h²=%.3f",
         h2_med, gene_id, gene_chr, tss_mb, float(row["h2"]),
     )
     return gene_id, gene_chr, tss_mb, h2_med
-
 

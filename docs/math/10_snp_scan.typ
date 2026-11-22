@@ -52,17 +52,19 @@ For SNP #mi(`s`); at position #mi(`p_s`); on chromosome #mi(`c`);, the imputed d
 
 where:
 
-- #mi(`H_{if\ell(s)}`); --- haplotype probability for sample #mi(`i`);, founder #mi(`f`);, at the
-  nearest typed locus #mi(`\ell(s)`); to position #mi(`p_s`); (minimum #mi(`|p_s - p_\ell|`);).
+- #mi(`H_{if}(p_s)`); --- haplotype probability for strain #mi(`i`);, founder #mi(`f`);, at the
+  SNP position, interpolated linearly in physical position (Mb) between the two typed loci that
+  bracket #mi(`p_s`); and clamped at the ends of the chromosome:
+  #mi(`H_{if}(p_s) = (1-t)\,H_{if\ell} + t\,H_{if,\ell+1}`);, #mi(`t = (p_s - p_\ell)/(p_{\ell+1} - p_\ell)`);.
+  A convex combination of probability vectors is again a probability vector.
 - #mi(`g_{fs} \in \{0,1,2\}`); --- founder #mi(`f`);\'s alt allele count at SNP #mi(`s`);.
 
-```python
-dosage = h_locus @ geno_f    # (n_valid,) inner product
-```
-
-For a fully inbred CC sample where #mi(`H_{i\ell} \approx e_{f^*}`);, this recovers
-#mi(`g_{f^*s}`); directly. For samples with uncertain ancestry the dosage is a
-probability-weighted interpolation across founders.
+Genotype is a property of the strain, so the dosage is formed once per strain and copied to
+every sample of that strain; the likelihood below is fit over samples. For a fully inbred CC
+strain where #mi(`H_i \approx e_{f^*}`);, the dosage recovers #mi(`g_{f^*s}`); directly. For
+strains with uncertain ancestry it is a probability-weighted interpolation across founders.
+Interpolation is in physical position, not genetic position; its effect against a
+genetic-map interpolation has not been measured.
 
 If some founders have no call (NaN), the SNP is skipped when any sample carries
 haplotype mass #mi(`> 0.05`); (`MAX_MISSING_HAP_MASS`) on those founders; otherwise
@@ -71,6 +73,32 @@ the dosage is renormalised over the called founders #mi(`F_s`);:
 #mitex(`d_{is} = \frac{\sum_{f \in F_s} H_{if\ell(s)}\, g_{fs}}{\sum_{f \in F_s} H_{if\ell(s)}}`)
 
 Monomorphic SNPs (#mi(`\text{sd}(d) < 10^{-8}`);) are skipped.
+
+#strong[Minimum minor-allele evidence.] Let #mi(`S`); be the number of strains present among
+the scanned samples and #mi(`T = \sum_{s} d_s`); the summed strain dosage. The quantity
+
+#mitex(`m = \min(T,\; S - T)`)
+
+is the expected number of independent genomes carrying the rarer allele (`minor_strains`).
+It counts strains because testability is set by the kinship and genetic architecture:
+replicate samples of one strain share a genotype and, through #mi(`Z K Z^\top`);, a fully
+correlated genetic effect, so they add information about the residual variance but not about
+the allele. A SNP carried by one strain with many replicates has a large sample count and one
+independent genotype, and its effect is largely absorbed by the random effect. A SNP is tested
+only when #mi(`m \ge 3`); (`MIN_MINOR_STRAINS`).
+
+The reported `af`, `maf`, `mac` and `ma_samples` are descriptive and are computed over the
+scanned samples. Everything inside the likelihood is at sample level; only this filter counts
+strains.
+
+The F-statistic at a SNP uses the gene\'s null #mi(`h^2`); and is exact only asymptotically, and
+with very few carriers a single strain can determine the fit. The value 3 is a conventional
+minimum-count rule, not a threshold derived for this design. In a null simulation on the real
+chromosome-19 kinship and the real microglial sample structure (300 replicates, SNPs
+stratified by #mi(`m`);), the type I error showed no trend with #mi(`m`); and a mild inflation
+(#mi(`\lambda_{GC} \approx 1.1`);) in every bin, whose cause is not identified. The cache holds
+no SNP with #mi(`m < 1.5`);, so the simulation does not test the threshold itself; with up to 48
+strains the filter removes only the rarest SNPs present.
 
 #divider()
 
@@ -83,11 +111,13 @@ used as a scalar predictor in the LMM:
 \qquad u \sim \mathcal{N}(0,\sigma^2_g K^{(-c)})`)
 
 This is `fit_lmm_at_locus` with a #mi(`1`);-column haplotype matrix (#mi(`J=1`);), giving
-1 effective df. #mi(`h^2`); is estimated once per chromosome from the null model by ML
-(`lmm.estimate_h2_null`) and held fixed across SNPs. Known issue: samples with a
-missing phenotype are dropped by slicing rows of the full-kinship eigenvectors
-(`eigvecs[valid]`) while all eigenvalues are kept, which is not the
-eigendecomposition of the sub-kinship.
+1 effective df. The model is fit at sample level with kinship #mi(`Z K^{(-c)} Z^\top`); over the
+samples that have a phenotype, so the SNP and haplotype likelihoods are nested: same samples,
+same rank-inverse-normal transform, same kinship and the same ML #mi(`h^2`); for the gene.
+#mi(`h^2`); is estimated once per chromosome from the null model by ML
+(`lmm.estimate_h2_null`) and held fixed across SNPs. SNPs are processed in chunks: the
+standardised dosages of a chunk are rotated by the eigenvectors once, and each SNP is then
+fit against the shared rotated phenotype and covariates.
 
 #strong[Power comparison to haplotype scan:] the haplotype scan has #mi(`J-1 = 7`); df and
 detects any founder-haplotype association regardless of SNP allele coding. The
@@ -134,5 +164,6 @@ for DO. This is a known, documented limitation --- not a bug.
   they now come from the HDF5 built by `genotype/snp_db.py`. In production the
   Nextflow `FINEMAP_CHR` process runs `workflow/scripts/run_finemap.py` →
   `pipeline.py::finemap_egenes`, scanning the SNPs inside each eGene's 1.5-LOD
-  support interval (capped to #mi(`\pm`);`window_mb` of the TSS in L mode). With
+  support interval, which in L mode is computed inside the scan window of #mi(`\pm`);`window_mb` around the
+  strand-aware TSS and so is never wider than it (`06_permutation.typ` §6). With
   `params.sanger_alleles` unset (the default, `null`), header-only outputs are written.

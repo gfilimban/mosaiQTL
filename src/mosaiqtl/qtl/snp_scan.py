@@ -15,6 +15,7 @@ import pandas as pd
 import logging
 from pathlib import Path
 
+from ..genotype.interpolation import bracket_weights
 from ..utils import _build_gm_idx, _enrich_scan_df
 
 logger = logging.getLogger("mosaiqtl")
@@ -22,6 +23,14 @@ logger = logging.getLogger("mosaiqtl")
 # Largest per-strain haplotype probability a founder with no allele call may carry
 # before the SNP is dropped; below it the dosage is renormalised over called founders.
 MAX_MISSING_HAP_MASS: float = 0.05
+
+# Fewest strains that must carry the minor allele (summed expected dosage over the
+# scanned strains, or its complement) for a SNP to be tested.
+MIN_MINOR_STRAINS: int = 3
+
+# SNPs processed together when interpolating probabilities and forming dosages;
+# bounds the (chunk, strains, founders) temporary.
+SNP_CHUNK: int = 512
 
 SNP_SCAN_COLS: list[str] = [
     "gene_id",
@@ -37,40 +46,8 @@ SNP_SCAN_COLS: list[str] = [
     "rss1",
     "beta_dosage",
     "se_dosage",
+    "minor_strains",
 ]
-
-
-def _reduce_to_strain_means(
-    phenotype: np.ndarray,
-    covariates: "np.ndarray | None",
-    sample_ids: list,
-    genomecache,
-) -> "tuple[np.ndarray, np.ndarray | None]":
-    """Average sample-level phenotype and covariates to cache strain order.
-
-    Strains without any sample (or samples not in the cache) are NaN, which the
-    scan's non-missing mask then drops.
-    """
-    from ..utils import build_z_matrix
-
-    z_mat, valid_mask = build_z_matrix(sample_ids, list(genomecache.sample_ids))
-    valid_idx = np.where(valid_mask)[0]
-    z_sub = z_mat[valid_idx]
-    r_cnt = z_sub.sum(axis=0)
-    active = r_cnt > 0
-    z_act = z_sub[:, active]
-    r_act = r_cnt[active]
-    active_idx = np.where(active)[0]
-    n_strains = len(genomecache.sample_ids)
-
-    y_str = np.full(n_strains, np.nan)
-    y_str[active_idx] = (z_act.T @ phenotype[valid_idx]) / r_act
-
-    cov_str = None
-    if covariates is not None:
-        cov_str = np.full((n_strains, covariates.shape[1]), np.nan)
-        cov_str[active_idx] = (z_act.T @ covariates[valid_idx]) / r_act[:, None]
-    return y_str, cov_str
 
 
 def imputed_snp_scan_h2lmm(
@@ -108,23 +85,26 @@ def imputed_snp_scan_h2lmm(
     gene_symbol : str  display name used only in log output; never written to output columns
     just_these_snps : list or None  restrict to these snp ids
     sample_ids : list or None  genotype ID per row of phenotype/covariates
-        (cache strain names, one per sample).  When given, phenotype and
-        covariates are reduced to strain means in cache order before the
-        scan, so replicate-level inputs align with the strain-level
-        haplotype probabilities and kinship.  None = inputs already in
-        cache strain order.
+        (cache strain names, one per sample).  The model is fit at sample
+        level: each sample carries the dosage of its strain, and replicate
+        samples share a genotype.  None = one sample per cache strain, in
+        cache order.
 
     returns
     -------
-    pd.DataFrame  columns: gene_id, snp, chr, pos_mb, lod, p_value, f_stat,
-                           h2, n, rss0, rss1, beta_dosage, se_dosage
+    pd.DataFrame  columns: SNP_SCAN_COLS (gene_id, snp, chr, pos_mb, lod,
+                           p_value, f_stat, h2, n, rss0, rss1, beta_dosage,
+                           se_dosage, minor_strains) plus dosage_mean, the
+                           mean dosage over the scanned samples.
+                           minor_strains is the smaller of the summed strain
+                           dosage and its complement over the strains present.
         NOT a ScanResult — SNP scan output is per-SNP dosage effects, not
         per-founder haplotype effects.  Do not pass to _scan_to_df or any
         ScanResult consumer.
     """
     from ..genotype import kinship as kin_module
     from . import lmm as lmm_module
-    from ..utils import rint as _rint
+    from ..utils import build_z_matrix, rint as _rint
 
     _n_snps_requested = (
         len(just_these_snps) if just_these_snps is not None else len(snp_genos)
@@ -135,31 +115,25 @@ def imputed_snp_scan_h2lmm(
         kd = kin_module.calc_kinship(genomecache, method="loco")
         kinship_decomp = kin_module.decomp_kinship(kd)
 
-    _rint_done = False
-    if sample_ids is not None:
-        pheno_arr = np.asarray(phenotype, dtype=float)
-        if use_rint:
-            # Apply RINT to sample-level phenotype before strain aggregation so
-            # the transformation matches the haplotype scan, which RINTs y_raw
-            # at sample level (rint(y_raw[vsid])) before scan_chromosome.
-            _valid_ph = ~np.isnan(pheno_arr)
-            pheno_arr[_valid_ph] = _rint(pheno_arr[_valid_ph])
-            _rint_done = True
-        phenotype, covariates = _reduce_to_strain_means(
-            pheno_arr, covariates, sample_ids, genomecache
-        )
-    else:
-        n_cache = len(list(genomecache.sample_ids))
-        if len(phenotype) != n_cache:
+    cache_ids = list(genomecache.sample_ids)
+    pheno_arr = np.asarray(phenotype, dtype=float)
+    if sample_ids is None:
+        if len(pheno_arr) != len(cache_ids):
             raise ValueError(
-                f"imputed_snp_scan_h2lmm: phenotype length {len(phenotype)} != "
-                f"cache n_strains {n_cache}; pass sample_ids to reduce "
-                "replicate inputs to strain means before the scan"
+                f"imputed_snp_scan_h2lmm: phenotype length {len(pheno_arr)} != "
+                f"cache n_strains {len(cache_ids)}; pass sample_ids for replicate inputs"
             )
+        z_mat, in_cache = np.eye(len(cache_ids)), np.ones(len(cache_ids), dtype=bool)
+    else:
+        z_mat, in_cache = build_z_matrix(sample_ids, cache_ids)
 
-    valid = ~np.isnan(phenotype)
-    y = phenotype[valid].copy()
-    if use_rint and not _rint_done:
+    # the model is fit at sample level, as the haplotype scan is, so the variant
+    # and haplotype likelihoods are nested: same samples, same RINT, same
+    # K_n = Z K_m Z^T, and the same ML h^2 for the gene
+    valid = in_cache & ~np.isnan(pheno_arr)
+    z_sub = z_mat[valid]
+    y = pheno_arr[valid].copy()
+    if use_rint:
         y = _rint(y)
     n = len(y)
 
@@ -198,80 +172,99 @@ def imputed_snp_scan_h2lmm(
             continue
 
         lids, pos, probs = genomecache.get_chromosome(chrom)  # probs: (L,n,J)
-        eigvals = kinship_decomp[chrom]["values"]
-        eigvecs = kinship_decomp[chrom]["vectors"]
-        ev_v = eigvecs[valid]
-        y_rot = ev_v.T @ y
-        x_rot = ev_v.T @ x
-        h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, eigvals)
+        ev_m, evc_m = kinship_decomp[chrom]["values"], kinship_decomp[chrom]["vectors"]
+        eigvals, eigvecs = np.linalg.eigh(z_sub @ ((evc_m * ev_m) @ evc_m.T) @ z_sub.T)
+        y_rot = eigvecs.T @ y
+        x_rot = eigvecs.T @ x
+        h2, _ = lmm_module.estimate_h2_null(y_rot, x_rot, eigvals, method="ml")
 
-        for snp_id, row in chr_snps.iterrows():
-            snp_pos = float(row.get("pos_mb", np.nan))
-            if np.isnan(snp_pos):
+        # strains with at least one scanned sample; dosage is computed per strain
+        # and expanded to samples by index
+        used = np.flatnonzero(z_sub.any(axis=0))
+        sample_to_used = np.searchsorted(used, z_sub.argmax(axis=1))
+        probs_used = probs[:, used]  # (L, m, J)
+        snp_ids = chr_snps.index.to_numpy()
+        snp_mb = pd.to_numeric(chr_snps["pos_mb"], errors="coerce").to_numpy(float)
+        # missing allele codes (N, -, ...) coerce to nan
+        geno_all = (
+            chr_snps.reindex(columns=founders_cache)
+            .apply(pd.to_numeric, errors="coerce")
+            .to_numpy(float)
+        )  # (S, J)
+
+        for a in range(0, len(snp_ids), SNP_CHUNK):
+            sl = slice(a, a + SNP_CHUNK)
+            g = geno_all[sl]
+            known = ~np.isnan(g)
+            g0 = np.where(known, g, 0.0)
+            live = ~np.isnan(snp_mb[sl]) & known.any(axis=1)
+            if not live.any():
                 continue
 
-            # find nearest locus for haplotype probs
-            nearest_i = int(np.argmin(np.abs(pos - snp_pos)))
-            h_locus = probs[nearest_i][valid]  # (n_valid, J)
+            # haplotype probabilities at each SNP position, interpolated between
+            # the two bracketing loci
+            left, t = bracket_weights(pos, snp_mb[sl])
+            t = t[:, None, None]
+            p = (1.0 - t) * probs_used[left] + t * probs_used[left + 1]  # (s, m, J)
 
-            # impute snp dosage: d = sum_f h_f * g_f  (g_f = alt allele count)
-            def _to_float(v):
-                """Coerce allele value to float; missing codes (N, -, etc.) become nan."""  # noqa: E501
-                try:
-                    return float(v)
-                except (TypeError, ValueError):
-                    return np.nan
+            # a founder without a call has an unknown allele: strains carrying
+            # appreciable haplotype mass on it have no defined dosage
+            miss = np.einsum("smj,sj->sm", p, (~known).astype(float))
+            too_missing = live & (miss.max(axis=1) > MAX_MISSING_HAP_MASS)
+            n_skipped_missing += int(too_missing.sum())
+            live &= ~too_missing
 
-            geno_f = np.array([_to_float(row.get(f, np.nan)) for f in founders_cache])
-            known = ~np.isnan(geno_f)
-            if not known.any():
-                continue
-            if not known.all():
-                # a founder without a call has an unknown allele; strains carrying
-                # appreciable haplotype mass on it have no defined dosage
-                if h_locus[:, ~known].sum(axis=1).max() > MAX_MISSING_HAP_MASS:
-                    n_skipped_missing += 1
-                    continue
-                known_mass = h_locus[:, known].sum(axis=1)
-                dosage = (h_locus[:, known] @ geno_f[known]) / known_mass
-            else:
-                dosage = h_locus @ geno_f  # (n_valid,)
+            dos_strain = np.einsum("smj,sj->sm", p, g0) / np.maximum(
+                1.0 - miss, 1e-12
+            )  # (s, m)
+            dosage = dos_strain[:, sample_to_used]  # (s, n)
 
-            # skip monomorphic snps
-            if dosage.std() < 1e-8:
+            # skip monomorphic SNPs and SNPs whose minor allele is carried by too
+            # few strains: replicates of a strain share one genotype, so the
+            # strain count, not the sample count, bounds the independent evidence
+            tot = dos_strain.sum(axis=1)
+            minor_strains = np.minimum(tot, len(used) - tot)
+            d_sd = dosage.std(axis=1)
+            live &= (d_sd >= 1e-8) & (minor_strains >= MIN_MINOR_STRAINS)
+            if not live.any():
                 continue
 
-            # standardise dosage and fit lmm with dosage as scalar predictor
-            d_std = (dosage - dosage.mean()) / dosage.std()
-            h_rot = (ev_v.T @ d_std).reshape(-1, 1)
+            keep = np.flatnonzero(live)
+            d_mean = dosage[keep].mean(axis=1)
+            d_std = (dosage[keep] - d_mean[:, None]) / d_sd[keep, None]
+            h_rot_all = eigvecs.T @ d_std.T  # (n, k): one rotation per chunk
+            pats = np.where(known[keep], np.rint(g0[keep]), -1).astype(int)
 
-            res = lmm_module.fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2)
-
-            _pat = tuple(-1 if np.isnan(x) else int(round(x)) for x in geno_f.tolist())
-            results.append(
-                {
-                    "gene_id": phenotype_id,
-                    "snp": snp_id,
-                    "chr": chrom,
-                    "pos_mb": snp_pos,
-                    "lod": res.lod,
-                    "p_value": res.p_value,
-                    "f_stat": res.f_stat,
-                    "h2": res.h2,
-                    "n": n,
-                    "rss0": res.rss_null,
-                    "rss1": res.rss_alt,
-                    "beta_dosage": float(res.betas[0]),
-                    "se_dosage": float(res.se_betas[0]),
-                    "dosage_mean": float(dosage.mean()),
-                    "_founder_pattern": _pat,
-                }
-            )
-            # track best dosage per unique founder pattern — one vector per
-            # pattern (≤2^8=256 for 8 binary founder positions), not one per
-            # SNP. memory stays O(n_patterns × n_valid) regardless of window.
-            if _pat not in _pat_best_dosage or res.lod > _pat_best_dosage[_pat][1]:
-                _pat_best_dosage[_pat] = (dosage, res.lod)
+            for j, i in enumerate(keep):
+                res = lmm_module.fit_lmm_at_locus(
+                    y_rot, h_rot_all[:, [j]], x_rot, eigvals, h2
+                )
+                _pat = tuple(pats[j].tolist())
+                results.append(
+                    {
+                        "gene_id": phenotype_id,
+                        "snp": snp_ids[a + i],
+                        "chr": chrom,
+                        "pos_mb": snp_mb[a + i],
+                        "lod": res.lod,
+                        "p_value": res.p_value,
+                        "f_stat": res.f_stat,
+                        "h2": res.h2,
+                        "n": n,
+                        "rss0": res.rss_null,
+                        "rss1": res.rss_alt,
+                        "beta_dosage": float(res.betas[0]),
+                        "se_dosage": float(res.se_betas[0]),
+                        "dosage_mean": float(d_mean[j]),
+                        "minor_strains": float(minor_strains[i]),
+                        "_founder_pattern": _pat,
+                    }
+                )
+                # best dosage per unique founder pattern — one vector per
+                # pattern (≤2^8=256 for 8 binary founder positions), not one per
+                # SNP. memory stays O(n_patterns × n_valid) regardless of window.
+                if _pat not in _pat_best_dosage or res.lod > _pat_best_dosage[_pat][1]:
+                    _pat_best_dosage[_pat] = (dosage[i].copy(), res.lod)
 
     if n_skipped_missing:
         logger.debug(

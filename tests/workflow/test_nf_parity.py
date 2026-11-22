@@ -12,6 +12,7 @@ Three check categories:
 
 Run: pytest tests/workflow/ -v
 """
+import ast
 import fnmatch
 import re
 import shutil
@@ -192,34 +193,53 @@ def _suffix_covered(writes_pattern: str, nf_globs: list[str]) -> bool:
 
 # ── 1. argv count parity ──────────────────────────────────────────────────────
 
+def _script_unpack_argc(script_name: str) -> 'int | None':
+    """Number of names in the script's ``(a, b, ...) = sys.argv[1:]`` unpacking.
+
+    Returns None when the script does not unpack its positional arguments in one
+    statement, in which case the expected count comes from _ARGC_TABLE.
+    """
+    tree = ast.parse((SCRIPTS / script_name).read_text())
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign)
+                and isinstance(node.targets[0], ast.Tuple)
+                and ast.unparse(node.value) == 'sys.argv[1:]'):
+            return len(node.targets[0].elts)
+    return None
+
+
 # Each tuple: (python_script, nf_module, expected_nf_token_count)
+# The count is None for a script that unpacks sys.argv[1:] in one statement: it is
+# then read from that statement, so the script is the single source of the arity.
 #
 # expected_nf_token_count = mandatory_argc + optional_argc_always_passed_by_nf
 #   build_cache.py         2 = 2 + 0
 #   build_kinship_loco.py  2 = 2 + 0
 #   run_lmm_scan_chr.py   10 = 10 + 0
-#   run_merge.py           6 = 5 + 1 (tissue always appended)
-#   run_permute.py        13 = 12 + 1 (tissue always appended)
-#   run_call_egenes.py    15 = 14 + 1 (tissue always appended)
+#   run_merge.py           7 = 5 + 2 (tissue and gene_tss slot always appended)
+#   run_call_egenes.py    18 = 14 + 4 (tissue, use_rint, call_rule, submission_fdr always appended)
 #   run_finemap.py        11 = 9 + 2 (${sanger} slot + tissue always appended)
 #   run_report.py         13 = 11 + 2 (${gtf_arg} slot + tissue always appended)
 _ARGC_TABLE = [
     ('build_cache.py',        'build_cache.nf',      2),
     ('build_kinship_loco.py', 'kinship_loco.nf',     2),
     ('run_lmm_scan_chr.py',   'lmm_scan.nf',        11),
-    ('run_merge.py',          'merge_results.nf',     6),
-    ('run_permute.py',        'permute.nf',          16),
-    ('run_call_egenes.py',    'call_egenes.nf',      16),
-    ('run_finemap.py',        'finemap.nf',          11),
+    ('run_merge.py',          'merge_results.nf',     7),
+    ('run_permute.py',        'permute.nf',          None),
+    ('run_call_egenes.py',    'call_egenes.nf',      18),
     ('run_report.py',         'report.nf',           14),
-    ('run_finemap.py',        'finemap_chr.nf',      16),
+    ('run_finemap.py',        'finemap_chr.nf',      None),
+    ('run_finemap_merge.py',  'finemap_merge.nf',    None),
 ]
 
 
 @pytest.mark.parametrize('script, module, expected', _ARGC_TABLE,
                          ids=[r[0] for r in _ARGC_TABLE])
-def test_argv_count_parity(script: str, module: str, expected: int) -> None:
+def test_argv_count_parity(script: str, module: str, expected: 'int | None') -> None:
     """NF script block passes exactly expected positional tokens to the Python script."""
+    if expected is None:
+        expected = _script_unpack_argc(script)
+        assert expected is not None, f'{script} has no (...) = sys.argv[1:] unpacking'
     actual = _nf_script_tokens(module)
     assert actual != -1, f'no script: block found in {module}'
     assert actual == expected, (
@@ -238,7 +258,6 @@ _OUTPUT_SCRIPTS = [
     ('run_merge.py',          'merge_results.nf'),
     ('run_permute.py',        'permute.nf'),
     ('run_call_egenes.py',    'call_egenes.nf'),
-    ('run_finemap.py',        'finemap.nf'),
     ('run_report.py',         'report.nf'),
 ]
 

@@ -36,6 +36,46 @@ logger = logging.getLogger("mosaiqtl")
 
 __all__: list[str] = []  # internal engine — no public symbols; import via scan.py
 
+# Admissible heritability range. The profile likelihood is evaluated on the closed
+# interval [_H2_MIN, _H2_MAX]; the endpoints stand in for h² = 0 and h² = 1, where
+# V = h²K + (1 - h²)I would be singular or degenerate.
+_H2_MIN = 1e-6
+_H2_MAX = 1.0 - 1e-6
+
+# Search grid: the weights w = 1 + h²(λ - 1) change at rate λ - 1 in h², so below
+# 0.01 the likelihood varies on the scale of h² itself and log spacing keeps a
+# constant relative resolution; linear points cover the bulk of (0.01, 0.99).
+_H2_GRID = np.concatenate(
+    [
+        np.logspace(-6.0, -3.0, 4),
+        np.array([0.003, 0.006]),
+        np.linspace(0.01, 0.99, 20),
+        np.array([0.994, 0.997]),
+        1.0 - np.logspace(-3.0, -6.0, 4),
+    ]
+)
+
+
+def h2_at_boundary(h2: float) -> bool:
+    r"""Report whether an estimated $h^2$ sits on an end of the search grid.
+
+    The profile likelihood is searched on a grid spanning $[10^{-6}, 1 - 10^{-6}]$,
+    log-spaced toward both ends, and refined by Brent's method inside the bracket of the
+    best grid point, so an optimum at either end of the grid is censored there rather
+    than interior.
+
+    Parameters
+    ----------
+    h2 : float
+        Estimated heritability.
+
+    Returns
+    -------
+    bool
+        True when $h^2 \le 10\cdot 10^{-6}$ or $h^2$ is within $10^{-4}$ of the top grid point.
+    """
+    return bool(h2 <= 10.0 * _H2_MIN or h2 >= float(_H2_GRID[-1]) - 1e-4)
+
 
 def estimate_h2_null(y_rot, x_rot, eigvals, method="ml"):
     """estimate heritability under the null model (no QTL effect).
@@ -46,10 +86,11 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method="ml"):
     the LRT is only valid under ML.
     REML is available as method='reml' for variance component estimation outside LRT.
 
-    algorithm: 1. evaluate profile ML on a 20-point h² grid [0.01, 0.99]
-      2. refine around the best grid point with Brent's method
-      3. brute check: compare against h²=0 — take whichever has
-         higher log-likelihood (brute-force safeguard)
+    algorithm: 1. evaluate profile ML on a grid over [1e-6, 1 - 1e-6]: log-spaced
+         points below 0.01 and above 0.99, and 20 linear points on [0.01, 0.99]
+      2. refine between the neighbours of the best grid point with Brent's method
+      3. keep the best grid point itself when it has the higher log-likelihood,
+         which is how an optimum on the floor or ceiling is reported
 
     parameters
     ----------
@@ -67,7 +108,7 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method="ml"):
 
     def neg_loglik(h2):
         """negative profile (RE)ML as a function of h²."""
-        h2 = np.clip(h2, 1e-6, 1 - 1e-6)
+        h2 = np.clip(h2, _H2_MIN, _H2_MAX)
         w = h2 * eigvals + (1.0 - h2)  # eigenvalues of V = h²K + (1-h²)I; > 0 always
         w_inv = 1.0 / w
         xw = x_rot * w_inv[:, None]
@@ -95,25 +136,25 @@ def estimate_h2_null(y_rot, x_rot, eigvals, method="ml"):
             return 1e10
         return -ll
 
-    # ── step 1: grid search ──────────────────────────────────────────────────
-    _grid = np.linspace(0.01, 0.99, 20)
-    _nll = np.array([neg_loglik(h) for h in _grid])
+    # ── step 1: grid search over the whole admissible range ──────────────────
+    _nll = np.array([neg_loglik(h) for h in _H2_GRID])
     _best_idx = int(np.argmin(_nll))
-    _lo = float(_grid[max(0, _best_idx - 1)])
-    _hi = float(_grid[min(len(_grid) - 1, _best_idx + 1)])
+    _lo = float(_H2_GRID[max(0, _best_idx - 1)])
+    _hi = float(_H2_GRID[min(len(_H2_GRID) - 1, _best_idx + 1)])
 
-    # ── step 2: brent refinement ─────────────────────────────────────────────
+    # ── step 2: brent refinement inside the bracket of the best grid point ───
     res = minimize_scalar(
         neg_loglik, bounds=(_lo, _hi), method="bounded", options={"xatol": 1e-8}
     )
-    h2_opt = float(np.clip(res.x, 1e-6, 1 - 1e-6))
+    h2_opt = float(np.clip(res.x, _H2_MIN, _H2_MAX))
     ll_opt = -float(res.fun)
 
-    # ── step 3: brute check at h²=0 — take whichever has higher LL ────────────
-    ll_zero = -neg_loglik(1e-6)
-    if ll_zero > ll_opt:
-        h2_opt = 1e-6
-        ll_opt = ll_zero
+    # ── step 3: keep the best grid point when it beats the refined value ─────
+    # Brent's bounded search never evaluates its end points, so an optimum on
+    # the floor or ceiling is represented only by the grid point itself.
+    if -float(_nll[_best_idx]) > ll_opt:
+        h2_opt = float(_H2_GRID[_best_idx])
+        ll_opt = -float(_nll[_best_idx])
 
     return h2_opt, ll_opt
 
@@ -193,7 +234,7 @@ def fit_lmm_at_locus(y_rot, h_rot, x_rot, eigvals, h2_null):
     if df2 > 0 and rss_alt > 0 and q_eff > 0:
         f_stat = ((rss_null - rss_alt) / q_eff) / (rss_alt / df2)
         f_stat = max(f_stat, 0.0)
-        p_value = 1.0 - stats.f.cdf(f_stat, q_eff, df2)
+        p_value = float(stats.f.sf(f_stat, q_eff, df2))
     else:
         f_stat = 0.0
         p_value = 1.0
@@ -384,7 +425,7 @@ def _scan_chromosome_core(
             np.maximum((rss0 - rss1) / np.maximum(q_eff, 1) / (rss1 / df2_arr), 0.0),
             0.0,
         )
-        pval_arr = np.where(df2_arr > 0, 1.0 - stats.f.cdf(f_stat, q_eff, df2_arr), 1.0)
+        pval_arr = np.where(df2_arr > 0, stats.f.sf(f_stat, q_eff, df2_arr), 1.0)
 
     return {
         "locus_ids": locus_ids,

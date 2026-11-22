@@ -1,16 +1,23 @@
-"""Convert GM_ccf1fo_mm39.csv (in ref/) to igvf_cache.h5.
+"""Build igvf_cache.h5 from GM_ccf1fo_mm39.csv and the per-chromosome maps in ref/GM/.
 
-argv[1]  gigamuga.csv   path to GM_ccf1fo_mm39.csv
-argv[2]  output_dir     directory to write igvf_cache.h5
+Usage: python build_cache.py <GM_ccf1fo_mm39.csv> <output_dir>
 
-gmap.csv and pmap.csv are expected alongside gigamuga.csv in the same directory.
-cc_cols are auto-detected from the CSV header (columns starting with 'CC').
-founder_cols are always FOUNDER_ORDER from mosaiqtl.genotype.cc.
+Inputs, resolved next to the CSV:
+  GM/gmap/GM_gmap{chr}.csv, GM/pmap/GM_pmap{chr}.csv   per-chromosome genetic and physical maps
+  GM/cc_cols.json, GM/founder_cols.json                strain column lists
+  GM/f1_crosses.json                                   [[id, parent1_idx, parent2_idx], ...]
+  cc_crossinfo.csv                                     funnel position of each founder per CC strain (X prior)
+
+The build fails if the cache holds fewer markers than the CSV has rows or a different number of
+strains than the three column lists define, so a marker or strain is never dropped silently.
 """
-
+import json
 import logging
-import os
 import sys
+from pathlib import Path
+
+import h5py
+import pandas as pd
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,44 +27,60 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-gigamuga_csv = sys.argv[1]
-output_dir   = sys.argv[2]
+ERROR_PROB = 0.002
 
-out_path = os.path.join(output_dir, 'igvf_cache.h5')
-if os.path.exists(out_path):
-    logger.info('cache already exists — skipping: %s', out_path)
-    sys.exit(0)
 
-ref_dir = os.path.dirname(os.path.abspath(gigamuga_csv))
+def main() -> None:
+    from mosaiqtl.genotype.genomecache import GenomeCache
 
-gmap_csv = os.path.join(ref_dir, 'gmap.csv')
-pmap_csv = os.path.join(ref_dir, 'pmap.csv')
+    gigamuga_csv = Path(sys.argv[1]).resolve()
+    out_path = Path(sys.argv[2]) / 'igvf_cache.h5'
+    if out_path.exists():
+        logger.info('cache already exists, skipping: %s', out_path)
+        return
 
-for p in (gigamuga_csv, gmap_csv, pmap_csv):
-    if not os.path.exists(p):
-        raise FileNotFoundError(f'required input not found: {p}')
+    gm_dir = gigamuga_csv.parent / 'GM'
+    crossinfo_csv = gigamuga_csv.parent / 'cc_crossinfo.csv'
+    required = [gigamuga_csv, crossinfo_csv, gm_dir / 'gmap', gm_dir / 'pmap'] + [
+        gm_dir / name for name in ('cc_cols.json', 'founder_cols.json', 'f1_crosses.json')
+    ]
+    for path in required:
+        if not path.exists():
+            raise FileNotFoundError(f'required input not found: {path}')
 
-from mosaiqtl.genotype.cc import FOUNDER_ORDER
-from mosaiqtl.genotype.genomecache import GenomeCache
+    cc_cols = json.loads((gm_dir / 'cc_cols.json').read_text())
+    founder_cols = json.loads((gm_dir / 'founder_cols.json').read_text())
+    f1_crosses = json.loads((gm_dir / 'f1_crosses.json').read_text())
+    n_markers = len(pd.read_csv(gigamuga_csv, usecols=['marker']))
+    n_strains = len(founder_cols) + len(f1_crosses) + len(cc_cols)
+    logger.info('building cache: %d markers, %d strains', n_markers, n_strains)
 
-import pandas as pd
-header = pd.read_csv(gigamuga_csv, nrows=0).columns.tolist()
-cc_cols = [c for c in header if c.startswith('CC')]
-if not cc_cols:
-    raise ValueError(f'no CC* columns found in {gigamuga_csv}; check CSV format')
+    cache = GenomeCache.from_gigamuga(
+        gigamuga_path=str(gigamuga_csv),
+        gmap_dir=str(gm_dir / 'gmap'),
+        pmap_dir=str(gm_dir / 'pmap'),
+        cc_cols=cc_cols,
+        founder_cols=founder_cols,
+        f1_crosses=f1_crosses,
+        error_prob=ERROR_PROB,
+        crossinfo_path=str(crossinfo_csv),
+        inbred=True,
+        step_cM=None,
+    )
+    cache.to_hdf5(str(out_path))
 
-logger.info('converting GigaMUGA CSV → igvf_cache.h5')
-logger.info('  gigamuga : %s', gigamuga_csv)
-logger.info('  cc_cols  : %d strains', len(cc_cols))
+    with h5py.File(out_path, 'r') as fh:
+        groups = [fh[key] for key in fh if key.startswith('chr')]
+        cached_markers = sum(grp['locus_ids'].shape[0] for grp in groups)
+        cached_strains = groups[0]['sample_ids'].shape[0]
+    if cached_markers != n_markers or cached_strains != n_strains:
+        out_path.unlink()
+        raise ValueError(
+            f'cache has {cached_markers} markers and {cached_strains} strains; '
+            f'expected {n_markers} and {n_strains}'
+        )
+    logger.info('wrote %s', out_path)
 
-cache = GenomeCache.from_gigamuga(
-    gigamuga_path=gigamuga_csv,
-    gmap_dir=ref_dir,
-    pmap_dir=ref_dir,
-    cc_cols=cc_cols,
-    founder_cols=FOUNDER_ORDER,
-)
 
-logger.info('writing %s', out_path)
-cache.to_hdf5(out_path)
-logger.info('done')
+if __name__ == '__main__':
+    main()

@@ -11,8 +11,6 @@ sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 from mosaiqtl.qtl.permutation import (
     generate_null_outcomes,
     run_threshold_scans,
-    KinshipSingularError,
-    _draw_kinship_re,
     _null_fit_params,
 )
 from mosaiqtl.qtl.thresholds import get_gev_thresholds
@@ -84,53 +82,6 @@ class TestPickRepGene:
         gene_id, chrom, start_mb, h2_med = pick_rep_gene(df)
         assert h2_med == pytest.approx(0.5)
         assert start_mb == pytest.approx(1.0)  # index 1 has start_mb=1.0
-
-    def test_gene_tss_df_strand_aware_plus(self):
-        """+ strand gene: TSS = start."""
-        import pandas as pd
-        from mosaiqtl.qtl.permutation import pick_rep_gene
-        df = self._make_peak_df([0.5])
-        tss = pd.DataFrame({
-            'gene_id': ['ENSMUSG00000000000.1'],
-            'chr': ['1'], 'start': [2_000_000], 'end': [5_000_000], 'strand': ['+'],
-        })
-        _, _, tss_mb, _ = pick_rep_gene(df, gene_tss_df=tss)
-        assert tss_mb == pytest.approx(2.0)
-
-    def test_gene_tss_df_strand_aware_minus(self):
-        """− strand gene: TSS = end."""
-        import pandas as pd
-        from mosaiqtl.qtl.permutation import pick_rep_gene
-        df = self._make_peak_df([0.5])
-        tss = pd.DataFrame({
-            'gene_id': ['ENSMUSG00000000000.1'],
-            'chr': ['1'], 'start': [2_000_000], 'end': [5_000_000], 'strand': ['-'],
-        })
-        _, _, tss_mb, _ = pick_rep_gene(df, gene_tss_df=tss)
-        assert tss_mb == pytest.approx(5.0)
-
-    def test_gene_tss_df_precomputed_tss_mb(self):
-        """Pre-computed tss_mb column is used directly (no re-derivation)."""
-        import pandas as pd
-        from mosaiqtl.qtl.permutation import pick_rep_gene
-        df = self._make_peak_df([0.5])
-        tss = pd.DataFrame({
-            'gene_id': ['ENSMUSG00000000000.1'],
-            'chr': ['1'], 'start': [2_000_000], 'end': [5_000_000],
-            'strand': ['-'], 'tss_mb': [3.7],
-        })
-        _, _, tss_mb, _ = pick_rep_gene(df, gene_tss_df=tss)
-        assert tss_mb == pytest.approx(3.7)
-
-    def test_gene_tss_df_missing_gene_falls_back_to_start_mb(self):
-        """Gene absent from gene_tss_df falls back to start_mb."""
-        import pandas as pd
-        from mosaiqtl.qtl.permutation import pick_rep_gene
-        df = self._make_peak_df([0.5])
-        tss = pd.DataFrame({'gene_id': ['ENSMUSG99999999999.1'], 'chr': ['1'],
-                             'start': [1_000], 'end': [2_000], 'strand': ['+']})
-        _, _, tss_mb, _ = pick_rep_gene(df, gene_tss_df=tss)
-        assert tss_mb == pytest.approx(0.0)  # start_mb of index 0
 
     def test_global_median_differs_from_chrom_restricted(self):
         """chrom=None picks from all chromosomes; chrom='19' restricts to that chr.
@@ -474,7 +425,7 @@ class TestDrawParametricNullBatchRankMatching:
 
 
 class TestParametricHelpers:
-    """unit tests for _null_fit_params, _draw_kinship_re, _parametric_null_col."""
+    """unit tests for _null_fit_params and the parametric threshold scan."""
 
     def _make_psd_kinship(self, n, seed=0):
         rng = np.random.default_rng(seed)
@@ -503,23 +454,6 @@ class TestParametricHelpers:
         _, sigma2_g, sigma2_e = _null_fit_params(y_rot, x_rot, eigvals, h2=h2)
         # sigma2_g / (sigma2_g + sigma2_e) should equal h2
         assert abs(sigma2_g / (sigma2_g + sigma2_e) - h2) < 1e-10
-
-    def test_draw_kinship_re_shape(self):
-        rng = np.random.default_rng(42)
-        n = 15
-        K = self._make_psd_kinship(n)
-        u = _draw_kinship_re(K, sigma2_g=0.5, rng=rng)
-        assert u.shape == (n,)
-
-    def test_draw_kinship_re_singular_raises(self):
-        rng = np.random.default_rng(0)
-        # genuinely non-PSD: shift eigenvalues negative by subtracting 0.5I
-        # min_eig ≈ -0.4 >> psd_tol (≈ max_eig * n² * eps << 1)
-        n = 10
-        A = rng.standard_normal((n, n))
-        K_bad = A @ A.T / n - 0.5 * np.eye(n)
-        with pytest.raises(KinshipSingularError):
-            _draw_kinship_re(K_bad, sigma2_g=1.0, rng=rng)
 
     def test_run_threshold_scans_parametric_shape(
         self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tiny_strain_covariates
@@ -717,3 +651,5 @@ class TestCalibrateGenePvalue:
         p1, *_ = calibrate_gene_pvalue(*args, **kwargs)
         p2, *_ = calibrate_gene_pvalue(*args, **kwargs)
         assert p1 == p2
+
+

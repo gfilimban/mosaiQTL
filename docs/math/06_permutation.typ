@@ -173,11 +173,33 @@ reference, and eGene calls come from the per-gene Beta-calibrated p-values and S
 
 == 6. Positional confidence interval
 <6-positional-confidence-interval-via-parametric-bootstrap>
-#strong[Current method --- LOD support interval] (`qtl/ci.py`): `ci_scan_multi_gene` runs one LMM
-scan per gene over its whole chromosome (ML #mi(`\hat{h}^2`);, `scan_chromosome`), and `lod_support_interval` returns the minimum and maximum
-position of all loci with #mi(`\text{LOD}_\ell \geq \text{LOD}_{\text{peak}} - 1.5`); (`lod_drop=1.5`, Dupuis &
-Siegmund 1999). Nextflow calls it from `run_finemap.py`. Known issue: the loci need not be
-contiguous, so a secondary peak on the same chromosome widens the interval (ledger CI-01).
+#strong[Current method --- LOD support interval] (`qtl/ci.py`). Let #mi(`t_g`); be the strand-aware TSS of
+gene #mi(`g`); and #mi(`w`); the scan half-window (`window_mb`). The haplotype scan evaluates the loci
+#mi(`\mathcal{L}_g = \{\ell : |x_\ell - t_g| \le w\}`);, where #mi(`x_\ell`); is the position of locus #mi(`\ell`);.
+`ci_scan_multi_gene` scans exactly #mi(`\mathcal{L}_g`); (ML #mi(`\hat{h}^2`);, the same `loci_mask` as the
+haplotype scan) and reads the support interval from that profile. With peak locus
+#mi(`\hat\ell = \arg\max_{\ell \in \mathcal{L}_g} \text{LOD}_\ell`);, the interval is the maximal run of
+consecutive loci in #mi(`\mathcal{L}_g`); that contains #mi(`\hat\ell`); and satisfies
+#mi(`\text{LOD}_\ell \geq \text{LOD}_{\hat\ell} - 1.5`); (`lod_drop=1.5`). Hence
+
+#mitex(`\hat\ell \in [\mathrm{ci}_{\mathrm{lo}}, \mathrm{ci}_{\mathrm{hi}}] \subseteq [\,t_g - w,\; t_g + w\,]`)
+
+so the interval is never wider than the scan window and always contains the peak. The flag `ci_truncated`
+is true when the run reaches the first or last locus of #mi(`\mathcal{L}_g`);: the LOD profile did not fall
+by 1.5 inside the window, so the interval is bounded by the window and not by the data.
+
+#strong[Why these choices.] A LOD support region is approximately a confidence region for the location of
+#emph[one] QTL, and its width scales with the sample size (Dupuis & Siegmund 1999); likelihood support
+intervals and approximate Bayes credible intervals have appropriate coverage where the bootstrap does not
+(Manichaikul et al. 2006). A union of disjoint segments, as produced by taking the minimum and maximum of all
+loci above the drop threshold, is not an interval for one location: a secondary peak elsewhere on the
+chromosome widened it (ledger CI-01). Restricting to the contiguous run fixes that. Restricting the scan to
+#mi(`\mathcal{L}_g`); keeps the interval inside the region in which the gene was tested and calibrated
+(§1--3 of `11_storey_qvalue.typ`). Posterior inclusion probabilities and credible sets are conditional on the
+region analysed (Maller et al. 2012; Schaid et al. 2018), so the fine-mapping region must be fixed
+beforehand and must not exceed the tested region. cis-eQTL positions concentrate around the TSS
+(Veyrieras et al. 2008), so one TSS anchor defines the scan window, the support-interval scan, the permutation
+null and the fine-mapping window. Nextflow calls `ci_scan_multi_gene` from `run_finemap.py`.
 
 #strong[History --- bootstrap CI:] before 2026-10 (`run_positional_scans`, removed in commit 09208c41) the package resampled #mi(`y - \bar{y}`); with replacement,
 applied RINT, ran `scan_chromosome` on the peak chromosome with fixed #mi(`\hat{h}^2`);, and took the

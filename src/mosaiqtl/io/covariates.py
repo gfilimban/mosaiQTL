@@ -299,7 +299,7 @@ def _encode_column(meta: pd.DataFrame, col: str) -> pd.DataFrame:
     series = meta[col]
     if pd.api.types.is_numeric_dtype(series):
         return series.rename(col).to_frame()
-    unique_vals = sorted(series.unique(), key=str.lower)
+    unique_vals = sorted(series.unique(), key=lambda v: str(v).lower())
     ref = next(
         (v for v in unique_vals if str(v).lower().startswith('founder')),
         unique_vals[0],

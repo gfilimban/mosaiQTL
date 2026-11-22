@@ -9,7 +9,7 @@ metadata:       '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/igvf_sample_metad
 sanger_alleles: '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/sanger_alleles.h5'
 
 # multi-CT mode — one subdir per cell type, each containing counts_lognorm.h5
-celltypes_dir:  '/dfs9/seyedam-lab/share/igvf_qtl/output/gastroc/nova/celltypes'
+celltypes_dir:  '/dfs9/seyedam-lab/share/igvf_qtl/output/gastroc/comb/celltypes'
 celltypes:      'all'
 
 tissue:         'gastroc'
@@ -24,9 +24,11 @@ n_perms:        1000
 n_perms_cal:    1000
 perm_method:    'parametric'
 fdr_threshold:  0.05
+submission_fdr: 0.1         # haplotype_peak_lod.csv keeps tested genes with fdr <= this
+call_rule:      'qvalue'    # 'qvalue' (Storey), 'bh' (Benjamini-Hochberg) or 'lfdr'; all three values are always written
 seed:           42
 
 n_bootstrap:    1000
 gtf:            '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/IGVFFI4777RDZK.gtf.gz'
 
-output_dir:     '/dfs9/seyedam-lab/share/igvf_qtl/output/gastroc/nova/celltypes'
+output_dir:     '/dfs9/seyedam-lab/share/igvf_qtl/output/gastroc/comb/celltypes'

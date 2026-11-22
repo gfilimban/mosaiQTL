@@ -9,9 +9,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
 from mosaiqtl.genotype.interpolation import (
+    bracket_weights,
     interpolate_haplotype_probs,
     collapse_to_dosage,
-    snp_allele_stats,
     _linear_interp_1d,
 )
 
@@ -257,34 +257,29 @@ class TestCollapseToDosage:
             collapse_to_dosage(probs, bad_mask)
 
 
-# ── snp_allele_stats ──────────────────────────────────────────────────────────
+# ── bracket_weights ───────────────────────────────────────────────────────────
 
 
-class TestSnpAlleleStats:
-    def test_uniform_dosage(self):
-        dosage = np.full((5, 10), 0.4)
-        af, maf, mac = snp_allele_stats(dosage, n_samples=100)
-        np.testing.assert_allclose(af, 0.4, atol=1e-14)
-        np.testing.assert_allclose(maf, 0.4, atol=1e-14)
-        assert mac[0] == 40
+class TestBracketWeights:
+    GRID = np.array([0.0, 1.0, 3.0, 4.0])
 
-    def test_maf_is_minor(self):
-        # af > 0.5 → maf = 1 - af
-        dosage = np.full((3, 8), 0.8)
-        af, maf, _ = snp_allele_stats(dosage)
-        np.testing.assert_allclose(maf, 0.2, atol=1e-14)
+    def test_interior_weight_is_fraction_of_interval(self):
+        left, t = bracket_weights(self.GRID, np.array([0.25, 2.0, 3.5]))
+        assert left.tolist() == [0, 1, 2]
+        assert t == pytest.approx([0.25, 0.5, 0.5])
 
-    def test_n_samples_default_is_n_strains(self):
-        dosage = np.full((2, 10), 0.5)
-        _, _, mac = snp_allele_stats(dosage)  # n_samples defaults to 10
-        assert mac[0] == 5
+    def test_query_on_marker_reproduces_marker(self):
+        q = np.array([1.0, 4.0])
+        left, t = bracket_weights(self.GRID, q)
+        rebuilt = self.GRID[left] * (1 - t) + self.GRID[left + 1] * t
+        assert rebuilt == pytest.approx(q)
 
-    def test_output_shapes(self):
-        dosage = _simplex_probs(7, 12, 4).sum(axis=2) / 4  # (7, 12) in [0,1]
-        af, maf, mac = snp_allele_stats(dosage, n_samples=200)
-        assert af.shape == maf.shape == mac.shape == (7,)
+    def test_outside_grid_is_clamped_to_boundary_marker(self):
+        left, t = bracket_weights(self.GRID, np.array([-5.0, 9.0]))
+        assert left.tolist() == [0, 2]
+        assert t.tolist() == [0.0, 1.0]
 
-    def test_mac_dtype_is_int(self):
-        dosage = np.full((3, 6), 0.3)
-        _, _, mac = snp_allele_stats(dosage, n_samples=50)
-        assert mac.dtype == np.int64
+    def test_weights_stay_in_unit_interval(self):
+        q = np.random.default_rng(0).uniform(-1, 5, size=200)
+        _, t = bracket_weights(self.GRID, q)
+        assert ((t >= 0) & (t <= 1)).all()

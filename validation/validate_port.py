@@ -301,8 +301,7 @@ if section(1, 'CACHE INFO'):
     if cache_py.crossinfo is not None:
         ci_covered = [s for s in CC_COLS if s in cache_py.crossinfo.index]
         ci_note = f'crossinfo={len(ci_covered)}/{len(CC_COLS)}_strains'
-        hi(f'  crossinfo: {len(ci_covered)}/{len(CC_COLS)} CC strains covered  '
-           f'x_donors={len(cache_py.x_donor)}')
+        hi(f'  crossinfo: {len(ci_covered)}/{len(CC_COLS)} CC strains covered')
     else:
         ci_note = 'crossinfo=not_loaded'
         hi('  crossinfo: not loaded (cc_crossinfo.csv not found)')

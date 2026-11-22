@@ -4,7 +4,7 @@ Usage: python run_permute.py <cache.h5> <kinship.h5> <phenotypes.h5>
            <peak_lod.csv> <metadata.csv> <celltype>
            <scan_tag> <covariates>
            <n_perms> <seed> <perm_method> <output_dir>
-           <scan_type> <window_mb> [tissue]
+           <scan_type> <window_mb> <tissue> <use_rint 1|0>
 
 <scan_type>: L (local ±window_mb), C (cis-chr), or G (genome-wide).
   L: local null — representative gene's chr + ±window_mb around its TSS (start_mb).
@@ -20,7 +20,7 @@ Representative gene is selected by pick_rep_gene() from mosaiqtl.qtl.permutation
 
 Writes: {tag}_perm_max_lods.csv, {tag}_perm_max_lods_chr{c}.csv, {tag}_perm_gev_params.json
 """
-import sys, json, logging, time
+import sys, logging, time
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -31,22 +31,15 @@ log = logging.getLogger(__name__)
 
 
 def main() -> None:
-    cache_path   = Path(sys.argv[1])
-    kinship_path = Path(sys.argv[2])
-    pheno_path   = Path(sys.argv[3])
-    peak_lod_csv = Path(sys.argv[4])
-    meta_path    = Path(sys.argv[5])
-    celltype     = sys.argv[6]
-    stag         = sys.argv[7]
-    covariates   = sys.argv[8]
-    n_perms      = int(sys.argv[9])
-    seed         = int(sys.argv[10])
-    perm_method  = sys.argv[11]
-    out          = Path(sys.argv[12])
-    scan_type      = sys.argv[13] if len(sys.argv) > 13 else 'G'
-    window_mb      = float(sys.argv[14]) if len(sys.argv) > 14 else 0.0
-    tissue         = sys.argv[15] if len(sys.argv) > 15 else ''
-    gene_tss_path  = Path(sys.argv[16]) if len(sys.argv) > 16 else None
+    (cache_arg, kinship_arg, pheno_arg, peak_lod_arg, meta_arg, celltype, stag, covariates,
+     n_perms_arg, seed_arg, perm_method, out_arg, scan_type, window_arg, tissue,
+     rint_arg) = sys.argv[1:]
+
+    cache_path, kinship_path, pheno_path, peak_lod_csv, meta_path, out = (
+        Path(a) for a in (cache_arg, kinship_arg, pheno_arg, peak_lod_arg, meta_arg, out_arg)
+    )
+    n_perms, seed = int(n_perms_arg), int(seed_arg)
+    window_mb, use_rint = float(window_arg), rint_arg != '0'
 
     tag  = f'{tissue}_{celltype}_{stag}' if tissue else f'{celltype}_{stag}'
     out.mkdir(parents=True, exist_ok=True)
@@ -54,6 +47,7 @@ def main() -> None:
     from mosaiqtl.genotype.genomecache import GenomeCache
     from mosaiqtl.genotype.kinship import load_kinship_decomp
     from mosaiqtl.io.anndata_io import load_expression_h5
+    from mosaiqtl.io.atomic import atomic_write_csv, atomic_write_json
     from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
     from mosaiqtl.qtl.permutation import generate_null_outcomes, pick_rep_gene, run_threshold_scans
     from mosaiqtl.qtl.thresholds import get_gev_thresholds
@@ -65,13 +59,7 @@ def main() -> None:
 
     peak_df     = pd.read_csv(peak_lod_csv, dtype={'chr': str})
     peak_df['chr'] = strip_chr_prefix(peak_df['chr'])
-    gene_tss_df = pd.read_csv(gene_tss_path, dtype={'chr': str}) if gene_tss_path else None
-    if gene_tss_df is not None:
-        gene_tss_df['chr'] = strip_chr_prefix(gene_tss_df['chr'])
-
-    rep_id, rep_chr, rep_tss_mb, h2_med = pick_rep_gene(
-        peak_df, chrom=None, gene_tss_df=gene_tss_df,
-    )
+    rep_id, rep_chr, rep_tss_mb, h2_med = pick_rep_gene(peak_df, chrom=None)
 
     perm_chrom: 'str | None' = None
     perm_tss_mb: 'float | None' = None
@@ -121,18 +109,19 @@ def main() -> None:
         gene_pos_mb=perm_tss_mb,
         window_mb=window_mb if perm_chrom is not None else None,
         seed=seed,
+        use_rint=use_rint,
     )
 
-    pd.DataFrame({'max_lod': max_lods}).to_csv(out / f'{tag}_perm_max_lods.csv', index=False)
+    atomic_write_csv(pd.DataFrame({'max_lod': max_lods}), out / f'{tag}_perm_max_lods.csv')
 
     gev_params: dict = {}
     for chrom, lods in sorted(chr_null_lods.items()):
-        pd.DataFrame({'max_lod': lods}).to_csv(out / f'{tag}_perm_max_lods_chr{chrom}.csv', index=False)
+        atomic_write_csv(pd.DataFrame({'max_lod': lods}), out / f'{tag}_perm_max_lods_chr{chrom}.csv')
         threshold, params = get_gev_thresholds(np.array(lods))
         if params is not None:
             gev_params[chrom] = params
 
-    (out / f'{tag}_perm_gev_params.json').write_text(json.dumps(gev_params, indent=2))
+    atomic_write_json(gev_params, out / f'{tag}_perm_gev_params.json')
     log.info('DONE %s: %d perms  %d chrs  %.1fs', tag, n_perms, len(chr_null_lods), time.perf_counter() - t0)
 
 

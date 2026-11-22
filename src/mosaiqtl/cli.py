@@ -1169,7 +1169,11 @@ def calibrate(
 @click.option("--pval-perm", default=None, type=click.Path(exists=True, path_type=Path),
               help="pval_perm.csv from `calibrate`; adds Storey q-values and significance.")
 @click.option("--fdr", default=0.05, show_default=True, type=float,
-              help="Storey q-value threshold for significance='T'.")
+              help="FDR threshold for significance='T'.")
+@click.option("--call-rule", default="qvalue", show_default=True,
+              type=click.Choice(["qvalue", "bh", "lfdr"]),
+              help="Value thresholded by --fdr: Storey q-value, Benjamini-Hochberg "
+                   "or local false discovery rate, over all tested genes.")
 @click.option("--output", required=True, type=click.Path(path_type=Path),
               help="Output eqtl_summary CSV path.")
 @click.option("--verbose", is_flag=True, default=False)
@@ -1179,6 +1183,7 @@ def call_egenes_cmd(
     allele_effects: Optional[Path],
     pval_perm: Optional[Path],
     fdr: float,
+    call_rule: str,
     output: Path,
     verbose: bool,
 ) -> None:
@@ -1233,10 +1238,12 @@ def call_egenes_cmd(
         pv = pd.read_csv(pval_perm, dtype={"gene_id": str}).dropna(subset=["pval_perm"])
         if not pv.empty:
             egenes = calibrate_egenes_storey(
-                egenes, dict(zip(pv["gene_id"], pv["pval_perm"])), fdr_threshold=fdr
+                egenes, dict(zip(pv["gene_id"], pv["pval_perm"])),
+                fdr_threshold=fdr, call_rule=call_rule,
             )
             logger.info(
-                "call-egenes: Storey significant(q<=%.2f)=%d / %d",
+                "call-egenes: significant(%s<=%.2f)=%d / %d",
+                call_rule,
                 fdr,
                 int((egenes["significance"] == "T").sum()),
                 len(egenes),
@@ -1366,6 +1373,8 @@ def characterise(
               help="Comma-separated metadata columns used as fixed-effect covariates.")
 @click.option("--ref-founder", default="B6J", show_default=True,
               help="Founder carrying the reference allele.")
+@click.option("--rint/--no-rint", "use_rint", required=True,
+              help="Rank-inverse normal transform of each phenotype; must match the haplotype scan.")
 @click.option("--suffix", required=True, help="Run suffix for output names.")
 @click.option("--output-dir", required=True, type=click.Path(path_type=Path),
               help="Directory for imputed_snps_{suffix}.csv.")
@@ -1379,6 +1388,7 @@ def impute(
     alleles: Path,
     covariates: str,
     ref_founder: str,
+    use_rint: bool,
     suffix: str,
     output_dir: Path,
     verbose: bool,
@@ -1423,6 +1433,7 @@ def impute(
         kinship_decomp=_load_kinship_h5(kinship),
         sample_ids=[geno_map.get(s, s) for s in sids],
         ref_founder=ref_founder,
+        use_rint=use_rint,
     )
     imputed.to_csv(out, index=False)
     logger.info(
@@ -1501,7 +1512,10 @@ def finemap(
 @click.option("--window-mb", default=1.0, show_default=True, type=float,
               help="Local scan half-window, recorded in eqtl_stats when --scan-type L.")
 @click.option("--fdr", default=0.05, show_default=True, type=float,
-              help="Storey q-value threshold recorded in eqtl_stats.")
+              help="FDR threshold recorded in eqtl_stats and applied to the --call-rule value.")
+@click.option("--call-rule", default="qvalue", show_default=True,
+              type=click.Choice(["qvalue", "bh", "lfdr"]),
+              help="Value thresholded by --fdr: Storey q-value, Benjamini-Hochberg or local false discovery rate.")
 @click.option("--suffix", required=True, help="Run suffix for output names.")
 @click.option("--output-dir", required=True, type=click.Path(path_type=Path),
               help="Directory for eqtl_peak_{suffix}.csv and eqtl_stats_{suffix}.csv.")
@@ -1518,6 +1532,7 @@ def report(
     scan_type: str,
     window_mb: float,
     fdr: float,
+    call_rule: str,
     suffix: str,
     output_dir: Path,
     verbose: bool,
@@ -1535,7 +1550,8 @@ def report(
     import pandas as pd
 
     from .genotype.cc import display_founders
-    from .io.results_io import _atomic_write_csv, write_eqtl_peak, write_eqtl_stats
+    from .io.atomic import atomic_write_csv
+    from .io.results_io import write_eqtl_peak, write_eqtl_stats
     from .pipeline import EQTL_FINEMAPPING_COLS, calibrate_egenes_storey
     from .utils import git_hash
 
@@ -1550,7 +1566,8 @@ def report(
         pv = pd.read_csv(pval_perm, dtype={"gene_id": str}).dropna(subset=["pval_perm"])
         if not pv.empty:
             sub = calibrate_egenes_storey(
-                sub, dict(zip(pv["gene_id"], pv["pval_perm"])), fdr_threshold=fdr
+                sub, dict(zip(pv["gene_id"], pv["pval_perm"])),
+                fdr_threshold=fdr, call_rule=call_rule,
             )
     eff = pd.read_csv(allele_effects, dtype={"gene_id": str})
     beta_cols = [c for c in eff.columns if c.startswith("beta_")]
@@ -1595,7 +1612,7 @@ def report(
             )
         fm_path = output_dir / f"eqtl_finemapping_{suffix}.csv"
         if fm_path.resolve() != finemapping.resolve():
-            _atomic_write_csv(fm[EQTL_FINEMAPPING_COLS], fm_path)
+            atomic_write_csv(fm[EQTL_FINEMAPPING_COLS], fm_path)
         n_fm = fm["gene_id"].nunique() if not fm.empty else 0
         logger.info("report: %s — %d credible-set SNPs, %d / %d eGenes fine-mapped",
                     fm_path.name, len(fm), n_fm, len(sub))

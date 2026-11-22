@@ -11,15 +11,24 @@ eight founder haplotypes, so the genotype of each animal at any SNP is fully det
 by its 8-dimensional haplotype probability vector and the SNP allele pattern across the
 eight founders. This gives rise to an important simplification: at most #mi(`2^8 = 256`);
 distinct biallelic allele patterns can exist across all SNPs in any genomic window. In
-practice, within the fine-mapping window (the eGene's 1.5-LOD support interval, capped
-to #mi(`\pm 1`); Mb of the TSS in L mode), 20--100 distinct patterns are typical.
+practice, within the fine-mapping window (the eGene's contiguous 1.5-LOD support interval,
+which in L mode lies inside #mi(`\pm 1`); Mb of the strand-aware TSS), 20--100 distinct patterns are typical.
 
 == Standard Single-Causal-Variant ABF (no LD)
 <standard-single-causal-variant-abf-no-ld>
 Given #mi(`n_{\text{snps}}`); association statistics (z-scores #mi(`z_j`); with standard errors #mi(`\mathrm{se}_j`);), the
-Wakefield approximate Bayes factor for variant #mi(`j`); under the single-causal-variant model is
+approximate Bayes factor for variant #mi(`j`); under the single-causal-variant model is
 
 #mitex(`\log \mathrm{ABF}_j = \tfrac{1}{2}\log\frac{V_j}{V_j + W} + \frac{z_j^2\, W}{2(V_j + W)}`)
+
+The Bayes factor compares the model in which variant #mi(`j`); is associated with the null of no
+association (association over null), and #mi(`\log`); is the natural logarithm. This is the reciprocal of
+the null-over-alternative form #mi(`\mathrm{ABF}^{(0)}_j = (1-r)^{-1/2}\exp(-z_j^2 r/2)`); with
+#mi(`r = W/(V_j+W)`);, so #mi(`\log\mathrm{ABF}_j = -\log\mathrm{ABF}^{(0)}_j`); exactly, and the posterior
+probability is unchanged. Large positive values are strong evidence; #mi(`z_j = 0`); gives a negative value. The outputs report #mi(`\log \mathrm{ABF}_j`);
+(column `log_abf`) rather than #mi(`\mathrm{ABF}_j`);, because #mi(`\exp(\log\mathrm{ABF}_j)`); overflows
+float64 near #mi(`\log\mathrm{ABF} \approx 709`);. The posterior probability below needs only differences
+of #mi(`\log\mathrm{ABF}`); and is computed by subtracting the maximum before exponentiating.
 
 where #mi(`V_j = \mathrm{se}_j^2`);, #mi(`W`); is the prior effect variance (default 0.04 for cis-eQTL on
 standardized phenotypes), and #mi(`z_j = \hat\beta_j / \mathrm{se}_j`); is the Wald z-score of the
@@ -28,7 +37,10 @@ LMM dosage effect (`beta_dosage / se_dosage`). SNPs with a non-finite or non-pos
 
 The posterior inclusion probability (PIP) under a uniform prior over #mi(`n_{\text{snps}}`); variants is
 
-#mitex(`\mathrm{PIP}_j = \frac{\mathrm{ABF}_j}{\sum_{k=1}^{n} \mathrm{ABF}_k}`)
+#mitex(`\mathrm{PIP}_j = \frac{\mathrm{ABF}_j}{\sum_{k=1}^{n} \mathrm{ABF}_k} = \frac{\exp(\log\mathrm{ABF}_j - \max_k \log\mathrm{ABF}_k)}{\sum_{k=1}^{n} \exp(\log\mathrm{ABF}_k - \max_k \log\mathrm{ABF}_k)}`)
+
+PIP is a probability in #mi(`[0,1]`);, not a log quantity, so the usual reading of #mi(`\mathrm{PIP} > 0.5`);
+is unchanged.
 
 With #mi(`n_{\text{snps}}`); in the thousands (a 2 Mb window at #mi(`\sim 7 \times 10^{7}`); Sanger SNPs genome-wide gives #mi(`\sim 2000`);
 SNPs per window), PIPs become small and uniformly distributed even when a true causal
@@ -78,14 +90,14 @@ carrying those patterns).
 Instead of placing a uniform prior over #mi(`n_{\text{snps}}`); variants, place it over #mi(`G`); LD groups.
 The group-level ABF is the maximum ABF among group members:
 
-#mitex(`\mathrm{ABF}_g = \max_{j \in g} \mathrm{ABF}_j`)
+#mitex(`\log\mathrm{ABF}_g = \max_{j \in g} \log\mathrm{ABF}_j`)
 
-Known issue: the running maximum is seeded with the first member's ABF, so a NaN first
-member leaves the whole group at NaN (near-zero PIP).
+Members with no valid Wald statistic are treated as #mi(`\log\mathrm{ABF} = -\infty`); and never set
+the group maximum.
 
 Group-level PIP:
 
-#mitex(`\mathrm{PIP}_g = \frac{\mathrm{ABF}_g}{\sum_{g'=1}^{G} \mathrm{ABF}_{g'}}`)
+#mitex(`\mathrm{PIP}_g = \frac{\exp(\log\mathrm{ABF}_g)}{\sum_{g'=1}^{G} \exp(\log\mathrm{ABF}_{g'})}`)
 
 Individual SNP PIP: the group\'s posterior mass is distributed equally among its members:
 
@@ -93,12 +105,35 @@ Individual SNP PIP: the group\'s posterior mass is distributed equally among its
 
 where #mi(`g(j)`); is the group containing #mi(`j`); and #mi(`\lvert g(j) \rvert`); is the number of members.
 
+The prior is uniform over groups, not over variants: a per-variant uniform prior would give a group
+prior mass proportional to its size, so a large block would outweigh a small one with equal evidence.
+Placing the prior over groups is a modelling choice made because the data do not separate the members
+of a group; it is not derived from a reference.
+
+== LD-Group Summary
+<ld-group-summary>
+The group table is a reporting view of the posteriors above; it adds no inference. Because the
+variant posteriors are the group posterior split equally, the group mass is recovered by summation:
+
+#mitex(`\mathrm{PIP}_g = \sum_{j \in g} \mathrm{PIP}_j, \qquad \sum_{g=1}^{G} \mathrm{PIP}_g = 1`)
+
+One row per group carries #mi(`\mathrm{PIP}_g`);, the distinct founder patterns of its members, its
+size and genomic span, its highest-LOD variant, and whether it is in the credible set. Groups are
+ranked by #mi(`\mathrm{PIP}_g`); in decreasing order. The sum over groups is checked to equal one
+within #mi(`10^{-9}`); before the table is written.
+
 == Credible Set Construction
 <credible-set-construction>
 Grow the credible set group-by-group from highest to lowest group PIP until cumulative
 mass #mi(`\ge`); coverage (default 0.95). All members of each included group enter the credible
 set. There is no guarantee on internal #mi(`r^2`);: groups are single-linkage, and a credible
 set that spans more than one group places no constraint on #mi(`r^2`); between groups.
+
+The lead variant is the first row of the per-gene table, ordered by #mi(`\mathrm{PIP}_j`); descending, then
+LOD descending, then absolute distance to the strand-aware TSS ascending, then input order. Members of
+one group share a #mi(`\mathrm{PIP}_j`);, so within the top group the lead is its highest-LOD member,
+nearest the TSS on a tie. The ordering is a deterministic convention: it makes no claim that the lead
+is the causal variant, which the data cannot separate from the other members of its group.
 
 == Why This Matters for CC/DO
 <why-this-matters-for-ccdo>
@@ -140,6 +175,9 @@ set that spans more than one group places no constraint on #mi(`r^2`); between g
 
 - `qtl/imputation.py::merge_ld_groups`: union-find merge of representatives; returns
   SNP-index → group-id mapping.
+
+- `qtl/imputation.py::ld_group_summary`: one row per LD group from the variant-level
+  fine-mapping table; checks that group PIPs sum to one.
 
 - `qtl/imputation.py::fine_map_region`: dispatches to LD-aware path when `ld_groups` is
   provided.

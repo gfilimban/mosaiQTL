@@ -50,15 +50,9 @@ class Population(BaseModel, frozen=True):
         asexual designs where sex-chromosome QTL handling is not needed
     sex_chromosome : str
         primary sex chromosome identifier (e.g. 'chrX')
-    x_donors : list[str]
-        subset of founders that donated the X chromosome; required for
-        correct sex-chromosome dosage compensation and QTL handling
     genotyping_error_prob : float
         per-locus genotyping error probability for the HMM forward-backward
         algorithm; 0.002 is the standard default for GigaMUGA CC data
-    n_gen : int
-        inbreeding generations used by the HMM transition matrix;
-        CC = 1 (consensus map), DO = animal-specific (varies)
     inbred : bool
         True for fully inbred lines (CC); False for outbred (DO, F2)
     loco_sufficient : bool
@@ -74,9 +68,7 @@ class Population(BaseModel, frozen=True):
     chromosome_names: list[str] = Field(default_factory=lambda: list(_MM39_CHROMS))
     has_sex_chromosomes: bool = True
     sex_chromosome: str = "chrX"
-    x_donors: list[str] = Field(default_factory=list)
     genotyping_error_prob: float = 0.002
-    n_gen: int = 1
     inbred: bool = True
     loco_sufficient: bool = True
 

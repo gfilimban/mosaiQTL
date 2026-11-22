@@ -5,6 +5,8 @@ Usage: python run_call_egenes.py <peak_lod.csv> <perm_max_lods.csv>
            <metadata.csv> <celltype> <scan_tag>
            <covariates> <fdr_threshold> <n_perms_cal> <seed>
            <output_dir> [tissue] [use_rint:0|1]  (default 1)
+           [call_rule:qvalue|bh|lfdr]  (default qvalue)
+           [submission_fdr]  (default 0.1)
 
 use_rint must match the value used during the scan — allele effects are
 estimated on the same transformed phenotype so betas remain on the scan scale.
@@ -17,12 +19,14 @@ supplies the reference LOD threshold that is logged for QC.
 Every gene with a peak is calibrated and enters the Storey q-value; founder
 effects are computed for significant genes only.
 Writes:
-  {tag}_peak_lod.csv     — all tested genes with is_egene flag added
+  {tag}_peak_lod_all.csv — all tested genes with is_egene, pval_perm, qval_storey, qval_bh, lfdr, pi0, fdr
   {tag}_pval_perm.json   — per-gene calibrated p-values {gene_id: float}
-  {tag}_eqtl_summary.csv — significant eGenes only, with founder effects + q-value
-All three are written (empty / header-only) when no gene has a peak.
+  {tag}_haplotype_peak_lod.csv — the rows of {tag}_peak_lod_all.csv with fdr <= submission_fdr
+  {tag}_haplotype_eqtl_summary.csv — significant eGenes only, with founder effects + q-value;
+    the support-interval columns are added by FINEMAP_MERGE
+All four are written (empty / header-only) when no gene has a peak.
 """
-import sys, json, logging
+import sys, logging
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -49,6 +53,8 @@ def main() -> None:
     out            = Path(sys.argv[14])
     tissue         = sys.argv[15] if len(sys.argv) > 15 else ''
     use_rint       = sys.argv[16] != '0' if len(sys.argv) > 16 else True
+    call_rule      = sys.argv[17] if len(sys.argv) > 17 else 'qvalue'
+    submission_fdr = float(sys.argv[18]) if len(sys.argv) > 18 else 0.1
 
     tag  = f'{tissue}_{celltype}_{stag}' if tissue else f'{celltype}_{stag}'
     out.mkdir(parents=True, exist_ok=True)
@@ -56,16 +62,19 @@ def main() -> None:
     from mosaiqtl.genotype.genomecache import GenomeCache
     from mosaiqtl.genotype.kinship import kinship_from_decomp, load_kinship_decomp
     from mosaiqtl.io.anndata_io import load_expression_h5
+    from mosaiqtl.io.atomic import atomic_write_csv, atomic_write_json
     from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
     from mosaiqtl.pipeline import (
         EGENE_SUMMARY_COLS, call_significant_egenes, finalize_egene_summary,
+        select_submission_genes,
     )
     from mosaiqtl.qtl.thresholds import get_gev_thresholds
     from mosaiqtl.utils import add_chr_prefix, build_z_matrix, strip_chr_prefix
 
-    peak_out   = out / f'{tag}_peak_lod.csv'
+    peak_out   = out / f'{tag}_peak_lod_all.csv'
     pval_out    = out / f'{tag}_pval_perm.json'
-    summary_out = out / f'{tag}_eqtl_summary.csv'
+    summary_out = out / f'{tag}_haplotype_eqtl_summary.csv'
+    submission_out = out / f'{tag}_haplotype_peak_lod.csv'
     if peak_out.resolve() == peak_lod_csv.resolve():
         raise ValueError(
             f'output {peak_out} would overwrite input {peak_lod_csv}; '
@@ -96,9 +105,10 @@ def main() -> None:
     if len(tested_df) == 0:
         empty_peak = peak_df.assign(is_egene=False)
         empty_peak['chr'] = add_chr_prefix(empty_peak['chr'])
-        empty_peak.to_csv(peak_out, index=False)
-        pval_out.write_text(json.dumps({}))
-        pd.DataFrame(columns=EGENE_SUMMARY_COLS).to_csv(summary_out, index=False)
+        atomic_write_csv(empty_peak, peak_out)
+        atomic_write_csv(empty_peak.iloc[0:0], submission_out)
+        atomic_write_json({}, pval_out)
+        atomic_write_csv(pd.DataFrame(columns=EGENE_SUMMARY_COLS), summary_out)
         log.info('no tested genes — wrote empty %s outputs', tag)
         return
 
@@ -142,29 +152,44 @@ def main() -> None:
         z_mat=Z,
         valid_mask=valid_mask,
         seed=seed,
+        call_rule=call_rule,
     )
     significant_df = called_df[called_df['significance'] == 'T']
 
     # ── write pval_perm.json (every tested gene) ──────────────────────────────
     pval_perm = dict(zip(called_df['gene_id'].astype(str),
                          called_df['pval_perm'].astype(float)))
-    pval_out.write_text(json.dumps(pval_perm, indent=2))
+    atomic_write_json(pval_perm, pval_out)
 
     # ── annotate full peak_lod with is_egene flag → updated peak_lod.csv ─────
     significant_ids = set(significant_df['gene_id'].astype(str))
     peak_df = peak_df.copy()
     peak_df['is_egene'] = peak_df['gene_id'].astype(str).isin(significant_ids)
+    adj_cols = [c for c in ('pval_perm', 'beta_a', 'beta_b', 'perm_n', 'qval_storey', 'qval_bh', 'lfdr', 'pi0', 'fdr', 'fdr_method')
+                if c in called_df.columns]
+    adj_df = called_df[['gene_id', *adj_cols]].assign(
+        gene_id=lambda d: d['gene_id'].astype(str)
+    ).drop_duplicates('gene_id')
+    peak_df['gene_id'] = peak_df['gene_id'].astype(str)
+    peak_df = peak_df.drop(columns=[c for c in adj_cols if c in peak_df.columns]).merge(
+        adj_df, on='gene_id', how='left'
+    )
     peak_out_df = peak_df.copy()
     peak_out_df['chr'] = add_chr_prefix(peak_out_df['chr'])
-    peak_out_df.to_csv(peak_out, index=False)
+    atomic_write_csv(peak_out_df, peak_out)
     log.info('wrote %s (%d genes, %d eGenes)', peak_out, len(peak_df),
              peak_df['is_egene'].sum())
+
+    submission_df = select_submission_genes(peak_out_df, submission_fdr)
+    atomic_write_csv(submission_df, submission_out)
+    log.info('wrote %s (%d of %d tested genes with fdr <= %g)', submission_out,
+             len(submission_df), len(peak_out_df), submission_fdr)
 
     final_df = finalize_egene_summary(significant_df, n_founders=len(gc.founders))
     summary_df = final_df.copy()
     if 'chr' in summary_df.columns:
         summary_df['chr'] = add_chr_prefix(summary_df['chr'])
-    summary_df.to_csv(summary_out, index=False)
+    atomic_write_csv(summary_df, summary_out)
     log.info('wrote %s (%d eGenes)', summary_out, len(final_df))
 
 

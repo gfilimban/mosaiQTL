@@ -8,7 +8,12 @@ import pytest  # noqa: F401
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
-from mosaiqtl.qtl.lmm import estimate_h2_null, precompute_chromosome, scan_chromosome
+from mosaiqtl.qtl.lmm import (
+    estimate_h2_null,
+    h2_at_boundary,
+    precompute_chromosome,
+    scan_chromosome,
+)
 from mosaiqtl.qtl.scan import scan_h2lmm
 
 
@@ -296,3 +301,80 @@ class TestReplicatePath:
         )
         assert np.all(np.isfinite(res.lod))
         assert np.all(res.lod >= 0.0)
+
+
+class TestEstimateH2NullGrid:
+    """Search range of the profile-ML optimiser (docs/math/03_lmm_scan.typ, section 2)."""
+
+    @staticmethod
+    def _rotated(h2_true: float, n: int = 2000, seed: int = 0):
+        rng = np.random.default_rng(seed)
+        eigvals = np.geomspace(1e-3, 200.0, n)
+        w = h2_true * eigvals + (1.0 - h2_true)
+        y_rot = np.sqrt(w) * rng.standard_normal(n)
+        x_rot = np.ones((n, 1))
+        return y_rot, x_rot, eigvals
+
+    def test_interior_optimum_below_grid_start_is_recovered(self):
+        y_rot, x_rot, eigvals = self._rotated(h2_true=0.002)
+        h2, ll = estimate_h2_null(y_rot, x_rot, eigvals)
+        assert 1e-6 < h2 < 0.0099
+        assert ll >= _profile_ml(y_rot, x_rot, eigvals, 1e-6) - 1e-9
+        assert ll >= _profile_ml(y_rot, x_rot, eigvals, 0.01) - 1e-9
+
+    def test_optimum_beats_every_linear_grid_point(self):
+        y_rot, x_rot, eigvals = self._rotated(h2_true=0.002)
+        h2, ll = estimate_h2_null(y_rot, x_rot, eigvals)
+        for h in np.linspace(0.01, 0.99, 20):
+            assert ll >= _profile_ml(y_rot, x_rot, eigvals, h) - 1e-9
+
+    def test_boundary_flag_marks_floor_and_ceiling_only(self):
+        assert h2_at_boundary(1e-6)
+        assert h2_at_boundary(1.0 - 1e-6)
+        assert not h2_at_boundary(0.99)
+        assert not h2_at_boundary(0.002)
+        assert not h2_at_boundary(0.3)
+
+    def test_boundary_flag_follows_the_estimate(self):
+        n = 500
+        eigvals = np.geomspace(0.05, 20.0, n)
+        y_rot = np.sqrt(eigvals) * np.where(np.arange(n) % 2 == 0, 1.0, -1.0)
+        h2_ceiling, _ = estimate_h2_null(y_rot, np.ones((n, 1)), eigvals)
+        assert h2_at_boundary(h2_ceiling)
+        y_rot, x_rot, eigvals = self._rotated(h2_true=0.3)
+        h2_interior, _ = estimate_h2_null(y_rot, x_rot, eigvals)
+        assert not h2_at_boundary(h2_interior)
+
+    def test_grid_is_log_spaced_toward_both_ends(self):
+        from mosaiqtl.qtl.lmm import _H2_GRID
+
+        assert _H2_GRID.min() == pytest.approx(1e-6)
+        assert _H2_GRID.max() == pytest.approx(1.0 - 1e-6)
+        assert np.all(np.diff(_H2_GRID) > 0)
+        np.testing.assert_allclose(1.0 - _H2_GRID[-4:][::-1], _H2_GRID[:4], rtol=1e-6)
+
+    def test_ceiling_optimum_is_reported_at_the_ceiling(self):
+        n = 500
+        eigvals = np.geomspace(0.05, 20.0, n)
+        y_rot = np.sqrt(eigvals) * np.where(np.arange(n) % 2 == 0, 1.0, -1.0)
+        x_rot = np.ones((n, 1))
+        h2, _ = estimate_h2_null(y_rot, x_rot, eigvals)
+        assert h2 > 0.9
+
+    def test_result_stays_in_admissible_interval(self):
+        for h2_true in (0.0, 0.002, 0.3, 0.9):
+            y_rot, x_rot, eigvals = self._rotated(h2_true, n=300, seed=3)
+            h2, _ = estimate_h2_null(y_rot, x_rot, eigvals)
+            assert 1e-6 <= h2 <= 1.0 - 1e-6
+
+
+def _profile_ml(y_rot, x_rot, eigvals, h2):
+    """Profile ML log-likelihood at a fixed $h^2$ (reference for the grid tests)."""
+    w = h2 * eigvals + (1.0 - h2)
+    wi = 1.0 / w
+    xtwx = x_rot.T @ (x_rot * wi[:, None])
+    alpha = np.linalg.solve(xtwx, x_rot.T @ (wi * y_rot))
+    r = y_rot - x_rot @ alpha
+    n = len(y_rot)
+    sigma2 = float(np.sum(wi * r * r) / n)
+    return -0.5 * n * (np.log(2 * np.pi * sigma2) + 1.0) - 0.5 * float(np.sum(np.log(w)))

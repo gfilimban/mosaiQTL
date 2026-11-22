@@ -9,12 +9,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
 from mosaiqtl.qtl.imputation import (
-    wakefield_abf,
-    abf_pip,
+    compute_log_abf,
+    log_abf_to_pip,
     credible_set,
     lod_beta_to_z,
     fine_map_region,
     merge_ld_groups,
+    ld_group_summary,
+    LD_GROUP_COLS,
 )
 
 _LOG10_TO_LN = np.log(10.0)
@@ -26,109 +28,114 @@ def _se_from_lod(lod, beta):
     return np.abs(beta) / np.sqrt(2.0 * _LOG10_TO_LN * np.maximum(lod, 1e-12))
 
 
-# ── wakefield_abf ─────────────────────────────────────────────────────────────
+# ── compute_log_abf ───────────────────────────────────────────────────────────
 
 
-class TestWakefieldAbf:
-    def test_z_zero_returns_value_less_than_one(self):
-        # z=0 → no signal; ABF < 1 under any positive prior
-        abf = wakefield_abf(np.array([0.0]), se=1.0)
-        assert float(abf[0]) < 1.0
-
-    def test_abf_increases_with_z(self):
-        z = np.array([0.0, 1.0, 2.0, 3.0, 5.0])
-        abf = wakefield_abf(z, se=1.0)
-        assert np.all(np.diff(abf) > 0)
-
-    def test_abf_symmetric_in_z(self):
-        z_pos = np.array([1.5, 2.5, 3.5])
-        z_neg = -z_pos
+class TestComputeLogAbf:
+    def test_hand_computed_values(self):
+        # r = W/(V+W) = 0.04/1.04; log ABF = 0.5·ln(1-r) + 0.5·z²·r
+        r = 0.04 / 1.04
+        out = compute_log_abf(np.array([0.0, 3.0]), se=1.0, prior_var=0.04)
         np.testing.assert_allclose(
-            wakefield_abf(z_pos, se=1.0),
-            wakefield_abf(z_neg, se=1.0),
-            atol=1e-14,
+            out, [-0.5 * np.log(1.04), -0.5 * np.log(1.04) + 4.5 * r], atol=1e-12
+        )
+
+    def test_z_zero_is_negative(self):
+        # no signal: the Bayes factor favours the null, so log ABF < 0
+        assert float(compute_log_abf(np.array([0.0]), se=1.0)[0]) < 0.0
+
+    def test_increases_with_abs_z(self):
+        out = compute_log_abf(np.array([0.0, 1.0, 2.0, 3.0, 5.0]), se=1.0)
+        assert np.all(np.diff(out) > 0)
+
+    def test_symmetric_in_z(self):
+        z = np.array([1.5, 2.5, 3.5])
+        np.testing.assert_allclose(
+            compute_log_abf(z, se=1.0), compute_log_abf(-z, se=1.0), atol=1e-14
         )
 
     def test_scalar_se_broadcasts(self):
         z = np.array([1.0, 2.0, 3.0])
-        abf_scalar = wakefield_abf(z, se=0.5)
-        se_array = np.full(3, 0.5)
-        abf_array = wakefield_abf(z, se=se_array)
-        np.testing.assert_allclose(abf_scalar, abf_array, atol=1e-14)
+        np.testing.assert_allclose(
+            compute_log_abf(z, se=0.5), compute_log_abf(z, se=np.full(3, 0.5)), atol=1e-14
+        )
 
     def test_output_shape(self):
-        z = np.arange(10, dtype=float)
-        assert wakefield_abf(z, se=1.0).shape == (10,)
+        assert compute_log_abf(np.arange(10, dtype=float), se=1.0).shape == (10,)
 
-    def test_abf_positive(self):
-        z = np.linspace(-5, 5, 50)
-        assert np.all(wakefield_abf(z, se=1.0) > 0)
-
-    def test_larger_prior_var_gives_higher_abf_for_nonzero_z(self):
-        # wider prior → more mass under the alternative → higher ABF when there is signal
+    def test_larger_prior_var_raises_log_abf_for_nonzero_z(self):
         z = np.array([3.0])
-        abf_small = wakefield_abf(z, se=1.0, prior_var=0.01)
-        abf_large = wakefield_abf(z, se=1.0, prior_var=0.10)
-        assert float(abf_large[0]) > float(abf_small[0])
+        small = compute_log_abf(z, se=1.0, prior_var=0.01)
+        large = compute_log_abf(z, se=1.0, prior_var=0.10)
+        assert float(large[0]) > float(small[0])
+
+    def test_large_z_is_finite_where_exp_would_overflow(self):
+        out = compute_log_abf(np.array([300.0]), se=1.0)
+        assert np.isfinite(out[0]) and out[0] > 709.0
 
 
-# ── abf_pip ───────────────────────────────────────────────────────────────────
+# ── log_abf_to_pip ────────────────────────────────────────────────────────────
 
 
-class TestAbfPip:
+class TestLogAbfToPip:
     def test_sums_to_one(self):
-        abf = np.array([0.5, 1.0, 2.5, 0.1])
-        pip = abf_pip(abf)
+        pip = log_abf_to_pip(np.log([0.5, 1.0, 2.5, 0.1]))
         assert float(pip.sum()) == pytest.approx(1.0, abs=1e-12)
 
-    def test_argmax_matches_abf_argmax(self):
-        abf = np.array([0.3, 5.0, 1.2, 0.8])
-        pip = abf_pip(abf)
-        assert int(np.argmax(pip)) == int(np.argmax(abf))
+    def test_matches_ratio_of_bayes_factors(self):
+        pip = log_abf_to_pip(np.log([1.0, 2.0, 3.0]))
+        np.testing.assert_allclose(pip, [1 / 6, 2 / 6, 3 / 6], atol=1e-12)
+
+    def test_argmax_matches_log_abf_argmax(self):
+        x = np.array([-1.2, 1.6, 0.2, -0.2])
+        assert int(np.argmax(log_abf_to_pip(x))) == int(np.argmax(x))
 
     def test_single_snp_pip_is_one(self):
-        pip = abf_pip(np.array([3.7]))
-        assert float(pip[0]) == pytest.approx(1.0, abs=1e-12)
+        assert float(log_abf_to_pip(np.array([3.7]))[0]) == pytest.approx(1.0, abs=1e-12)
 
-    def test_uniform_abf_gives_uniform_pip(self):
-        abf = np.ones(8)
-        pip = abf_pip(abf)
-        np.testing.assert_allclose(pip, 1.0 / 8, atol=1e-12)
+    def test_equal_log_abf_gives_uniform_pip(self):
+        np.testing.assert_allclose(log_abf_to_pip(np.zeros(8)), 1.0 / 8, atol=1e-12)
 
-    def test_output_in_unit_interval(self):
-        rng = np.random.default_rng(0)
-        abf = rng.exponential(1.0, 50)
-        pip = abf_pip(abf)
-        assert np.all(pip >= 0) and np.all(pip <= 1)
+    def test_shift_invariant(self):
+        x = np.array([0.3, -1.0, 2.0])
+        np.testing.assert_allclose(log_abf_to_pip(x), log_abf_to_pip(x + 1000.0), atol=1e-12)
 
-    def test_prior_prob_does_not_change_result(self):
-        # uniform scalar prior cancels in normalization
-        abf = np.array([1.0, 2.0, 3.0])
-        pip_default = abf_pip(abf)
-        pip_explicit = abf_pip(abf, prior_prob=0.5)
-        np.testing.assert_allclose(pip_default, pip_explicit, atol=1e-14)
-
-    def test_near_zero_abf_handled(self):
-        abf = np.array([1e-310, 1.0, 0.5])
-        pip = abf_pip(abf)
+    def test_huge_log_abf_does_not_overflow(self):
+        pip = log_abf_to_pip(np.array([5000.0, 4990.0, 0.0]))
         assert np.all(np.isfinite(pip))
-        assert float(pip.sum()) == pytest.approx(1.0, abs=1e-10)
+        assert float(pip[0]) == pytest.approx(1.0 / (1.0 + np.exp(-10.0)), rel=1e-9)
 
-    def test_nan_abf_does_not_dominate(self):
-        # A NaN ABF (failed scan) must not collapse all other PIPs to zero.
-        # Before the fix, np.isfinite(NaN)=False → log_abf=700 → NaN SNP gets
-        # PIP≈1 and all others get PIP≈0.
-        abf_clean = np.array([1.0, 2.0, 3.0])
-        pip_clean = abf_pip(abf_clean)
-        abf_with_nan = np.array([1.0, 2.0, 3.0, np.nan])
-        pip_with_nan = abf_pip(abf_with_nan)
-        # the NaN SNP receives near-zero PIP and the others preserve their ratios
-        assert pip_with_nan[3] < 1e-10, "NaN ABF must not dominate"
-        np.testing.assert_allclose(
-            pip_with_nan[:3] / pip_with_nan[:3].sum(),
-            pip_clean,
-            atol=1e-10,
+    def test_matches_posterior_from_null_over_alternative_form(self):
+        z = np.array([0.5, 2.0, 5.0, 1.0])
+        se = np.array([0.1, 0.2, 0.15, 0.3])
+        r = 0.04 / (se**2 + 0.04)
+        null_over_alt = np.exp(-0.5 * z**2 * r) / np.sqrt(1.0 - r)
+        expected = (1.0 / null_over_alt) / np.sum(1.0 / null_over_alt)
+        np.testing.assert_allclose(log_abf_to_pip(compute_log_abf(z, se)), expected, rtol=1e-12)
+
+    def test_very_negative_log_abf_gets_zero_weight(self):
+        pip = log_abf_to_pip(np.array([-1e4, 0.0, -2e4]))
+        assert float(pip[1]) == pytest.approx(1.0, abs=1e-12)
+
+    def test_nan_gets_zero_weight_and_others_keep_ratios(self):
+        clean = log_abf_to_pip(np.log([1.0, 2.0, 3.0]))
+        with_nan = log_abf_to_pip(np.append(np.log([1.0, 2.0, 3.0]), np.nan))
+        assert with_nan[3] == 0.0
+        np.testing.assert_allclose(with_nan[:3], clean, atol=1e-12)
+
+    def test_no_finite_value_returns_zeros(self):
+        np.testing.assert_array_equal(log_abf_to_pip(np.array([np.nan, np.nan])), [0.0, 0.0])
+
+    def test_ld_group_with_nan_first_member_keeps_its_valid_evidence(self):
+        lod = np.array([np.nan, 6.0, 0.5, 0.4])
+        beta = np.array([0.3, 0.3, 0.2, 0.2])
+        df = fine_map_region(
+            lod, beta, _se_from_lod(lod, beta), ld_groups={0: 0, 1: 0, 2: 1, 3: 2}
         )
+        by_snp = df.set_index("snp")
+        assert by_snp.loc[1, "pip"] > by_snp.loc[2, "pip"]
+        assert bool(by_snp.loc[1, "in_cs"])
+        assert float(df["pip"].sum()) == pytest.approx(1.0, abs=1e-9)
 
     def test_nan_lod_excluded_from_fine_map_region(self):
         # A NaN LOD row must not produce a valid PIP through fine_map_region.
@@ -171,7 +178,7 @@ class TestCredibleSet:
         assert list(cs) == sorted(cs)
 
     def test_100_percent_coverage_returns_all(self):
-        pip = abf_pip(np.array([1.0, 2.0, 3.0]))
+        pip = log_abf_to_pip(np.log([1.0, 2.0, 3.0]))
         cs = credible_set(pip, coverage=1.0)
         assert len(cs) == 3
 
@@ -231,7 +238,7 @@ class TestFineMapRegion:
     def test_output_columns_default(self, region):
         lod, beta = region
         df = fine_map_region(lod, beta, _se_from_lod(lod, beta))
-        assert list(df.columns) == ["snp", "lod", "z", "abf", "pip", "in_cs"]
+        assert list(df.columns) == ["snp", "lod", "z", "log_abf", "pip", "in_cs"]
 
     def test_output_columns_with_pos_mb(self, region):
         lod, beta = region
@@ -244,6 +251,37 @@ class TestFineMapRegion:
         lod, beta = region
         df = fine_map_region(lod, beta, _se_from_lod(lod, beta))
         assert list(df["pip"]) == sorted(df["pip"], reverse=True)
+
+    def test_tied_pip_ordered_by_lod_then_tss_distance(self):
+        lod = np.array([3.0, 5.0, 4.0, 5.0])
+        beta = np.ones(4)
+        pos = np.array([1.0, 3.0, 2.0, 1.2])
+        groups = {i: 1 for i in range(4)}
+        snps = ['a', 'b', 'c', 'd']
+        df = fine_map_region(
+            lod, beta, _se_from_lod(lod, beta), snp_ids=snps, pos_mb=pos,
+            ld_groups=groups, tss_mb=1.0,
+        )
+        assert df['pip'].nunique() == 1
+        assert list(df['snp']) == ['d', 'b', 'c', 'a']
+
+    def test_tie_order_independent_of_input_order(self):
+        lod = np.array([5.0, 5.0, 5.0])
+        beta = np.ones(3)
+        pos = np.array([1.5, 1.1, 0.7])
+        groups = {i: 1 for i in range(3)}
+        snps = np.array(['x', 'y', 'z'])
+        first = fine_map_region(
+            lod, beta, _se_from_lod(lod, beta), snp_ids=list(snps), pos_mb=pos,
+            ld_groups=groups, tss_mb=1.0,
+        )
+        perm = np.array([2, 0, 1])
+        second = fine_map_region(
+            lod[perm], beta[perm], _se_from_lod(lod[perm], beta[perm]),
+            snp_ids=list(snps[perm]), pos_mb=pos[perm], ld_groups=groups,
+            tss_mb=1.0,
+        )
+        assert list(first['snp']) == list(second['snp']) == ['y', 'z', 'x']
 
     def test_in_cs_count_matches_credible_set(self, region):
         lod, beta = region
@@ -422,6 +460,58 @@ class TestFineMapRegionLdAware:
         assert len(df) == n_snps
 
 
+class TestLdGroupSummary:
+    @staticmethod
+    def _fm(coverage=0.95):
+        lod = np.array([1.0, 1.0, 6.0, 6.0, 6.0, 0.5, 0.5, 0.5])
+        beta = np.ones(len(lod))
+        ld_groups = {0: 0, 1: 0, 2: 1, 3: 1, 4: 1, 5: 2, 6: 2, 7: 2}
+        patterns = np.array(['10', '10', '01', '01', '11', '00', '00', '00'], dtype=object)
+        pos = np.arange(len(lod), dtype=float) * 1e-3
+        return fine_map_region(
+            lod, beta, _se_from_lod(lod, beta), pos_mb=pos, ld_groups=ld_groups,
+            patterns=patterns, coverage=coverage,
+        )
+
+    def test_columns_and_group_pips_sum_to_one(self):
+        out = ld_group_summary(self._fm())
+        assert list(out.columns) == LD_GROUP_COLS
+        assert float(out['group_pip'].sum()) == pytest.approx(1.0, abs=1e-9)
+
+    def test_ranked_by_group_pip_with_rank_ids(self):
+        out = ld_group_summary(self._fm())
+        assert out['ld_group'].tolist() == [1, 2, 3]
+        assert out['group_pip'].is_monotonic_decreasing
+        assert out.loc[0, 'n_variants'] == 3
+        assert out.loc[0, 'n_patterns'] == 2
+        assert out.loc[0, 'patterns'] == '01,11'
+        assert out.loc[0, 'span_bp'] == 2000
+
+    def test_group_membership_matches_variant_credible_set(self):
+        fm = self._fm()
+        out = ld_group_summary(fm)
+        cs_variants = set(fm.loc[fm['in_cs'], 'snp'])
+        top_members = set(fm.loc[fm['ld_group'] == fm.loc[fm['pip'].idxmax(), 'ld_group'], 'snp'])
+        assert bool(out.loc[0, 'in_cs'])
+        assert top_members <= cs_variants
+        assert int(out.loc[out['in_cs'], 'n_variants'].sum()) == len(cs_variants)
+
+    def test_best_lod_variant_belongs_to_group(self):
+        out = ld_group_summary(self._fm())
+        assert out.loc[0, 'best_lod'] == pytest.approx(6.0)
+        assert out.loc[0, 'best_lod_variant'] in {2, 3, 4}
+
+    def test_empty_when_no_valid_variant(self):
+        fm = self._fm().assign(pip=0.0)
+        assert ld_group_summary(fm).empty
+
+    def test_raises_when_pips_do_not_sum_to_one(self):
+        fm = self._fm()
+        fm['pip'] = fm['pip'] * 0.5
+        with pytest.raises(ValueError, match='sum to'):
+            ld_group_summary(fm)
+
+
 # ── simulation checks ─────────────────────────────────────────────────────────
 
 
@@ -459,7 +549,7 @@ class TestFineMappingSimulation:
     def test_null_phenotype_calls_nothing_at_fdr(self):
         from scipy import stats
 
-        from mosaiqtl.qtl.fdr import storey_qvalue
+        from mosaiqtl.qtl.fdr import qvalue
 
         rng = np.random.default_rng(5)
         n, n_genes = 100, 600
@@ -470,7 +560,7 @@ class TestFineMappingSimulation:
             y = rng.permutation(rng.normal(size=n))
             beta, se = _ols_beta_se(geno, y)
             pvals[g] = 2 * stats.t.sf(abs(beta[0] / se[0]), df=n - 2)
-        q, pi0 = storey_qvalue(pvals)
+        q, pi0 = qvalue(pvals)
         assert pi0 > 0.85
         assert int((q < 0.05).sum()) <= 2
 
@@ -529,6 +619,121 @@ class TestMissingFounderAlleles:
         )
         assert 'missing' in set(df_ref['snp'])
         assert 'missing' not in set(df_missing['snp'])
+
+    def test_replicates_are_fit_at_sample_level_with_the_sample_kinship(
+        self, tiny_cache, scan_inputs, strain_ids
+    ):
+        from mosaiqtl.qtl import lmm
+        from mosaiqtl.qtl.snp_scan import imputed_snp_scan_h2lmm
+        from mosaiqtl.utils import build_z_matrix, rint
+
+        _, snp_genos, kd = scan_inputs
+        sample_ids = list(strain_ids) * 2
+        y = np.random.default_rng(9).normal(size=len(sample_ids))
+        df = imputed_snp_scan_h2lmm(
+            y, tiny_cache, snp_genos, kinship_decomp=kd, sample_ids=sample_ids
+        )
+
+        z, _ = build_z_matrix(sample_ids, list(tiny_cache.sample_ids))
+        k_m = (kd['1']['vectors'] * kd['1']['values']) @ kd['1']['vectors'].T
+        evals, evecs = np.linalg.eigh(z @ k_m @ z.T)
+        x = np.ones((len(y), 1))
+        h2, _ = lmm.estimate_h2_null(evecs.T @ rint(y), evecs.T @ x, evals, method='ml')
+        assert (df['n'] == len(sample_ids)).all()
+        assert df['h2'].to_numpy() == pytest.approx(h2)
+
+
+# ── SNP scan: interpolated haplotype probabilities and minor-strain filter ────
+
+
+class TestSnpScanInterpolationAndFilter:
+    @pytest.fixture
+    def setup(self, tiny_cache, tiny_kinship, strain_ids):
+        import pandas as pd
+
+        from mosaiqtl.genotype.kinship import decomp_kinship
+
+        founders = list(tiny_cache.founders)
+        _, pos, probs = tiny_cache.get_chromosome('1')
+        g = np.zeros(len(founders))
+        g[[0, 3, 5]] = 1.0
+        x = float(pos[4] + 0.25 * (pos[5] - pos[4]))
+        snp = pd.DataFrame(
+            {'chr': ['1'], 'pos_mb': [x], **{f: [v] for f, v in zip(founders, g)}},
+            index=['mid'],
+        )
+        y = np.random.default_rng(5).normal(size=len(strain_ids))
+        return snp, g, x, pos, probs, y, decomp_kinship(tiny_kinship)
+
+    def test_dosage_uses_probabilities_interpolated_to_snp_position(
+        self, tiny_cache, setup, monkeypatch
+    ):
+        from mosaiqtl.qtl import snp_scan
+
+        snp, g, x, pos, probs, y, kd = setup
+        monkeypatch.setattr(snp_scan, 'MIN_MINOR_STRAINS', 0)
+        df = snp_scan.imputed_snp_scan_h2lmm(
+            y, tiny_cache, snp, kinship_decomp=kd, use_rint=False
+        )
+        t = (x - pos[4]) / (pos[5] - pos[4])
+        expected = ((1 - t) * probs[4] + t * probs[5]) @ g
+        nearest = probs[int(np.argmin(np.abs(pos - x)))] @ g
+        assert df['dosage_mean'].iloc[0] == pytest.approx(expected.mean())
+        assert not np.isclose(expected.mean(), nearest.mean())
+
+    def test_minor_strains_reported_and_threshold_enforced(
+        self, tiny_cache, setup, monkeypatch
+    ):
+        from mosaiqtl.qtl import snp_scan
+
+        snp, g, x, pos, probs, y, kd = setup
+        monkeypatch.setattr(snp_scan, 'MIN_MINOR_STRAINS', 0)
+        df = snp_scan.imputed_snp_scan_h2lmm(
+            y, tiny_cache, snp, kinship_decomp=kd, use_rint=False
+        )
+        t = (x - pos[4]) / (pos[5] - pos[4])
+        tot = (((1 - t) * probs[4] + t * probs[5]) @ g).sum()
+        n = probs.shape[1]
+        assert df['minor_strains'].iloc[0] == pytest.approx(min(tot, n - tot))
+
+        monkeypatch.setattr(snp_scan, 'MIN_MINOR_STRAINS', n)
+        gone = snp_scan.imputed_snp_scan_h2lmm(
+            y, tiny_cache, snp, kinship_decomp=kd, use_rint=False
+        )
+        assert gone.empty
+
+    def test_minor_strains_flows_into_scan_and_imputed_schemas(
+        self, tiny_cache, setup, monkeypatch
+    ):
+        from mosaiqtl.pipeline import IMPUTED_SNP_COLS
+        from mosaiqtl.qtl import snp_scan
+
+        snp, _, _, _, _, y, kd = setup
+        monkeypatch.setattr(snp_scan, 'MIN_MINOR_STRAINS', 0)
+        df = snp_scan.imputed_snp_scan_h2lmm(
+            y, tiny_cache, snp, kinship_decomp=kd, use_rint=False
+        )
+        assert 'minor_strains' in snp_scan.SNP_SCAN_COLS
+        assert 'minor_strains' in IMPUTED_SNP_COLS
+        assert set(snp_scan.SNP_SCAN_COLS) <= set(df.columns)
+
+    def test_allele_frequency_is_over_samples_not_strains(
+        self, tiny_cache, setup, strain_ids, monkeypatch
+    ):
+        from mosaiqtl.qtl import snp_scan
+
+        snp, g, x, pos, probs, _, kd = setup
+        monkeypatch.setattr(snp_scan, 'MIN_MINOR_STRAINS', 0)
+        sample_ids = list(strain_ids) + list(strain_ids[:3])
+        y = np.random.default_rng(6).normal(size=len(sample_ids))
+        df = snp_scan.imputed_snp_scan_h2lmm(
+            y, tiny_cache, snp, kinship_decomp=kd, sample_ids=sample_ids
+        )
+        t = (x - pos[4]) / (pos[5] - pos[4])
+        d = ((1 - t) * probs[4] + t * probs[5]) @ g
+        per_sample = np.concatenate([d, d[:3]])
+        assert df['dosage_mean'].iloc[0] == pytest.approx(per_sample.mean())
+        assert df['n'].iloc[0] == len(sample_ids)
 
 
 # ── end-to-end fine-mapping simulation (real scan → real fine-mapping) ────────
@@ -595,3 +800,55 @@ class TestFineMappingEndToEnd:
                 self._fine_map(tiny_cache, snp_genos, kd, 3.0 * z + noise)['pip'].max()
             )
         assert np.median(null_top) < np.median(planted_top)
+
+
+# ── allele-frequency columns of the imputed SNP table ─────────────────────────
+
+
+class TestImputedAlleleCountColumns:
+    def test_mac_and_ma_sample_are_populated_from_sample_count(
+        self, tiny_cache, tiny_kinship, strain_ids, monkeypatch
+    ):
+        import pandas as pd
+
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        from mosaiqtl.pipeline import impute_egene
+        from mosaiqtl.qtl import snp_scan
+
+        monkeypatch.setattr(snp_scan, 'MIN_MINOR_STRAINS', 0)
+        founders = list(tiny_cache.founders)
+        _, pos, probs = tiny_cache.get_chromosome('1')
+        rng = np.random.default_rng(21)
+        rows = []
+        for i, p in enumerate(pos):
+            alt = rng.integers(0, 2, size=len(founders))
+            alt[0], alt[1] = 0, 1
+            rows.append(
+                {
+                    'marker': f'snp{i}',
+                    'chr': '1',
+                    'pos_bp': int(round(p * 1e6)),
+                    'pos_mb': float(p),
+                    'rsid': f'rs{i}',
+                    **{f: ('G' if a else 'A') for f, a in zip(founders, alt)},
+                }
+            )
+        alleles = pd.DataFrame(rows)
+        sample_ids = list(strain_ids) + list(strain_ids[:3])
+        y = np.random.default_rng(22).normal(size=len(sample_ids))
+
+        df = impute_egene(
+            'g1', '1', y, tiny_cache, alleles,
+            int(pos[0] * 1e6), 'snp0', 1.0,
+            int(pos[0] * 1e6), int(pos[-1] * 1e6) + 1,
+            kinship_decomp=decomp_kinship(tiny_kinship),
+            sample_ids=sample_ids,
+            ref_founder=founders[0],
+            use_rint=False,
+        )
+
+        assert df['mac'].notna().all()
+        assert df['ma_sample'].notna().all()
+        expected = (np.minimum(df['af'], 1.0 - df['af']) * len(sample_ids)).round()
+        assert df['mac'].astype(float).to_numpy() == pytest.approx(expected.to_numpy())
+        assert (df['ma_sample'] == df['mac']).all()

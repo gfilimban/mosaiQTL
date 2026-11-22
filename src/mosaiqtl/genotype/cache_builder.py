@@ -240,12 +240,6 @@ def build(args=None):
         help='GigaMUGA genotyping error probability',
     )
     parser.add_argument(
-        '--n-gen',
-        type=int,
-        default=1,
-        help='HMM transition scaling (1 for consensus CC map)',
-    )
-    parser.add_argument(
         '--collapse', action='store_true', help='collapse redundant loci before saving'
     )
     parser.add_argument('--verbose', action='store_true', help='enable DEBUG logging')
@@ -295,7 +289,6 @@ def build(args=None):
         founder_cols=founder_cols,
         f1_crosses=f1_crosses,
         error_prob=args.error_prob,
-        n_gen=args.n_gen,
         crossinfo_path=args.crossinfo,
         step_cM=step_cM,
     )

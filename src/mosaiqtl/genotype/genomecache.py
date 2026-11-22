@@ -60,7 +60,7 @@ def _gigamuga_chr_worker(task: dict) -> dict:
 
     Receives pre-encoded A/B/H/- genotype arrays and returns the
     per-chromosome probs dict ready for GenomeCache. Population-agnostic:
-    n_gen and inbred come from the task dict set by from_gigamuga.
+    inbred comes from the task dict set by from_gigamuga.
     """
     from .hmm import calc_genoprob_cc  # imported in worker process
 
@@ -71,7 +71,6 @@ def _gigamuga_chr_worker(task: dict) -> dict:
     pmap_pos = task["pmap_pos"]  # (n_m,) Mb
     locus_ids = task["locus_ids"]  # (n_m,) str
     n_founders = task["n_founders"]
-    n_gen = task["n_gen"]
     inbred = task["inbred"]
     error_prob = task["error_prob"]
     cc_cols = task["cc_cols"]
@@ -79,17 +78,18 @@ def _gigamuga_chr_worker(task: dict) -> dict:
     f1_crosses = task["f1_crosses"]
     all_48 = task["all_48"]
     step_cM = task["step_cM"]
+    x_funnel = task["x_funnel"]
 
     result = calc_genoprob_cc(
         geno_cc,
         geno_f,
         gmap_pos,
         n_founders=n_founders,
-        n_gen=n_gen,
         error_prob=error_prob,
         return_additive=True,
         cc_inbred=inbred,
         step_cM=step_cM,
+        x_funnel=x_funnel if inbred else None,
     )
 
     if step_cM is not None:
@@ -172,7 +172,6 @@ class GenomeCache:
         self._h5_handle = _h5_handle
         self._h5_path = str(_h5_path) if _h5_path is not None else None
         self.crossinfo = None  # DataFrame (strains × A-H) from cc_crossinfo.csv
-        self.x_donor = {}  # strain_id -> founder_col of x-chr donor
         self.chromosomes = sorted(self._data.keys(), key=chr_sort_key)
 
     def __del__(self):
@@ -314,8 +313,22 @@ class GenomeCache:
             grp = f[key]
             chrom = key.replace("chr", "")
 
+            grp_ids = np.array([s.decode() for s in grp["sample_ids"][:]])
             if sample_ids is None:
-                sample_ids = np.array([s.decode() for s in grp["sample_ids"][:]])
+                sample_ids = grp_ids
+            elif not np.array_equal(sample_ids, grp_ids):
+                f.close()
+                raise ValueError(
+                    f"sample_ids of {key} differ from those of the first "
+                    f"chromosome in {filepath}"
+                )
+            expected = (len(grp["locus_ids"]), len(grp_ids), len(founders))
+            if tuple(grp["probs"].shape) != expected:
+                f.close()
+                raise ValueError(
+                    f"probs of {key} has shape {tuple(grp['probs'].shape)}, "
+                    f"expected {expected}"
+                )
 
             data[chrom] = {
                 "locus_ids": np.array([s.decode() for s in grp["locus_ids"][:]]),
@@ -409,7 +422,6 @@ class GenomeCache:
         founder_cols,
         f1_crosses=None,
         n_founders=8,
-        n_gen=1,
         error_prob=0.002,
         inbred=True,
         just_these_loci=None,
@@ -419,10 +431,9 @@ class GenomeCache:
     ):
         """build genome cache from raw GigaMUGA genotype data.
 
-        population-agnostic: works for CC (inbred=True, n_gen=1), DO
-        (inbred=False, n_gen=<breeding_gen>), and custom MPPs. the caller
-        supplies sample_cols, founder_cols, and optionally f1_crosses; the
-        HMM parameters n_gen and inbred are passed through to calc_genoprob_cc.
+        the caller supplies sample_cols, founder_cols, and optionally
+        f1_crosses; inbred is passed through to calc_genoprob_cc. the
+        transition kernel is that of fixed lines of an eight-founder funnel.
 
         pipeline:
           gigamuga CSV → encode A/H/B (vectorised, J passes) → HMM (forward-backward,
@@ -449,10 +460,6 @@ class GenomeCache:
             e.g. [('B6AF1J', 1, 0), ...] where indices are into founder_cols
         n_founders : int
             number of founders J (8 for CC)
-        n_gen : int
-            transition scaling factor passed to calc_genoprob_cc. must be 1
-            for CC with the GigaMUGA consensus map (map already encodes
-            cumulative recombination history; r used directly). default 1.
         error_prob : float
             GigaMUGA genotyping error rate (0.002)
         just_these_loci : list of str or None
@@ -477,21 +484,28 @@ class GenomeCache:
 
         logger.info("building genome cache from raw GigaMUGA...")
 
-        # crossinfo columns give each founder's position in the breeding
-        # funnel per strain (for CC, columns A-H map to funnel positions
-        # 1-8); used to confirm each strain is fully inbred and to identify
-        # which founder donated the X chromosome
+        # crossinfo columns are the breeding-funnel positions 1-8 and each value
+        # is the 1-based founder at that position; this gives each strain's X
+        # chromosome prior and kernel, since only the founders at funnel
+        # positions 1, 2, 3, 5 and 6 carry X
         _crossinfo = None
-        _x_donor = {}  # strain_id -> founder_col of x-chr donor (funnel pos 8)
+        _x_funnel = None  # (n_cc, J) founder index at each funnel position
         if crossinfo_path is not None and os.path.exists(crossinfo_path):
             _crossinfo = pd.read_csv(crossinfo_path, index_col=0)
-            for sid, row in _crossinfo.iterrows():
-                # the founder at the last funnel position donated the X chromosome
-                x_donor_code = row[row == 8].index[0]
-                _x_donor[sid] = x_donor_code
-            logger.info(
-                f"crossinfo: loaded {len(_crossinfo)} strains; "
-                f"{len(_x_donor)} x-chr donors identified"
+            logger.info(f"crossinfo: loaded {len(_crossinfo)} strains")
+            missing_ci = [c for c in cc_cols if c not in _crossinfo.index]
+            if missing_ci:
+                logger.warning(
+                    f"crossinfo lacks {len(missing_ci)} CC strains; "
+                    f"chrX uses the autosomal haplotype model"
+                )
+            else:
+                _x_funnel = np.array(
+                    [_crossinfo.loc[c].to_numpy(dtype=int) - 1 for c in cc_cols]
+                )
+        if _x_funnel is None:
+            logger.warning(
+                "no funnel order available; chrX uses the autosomal haplotype model"
             )
         # CC strains are treated as fully inbred (homozygous prior in the HMM);
         # founders and F1s are assigned directly without running the HMM at all
@@ -538,10 +552,15 @@ class GenomeCache:
         # downstream result (kinship, LOD)
         shared_set = set(gm_raw.index) & set(gmap["locus"]) & set(pmap["locus"])
         gmap_idx = gmap.set_index("locus")
-        gmap_shared = gmap_idx.loc[list(shared_set)].copy()
+        gmap_shared = gmap_idx.loc[sorted(shared_set)].copy()
 
+        # markers sharing a genetic position are ordered by physical position, so
+        # the locus order is identical on every rebuild
         gmap_shared["_k"] = gmap_shared["chr"].map(chr_sort_key)
-        gmap_shared = gmap_shared.sort_values(["_k", "pos_cM"]).drop(columns=["_k"])
+        gmap_shared["_mb"] = pmap.set_index("locus").loc[gmap_shared.index, "pos_mb"]
+        gmap_shared = gmap_shared.sort_values(
+            ["_k", "pos_cM", "_mb"], kind="stable"
+        ).drop(columns=["_k", "_mb"])
         shared = gmap_shared.index.tolist()
 
         gm = gm_raw.loc[shared]
@@ -635,7 +654,6 @@ class GenomeCache:
                     "pmap_pos": pmap_idx.loc[loci, "pos_mb"].values.astype(float),
                     "locus_ids": loci,
                     "n_founders": n_founders,
-                    "n_gen": n_gen,
                     "inbred": inbred,
                     "error_prob": error_prob,
                     "cc_cols": cc_cols,
@@ -643,6 +661,7 @@ class GenomeCache:
                     "f1_crosses": f1_crosses,
                     "all_48": all_48,
                     "step_cM": step_cM,
+                    "x_funnel": _x_funnel if chrom == "X" else None,
                 }
             )
 
@@ -652,7 +671,7 @@ class GenomeCache:
         n_proc = min(len(tasks), os.cpu_count() or 4)
         logger.info(
             f"running HMM on {len(tasks)} chromosomes "
-            f"(n_gen={n_gen}, inbred={inbred}, {n_proc} workers)..."
+            f"(inbred={inbred}, {n_proc} workers)..."
         )
         if n_proc > 1:
             with ProcessPoolExecutor(max_workers=n_proc) as pool:
@@ -664,7 +683,6 @@ class GenomeCache:
 
         cache = GenomeCache(all_48, list(founder_cols), data)
         cache.crossinfo = _crossinfo  # None if crossinfo_path not provided
-        cache.x_donor = _x_donor  # {} if crossinfo_path not provided
         return cache
 
     @staticmethod

@@ -24,10 +24,12 @@ probabilities encode how likely the observed A/H/B call is given the diplotype:
 (#mi(`\varepsilon = 0.002`);; uniform #mi(`1/3`); when a founder call is missing). Transition
 probabilities encode recombination rates: the Haldane map function
 #mi(`r = \tfrac{1}{2}(1 - e^{-2d})`); with #mi(`d = \Delta_\text{cM}/100`); the inter-marker distance in Morgans
-gives a haplotype kernel with #mi(`P(\text{stay}) = 1 - r(J-1)/J`); and
-#mi(`P(f \to g) = r/J`);, combined over the two haplotypes into a diplotype kernel. The
-default initial distribution (`cc_inbred_init`) puts mass #mi(`1/J`); on each homozygous state.
-Known issue: `transition_matrix()` halves every heterozygous-target entry before row renormalisation (ledger HMM-01).
+gives a haplotype kernel #mi(`H = e^{-d} I + (1 - e^{-d})\mathbf{1}\mathbf{1}^\top/J`); (founder kept with
+probability #mi(`e^{-d}`);, otherwise re-drawn uniformly), which has total switch probability
+#mi(`r(J-1)/J`); for small #mi(`r`);. For fully inbred strains the chain runs on the #mi(`J`); homozygous
+states with initial law #mi(`1/J`);; otherwise the two haplotypes are combined into the 36-state diplotype kernel
+#mi(`T_{(f_1 f_2)\to(g_1 g_2)} = H_{f_1 g_1} H_{f_2 g_2} + \mathbb{1}[g_1 \neq g_2] H_{f_1 g_2} H_{f_2 g_1}`);,
+whose rows sum to 1.
 
 #strong[Forward-backward algorithm.] For a chain with #mi(`S`); diplotype states and #mi(`L`); markers
 (#mi(`e_\ell(s)`); the emission of the observed call; #mi(`\alpha`);, #mi(`\beta`); renormalised to sum 1 at each marker):
@@ -531,7 +533,7 @@ Known issue: the pipeline (`_run_conditional_scan`) calls `scan_conditional()` r
 phenotype (breaking the genotype-phenotype link) and fitting a Generalised
 Extreme Value (GEV) distribution to the null distribution of maximum LOD scores.
 In production this threshold is logged for QC only; eGene calls use the per-gene
-calibrated p-value (`qtl/fdr.py → calibrate_gene_pvalue()`) followed by `storey_qvalue()`
+calibrated p-value (`qtl/fdr.py → calibrate_gene_pvalue()`) followed by `qvalue()`
 over all tested genes.
 
 #strong[Procedure.]

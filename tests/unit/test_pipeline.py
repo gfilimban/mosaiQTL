@@ -25,6 +25,7 @@ from mosaiqtl.pipeline import (
     characterize,
     resolve,
 )
+from mosaiqtl import pipeline
 from mosaiqtl.qtl.scan import ScanResult
 
 # match conftest constants
@@ -455,6 +456,15 @@ class TestCalibrateEgenesStorey:
         out = calibrate_egenes_storey(df, pval_perm)
         assert len(out) == n
 
+    def test_perm_n_records_null_draws(self):
+        """perm_n carries the per-gene null draw count on every row."""
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        df = self._egenes_df(n_genes=6)
+        pval_perm = {f"g{i}": 0.1 for i in range(6)}
+        out = calibrate_egenes_storey(df, pval_perm, n_perms=777)
+        assert (out["perm_n"] == 777).all()
+
 
 # ── Storey FDR end-to-end integration (SWE-09) ───────────────────────────────
 
@@ -549,3 +559,280 @@ class TestImputation:
         # must not raise
         result = pd.concat(frames, ignore_index=True)
         assert len(result) == 15
+
+
+class TestCallRule:
+    """calibrate_egenes_storey: call_rule selects fdr and significance."""
+
+    @staticmethod
+    def _inputs():
+        import pandas as pd
+
+        rng = np.random.default_rng(4)
+        pv = {f"g{i}": float(rng.uniform(0, 1e-6)) for i in range(950)}
+        pv.update({f"h{i}": float(rng.uniform(0.6, 1.0)) for i in range(50)})
+        df = pd.DataFrame({"gene_id": list(pv), "peak_lod": np.linspace(1.0, 5.0, len(pv))})
+        return df, pv
+
+    def test_both_adjusted_values_and_pi0_are_always_written(self):
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        df, pv = self._inputs()
+        out = calibrate_egenes_storey(df, pv)
+        for col in ("qval_storey", "qval_bh", "lfdr", "pi0"):
+            assert col in out.columns
+
+    def test_lfdr_rule_thresholds_the_local_rate(self):
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        df, pv = self._inputs()
+        out = calibrate_egenes_storey(df, pv, call_rule="lfdr")
+        assert (out["fdr_method"] == "lfdr").all()
+        assert np.allclose(out["fdr"], out["lfdr"])
+        assert ((out["lfdr"] <= 0.05) == (out["significance"] == "T")).all()
+
+    def test_lfdr_rule_needs_enough_genes(self):
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        df, pv = self._inputs()
+        small = df.iloc[:5].copy()
+        with pytest.raises(ValueError, match="lfdr"):
+            calibrate_egenes_storey(small, pv, call_rule="lfdr")
+        out = calibrate_egenes_storey(small, pv)
+        assert out["lfdr"].isna().all()
+
+    def test_bh_rule_does_not_call_the_late_genes(self):
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        df, pv = self._inputs()
+        # pi0 is about 0.14 here, so a 0.2 cutoff lies above the largest Storey
+        # q-value (pi0 * p_(m)) and every gene passes it; BH keeps the late genes out.
+        storey = calibrate_egenes_storey(df, pv, fdr_threshold=0.2, call_rule="qvalue")
+        bh = calibrate_egenes_storey(df, pv, fdr_threshold=0.2, call_rule="bh")
+        late = bh["gene_id"].str.startswith("h")
+        assert storey["pi0"].iloc[0] < 0.2
+        assert (storey["significance"] == "T").all()
+        assert (bh.loc[late, "significance"] == "F").all()
+        assert (bh["fdr_method"] == "BH").all()
+        assert (storey["fdr_method"] == "qvalue").all()
+
+    def test_unknown_rule_raises(self):
+        from mosaiqtl.pipeline import calibrate_egenes_storey
+
+        df, pv = self._inputs()
+        with pytest.raises(ValueError, match="call_rule"):
+            calibrate_egenes_storey(df, pv, call_rule="bonferroni")
+
+
+class TestRintThreading:
+    """use_rint is a required keyword on the fine-mapping chain and is forwarded."""
+
+    @pytest.mark.parametrize("name", ["impute_egene", "impute_egenes", "finemap_egenes"])
+    def test_use_rint_is_required_keyword(self, name):
+        import inspect
+
+        from mosaiqtl import pipeline
+
+        p = inspect.signature(getattr(pipeline, name)).parameters["use_rint"]
+        assert p.kind is inspect.Parameter.KEYWORD_ONLY
+        assert p.default is inspect.Parameter.empty
+
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_impute_egene_forwards_flag(self, monkeypatch, flag):
+        from mosaiqtl import pipeline
+        from mosaiqtl.qtl import snp_scan
+
+        seen = {}
+
+        def fake_scan(*args, **kwargs):
+            seen["use_rint"] = kwargs["use_rint"]
+            return None
+
+        monkeypatch.setattr(snp_scan, "imputed_snp_scan_h2lmm", fake_scan)
+        monkeypatch.setattr(
+            "mosaiqtl.genotype.snp_db.make_alt_mask",
+            lambda window, order, ref_founder: np.zeros((len(window), len(order)), dtype=bool),
+        )
+        alleles = pd.DataFrame({"marker": ["m1"], "chr": ["1"], "pos_bp": [500], "pos_mb": [5e-4]})
+
+        class _GC:
+            founders = ["A", "B"]
+
+        pipeline.impute_egene(
+            "g1", "1", np.zeros(4), _GC(), alleles, 500, "m1", 3.0, 0, 1000,
+            founder_order=["A", "B"], use_rint=flag,
+        )
+        assert seen["use_rint"] is flag
+
+
+class TestEnrichPeakLodTss:
+    @staticmethod
+    def _gene_info():
+        return pd.DataFrame({
+            "gene_id": ["ENSMUSG1.5", "ENSMUSG2.1"],
+            "gene_symbol": ["Aaa", "Bbb"],
+            "start": [1_000_000, 5_000_000],
+            "end": [1_100_000, 5_100_000],
+            "strand": ["-", "+"],
+        })
+
+    @staticmethod
+    def _peaks(ids):
+        return pd.DataFrame({"gene_id": ids, "peak_mb": [1.09, 5.02]})
+
+    def test_minus_strand_uses_end_as_tss(self):
+        out = pipeline.enrich_peak_lod(self._peaks(["ENSMUSG1", "ENSMUSG2"]), self._gene_info())
+        assert out["start_mb"].tolist() == pytest.approx([1.1, 5.0])
+        assert out["cis_dist_mb"].tolist() == pytest.approx([0.01, 0.02])
+
+    def test_cis_dist_negative_means_upstream_on_both_strands(self):
+        peaks = pd.DataFrame({"gene_id": ["ENSMUSG1", "ENSMUSG2"], "peak_mb": [1.12, 4.98]})
+        out = pipeline.enrich_peak_lod(peaks, self._gene_info())
+        assert out["cis_dist_mb"].tolist() == pytest.approx([-0.02, -0.02])
+
+    def test_matches_with_and_without_versions(self):
+        for ids in (["ENSMUSG1.5", "ENSMUSG2.1"], ["ENSMUSG1", "ENSMUSG2"], ["ENSMUSG1.9", "ENSMUSG2"]):
+            out = pipeline.enrich_peak_lod(self._peaks(ids), self._gene_info())
+            assert out["gene_symbol"].tolist() == ["Aaa", "Bbb"]
+            assert out["cis_dist_mb"].notna().all()
+            assert out["gene_id"].tolist() == ids
+
+    def test_gene_tss_takes_priority_over_gene_info(self):
+        tss = pd.DataFrame({
+            "gene_id": ["ENSMUSG1.5", "ENSMUSG1.5"],
+            "start": [1_000_000, 1_000_000],
+            "end": [1_095_000, 1_050_000],
+            "strand": ["-", "-"],
+        })
+        out = pipeline.enrich_peak_lod(self._peaks(["ENSMUSG1", "ENSMUSG2"]), self._gene_info(), tss)
+        assert out["near_tss_mb"].iloc[0] == pytest.approx(1.095)
+        assert out["cis_dist_mb"].iloc[0] == pytest.approx(0.005)
+        assert out["start_mb"].iloc[0] == pytest.approx(1.1)
+
+    def test_gene_absent_from_gene_tss_falls_back_to_gene_info(self):
+        tss = pd.DataFrame({
+            "gene_id": ["ENSMUSG1"], "start": [1_000_000], "end": [1_100_000], "strand": ["-"],
+        })
+        out = pipeline.enrich_peak_lod(self._peaks(["ENSMUSG1", "ENSMUSG2"]), self._gene_info(), tss)
+        assert np.isnan(out["near_tss_mb"].iloc[1])
+        assert out["cis_dist_mb"].iloc[1] == pytest.approx(0.02)
+
+
+class TestScannedChromosomes:
+    @staticmethod
+    def _write(directory, chroms, skip=()):
+        for c in chroms:
+            for name in (f"lod_chr{c}.csv", f"peak_stats_chr{c}.csv", f"timing_chr{c}.json"):
+                if name not in skip:
+                    (directory / name).write_text("x\n")
+
+    def test_biological_order(self, tmp_path):
+        self._write(tmp_path, ["10", "2", "X", "1"])
+        assert pipeline.scanned_chromosomes(tmp_path) == ["1", "2", "10", "X"]
+
+    def test_missing_peak_file_names_it(self, tmp_path):
+        self._write(tmp_path, ["1", "2"], skip={"peak_stats_chr2.csv"})
+        with pytest.raises(ValueError, match="peak_stats_chr2.csv"):
+            pipeline.scanned_chromosomes(tmp_path)
+
+    def test_missing_timing_file_names_it(self, tmp_path):
+        self._write(tmp_path, ["1"], skip={"timing_chr1.json"})
+        with pytest.raises(ValueError, match="timing_chr1.json"):
+            pipeline.scanned_chromosomes(tmp_path)
+
+    def test_no_lod_files(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            pipeline.scanned_chromosomes(tmp_path)
+
+
+class TestValidateFinemapFrames:
+    @staticmethod
+    def _fm(rows):
+        return pd.DataFrame(rows, columns=["gene_id", "variant"])
+
+    def test_valid_frames_pass(self):
+        fm = self._fm([("g1", "a"), ("g1", "b"), ("g2", "a")])
+        peak = pd.DataFrame({"gene_id": ["g1", "g2"]})
+        pipeline.validate_finemap_frames(fm, peak, {"g1", "g2", "g3"})
+
+    def test_gene_without_output_is_allowed(self):
+        fm = self._fm([("g1", "a")])
+        pipeline.validate_finemap_frames(fm, pd.DataFrame({"gene_id": ["g1"]}), {"g1", "g2"})
+
+    def test_empty_frames_pass(self):
+        pipeline.validate_finemap_frames(
+            pd.DataFrame(columns=["gene_id", "variant"]),
+            pd.DataFrame(columns=["gene_id"]),
+            {"g1"},
+        )
+
+    def test_output_gene_not_in_input(self):
+        with pytest.raises(ValueError, match="not in the input"):
+            pipeline.validate_finemap_frames(
+                self._fm([("g9", "a")]), pd.DataFrame({"gene_id": ["g9"]}), {"g1"},
+            )
+
+    def test_duplicate_variant_rows(self):
+        with pytest.raises(ValueError, match="duplicate"):
+            pipeline.validate_finemap_frames(
+                self._fm([("g1", "a"), ("g1", "a")]), pd.DataFrame({"gene_id": ["g1"]}), {"g1"},
+            )
+
+    def test_peak_with_two_rows_per_gene(self):
+        with pytest.raises(ValueError, match="several rows"):
+            pipeline.validate_finemap_frames(
+                self._fm([("g1", "a")]), pd.DataFrame({"gene_id": ["g1", "g1"]}), {"g1"},
+            )
+
+    def test_peak_gene_absent_from_variant_table(self):
+        with pytest.raises(ValueError, match="absent from the per-variant"):
+            pipeline.validate_finemap_frames(
+                self._fm([("g1", "a")]), pd.DataFrame({"gene_id": ["g1", "g2"]}), {"g1", "g2"},
+            )
+
+
+class TestSupportIntervalAndSubmission:
+    @staticmethod
+    def _summary():
+        return pd.DataFrame({
+            "gene_id": ["g1", "g2", "g3"], "chr": ["chr1", "chr1", "chr2"],
+            "peak_lod": [5.0, 4.0, 6.0], "fdr": [0.01, 0.2, 0.04],
+        })
+
+    @staticmethod
+    def _ci():
+        return pd.DataFrame({
+            "gene_id": ["g1", "g3"], "ci_peak_lod": [5.0, 6.0],
+            "ci_lo": [1.0, 2.0], "ci_hi": [2.0, 3.5], "ci_width_mb": [1.0, 1.5],
+            "ci_truncated": [False, True],
+        })
+
+    def test_join_adds_interval_and_leaves_missing_gene_nan(self):
+        out = pipeline.attach_support_interval(self._summary(), self._ci())
+        assert len(out) == 3
+        row = out.set_index("gene_id")
+        assert row.loc["g1", "ci_lo"] == 1.0 and row.loc["g3", "ci_hi"] == 3.5
+        assert np.isnan(row.loc["g2", "ci_lo"]) and pd.isna(row.loc["g2", "ci_truncated"])
+        assert str(out["ci_truncated"].dtype) == "boolean"
+
+    def test_columns_follow_summary_order(self):
+        s = self._summary().assign(
+            **{c: 0.0 for c in pipeline.EGENE_SUMMARY_COLS if c not in self._summary()}
+        )
+        out = pipeline.attach_support_interval(s, self._ci())
+        assert list(out.columns) == [c for c in pipeline.EGENE_SUMMARY_COLS if c in out.columns]
+
+    def test_replaces_existing_interval_columns(self):
+        s = self._summary().assign(ci_lo=-9.0)
+        out = pipeline.attach_support_interval(s, self._ci()).set_index("gene_id")
+        assert out.loc["g1", "ci_lo"] == 1.0
+
+    def test_header_only_inputs(self):
+        out = pipeline.attach_support_interval(self._summary().iloc[0:0], self._ci().iloc[0:0])
+        assert len(out) == 0 and "ci_lo" in out.columns
+
+    def test_select_submission_genes_threshold_and_nan(self):
+        peak = pd.DataFrame({"gene_id": list("abcd"), "fdr": [0.1, 0.1000001, np.nan, 0.0]})
+        assert pipeline.select_submission_genes(peak, 0.1)["gene_id"].tolist() == ["a", "d"]
+
+

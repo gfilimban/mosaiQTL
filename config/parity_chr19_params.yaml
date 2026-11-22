@@ -1,8 +1,8 @@
 # Parity test: ctxhipp microglial_cell chr19 (UCI DFS9)
 # Run: NXF_CACHE_DIR=.nf_cache/parity_chr19 nextflow run workflow/main.nf -profile slurm -params-file config/parity_chr19_params.yaml
 genomecache:    '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/igvf_cache.h5'
-phenotypes:     '/dfs9/seyedam-lab/share/igvf_qtl/output/ctxhipp/nova/celltypes/microglial_cell/counts_lognorm.h5'
-gene_info:      '/dfs9/seyedam-lab/share/igvf_qtl/output/ctxhipp/nova/celltypes/microglial_cell/exp_gene_info_microglial_cell.csv'
+phenotypes:     '/dfs9/seyedam-lab/share/igvf_qtl/output/ctxhipp/comb/celltypes/microglial_cell/counts_lognorm.h5'
+gene_info:      '/dfs9/seyedam-lab/share/igvf_qtl/output/ctxhipp/comb/celltypes/microglial_cell/exp_gene_info_microglial_cell.csv'
 gene_tss:       '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/gene_tss.vm36.csv'
 metadata:       '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/igvf_sample_metadata.csv'
 sanger_alleles: '/dfs9/seyedam-lab/share/igvf_qtl/mosaiqtl/ref/sanger_alleles.h5'
@@ -20,6 +20,8 @@ n_perms:        1000
 n_perms_cal:    1000
 perm_method:    'parametric'
 fdr_threshold:  0.05
+submission_fdr: 0.1         # haplotype_peak_lod.csv keeps tested genes with fdr <= this
+call_rule:      'qvalue'    # 'qvalue' (Storey), 'bh' (Benjamini-Hochberg) or 'lfdr'; all three values are always written
 seed:           42
 
-output_dir:     '/dfs9/seyedam-lab/share/igvf_qtl/output/ctxhipp/nova/celltypes'
+output_dir:     '/dfs9/seyedam-lab/share/igvf_qtl/output/ctxhipp/comb/celltypes'

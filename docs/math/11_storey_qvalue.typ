@@ -3,7 +3,7 @@
 
 = Per-Gene Beta-Approximated Permutation p-values and Storey q-values
 <per-gene-beta-approximated-permutation-p-values-and-storey-q-values>
-#strong[Module:] `qtl/fdr.py` (`calibrate_gene_pvalue`, `beta_calibrate_pvalue`, `storey_qvalue`),
+#strong[Module:] `qtl/fdr.py` (`calibrate_gene_pvalue`, `beta_calibrate_pvalue`, `qvalue`, `bh`),
 `qtl/permutation.py` (`draw_parametric_null_batch`), `pipeline.py` (`calibrate_egenes_storey`,
 `call_significant_egenes`); Nextflow `CALL_EGENES` → `workflow/scripts/run_call_egenes.py`
 #strong[miQTL parallel:] none --- miQTL uses BH-FDR on genome-wide max-LOD; this design follows the
@@ -145,7 +145,7 @@ in `EGENE_SUMMARY_COLS`. `run_call_egenes.py` also writes it to `{tag}_pval_perm
 With #mi(`\{p_{\text{adj},g}\}_{g=1}^G`); now genuinely #mi(`\mathrm{Uniform}(0,1)`); under each gene\'s own null, Storey\'s
 construction (Storey & Tibshirani 2003, PNAS 10.1073/pnas.1530509100; Storey 2002, JRSS-B
 10.1111/1467-9868.00346 --- both already in `docs/REFERENCES.md`) applies validly. The q-value step
-(`fdr.storey_qvalue`) operates purely on the p-value vector, with no engine dependence at all. `NaN`
+(`fdr.qvalue`) operates purely on the p-value vector, with no engine dependence at all. `NaN`
 p-values are skipped, and #mi(`G`); is the number of finite p-values. #mi(`G`); covers #strong[all tested genes]:
 `call_significant_egenes` passes every gene with a non-missing `gene_id`, `chr` and `peak_lod`.
 
@@ -170,14 +170,42 @@ should not recur once §1--3\'s per-gene calibration is in place.
   \quad \text{for } i = G-1,\dots,1`)
 
 the monotone (step-down) minimum enforces #mi(`\hat{q}(p_{(i)})`); non-decreasing in #mi(`i`);. An eGene is
-called at #mi(`\hat{q}(p_{\text{adj},g}) \le 0.05`); (`fdr_threshold`, default 0.05; `SWE-09`\'s BIO-A5 gate target,
-unchanged). The q-value is written to `fdr`, `fdr_method = 'qvalue'`, and `significance = 'T'` iff
-#mi(`\hat{q} \le`); `fdr_threshold`.
+called at #mi(`\hat{q}(p_{\text{adj},g}) \le 0.05`); when the call rule is `qvalue` (`fdr_threshold`, default 0.05;
+`SWE-09`\'s BIO-A5 gate target, unchanged). The call rule is set by `call_rule` (`--call-rule`, Nextflow
+`params.call_rule`); the selected adjusted value is written to `fdr`, with `fdr_method` equal to `'qvalue'` or `'BH'`
+and `significance = 'T'` iff #mi(`\text{fdr} \le`); `fdr_threshold`. Both adjusted values are always written, as
+`qval_storey` and `qval_bh`, together with #mi(`\hat\pi_0`); as `pi0`.
 
-#strong[Versus BH-FDR:] BH is the #mi(`\hat\pi_0 = 1`); special case of the same formula --- always
-conservative when real signal exists among the #mi(`G`); genes. Storey recovers power BH wastes, but
-#emph[only] once its #mi(`\mathrm{Uniform}(0,1)`);-under-#mi(`H_0`); input assumption holds, which is what §1--3
-provide for LMM-scanned genes.
+#strong[Versus BH-FDR.] The Benjamini--Hochberg adjusted value is the #mi(`\hat\pi_0 = 1`); case of the same
+formula,
+
+#mitex(`q^{\mathrm{BH}}_{(i)} = \min_{j \ge i}\ \min\!\left(1,\ \frac{G\,p_{(j)}}{j}\right),
+  \qquad q^{\mathrm{Storey}}_{(i)} = \min\!\left(1,\ \hat\pi_0\, q^{\mathrm{BH}}_{(i)}\right)`)
+
+so, with #mi(`\hat\pi_0 \le 1`);, the Storey q-value is never larger than the BH value: BH is the stricter rule
+and Storey recovers power only through #mi(`\hat\pi_0 < 1`);. BH controls FDR for independent or positively
+dependent tests (Benjamini and Yekutieli 2001). The Storey bound requires weak dependence and
+#mi(`\mathrm{Uniform}(0,1)`);-under-#mi(`H_0`); p-values (Storey, Taylor and Siegmund 2004), which is what §1--3
+provide for LMM-scanned genes; a mis-specified null distorts #mi(`\hat\pi_0`); (Efron 2004).
+
+#strong[Saturation.] The largest q-value is #mi(`\hat q(p_{(G)}) = \hat\pi_0\, p_{(G)} \le \hat\pi_0`);, so if
+#mi(`\hat\pi_0 \le`); `fdr_threshold` every tested gene has #mi(`\hat q \le`); `fdr_threshold` whatever its
+p-value, and `significance` then describes the table and not the gene. `qvalue` logs a warning when
+#mi(`\hat\pi_0 < 0.2`);. In the ctxhipp cell-type tables the share of tested genes with #mi(`\hat q \le 0.05`); was
+100% for glutamatergic neurons (72% by BH) and 91% for astrocytes (50% by BH). Whether a small #mi(`\hat\pi_0`);
+is real signal or a miscalibrated null is decided by checking the null p-value distribution against simulation,
+not by the q-value itself. Estimator edge case: when every p-value is below every #mi(`\lambda`); on the grid,
+all #mi(`\hat\pi_0(\lambda)`); are zero and the code returns #mi(`\hat\pi_0 = 1`); instead of the floor.
+
+#strong[Across cell types and tissues.] Each cell-type table is a separate family, so the call above controls
+FDR within a table and not over the study. Over families selected on the data, the error rate must be controlled
+on the selected families (Benjamini and Bogomolov 2014): with #mi(`R`); of #mi(`F`); families selected, each is
+tested at level #mi(`q\,R/F`);. The same gene recurs across cell types of the same strains, so tests are
+positively dependent, which is the setting of the BH guarantee but is an assumption of the family-level
+adjustment, to be checked by simulation. TreeQTL (Peterson et al. 2016) is the hierarchical design for a gene
+level above a condition level; its released form is single-tissue, so a tissue level is an extension.
+#emph[Documented, not implemented.] Sharing of effect estimates across cell types is a separate problem
+(Urbut et al. 2019) and does not control the error rate. All citations are in `docs/REFERENCES.md`.
 
 #divider()
 

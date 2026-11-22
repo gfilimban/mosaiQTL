@@ -67,9 +67,6 @@ CC_COLS: list[str] = [
     'CC074',
 ]
 
-# HMM parameters — n_gen=1 for the CC consensus map (map already encodes
-# cumulative recombination history; r is used directly without scaling).
-N_GEN: int = 1
 ERROR_PROB: float = 0.002
 
 
@@ -138,7 +135,7 @@ def main() -> None:
     log.info('  founders  : %s', FOUNDER_COLS)
     log.info('  F1 crosses: %d', len(F1_CROSSES))
     log.info('  CC strains: %d', len(CC_COLS))
-    log.info('  n_gen=%d  error_prob=%.4f', N_GEN, ERROR_PROB)
+    log.info('  error_prob=%.4f', ERROR_PROB)
 
     # ── validate inputs ───────────────────────────────────────────────────────
     missing = [p for p in (gigamuga, gmap_dir, pmap_dir) if not p.exists()]
@@ -170,7 +167,6 @@ def main() -> None:
         founder_cols=FOUNDER_COLS,
         cc_cols=CC_COLS,
         f1_crosses=F1_CROSSES,
-        n_gen=N_GEN,
         error_prob=ERROR_PROB,
     )
 
