@@ -1,4 +1,4 @@
-"""Unit tests for qtl/fdr.py — storey_qvalue + calibrate_gene_pvalue."""
+"""Unit tests for qtl/fdr.py — qvalue + calibrate_gene_pvalue."""
 
 import sys
 from pathlib import Path
@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
-from mosaiqtl.qtl.fdr import storey_qvalue, calibrate_gene_pvalue
+from mosaiqtl.qtl.fdr import qvalue, calibrate_gene_pvalue
 
 _FIXTURE = Path(__file__).parents[1] / "fixtures" / "data" / "qvalue_reference.csv"
 
@@ -21,7 +21,7 @@ class TestPi0Estimation:
     def test_uniform_null_pi0_near_one(self):
         rng = np.random.default_rng(0)
         pv = rng.uniform(0, 1, 2000)
-        _, pi0 = storey_qvalue(pv)
+        _, pi0 = qvalue(pv)
         assert pi0 <= 1.0
         assert pi0 >= 0.85  # uniform null → π₀ close to 1
 
@@ -29,7 +29,7 @@ class TestPi0Estimation:
         rng = np.random.default_rng(1)
         # 50% near-zero (signal) + 50% uniform (null)
         pv = np.concatenate([rng.beta(0.1, 1, 500), rng.uniform(0, 1, 500)])
-        _, pi0 = storey_qvalue(pv)
+        _, pi0 = qvalue(pv)
         assert pi0 < 0.75
 
     def test_smooth_df3_reproduces_a_line(self):
@@ -42,7 +42,7 @@ class TestPi0Estimation:
     def test_raw_pi0_above_one_is_logged_and_capped(self, caplog):
         pv = np.linspace(0.5, 1.0, 400)
         with caplog.at_level("WARNING"):
-            _, pi0 = storey_qvalue(pv)
+            _, pi0 = qvalue(pv)
         assert pi0 == 1.0
         assert any('exceeds 1' in r.message for r in caplog.records)
 
@@ -50,7 +50,7 @@ class TestPi0Estimation:
         rng = np.random.default_rng(2)
         for seed in range(10):
             pv = rng.uniform(0, 1, 200)
-            _, pi0 = storey_qvalue(pv)
+            _, pi0 = qvalue(pv)
             assert pi0 <= 1.0 + 1e-9
 
 
@@ -61,14 +61,14 @@ class TestQvalueProperties:
     def test_qvalues_in_unit_interval(self):
         rng = np.random.default_rng(3)
         pv = rng.uniform(0, 1, 300)
-        q, _ = storey_qvalue(pv)
+        q, _ = qvalue(pv)
         assert np.all(q[np.isfinite(q)] >= 0.0)
         assert np.all(q[np.isfinite(q)] <= 1.0 + 1e-9)
 
     def test_qvalues_monotone(self):
         rng = np.random.default_rng(4)
         pv = rng.uniform(0, 1, 500)
-        q, _ = storey_qvalue(pv)
+        q, _ = qvalue(pv)
         # sorted p → non-decreasing q
         order = np.argsort(pv)
         q_sorted = q[order]
@@ -77,7 +77,7 @@ class TestQvalueProperties:
     def test_qvalues_leq_bh_under_signal(self):
         rng = np.random.default_rng(5)
         pv = np.concatenate([rng.beta(0.1, 1, 200), rng.uniform(0, 1, 200)])
-        q_storey, pi0 = storey_qvalue(pv)
+        q_storey, pi0 = qvalue(pv)
         # BH is Storey with π₀=1; when π₀<1, Storey ≤ BH
         if pi0 < 0.99:
             m = len(pv)
@@ -94,7 +94,7 @@ class TestQvalueProperties:
         # large uniform sample → π₀ ≈ 1 → Storey q ≈ BH q
         rng = np.random.default_rng(6)
         pv = rng.uniform(0, 1, 2000)
-        q_storey, pi0 = storey_qvalue(pv)
+        q_storey, pi0 = qvalue(pv)
         m = len(pv)
         order = np.argsort(pv)
         ranks = np.arange(1, m + 1)
@@ -110,13 +110,13 @@ class TestQvalueProperties:
 
     def test_nan_input_returns_nan(self):
         pv = np.array([0.01, np.nan, 0.5, 0.9])
-        q, _ = storey_qvalue(pv)
+        q, _ = qvalue(pv)
         assert np.isnan(q[1])
         assert np.isfinite(q[0])
 
     def test_all_nan_returns_pi0_one(self):
         pv = np.full(10, np.nan)
-        q, pi0 = storey_qvalue(pv)
+        q, pi0 = qvalue(pv)
         assert pi0 == 1.0
         assert np.all(np.isnan(q))
 
@@ -131,7 +131,7 @@ class TestAgainstRFixture:
     def test_pi0_close_to_r(self):
         df = pd.read_csv(_FIXTURE)
         pv = df["p_value"].to_numpy()
-        _, pi0_py = storey_qvalue(pv)
+        _, pi0_py = qvalue(pv)
         pi0_r = float(df["pi0"].iloc[0])
         # within 10% of R reference (scipy vs R spline smoothing penalty differ)
         assert abs(pi0_py - pi0_r) / pi0_r < 0.10
@@ -142,7 +142,7 @@ class TestAgainstRFixture:
     def test_qvalues_corr_with_r(self):
         df = pd.read_csv(_FIXTURE)
         pv = df["p_value"].to_numpy()
-        q_py, _ = storey_qvalue(pv)
+        q_py, _ = qvalue(pv)
         q_r = df["q_value"].to_numpy()
         corr = float(np.corrcoef(q_py, q_r)[0, 1])
         assert corr >= 0.99
@@ -368,10 +368,10 @@ class TestCallSignificantEgenes:
 
     def test_q_values_use_every_tested_gene(self):
         """Storey q-values are computed over the full tested set, not a subset."""
-        from mosaiqtl.qtl.fdr import storey_qvalue
+        from mosaiqtl.qtl.fdr import qvalue
 
         out, _ = self._run()
-        q, _ = storey_qvalue(out["pval_perm"].to_numpy())
+        q, _ = qvalue(out["pval_perm"].to_numpy())
         np.testing.assert_allclose(out["fdr"].to_numpy(), q)
 
 
@@ -413,7 +413,141 @@ class TestStoreyEndToEndNullAndSignal:
             pvals.append(p)
             is_signal.append(signal)
         pvals, is_signal = np.asarray(pvals), np.asarray(is_signal)
-        q, pi0 = storey_qvalue(pvals)
+        q, pi0 = qvalue(pvals)
         assert pi0 <= 1.0
         assert np.mean(q[~is_signal] < 0.05) <= 0.1
         assert np.median(pvals[is_signal]) < np.median(pvals[~is_signal])
+
+
+class TestBenjaminiHochberg:
+    """bh and its relation to the Storey q-value."""
+
+    def test_matches_textbook_values(self):
+        from mosaiqtl.qtl.fdr import bh
+
+        p = np.array([0.01, 0.04, 0.03, 0.005])
+        # sorted: .005 .01 .03 .04 -> m p / i = .02 .02 .04 .04
+        assert np.allclose(bh(p), [0.02, 0.04, 0.04, 0.02])
+
+    def test_nan_is_skipped_and_preserved(self):
+        from mosaiqtl.qtl.fdr import bh
+
+        q = bh(np.array([0.01, np.nan, 0.5]))
+        assert np.isnan(q[1]) and np.isfinite(q[[0, 2]]).all()
+
+    def test_storey_equals_pi0_times_bh_before_clipping(self):
+        from mosaiqtl.qtl.fdr import bh
+
+        rng = np.random.default_rng(1)
+        pv = np.concatenate([rng.uniform(0, 1e-4, 300), rng.uniform(0, 1, 700)])
+        q_storey, pi0 = qvalue(pv)
+        q_bh = bh(pv)
+        assert np.all(q_bh >= q_storey - 1e-12)
+        assert np.allclose(q_storey, np.minimum(pi0 * q_bh, 1.0), atol=1e-12)
+
+    def test_saturation_warning_when_pi0_is_small(self, caplog):
+        import logging
+
+        rng = np.random.default_rng(2)
+        pv = np.concatenate([rng.uniform(0, 1e-3, 900), rng.uniform(0, 1, 100)])
+        with caplog.at_level(logging.WARNING):
+            _, pi0 = qvalue(pv)
+        assert pi0 < 0.2
+        assert any("pi0" in r.message for r in caplog.records)
+
+    def test_small_pi0_makes_every_gene_pass_storey_not_bh(self):
+        from mosaiqtl.qtl.fdr import bh
+
+        rng = np.random.default_rng(3)
+        pv = np.concatenate([rng.uniform(0, 1e-6, 950), rng.uniform(0, 1, 50)])
+        q_storey, pi0 = qvalue(pv)
+        q_bh = bh(pv)
+        late = pv > 0.5
+        assert pi0 < 0.2
+        assert np.mean(q_storey <= 0.05) > np.mean(q_bh <= 0.05)
+        assert (q_storey[late] <= 0.05).mean() > 0.9
+        assert (q_bh[late] > 0.05).all()
+
+
+class TestLfdr:
+    """lfdr is the per-gene posterior null probability; q is its running mean."""
+
+    @staticmethod
+    def _mixture(seed=0, n_null=1500, n_alt=500):
+        rng = np.random.default_rng(seed)
+        return np.concatenate([rng.uniform(0, 1, n_null), rng.beta(0.2, 6.0, n_alt)])
+
+    def test_bounded_and_nan_preserved(self):
+        from mosaiqtl.qtl.fdr import lfdr
+
+        pv = self._mixture()
+        pv[3] = np.nan
+        out = lfdr(pv)
+        assert np.isnan(out[3])
+        fin = out[np.isfinite(out)]
+        assert fin.min() >= 0.0 and fin.max() <= 1.0
+
+    def test_non_decreasing_in_p(self):
+        from mosaiqtl.qtl.fdr import lfdr
+
+        pv = self._mixture(1)
+        out = lfdr(pv)
+        assert np.all(np.diff(out[np.argsort(pv)]) >= -1e-12)
+
+    def test_uniform_null_is_near_one(self):
+        from mosaiqtl.qtl.fdr import lfdr
+
+        pv = np.random.default_rng(2).uniform(0, 1, 2000)
+        assert np.median(lfdr(pv, pi0=1.0)) > 0.9
+
+    def test_small_p_is_signal_large_p_is_null(self):
+        from mosaiqtl.qtl.fdr import lfdr
+
+        pv = self._mixture(3)
+        out = lfdr(pv)
+        assert np.median(out[pv < 1e-3]) < 0.1
+        assert np.median(out[pv > 0.5]) > 0.8
+
+    def test_marginal_gene_exceeds_its_qvalue(self):
+        from mosaiqtl.qtl.fdr import lfdr
+
+        pv = self._mixture(4)
+        q, pi0 = qvalue(pv)
+        local = lfdr(pv, pi0=pi0)
+        called = q <= 0.05
+        assert called.any()
+        assert local[called].max() > 0.05
+        # the q-value is the running mean of the lfdr, to density-estimation error
+        order = np.argsort(pv)
+        running = np.cumsum(local[order]) / np.arange(1, len(pv) + 1)
+        k = int(called.sum())
+        assert abs(running[k - 1] - q[order][k - 1]) < 0.05
+
+    def test_too_few_p_values_raises(self):
+        from mosaiqtl.qtl.fdr import lfdr
+
+        with pytest.raises(ValueError, match="at least"):
+            lfdr(np.array([0.1, 0.5, 0.9]))
+
+
+# ── beta_calibrate_pvalue ────────────────────────────────────────────────────
+
+
+class TestBetaCalibrationReproducible:
+    """pval_perm is recoverable from the null max-LODs and the fitted Beta shapes."""
+
+    @pytest.mark.parametrize('seed', range(10))
+    def test_p_adj_is_beta_cdf_of_pointwise_p(self, seed):
+        from scipy import stats
+
+        from mosaiqtl.qtl.fdr import beta_calibrate_pvalue
+
+        rng = np.random.default_rng(seed)
+        df = 7
+        null_lods = rng.chisquare(df, 200) / (2.0 * np.log(10.0))
+        peak_lod = float(np.quantile(null_lods, 0.99)) + 0.5
+        p_adj, a_hat, b_hat = beta_calibrate_pvalue(peak_lod, null_lods, df)
+        p_real = stats.chi2.sf(2.0 * np.log(10.0) * peak_lod, df)
+        assert p_adj == pytest.approx(stats.beta.cdf(p_real, a_hat, b_hat))
+        assert a_hat > 0.0 and b_hat > 0.0
+        assert 0.0 <= p_adj <= 1.0

@@ -30,7 +30,7 @@ Writes:
 """
 import gc
 import re
-import sys, json, logging, datetime, warnings
+import sys, logging, datetime, warnings
 import numpy as np
 import pandas as pd
 import h5py
@@ -154,6 +154,7 @@ def main() -> None:
 
     from mosaiqtl import __version__
     from mosaiqtl.genotype.cc import FOUNDER_ORDER, display_founders as _display_founders
+    from mosaiqtl.io.atomic import atomic_write_json
     from mosaiqtl.io.results_io import write_eqtl_stats
     from mosaiqtl.utils import chr_sort_key, git_hash, strip_chr_prefix
     from mosaiqtl.viz.effects import effects_per_chr, genome_effects_grid
@@ -513,7 +514,7 @@ def main() -> None:
         'git_hash':          genome_row['git_hash'],
         'generated_at':      datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
-    (out / 'run_metadata.json').write_text(json.dumps(metadata, indent=2))
+    atomic_write_json(metadata, out / 'run_metadata.json')
     log.info('wrote run_metadata.json')
 
 

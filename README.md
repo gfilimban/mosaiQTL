@@ -1,314 +1,130 @@
 # mosaiQTL
 
-**Haplotype-based QTL mapping for multiparent populations.**  
-Maps molecular phenotypes to 8 founder haplotypes using a Gaussian LMM or NB-GLMM with LOCO
-kinship correction. Designed for CC/DO mice (mm39); extensible to other MPPs.
+**Haplotype-based QTL mapping for multiparent mouse populations.** mosaiQTL tests whether a gene's expression
+depends on which of the 8 founder haplotypes a strain carries near it, using a linear mixed model with
+leave-one-chromosome-out (LOCO) kinship. It was built for single-nucleus pseudobulk data from the Collaborative
+Cross (CC lines, founders and F1s; mm39) and calls eGenes, founder effects and fine-mapped variants.
 
-> **Current status (v0.7.0):** The **Gaussian LMM** (`--model lmm`) is the validated,
-> production-ready model — Phase 1–3 gates pass, full gastroc scan complete, Sanger
-> fine-mapping with IGVF-schema outputs wired end-to-end. The **NB-GLMM** (`--model nb`) is
-> the intended long-term primary model for raw pseudobulk counts but has not yet passed
-> end-to-end biological validation (Phase 4). Use `--model lmm` for any real analysis until
-> Phase 4 is complete.
+> **Status — v0.7.2.** The Gaussian LMM is the validated production model, run by the Nextflow workflow and the
+> CLI. The negative-binomial GLMM (`qtl/nb.py`) is experimental and available from the Python API only.
 
----
+## How it works
 
-## Introduction
-
-mosaiQTL performs genome-wide haplotype-based QTL scans for single-cell modalities. It resolves
-associations to 8 founder haplotypes using a score test under a NB-GLMM or Gaussian LMM with
-LOCO (leave-one-chromosome-out) kinship correction. The pipeline streams one chromosome at a
-time (peak RAM < 1 GB for 43 k genes across 20 chromosomes) and runs either as a local CLI or
-a Nextflow workflow for HPC clusters.
-
-**Supported modalities:** snRNA-seq eQTL · ATAC-seq caQTL (planned) · splicing QTL (planned)
-
-| | mosaiQTL | miQTL (R) | tensorQTL |
-|---|---|---|---|
-| **Primary model** | NB-GLMM (counts) | Gaussian LMM | Gaussian linear |
-| **Haplotype scan** | ✓ (8 founders) | ✓ (8 founders) | ✗ |
-| **LOCO kinship** | ✓ mandatory | ✓ | ✗ |
-| **Raw count input** | ✓ | ✗ | ✗ |
-| **Sanger fine-mapping** | ✓ ABF credible sets | ✗ | ✗ |
-| **Peak RAM (43k genes, 20 chr)** | 897 MB | — | — |
-
----
-
-## Installation
-
-```bash
-conda create -n mosaiqtl python=3.13
-conda activate mosaiqtl
-pip install -e '.[dev]'
-```
-
-Core deps (scan engine): `numpy scipy pandas h5py anndata natsort`  
-Required for CLI and plots: `pydantic click seaborn matplotlib`  
-Optional: `rpy2` (convert existing R-format genome caches to HDF5), `pysam` (build Sanger
-alleles HDF5 from MGP VCF)
-
----
-
-## Quick start
-
-```bash
-# 1. Build a genome cache from GigaMUGA probs (JAX DO reference data)
-mosaiqtl build-cache --gigamuga GM_ccf1fo_mm39.csv --probs cc_probs.rds --out cache.h5
-
-# 2. Genome-wide LMM scan → per-gene peak LOD
-mosaiqtl scan --model lmm \
-    --cache cache.h5 --counts data.h5ad \
-    --gene-info gene_info.csv --metadata meta.csv \
-    --output peak_lod.csv
-
-# 3. Permutation thresholds
-mosaiqtl permute \
-    --cache cache.h5 --counts data.h5ad \
-    --gene-info gene_info.csv --metadata meta.csv \
-    --output perm/ --n-perms 1000
-
-# 4. Allele effects + eGene calling + IGVF outputs
-mosaiqtl report \
-    --scan-result peak_lod.csv --perm-dir perm/ --output-dir results/ \
-    --allele-effects allele_effects.csv --pval-perm pval_perm.json
-
-# 5. Sanger fine-mapping (requires sanger_alleles.h5)
-mosaiqtl finemap \
-    --egenes results/eqtl_summary.csv \
-    --cache cache.h5 --counts data.h5ad \
-    --metadata meta.csv \
-    --sanger-alleles sanger_alleles.h5 \
-    --output results/finemap/
-```
-
-For parallel per-chromosome HPC runs see **Nextflow pipeline** below.
-
----
-
-## CLI reference
-
-### Subcommands
-
-| Subcommand | Description |
+| Step | What happens |
 |---|---|
-| `build-cache` | GigaMUGA CSV → genomecache HDF5 |
-| `scan` | Per-chromosome LMM/NB scan → `peak_lod.csv` |
-| `permute` | Permutation null distribution → GEV fit |
-| `call-egenes` | Storey FDR eGene discovery |
-| `finemap` | Sanger SNP fine-mapping → credible-set CSVs |
-| `report` | Summary tables + QC plots |
+| 1. Haplotypes | An HMM turns GigaMUGA marker calls into founder probabilities per strain and locus (genome cache). |
+| 2. Kinship | LOCO kinship from those probabilities, eigendecomposed once per chromosome. |
+| 3. Scan | Per gene, $h^2$ is fitted once by maximum likelihood; every locus within ±1 Mb of the TSS is then tested in one batched solve (LOD). |
+| 4. Significance | Each gene's peak is calibrated against its own simulated null (Beta fit), then Storey q-values are computed over all tested genes. |
+| 5. Fine-mapping | For eGenes, Sanger SNPs in the 1.5-LOD support interval get Bayes factors; posterior probability (PIP) is shared within founder-allele patterns. |
 
-Run `mosaiqtl <subcommand> --help` for the full flag list.
+The derivations are in [`docs/METHODS.typ`](docs/METHODS.typ) and [`docs/math/`](docs/math/).
 
-### Model flag
-
-`--model lmm` (Gaussian LMM, validated) or `--model nb` (NB-GLMM, Phase 4 pending).  
-The default is `nb`; always pass `--model lmm` for real analyses until Phase 4 completes.
-
-### Scan window
-
-`--scan-type L` (local ±`window_mb` around TSS, recommended for cis-eQTL),
-`C` (whole chromosome), or `G` (genome-wide). The permutation null must use the same
-`--scan-type` and `--window-mb` as the scan.
-
----
-
-## Nextflow pipeline (HPC)
-
-The Nextflow DSL2 workflow parallelises per-chromosome scanning across SLURM array jobs with
-a shared LOCO kinship object.
+## Install
 
 ```bash
-# dry-run (validates DAG and stubs all processes)
-nextflow run workflow/main.nf -profile local -stub-run \
-    -params-file config/default_params.yaml
+git clone https://github.com/gfilimban/mosaiQTL.git && cd mosaiQTL
+conda create -n mosaiqtl python=3.13 && conda activate mosaiqtl
+pip install -e .            # add '.[dev]' for tests and linting
+```
+Optional: `pysam` (build the Sanger allele file from the MGP VCF), `rpy2` (convert R-format genome caches).
 
-# production HPC run (SLURM)
-nextflow run workflow/main.nf -profile slurm \
-    -params-file config/default_params.yaml -resume
+## Run the pipeline (Nextflow)
+
+```bash
+# check the DAG without running anything
+nextflow run workflow/main.nf -profile local -stub-run -params-file config/default_params.yaml
+
+# production run on SLURM
+nextflow run workflow/main.nf -profile slurm -params-file config/gastroc_hpc_params.yaml -resume
 ```
 
-Key params in `config/default_params.yaml`:
+Copy `config/default_params.yaml` and set at least:
 
-| Param | Description |
+| Parameter | Meaning |
 |---|---|
-| `celltypes_dir` | Directory of per-cell-type counts HDF5 files |
-| `sanger_alleles` | Path to `sanger_alleles.h5` (optional — fine-mapping skipped if absent) |
-| `scan_type` | `L`, `C`, or `G` |
-| `window_mb` | Half-window in Mb for `scan_type=L` |
-| `use_rint` | `1` (default) for rank-normalised expression; `0` for raw Gaussian phenotypes |
-| `n_perms` | Number of permutations for GEV null fit |
+| `celltypes_dir` | Folder with one subfolder per cell type, each holding `counts_lognorm.h5` |
+| `metadata` | Sample sheet: `sample_id`, `genotype` (strain) and the covariate columns |
+| `gene_info`, `gene_tss` | Gene coordinates and strand-aware transcript TSSs |
+| `sanger_alleles` | Founder SNP alleles (HDF5); fine-mapping is skipped when absent |
+| `scan_type`, `window_mb` | `L` (local, default) with a ±1 Mb window; `C` chromosome-wide; `G` genome-wide |
+| `covariates` | Fixed effects, default `sex,dataset` |
+| `call_rule`, `fdr_threshold` | `qvalue` (default), `bh` or `lfdr`; eGene cut, default 0.05 |
 
----
-
-## Python API
-
-Use the API for custom workflows, single-chromosome exploration, or downstream analyses.
-For full runs, prefer the CLI — it checkpoints per-chromosome and resumes after failures.
-
-```python
-import numpy as np
-import pandas as pd
-import anndata
-from mosaiqtl.genotype.genomecache import GenomeCache
-from mosaiqtl.genotype.kinship import calc_kinship, decomp_kinship
-from mosaiqtl.utils import build_z_matrix, reduce_to_strain_means
-from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
-from mosaiqtl.io.results_io import scan_result_to_df
-from mosaiqtl.qtl.scan import scan_multi_gene_lmm
-from mosaiqtl.qtl.thresholds import get_gev_thresholds
-from mosaiqtl.qtl.fdr import calibrate_gene_pvalue
-from mosaiqtl.qtl.effects import get_allele_effects
-from mosaiqtl.pipeline import (
-    call_egenes, calibrate_egenes_storey, finalize_egene_summary,
-    finemap_egenes, prepare_egenes_for_finemap,
-)
-
-# 1. Cache + LOCO kinship (once per run)
-cache          = GenomeCache.from_hdf5('ref/cache.h5')
-kinship_decomp = decomp_kinship(calc_kinship(cache, method='loco'))
-
-# 2. Metadata, covariates, expression
-meta       = pd.read_csv('metadata.csv')   # required: sample_id; opt: sex, batch
-geno_map   = build_sample_geno_map(meta)
-sample_ids = list(meta['sample_id'])
-geno_ids   = [geno_map.get(s, s) for s in sample_ids]
-cov_arr    = build_cov_array(meta, sample_ids, ['sex', 'batch'])  # (n_samples, p)
-
-adata    = anndata.read_h5ad('counts.h5ad', backed='r')
-Y        = np.array(adata.raw.X.toarray(), dtype=np.float64)  # (n_genes, n_samples)
-gene_ids = list(adata.var_names)
-gene_info = pd.read_csv('gene_info.csv')   # gene_id, gene_symbol, chr, start, end
-
-# 3. Genome-wide scan (streams one chromosome at a time)
-peak_rows = scan_multi_gene_lmm(
-    phenotype_matrix=Y,
-    gene_ids=gene_ids,
-    genomecache=cache,
-    gene_chr_map=dict(zip(gene_info['gene_id'], gene_info['chr'].astype(str))),
-    covariates=cov_arr,
-    kinship_decomp=kinship_decomp,
-    sample_ids=geno_ids,
-    use_rint=True,
-    scan_type='L',
-    window_mb=1.0,
-    gene_pos_mb_map=dict(zip(gene_info['gene_id'], gene_info['start'] / 1e6)),
-)
-peak_lod_df = pd.DataFrame(peak_rows)
-
-# 4. GEV threshold from permutation max-LOD null
-max_lods     = pd.read_csv('perm/perm_max_lods.csv')['max_lod'].values
-threshold, _ = get_gev_thresholds(max_lods)   # (None, None) on failure
-
-# 5. Stage-1 coarse gate
-egenes_stage1 = call_egenes(peak_lod_df, threshold=threshold)
-
-# 6. Stage-2 FDR: per-gene Beta calibration + Storey q-value
-# calibrate_gene_pvalue operates at strain level — reduce via Z-matrix
-Z, valid = build_z_matrix(geno_ids, list(cache.sample_ids))
-pval_perm: dict[str, float] = {}
-for _, row in egenes_stage1.iterrows():
-    gid = str(row['gene_id'])
-    idx = gene_ids.index(gid)
-    y_strain = reduce_to_strain_means(Y[idx], Z, valid)
-    p, *_    = calibrate_gene_pvalue(
-        y_gene=y_strain, genomecache=cache, chrom=str(row['chr']),
-        peak_lod=float(row['peak_lod']), covariates=None,
-        kinship_decomp=kinship_decomp, n_perms=200,
-    )
-    pval_perm[gid] = p
-
-egenes = calibrate_egenes_storey(egenes_stage1, pval_perm, fdr_threshold=0.05)
-
-# 7. Sanger fine-mapping → IGVF-schema outputs
-egenes_fm = prepare_egenes_for_finemap(egenes)
-fm_df, fm_peak_df = finemap_egenes(
-    egene_df=egenes_fm, phenotype_matrix=Y, gene_ids=gene_ids,
-    genomecache=cache, alleles_h5='ref/sanger_alleles.h5',
-    out_dir='results/', covariates=cov_arr, kinship_decomp=kinship_decomp,
-    sample_ids=geno_ids,
-)
-```
-
----
+The genome cache and LOCO kinship are built on the first run (`ref/igvf_cache.h5`, `ref/igvf_kinship_loco.h5`)
+and reused afterwards. Every run writes a Nextflow trace to `<output_dir>/logs/trace.txt`.
 
 ## Inputs
 
-| Input | CLI flag | Format | Description |
-|---|---|---|---|
-| Genome cache | `--cache` | HDF5 | Haplotype probabilities + loci map. Build with `mosaiqtl build-cache`; source GigaMUGA probs from [JAX DO Reference Data](https://www.jax.org/research-and-faculty/genetic-diversity-initiative/tools-data/diversity-outbred-reference-data). |
-| Gene info | `--gene-info` | CSV | `gene_id`, `gene_symbol`, `chr`, `start`, `end` |
-| Pseudobulk counts | `--counts` | AnnData `.h5ad` | Genes × samples; raw integer counts in `.raw.X` for NB-GLMM, log-normalised for LMM |
-| Sample metadata | `--metadata` | CSV | `sample_id` required; `sex` (0=M, 1=F) and `batch` auto-included as covariates when present |
-| Sanger alleles | `--sanger-alleles` | HDF5 | Built once from MGP REL2021 VCF via `build_founder_allele_mgp()`; optional (fine-mapping skipped if absent) |
-| LOCO kinship | `--kinship` | HDF5 | Optional — built from `--cache` if not provided |
-
----
+| Input | Format |
+|---|---|
+| Genotypes | GigaMUGA calls (CSV) for founders, F1s and CC lines; turned into the genome cache (HDF5) by `build-cache` or the first Nextflow run |
+| Expression | One `counts_lognorm.h5` per cell type: `counts` (genes × samples, log-normalised), `genes`/`gene_ids`, `samples`/`sample_ids` |
+| Sample metadata | CSV with `sample_id`, `genotype` (strain) and covariate columns (numeric used as is, text one-hot encoded) |
+| Gene info | CSV with `gene_id`, `chr`, `start`; optional `end`, `strand` (strand-aware TSS), `gene_symbol` |
+| Transcript TSS | Optional CSV of strand-aware TSSs, used for cis distances |
+| Sanger alleles | Optional HDF5 of founder SNP alleles, built once from the MGP REL2021 VCF (`build_founder_allele_mgp`) |
 
 ## Outputs
 
-All output files are named `{tissue}_{celltype}_{scan_tag}_{filename}`.
+Files are named `{tissue}_{celltype}_{scan_tag}_…` (for example `gastroc_type_ii_myonucleus_Lw1_peak_lod.csv`).
+Every column is described in [`docs/output_schema.md`](docs/output_schema.md).
 
-### Scan outputs
+| File | Contents |
+|---|---|
+| `*_peak_lod.csv` | Per gene: peak locus, LOD, $h^2$, founder effects, cis distance, `is_egene` |
+| `*_lod_genome.csv` | LOD at every scanned locus |
+| `*_haplotype_eqtl_summary.csv` | eGene calls: calibrated p-value, q-values (Storey, BH), $\hat\pi_0$, significance |
+| `*_perm_max_lods.csv`, `*_perm_gev_params.json` | Permutation null and GEV threshold (quality control) |
+| `*_eqtl_ci.csv` | 1.5-LOD support interval per eGene |
+| `*_eqtl_finemapping.csv` | Per-variant fine-mapping: PIP, credible set, Bayes factor, founder alleles |
+| `*_eqtl_finemapping_groups.csv` | One row per founder-pattern group: group PIP, variants, span |
+| `*_eqtl_finemapping_peak.csv` | Lead variant per eGene (lead PIP > 0.25) |
+| `*_eqtl_stats.csv`, `*.png` | Run summary and figures |
 
-| File | Status | Description |
-|---|---|---|
-| `peak_lod.csv` | ✅ | Per-gene peak LOD, peak locus, cis distance, null model params |
-| `allele_effects.csv` | ✅ | Per-founder effect estimates at each gene's peak locus |
-| `eqtl_summary.csv` | ✅ | eGene table with `pval_perm`, `fdr` (Storey q-value), `significance` |
-| `eqtl_peak.csv` | ✅ | Peak locus per eGene — haplotype effects, run metadata, CI bounds |
-| `eqtl_stats.csv` | ✅ | Run-level summary — LOD threshold, GEV params, gene counts, timing |
-| `eqtl_scan.csv` | ✅ | Full haplotype scan — one row per gene × locus; `peak_locus` flag. Enable with `--eqtl-scan`. |
-| `genome_summary.png` | ✅ | Genome-wide Manhattan and QC figures |
+## Command line and Python API
 
-### Fine-mapping outputs (require `--sanger-alleles`)
+The `mosaiqtl` command runs the same steps one at a time (`build-kinship`, `scan-chr`, `merge-scan`, `permute`,
+`calibrate`, `call-egenes`, `characterise`, `impute`, `finemap`, `report`, plus `scan-mi`, `mediate`,
+`assess-stability`); `build-cache` is a separate command. Run `mosaiqtl <command> --help` for options. The
+Nextflow workflow is the tested route; the CLI is useful for single steps and debugging. For the Python API see
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-IGVF variant-first column schema: `variant → rsid → chr → pos → ref → alt → effect_allele →
-other_allele → gene_id → gene_symbol → pip → ...`
-
-| File | Status | Description |
-|---|---|---|
-| `eqtl_finemapping.csv` | ✅ | All credible-set SNPs per eGene — PIP, ABF, CI bounds, biallelic contrast (effect/other allele, ref/alt founders, dosage, SE) |
-| `eqtl_finemapping_peak.csv` | ✅ | Highest-PIP SNP per eGene with founder haplotype effects |
-
-`dosage='T'` flags haplotype-probability-imputed calls (vs `'F'` for hard GigaMUGA genotype
-calls). `se_effect_size` is derived via Wald inversion from the imputed SNP scan LOD.
-
----
+**Known CLI limitations:** `mosaiqtl impute` fails (use Nextflow or `pipeline.finemap_egenes`), and
+`calibrate`/`call-egenes` compute q-values only for genes passing a LOD gate, unlike Nextflow, which uses all
+tested genes.
 
 ## Models
 
-| Model | Function | When to use |
+| Model | Entry point | Status |
 |---|---|---|
-| **NB-GLMM + LOCO** | `scan_nb_gene()` | Raw pseudobulk counts — primary for snRNA-seq eQTL |
-| **Gaussian LMM** | `scan_h2lmm()` | Rank-normalised expression or strain-level phenotypes |
-| **LMM + MI** | `scan_h2lmm_mi()` | Averages over haplotype-assignment uncertainty |
-| **Dispersion QTL** | `scan_vqtl()` | NB dispersion as phenotype (transcriptional noise) |
-| **Mediation** | `mediation_scan_qr()` | Candidate mediator LOD via QR Woodbury update |
-| **Epistasis** | `scan_epistasis()` | Pairwise founder × founder interaction scan |
-
-**Choosing NB-GLMM vs LMM:**
-
-| | NB-GLMM (`--model nb`) | LMM (`--model lmm`) |
-|---|---|---|
-| **Input** | Raw integer pseudobulk counts | Log-normalised / continuous phenotype |
-| **Overdispersion** | Modelled explicitly (NB φ per gene) | Not modelled — inflated false positives for low-expr genes |
-| **Stage 0** | Required — `fit-null` estimates φ and σ² per gene | Not needed — h² estimated inside `scan` |
-| **Speed** | Slower (PQL null per gene × chr) | Faster (h² once per chr, FWL vectorised) |
-| **Validation** | Phase 4 (biological accuracy) pending | Phase 1–3 ✅ — use for all current analyses |
-
----
+| Gaussian LMM, LOCO kinship | `scan_h2lmm`, `scan_multi_gene_lmm` | Production (Nextflow, CLI) |
+| Negative-binomial GLMM on raw counts | `scan_nb_gene`, `pipeline.discover(model='nb')` | Experimental, Python API only |
+| LMM averaged over haplotype uncertainty | `scan_h2lmm_mi` (CLI `scan-mi`) | Follow-up |
+| Dispersion (variance) QTL | `scan_vqtl` | Follow-up, Python API |
+| Mediation | `mediation_scan_qr` (CLI `mediate`) | Follow-up |
+| Founder × founder epistasis | `scan_epistasis` | Follow-up, Python API |
 
 ## Documentation
 
-| Resource | Content |
+| | |
 |---|---|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System design, model derivations, inference choices |
-| [`docs/math/`](docs/math/) | Step-by-step derivations for PQL, LOCO kinship, GEV thresholds, Storey q-value |
-| [`config/`](config/) | Annotated parameter files for gastroc and ctxhipp reference runs |
+| [`docs/METHODS.typ`](docs/METHODS.typ), [`docs/math/`](docs/math/) | Methods and derivations (Typst; `make docs-math` builds PDFs) |
+| [`docs/output_schema.md`](docs/output_schema.md) | Every output column, its meaning and unit |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Modules, data flow, Python API |
+| [`config/`](config/) | Parameter files for the gastrocnemius and cortex/hippocampus runs |
+| [`CHANGELOG.md`](CHANGELOG.md) | Changes by release |
 
----
+## Development
+
+```bash
+pytest tests/unit -x -q     # fast tests
+make lint                   # black, flake8, interrogate, mypy
+make bench                  # performance benchmarks (benchmarks/README.md)
+```
+Work on `dev`; open pull requests to `main` using the PR template, with a `CHANGELOG.md` entry for any change to
+`src/` or `workflow/`.
 
 ## License
 
-GPL-3.0
+GPL-3.0-or-later.

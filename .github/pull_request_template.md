@@ -1,44 +1,26 @@
 ## Summary
-<!-- What changed and why -->
+<!-- What changed and why; goal or fix IDs -->
 
 ## Type
-- [ ] Bug fix
-- [ ] Feature / new functionality
-- [ ] Performance improvement
-- [ ] Refactor
-- [ ] Docs / validation only
+- [ ] fix
+- [ ] feat
+- [ ] perf
+- [ ] refactor
+- [ ] docs / validation only
 
-## Validation checklist
-<!-- All boxes must be checked before merging dev → main -->
+## Checks
+- [ ] `pytest tests/unit tests/integration -x -q` passes; no test removed or weakened
+- [ ] `make lint` clean (black, flake8, interrogate, mypy)
+- [ ] qtl/ or genotype/ changed → `python validation/validate_sim.py` passes (P1-S1 peak-LOD r² ≥ 0.990, P1-S2 MI r ≥ 0.75, P1-S3 GEV Δ < 0.5 LOD)
+- [ ] lmm.py, scan.py or permutation.py changed → `make bench` output pasted and new benchmarks/history.csv rows committed; ratios > 1.10 explained
+- [ ] Inputs loaded lazily (only the chromosomes, genes and columns used); no genes × loci array; gene-invariant work and file opens outside per-gene loops; no gc.collect() in loops
+- [ ] `chr` stored as 'chr{N}' str before merges; no inline hex, `shell=True`, bare `except:` or `print()`
 
-### Tests
-- [ ] `pytest tests/unit/ -x -q` passes
-- [ ] `pytest tests/integration/ -x -q` passes
-- [ ] No existing tests removed or weakened
+## Documentation
+- [ ] CHANGELOG.md `[Unreleased]` entry (required by CI when src/ or workflow/ change)
+- [ ] README updated if the CLI, Nextflow params, inputs or outputs changed
+- [ ] docs/ARCHITECTURE.md updated if modules or data flow changed
+- [ ] docs/math/*.typ and docs/METHODS.typ (LaTeX math via Typst) updated if a formula, h² parameterisation or FWL projection changed; R/Python comparison linked
 
-### Phase 1 gate (required for any change to qtl/ or genotype/)
-- [ ] `python validation/validate_sim.py` passes all three gates
-  - P1-S1: peak-LOD r² ≥ 0.990
-  - P1-S2: MI r ≥ 0.75
-  - P1-S3: GEV threshold Δ < 0.5 LOD
-
-### Code quality
-- [ ] `make lint` clean (flake8 + interrogate)
-- [ ] No new `shell=True`, bare `except:`, hardcoded hex colors, or `print()`
-- [ ] `chr` columns cast with `.astype(str)` before any merge
-- [ ] No full genes × loci LOD matrix materialised
-- [ ] No per-gene HDF5 open inside a scan loop
-
-### Performance (required for any change to lmm.py / scan.py / permutation.py)
-- [ ] `pytest tests/benchmarks/ --benchmark-compare=benchmarks/baseline/latest.json` shows < 10% regression
-  - or: explain why the regression is acceptable
-
-### Math changes (required if LOD formula, h² parameterisation, or FWL projection changed)
-- [ ] Derivation updated in `docs/math/`
-- [ ] R/Python comparison output attached or linked
-
-## Claude Code review
-<!-- Claude Code review runs automatically on PR open. Address all FAIL findings before merge. WARN findings require a written justification below. -->
-
-### WARN justifications (if any)
-<!-- List any WARN findings you are accepting and why -->
+## Review
+<!-- Automated review posts PASS / WARN / FAIL. Fix every FAIL; justify accepted WARNs here. -->

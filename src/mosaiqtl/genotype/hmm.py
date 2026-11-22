@@ -81,23 +81,97 @@ def haldane_recomb(d_morgan):
     return 0.5 * (1 - np.exp(-2 * np.abs(d_morgan)))
 
 
-def transition_matrix(r, n_founders=8, n_gen=1):
-    """compute diplotype transition matrix at recombination fraction r.
+def haplotype_transition_matrix(r, n_founders=8):
+    r"""founder-haplotype transition matrix of a fixed line at recombination fraction r.
 
-    for CC mice the genetic map (from the CC consensus map) already
-    encodes the cumulative recombination from ~20 generations of
-    intercrossing. the per-interval recombination fraction r derived
-    from that map should therefore be used directly — do NOT multiply
-    by n_gen (that would inflate r by 20×, collapsing all transitions
-    toward the equilibrium distribution and destroying haplotype blocks).
-
-    n_gen is kept as a parameter for non-CC populations (e.g. DO F1s)
-    where the caller may need to adjust; for CC it should be left at 1.
+    a line founded by an eight-founder funnel and inbred by sibling mating
+    carries founder $g$ at one locus given founder $f$ at the other with
+    $H_{ff} = (1 - r)/(1 + 6r)$ and $H_{fg} = r/(1 + 6r)$ for $f \neq g$,
+    equivalently
+    $H = k I + (1 - k)\mathbf{1}\mathbf{1}^\top / J$ with $k = (1 - 2r)/(1 + 6r)$.
+    rows sum to 1, $H$ is symmetric (uniform stationary law), $H = I$ at
+    $r = 0$ and $H = \mathbf{1}\mathbf{1}^\top / J$ at $r = 0.5$. the two loci
+    differ with probability $7r/(1 + 6r)$, so the line's map is expanded
+    sevenfold: $r$ is the single-meiosis recombination fraction.
 
     args:
-        r         : per-interval recombination fraction (0 to 0.5)
+        r         : single-meiosis recombination fraction between the loci (0 to 0.5)
+        n_founders: J, must be 8 (the funnel size the kernel is derived for)
+    returns:
+        H : (n_founders, n_founders) matrix, rows sum to 1
+    """
+    if n_founders != 8:
+        raise ValueError(
+            f"the sibling-mating funnel kernel is derived for 8 founders, got {n_founders}"
+        )
+    J = n_founders
+    k = (1.0 - 2.0 * r) / (1.0 + (J - 2) * r)
+    H = np.full((J, J), (1.0 - k) / J)
+    H[np.diag_indices(J)] += k
+    return H
+
+
+X_FUNNEL_FAVOURED = 2
+X_FUNNEL_CARRIERS = (0, 1, 2, 4, 5)
+
+
+def x_haplotype_prior(funnel):
+    r"""founder law of the X chromosome of a fixed line from an eight-founder funnel.
+
+    $\texttt{funnel}[p]$ is the founder at funnel position $p+1$. The X chromosome
+    descends only from the founders at positions 1, 2, 3, 5 and 6; the founders at
+    positions 4, 7 and 8 carry no X. The founder at position 3 has probability
+    $1/3$ and each of the other four carriers $1/6$.
+
+    args:
+        funnel: (8,) int array, founder index at each funnel position
+    returns:
+        prior : (8,) float array summing to 1
+    """
+    funnel = np.asarray(funnel, dtype=int)
+    prior = np.zeros(len(funnel))
+    prior[funnel[list(X_FUNNEL_CARRIERS)]] = 1.0 / 6.0
+    prior[funnel[X_FUNNEL_FAVOURED]] = 1.0 / 3.0
+    return prior
+
+
+def x_haplotype_transition_matrix(r, funnel):
+    r"""founder-haplotype transition matrix of the X chromosome of a fixed line.
+
+    With $c$ the founder at funnel position 3 and $S$ the five carrier founders,
+    for $f, g \in S$: $H_{cc} = 1/(1 + 4r)$, $H_{ff} = (1 - r)/(1 + 4r)$ for
+    $f \neq c$, $H_{fc} = 2r/(1 + 4r)$ for $f \neq c$, and $H_{fg} = r/(1 + 4r)$
+    for $f \neq g$, both different from $c$. Founders outside $S$ never occur and
+    keep identity rows. The matrix is reversible with respect to
+    $\texttt{x\_haplotype\_prior}$ and equals that law at $r = 0.5$.
+
+    args:
+        r     : single-meiosis recombination fraction between the loci (0 to 0.5)
+        funnel: (8,) int array, founder index at each funnel position
+    returns:
+        H : (8, 8) matrix, rows sum to 1
+    """
+    funnel = np.asarray(funnel, dtype=int)
+    carriers = funnel[list(X_FUNNEL_CARRIERS)]
+    favoured = funnel[X_FUNNEL_FAVOURED]
+    d = 1.0 + 4.0 * r
+    H = np.eye(len(funnel))
+    for f in carriers:
+        H[f, carriers] = r / d
+        H[f, favoured] = 2.0 * r / d
+        H[f, f] = 1.0 / d if f == favoured else (1.0 - r) / d
+    return H
+
+
+def transition_matrix(r, n_founders=8):
+    """compute diplotype transition matrix at recombination fraction r.
+
+    the two chromosomes of a diplotype evolve independently under the
+    haplotype kernel, which is derived for fixed (inbred) lines.
+
+    args:
+        r         : single-meiosis recombination fraction (0 to 0.5)
         n_founders: J
-        n_gen     : scaling factor (1 for CC with consensus map)
     returns:
         T : (n_states, n_states) transition matrix, rows sum to 1
     """
@@ -105,40 +179,23 @@ def transition_matrix(r, n_founders=8, n_gen=1):
     states, state_to_idx = build_diplotype_states(J)
     n_states = len(states)
 
-    # r is already the correct per-interval recombination fraction
-    # n_gen=1 for CC with consensus map; capped at 0.5
-    r_eff = min(r * n_gen, 0.5)
+    H = haplotype_transition_matrix(r, J)
 
-    # haplotype stay / switch probabilities
-    p_stay = 1 - r_eff * (J - 1) / J
-    p_switch = r_eff / J
-
-    # build haplotype transition matrix (J × J)
-    H = np.full((J, J), p_switch)
-    np.fill_diagonal(H, p_stay)
-    # normalize rows
-    H = H / H.sum(axis=1, keepdims=True)
-
-    # diplotype transition = outer product of two haplotype transitions
-    # P((f1,f2)→(g1,g2)) = H[f1,g1] * H[f2,g2]  (+ symmetric term)
+    # the two haplotypes of a diplotype evolve independently, so an unordered
+    # target {g1, g2} is reached through both ordered outcomes (g1, g2) and
+    # (g2, g1); a homozygous target is a single ordered outcome:
+    # P({f1,f2} -> {g1,g2}) = H[f1,g1] H[f2,g2] + 1[g1 != g2] H[f1,g2] H[f2,g1]
+    # every row then sums to 1 exactly, with no renormalisation
     T = np.zeros((n_states, n_states))
     for i, (f1, f2) in enumerate(states):
         for j, (g1, g2) in enumerate(states):
-            if f1 == f2:
-                # homozygous source: both haplotypes are f1
-                val = H[f1, g1] * H[f1, g2]
-                if g1 != g2:
-                    val += H[f1, g2] * H[f1, g1]  # symmetric diplotype
-            else:
-                # heterozygous source: haplotypes f1 and f2
-                val = H[f1, g1] * H[f2, g2] + H[f2, g1] * H[f1, g2]
+            val = H[f1, g1] * H[f2, g2]
             if g1 != g2:
-                val /= 2  # unordered diplotype: each ordered pair counted once
+                val += H[f1, g2] * H[f2, g1]
             T[i, j] = val
 
-    # renormalize rows
-    row_sums = T.sum(axis=1, keepdims=True)
-    T = T / np.maximum(row_sums, 1e-300)
+    if not np.allclose(T.sum(axis=1), 1.0, atol=1e-10):
+        raise ValueError("diplotype transition rows do not sum to 1")
     return T
 
 
@@ -311,7 +368,7 @@ def _augmented_positions(gmap_cM, step_cM, tol=0.01):
 
 
 def interpolate_posteriors(
-    gamma, alpha, beta, E, obs_seq, gmap_cM, step_cM, n_founders, tol=0.01
+    gamma, alpha, beta, E, obs_seq, gmap_cM, step_cM, n_founders, tol=0.01, kernel=None
 ):
     """interpolate HMM posteriors at pseudomarker positions on a fixed-step grid.
 
@@ -334,8 +391,11 @@ def interpolate_posteriors(
         obs_seq  : (n_markers,) int  0/1/2 or -1=missing
         gmap_cM  : (n_markers,) sorted genetic positions in cM
         step_cM  : float  pseudomarker spacing in cM
-        n_founders: int
+        n_founders: int; gamma with n_founders columns is read as founder-haplotype
+                    states, otherwise as diplotype states
         tol      : float  min cM distance from a real marker to keep a pseudomarker (default 0.01)
+        kernel   : optional callable r -> (n_states, n_states) transition matrix replacing
+                   the default kernel of the state space (used for the X chromosome)
 
     returns:
         gamma_all  : (n_total, n_states)
@@ -344,6 +404,8 @@ def interpolate_posteriors(
     """
     aug_pos, is_real = _augmented_positions(gmap_cM, step_cM, tol)
     n_states = gamma.shape[1]
+    # J states = founder-haplotype chain (inbred lines); J(J+1)/2 = diplotype chain
+    haplotype_states = n_states == n_founders
     n_total = len(aug_pos)
     all_gamma = np.empty((n_total, n_states))
 
@@ -360,8 +422,15 @@ def interpolate_posteriors(
 
         r1 = haldane_recomb((pos - gmap_cM[j]) / 100.0)
         r2 = haldane_recomb((gmap_cM[j + 1] - pos) / 100.0)
-        T1 = transition_matrix(r1, n_founders)
-        T2 = transition_matrix(r2, n_founders)
+        if kernel is not None:
+            T1 = kernel(r1)
+            T2 = kernel(r2)
+        elif haplotype_states:
+            T1 = haplotype_transition_matrix(r1, n_founders)
+            T2 = haplotype_transition_matrix(r2, n_founders)
+        else:
+            T1 = transition_matrix(r1, n_founders)
+            T2 = transition_matrix(r2, n_founders)
         alpha_p = alpha[j] @ T1
         # beta[j+1] = P(obs[j+2..] | state at j+1) — no E[j+1]; must re-include it
         obs_m1 = obs_seq[j + 1]
@@ -387,23 +456,6 @@ def uniform_init(n_founders=8):
     return np.full(n, 1.0 / n)
 
 
-def cc_inbred_init(n_founders=8):
-    """initial distribution for fully inbred CC strains.
-
-    CC strains are homozygous throughout after ~20 generations of inbreeding.
-    only the 8 homozygous diplotype states (AA, BB, ..., HH) have non-zero
-    prior probability; the 28 heterozygous states get 0. this is the correct
-    prior for a fully inbred line regardless of funnel order — the crossinfo
-    funnel confirms the 8-way design but does not differentially weight founders
-    on autosomes (all 8 contribute equally in expectation).
-    """
-    states, state_to_idx = build_diplotype_states(n_founders)
-    init = np.zeros(len(states))
-    for f in range(n_founders):
-        init[state_to_idx[(f, f)]] = 1.0 / n_founders  # homozygous states only
-    return init
-
-
 # ── top-level: compute haplotype probs for CC strains ────────────────────────
 
 
@@ -412,11 +464,11 @@ def calc_genoprob_cc(
     founder_genos,
     gmap_positions,
     n_founders=8,
-    n_gen=1,
     error_prob=0.002,
     return_additive=True,
     cc_inbred=True,
     step_cM=None,
+    x_funnel=None,
 ):
     """compute founder haplotype probabilities for CC inbred strains.
 
@@ -427,22 +479,20 @@ def calc_genoprob_cc(
         geno_matrix   : (n_markers, n_cc) array of genotype calls (A/H/B/-)
                         columns = CC strains, rows = markers
         founder_genos : (n_markers, J) array of founder genotype calls
-        gmap_positions: (n_markers,) genetic positions in Morgans (not cM)
+        gmap_positions: (n_markers,) single-meiosis genetic positions in cM
         n_founders    : J (8 for CC)
-        n_gen         : transition scaling factor. MUST be 1 for CC with the
-                        consensus genetic map (JAX/UNC GigaMUGA map), because
-                        that map already encodes the cumulative recombination
-                        from ~20 generations of intercrossing — r is used
-                        directly (r_eff = r * n_gen). use n_gen > 1 only for
-                        outbred populations (e.g. DO) where the map does not
-                        encode generational history.
-        error_prob    : GigaMUGA genotyping error rate (0.002)
+        error_prob   : GigaMUGA genotyping error rate (0.002)
         return_additive: if True return (n_cc, J, n_markers) additive probs
                          if False return (n_cc, n_states, n_markers) diplotype
-        cc_inbred     : if True use cc_inbred_init (homozygous-only prior,
-                        correct for fully inbred CC strains). if False use
-                        uniform_init (1/36 per state, for outbred/unknown).
-                        default True.
+        cc_inbred     : if True run the chain on the J homozygous states only
+                        (fully inbred strains; uniform initial law 1/J,
+                        haplotype kernel). if False run the 36-state chain
+                        with the diplotype kernel and a uniform initial law
+                        (outbred or partly inbred populations). default True.
+        x_funnel      : (n_cc, J) int array, founder index at each funnel position of
+                        each strain, for an X chromosome; requires cc_inbred. each
+                        strain then runs on its own X prior and kernel
+                        (x_haplotype_prior, x_haplotype_transition_matrix).
 
     returns:
         probs : (n_cc, J or n_states, n_markers) float64 array
@@ -457,15 +507,35 @@ def calc_genoprob_cc(
     log.info(f"building emission matrix ({n_markers} markers × {n_states} states)")
     E = build_emission_matrix(founder_genos, None, error_prob, n_founders)
 
-    log.info("building transition matrices...")
-    T_list = []
-    for t in range(n_markers - 1):
-        d_cm = abs(gmap_positions[t + 1] - gmap_positions[t])
-        d_morgan = d_cm / 100.0
-        r = haldane_recomb(d_morgan)
-        T_list.append(transition_matrix(r, n_founders, n_gen))
+    # a fully inbred line carries one founder haplotype at every locus, so its
+    # chain lives on the J homozygous states; the 28 heterozygous states have no
+    # support and would only leak mass along the chromosome
+    if cc_inbred:
+        _, state_to_idx = build_diplotype_states(n_founders)
+        hom_idx = np.array([state_to_idx[(f, f)] for f in range(n_founders)])
+        E = E[:, hom_idx, :]
+        kernel = haplotype_transition_matrix
+        init = np.full(n_founders, 1.0 / n_founders)
+    else:
+        kernel = transition_matrix
+        init = uniform_init(n_founders)
 
-    init = cc_inbred_init(n_founders) if cc_inbred else uniform_init(n_founders)
+    if x_funnel is not None:
+        if not cc_inbred:
+            raise ValueError("x_funnel requires cc_inbred=True")
+        x_funnel = np.asarray(x_funnel, dtype=int)
+        if x_funnel.shape != (n_cc, n_founders):
+            raise ValueError(
+                f"x_funnel must have shape {(n_cc, n_founders)}, got {x_funnel.shape}"
+            )
+
+    log.info("building transition matrices...")
+    r_list = [
+        haldane_recomb(abs(gmap_positions[t + 1] - gmap_positions[t]) / 100.0)
+        for t in range(n_markers - 1)
+    ]
+    T_list = [kernel(r, n_founders) for r in r_list] if x_funnel is None else None
+
     n_out = n_founders if return_additive else n_states
 
     # determine n_out_loci from geometry only — no probability computation needed
@@ -484,13 +554,36 @@ def calc_genoprob_cc(
             )
         obs = np.array([obs_map.get(str(g), -1) for g in geno_matrix[:, s]])
         # (n_markers, n_states) posterior diplotype probs + forward/backward state
-        gamma, alpha, beta = forward_backward(obs, E, T_list, init)
+        if x_funnel is None:
+            T_s, init_s, kernel_s = T_list, init, None
+        else:
+            funnel_s = x_funnel[s]
+            T_s = [x_haplotype_transition_matrix(r, funnel_s) for r in r_list]
+            init_s = x_haplotype_prior(funnel_s)
+
+            def kernel_s(r, funnel_s=funnel_s):
+                return x_haplotype_transition_matrix(r, funnel_s)
+
+        gamma, alpha, beta = forward_backward(obs, E, T_s, init_s)
         if step_cM is not None:
             # interpolate posteriors at pseudomarker positions between real markers
             gamma, _, _ = interpolate_posteriors(
-                gamma, alpha, beta, E, obs, gmap_positions, step_cM, n_founders
+                gamma,
+                alpha,
+                beta,
+                E,
+                obs,
+                gmap_positions,
+                step_cM,
+                n_founders,
+                kernel=kernel_s,
             )
-        if return_additive:
+        if cc_inbred:
+            if return_additive:
+                probs[s] = gamma.T  # haplotype posteriors are the founder probs
+            else:
+                probs[s][hom_idx] = gamma.T
+        elif return_additive:
             add = diplotype_to_allele_probs(gamma, n_founders)
             probs[s] = add.T  # (8, n_total)
         else:

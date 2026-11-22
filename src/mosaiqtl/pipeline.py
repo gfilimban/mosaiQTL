@@ -29,6 +29,7 @@ quick start:
                 conditional_scan_kwargs={'n_signals': 3})
 """
 
+import os
 import re
 import numpy as np
 import logging
@@ -46,6 +47,7 @@ from .qtl.scan import scan_h2lmm, scan_multi_gene
 from .qtl.mediation import MEDIATION_COLS, FIXEF_MEDIATION_COLS
 from .qtl.snp_scan import SNP_SCAN_COLS
 from .qtl.ci import CI_COLS
+from .qtl.imputation import LD_GROUP_COLS
 
 from .genotype import kinship as kin_module
 
@@ -87,7 +89,9 @@ PEAK_LOD_COLS: list[str] = [
     "peak_mb",
     "cis_dist_mb",
     "peak_lod",
+    "peak_at_edge",
     "h2",
+    "h2_at_boundary",
     "n_valid",
     "rss0",
     "rss1",
@@ -106,12 +110,20 @@ EGENE_SUMMARY_COLS: list[str] = [
     "peak_mb",
     "cis_dist_mb",
     "peak_lod",
+    "peak_at_edge",
+    "ci_lo",
+    "ci_hi",
+    "ci_width_mb",
+    "ci_truncated",
     "h2",
     "perm_n",
-    "perm_chr",
     "chi2_haplotype",
     "p_haplotype",
     "pval_perm",
+    "qval_storey",
+    "qval_bh",
+    "lfdr",
+    "pi0",
     "fdr",
     "fdr_method",
     "significance",
@@ -183,10 +195,10 @@ _ALLELE_COLS: list[str] = [
     "alt_founders",   # comma-joined founders carrying alt allele
     # ── dosage mode and allele frequencies ────────────────────────────────────
     "dosage",         # 'T' = haplotype-prob imputed dosage; 'F' = hard calls (GigaMUGA peak)
-    "af",             # allele frequency of effect_allele across 48 strains
+    "af",             # mean imputed dosage of the effect allele over the gene's n_sample scanned samples
     "maf",            # min(af, 1-af)
-    "mac",            # round(maf × 48) at strain level (48 = 33 CC + 8 founders + 7 F1)
-    "ma_sample",      # round(maf × n_sample) at replicate mouse level
+    "mac",            # round(maf × n_sample): minor-allele count over the scanned samples
+    "ma_sample",      # equal to mac
     # ── dosage regression outputs (Sanger only; NaN at GigaMUGA haplotype level)
     "effect_size",    # dosage beta from Sanger biallelic regression
     "se_effect_size", # SE of dosage beta
@@ -205,12 +217,19 @@ _FOUNDER_EFFECT_COLS: list[str] = [
     "effect_WSBJ",
 ]
 
+# Call rule -> value written to fdr_method.
+_CALL_RULES: dict[str, str] = {"qvalue": "qvalue", "bh": "BH", "lfdr": "lfdr"}
+
 # Gene-level significance — from permutation calibration and Storey FDR; one value
 # per gene, repeated on all per-locus rows for that gene.
 _SIG_COLS: list[str] = [
     "pval_perm",    # Beta-calibrated per-gene permutation p-value
-    "fdr",          # Storey q-value across all genes that cleared the Stage-1 GEV gate
-    "fdr_method",   # constant 'qvalue'
+    "qval_storey",  # Storey q-value across all tested genes
+    "qval_bh",      # Benjamini-Hochberg adjusted p-value across all tested genes
+    "lfdr",         # local false discovery rate: posterior probability the gene is null
+    "pi0",          # estimated null fraction used by qval_storey and lfdr (one value per table)
+    "fdr",          # the value selected by the call rule (qval_storey, qval_bh or lfdr)
+    "fdr_method",   # 'qvalue', 'BH' or 'lfdr'
     "significance", # 'T' if fdr <= fdr_threshold
 ]
 
@@ -249,11 +268,11 @@ EQTL_FINEMAPPING_COLS: list[str] = [
     # gene context
     "gene_id", "gene_symbol", "cis_dist_mb",
     # fine-mapping posteriors (the primary result)
-    "pip", "CS", "lead_snp", "pip_method",
+    "pip", "log_abf", "CS", "lead_snp", "pip_method",
     # association statistics
     "lod", "pval_nominal", "log10p_nominal",
     # gene-level significance
-    "pval_perm", "fdr", "fdr_method", "significance",
+    "pval_perm", "qval_storey", "qval_bh", "lfdr", "pi0", "fdr", "fdr_method", "significance",
     # allele coding (effect/other allele + founder carrier sets)
     "effect_allele", "other_allele", "ref_founders", "alt_founders",
     # dosage, frequency, effect
@@ -264,23 +283,23 @@ EQTL_FINEMAPPING_COLS: list[str] = [
     "h2_null_chr", "sd_phenotype", "n_sample",
 ]
 
-# Lead SNP PIP below this value indicates the locus did not resolve to a credible
-# causal SNP — the haplotype signal is real but no Sanger SNP in the CI window
-# captures it (missing variant, complex allele pattern, or low LD in CC strains).
-CS_RESOLVED_PIP_THRESHOLD: float = 0.10
+# LD-group fine-mapping: one row per LD group per eGene, ranked by group_pip (1 = top).
+# group_pip sums to 1 over a gene's groups; in_cs marks the groups in the credible set.
+EQTL_FINEMAPPING_GROUP_COLS: list[str] = ["gene_id", *LD_GROUP_COLS]
 
-# Sanger fine-mapping peak — one row per eGene (highest-PIP CS member).
-# lead_snp dropped (redundant for a single-row-per-gene file); cs_resolved flags
-# whether the locus resolved to a credible SNP candidate (lead pip >= threshold);
+# The peak file lists only eGenes whose lead variant has pip above this value. Under the
+# single-causal-variant model pip is the posterior probability that the variant is the
+# causal one; variants that share a founder allele pattern have identical ABF and split
+# that probability, so a single variant seldom reaches 0.5 in a dense window and 0.25
+# keeps the variants carrying at least a quarter of the posterior. Every other eGene
+# stays in the per-variant and LD-group tables.
+PEAK_PIP_THRESHOLD: float = 0.25
+
+# Sanger fine-mapping peak — one row per resolved eGene (its lead variant).
+# lead_snp dropped (redundant for a single-row-per-gene file);
 # founder betas added here (haplotype-peak property, not per-SNP).
 _FM_PEAK_BASE: list[str] = [c for c in EQTL_FINEMAPPING_COLS if c != "lead_snp"]
-_pip_idx = _FM_PEAK_BASE.index("pip") + 1
-EQTL_FINEMAPPING_PEAK_COLS: list[str] = (
-    _FM_PEAK_BASE[:_pip_idx]
-    + ["cs_resolved"]
-    + _FM_PEAK_BASE[_pip_idx:]
-    + _FOUNDER_EFFECT_COLS
-)
+EQTL_FINEMAPPING_PEAK_COLS: list[str] = _FM_PEAK_BASE + _FOUNDER_EFFECT_COLS
 
 # Imputed SNP association scan inside each eGene's LOD-drop CI — the input to
 # Sanger fine-mapping.  Haplotype-peak context columns, then the per-SNP scan
@@ -305,6 +324,8 @@ IMPUTED_SNP_COLS: list[str] = [
     "dosage",
     "af",
     "maf",
+    "mac",
+    "ma_sample",
     "effect_size",
     "se_effect_size",
 ]
@@ -340,21 +361,23 @@ __all__ = [
     "ALLELE_EFFECTS_BASE_COLS",
     "PEAK_LOD_COLS",
     "EGENE_SUMMARY_COLS",
+    "scanned_chromosomes",
+    "validate_finemap_frames",
     "MEDIATION_COLS",
     "FIXEF_MEDIATION_COLS",
     "SNP_SCAN_COLS",
     "CI_COLS",
     "EQTL_SCAN_COLS",
     "EQTL_PEAK_COLS",
-    "CS_RESOLVED_PIP_THRESHOLD",
+    "PEAK_PIP_THRESHOLD",
     "EQTL_FINEMAPPING_COLS",
     "EQTL_FINEMAPPING_PEAK_COLS",
+    "EQTL_FINEMAPPING_GROUP_COLS",
     "EQTL_STATS_COLS",
     "IMPUTED_SNP_COLS",
     "call_egenes",
     "calibrate_egenes_storey",
     "call_significant_egenes",
-    "cap_egene_ci",
     "enrich_peak_lod",
     "finalize_egene_summary",
     "prepare_egenes_for_finemap",
@@ -374,33 +397,68 @@ __all__ = [
 def enrich_peak_lod(
     peak_lod_df: pd.DataFrame,
     gene_info_df: pd.DataFrame,
+    gene_tss_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
-    """Join gene_symbol and start_mb from gene_info and compute cis_dist_mb.
+    """Join gene_symbol and TSS anchors from the annotation tables and compute cis_dist_mb.
+
+    Genes join on the unversioned ``gene_id``, so versioned and unversioned
+    tables match. ``start_mb`` is the gene's strand-aware TSS from ``gene_info_df``
+    (``start`` on ``+``, ``end`` on ``-``) and is the anchor of the scan window.
+    ``near_tss_mb`` is the strand-aware transcript TSS nearest the peak from
+    ``gene_tss_df``. ``cis_dist_mb = peak_mb - near_tss_mb`` where a transcript
+    TSS exists, else ``peak_mb - start_mb``, multiplied by -1 for minus-strand
+    genes so that negative always means upstream of the TSS.
 
     Parameters
     ----------
     peak_lod_df :
         Output of a scan merge step (PEAK_LOD_COLS subset).
     gene_info_df :
-        Gene annotation table with at minimum ``gene_id`` and ``start`` columns.
+        Gene annotation table with ``gene_id`` and ``start``; ``end`` and ``strand``
+        give the strand-aware TSS.
+    gene_tss_df :
+        Per-transcript table with ``gene_id``, ``start``, ``end`` and ``strand``,
+        or None when no transcript table is available.
 
     Returns
     -------
     pd.DataFrame
-        ``peak_lod_df`` enriched with ``gene_symbol``, ``start_mb``, and
-        ``cis_dist_mb`` columns (where data is available).
+        ``peak_lod_df`` enriched with ``gene_symbol``, ``start_mb``,
+        ``near_tss_mb`` and ``cis_dist_mb`` (where data is available).
     """
+    from .utils import build_tss_lookup, nearest_transcript_tss_mb, strip_gene_version
+
+    key = strip_gene_version(peak_lod_df['gene_id'])
+    gi = gene_info_df.assign(gene_id=strip_gene_version(gene_info_df['gene_id']))
+    gi = gi.drop_duplicates('gene_id')
     gi_cols = ['gene_id']
-    if 'gene_symbol' in gene_info_df.columns and 'gene_symbol' not in peak_lod_df.columns:
+    if 'gene_symbol' in gi.columns and 'gene_symbol' not in peak_lod_df.columns:
         gi_cols.append('gene_symbol')
-    if 'start' in gene_info_df.columns:
-        gi_cols.append('start')
-    gi_sub = gene_info_df[gi_cols].drop_duplicates('gene_id')
-    if 'start' in gi_sub.columns:
-        gi_sub = gi_sub.assign(start_mb=gi_sub['start'] / 1e6).drop(columns=['start'])
-    out = peak_lod_df.merge(gi_sub, on='gene_id', how='left')
-    if 'start_mb' in out.columns and 'peak_mb' in out.columns:
-        out['cis_dist_mb'] = out['peak_mb'] - out['start_mb']
+    gi_sub = gi[gi_cols].rename(columns={'gene_id': '_key'})
+    if 'start' in gi.columns:
+        if not {'end', 'strand'} <= set(gi.columns):
+            logger.warning(
+                'enrich_peak_lod: gene_info lacks end/strand; start_mb is the '
+                'gene start, not the TSS, for minus-strand genes'
+            )
+        gi_sub = gi_sub.assign(start_mb=gi_sub['_key'].map(build_tss_lookup(gi)))
+    out = peak_lod_df.assign(_key=key).merge(gi_sub, on='_key', how='left')
+    out = out.drop(columns='_key')
+    if 'peak_mb' not in out.columns:
+        return out
+    if gene_tss_df is not None:
+        out['near_tss_mb'] = nearest_transcript_tss_mb(out, gene_tss_df)
+    anchor = out['near_tss_mb'] if 'near_tss_mb' in out.columns else None
+    if 'start_mb' in out.columns:
+        anchor = out['start_mb'] if anchor is None else anchor.fillna(out['start_mb'])
+    if anchor is not None:
+        sign = 1.0
+        if 'strand' in gi.columns:
+            sign = np.where(key.map(gi.set_index('gene_id')['strand']).eq('-'), -1.0, 1.0)
+        out['cis_dist_mb'] = (out['peak_mb'] - anchor) * sign
+    n_miss = int(out['cis_dist_mb'].isna().sum()) if 'cis_dist_mb' in out.columns else 0
+    if n_miss:
+        logger.warning('enrich_peak_lod: %d of %d genes have no TSS anchor', n_miss, len(out))
     return out
 
 
@@ -472,79 +530,45 @@ def finalize_egene_summary(
     return out.reindex(columns=[c for c in EGENE_SUMMARY_COLS if c in out.columns])
 
 
-def cap_egene_ci(
-    egene_df: pd.DataFrame,
-    scan_type: str,
-    window_mb: float,
-    gene_tss_df: 'pd.DataFrame | None' = None,
-    gene_info_df: 'pd.DataFrame | None' = None,
-) -> pd.DataFrame:
-    """Cap ci_lo_bp / ci_hi_bp to ±window_mb from TSS for L-mode scans.
+SUPPORT_INTERVAL_COLS: tuple[str, ...] = ("ci_lo", "ci_hi", "ci_width_mb", "ci_truncated")
 
-    Returns the DataFrame unchanged for C/G modes or when window_mb == 0.
-    TSS source priority: gene_tss_df (strand-aware, joined via gene_symbol) >
-    gene_info_df start/end/strand > start_mb column > peak_mb fallback.
+
+def attach_support_interval(summary_df: pd.DataFrame, ci_df: pd.DataFrame) -> pd.DataFrame:
+    """Join each eGene's support interval onto the eGene summary.
 
     Parameters
     ----------
-    egene_df : DataFrame with gene_id, peak_mb, ci_lo_bp, ci_hi_bp columns.
-    scan_type : 'L', 'C', or 'G'.
-    window_mb : half-window in Mb for L-mode scans.
-    gene_tss_df : optional strand-aware TSS table (gene_name + tss_mb, or
-        gene_name + start/end/strand from which tss_mb is derived).
-    gene_info_df : optional gene info table (gene_id, gene_symbol, start, end,
-        strand); used as secondary TSS source and for gene_id→gene_symbol lookup
-        when gene_symbol is absent from egene_df.
+    summary_df : eGene summary with a ``gene_id`` column.
+    ci_df : support-interval table (``CI_COLS``), one row per eGene.
+
+    Returns
+    -------
+    DataFrame with the rows of ``summary_df`` and the ``SUPPORT_INTERVAL_COLS`` filled
+    for eGenes present in ``ci_df`` (missing otherwise), in ``EGENE_SUMMARY_COLS`` order.
     """
-    if scan_type != 'L' or window_mb <= 0:
-        return egene_df.copy()
+    ci = ci_df[["gene_id", *SUPPORT_INTERVAL_COLS]].copy()
+    ci["gene_id"] = ci["gene_id"].astype(str)
+    ci = ci.drop_duplicates("gene_id")
+    ci["ci_truncated"] = ci["ci_truncated"].astype("boolean")
+    out = summary_df.drop(columns=[c for c in SUPPORT_INTERVAL_COLS if c in summary_df.columns])
+    out = out.assign(gene_id=out["gene_id"].astype(str)).merge(ci, on="gene_id", how="left")
+    return out.reindex(columns=[c for c in EGENE_SUMMARY_COLS if c in out.columns])
 
-    df = egene_df.copy()
-    _tss_mb: 'pd.Series | None' = None
 
-    if gene_tss_df is not None:
-        _gtss = gene_tss_df.copy()
-        _cols = set(_gtss.columns)
-        if {'start', 'end', 'strand'} <= _cols:
-            _gtss['tss_mb'] = np.where(
-                _gtss['strand'] == '-', _gtss['end'] / 1e6, _gtss['start'] / 1e6
-            )
-        elif 'start' in _cols and 'tss_mb' not in _cols:
-            _gtss['tss_mb'] = _gtss['start'] / 1e6
-        if 'gene_name' in _gtss.columns and 'tss_mb' in _gtss.columns:
-            _sym_to_tss = _gtss.groupby('gene_name')['tss_mb'].mean()
-            if 'gene_symbol' in df.columns:
-                _tss_mb = df['gene_symbol'].map(_sym_to_tss)
-            elif gene_info_df is not None and 'gene_symbol' in gene_info_df.columns:
-                _gid_to_sym = gene_info_df.set_index('gene_id')['gene_symbol']
-                _tss_mb = df['gene_id'].map(_gid_to_sym).map(_sym_to_tss)
+def select_submission_genes(peak_df: pd.DataFrame, fdr_max: float) -> pd.DataFrame:
+    r"""Rows of the calibrated peak table whose selected FDR is at or below ``fdr_max``.
 
-    if _tss_mb is None or _tss_mb.isna().all():
-        if gene_info_df is not None and 'start' in gene_info_df.columns:
-            _has_strand = 'strand' in gene_info_df.columns
-            _gi_tss = gene_info_df.set_index('gene_id').apply(
-                lambda r: (float(r['end']) / 1e6
-                           if _has_strand and r.get('strand') == '-'
-                           else float(r['start']) / 1e6),
-                axis=1,
-            )
-            _tss_mb = df['gene_id'].map(_gi_tss)
-        elif 'start_mb' in df.columns:
-            _tss_mb = df['start_mb']
+    The calibration and the q-values are computed over every tested gene before this
+    selection, so $\hat\pi_0$ and ``fdr`` do not depend on it. Choosing ``fdr_max`` above
+    the eGene calling threshold keeps genes that were not called but are plausible
+    eQTLs. Genes with a missing ``fdr`` are dropped.
 
-    _peak_mb = df['peak_mb'] if 'peak_mb' in df.columns else pd.Series(0.0, index=df.index)
-    _tss_fill = _tss_mb if _tss_mb is not None else _peak_mb
-    _tss_bp = (_tss_fill.fillna(_peak_mb) * 1e6).round().astype('Int64')
-    _half = int(window_mb * 1e6)
-    _cap_lo = (_tss_bp - _half).clip(lower=0)
-    _cap_hi = _tss_bp + _half
-
-    if 'ci_lo_bp' in df.columns:
-        df['ci_lo_bp'] = df['ci_lo_bp'].fillna(_cap_lo).combine(_cap_lo, max)
-    if 'ci_hi_bp' in df.columns:
-        df['ci_hi_bp'] = df['ci_hi_bp'].fillna(_cap_hi).combine(_cap_hi, min)
-
-    return df
+    Parameters
+    ----------
+    peak_df : peak table carrying the calibration block, including ``fdr``.
+    fdr_max : largest ``fdr`` kept.
+    """
+    return peak_df.loc[peak_df["fdr"] <= fdr_max].copy()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -615,8 +639,11 @@ def _calibrate_pvalues_loop(
     z_mat: "np.ndarray | None",
     valid_mask: "np.ndarray | None",
     seed: int,
-) -> "dict[str, float]":
+) -> pd.DataFrame:
     """per-gene calibrated p-values from a null built the way the real scan is built.
+
+    returns a frame indexed by gene_id with pval_perm and the fitted Beta shape
+    parameters beta_a and beta_b of the gene's null p-values.
 
     phenotype, covariates and kinship are at sample level: y and x are restricted
     to genotyped samples, K_n = Z K_m Z^T is eigendecomposed once per chromosome
@@ -639,7 +666,8 @@ def _calibrate_pvalues_loop(
     if not np.allclose(x[:, 0], 1.0):
         x = np.hstack([np.ones((len(x), 1)), x])
 
-    pval_perm: dict[str, float] = {}
+    nan3 = (float('nan'),) * 3
+    fits: dict[str, tuple[float, float, float]] = {}
     n_failed = 0
     n_total = len(egenes_df)
     n_done = 0
@@ -657,13 +685,13 @@ def _calibrate_pvalues_loop(
             sym = sym_map.get(gid, gid)
             logger.info('  calibrate [%d/%d] %s chr%s', n_done, n_total, sym, chrom)
             if gid not in gene_idx:
-                pval_perm[gid] = float('nan')
+                fits[gid] = nan3
                 n_failed += 1
                 continue
             gene_seed = int(np.random.SeedSequence(
                 [seed, zlib.crc32(gid.encode())]).generate_state(1)[0])
             try:
-                p_adj, _, _, _ = _cal(
+                p_adj, a_hat, b_hat, _ = _cal(
                     y_gene=pheno_mat[gene_idx[gid]][valid],
                     genomecache=genomecache,
                     chrom=chrom,
@@ -679,16 +707,18 @@ def _calibrate_pvalues_loop(
                     seed=gene_seed,
                     chr_data=chr_data,
                 )
-                pval_perm[gid] = float(p_adj)
+                fits[gid] = (float(p_adj), float(a_hat), float(b_hat))
             except (ValueError, np.linalg.LinAlgError, KinshipSingularError) as exc:
                 logger.debug('calibration failed for %s: %s', sym, exc)
-                pval_perm[gid] = float('nan')
+                fits[gid] = nan3
                 n_failed += 1
         del k_n, ev, evc, decomp, loco, chr_data
     if n_failed:
         logger.warning('calibration produced no p-value for %d / %d genes',
                        n_failed, n_total)
-    return pval_perm
+    return pd.DataFrame.from_dict(
+        fits, orient='index', columns=['pval_perm', 'beta_a', 'beta_b']
+    )
 
 
 def calibrate_egenes_storey(
@@ -709,6 +739,7 @@ def calibrate_egenes_storey(
     z_mat: "np.ndarray | None" = None,
     valid_mask: "np.ndarray | None" = None,
     seed: int = 1,
+    call_rule: str = "qvalue",
 ) -> pd.DataFrame:
     """eGene calling: per-gene Beta calibration + Storey q-value FDR.
 
@@ -750,10 +781,17 @@ def calibrate_egenes_storey(
     z_mat          : (n_samples, n_strains) sample-to-strain design matrix.
     valid_mask     : (n_strains,) bool mask.
     seed           : base RNG seed; each gene derives its own stream.
+    call_rule      : 'qvalue' (Storey), 'bh' (Benjamini-Hochberg) or 'lfdr'
+                     (local false discovery rate); selects which value is
+                     written to fdr and thresholded.
 
     Returns
     -------
-    DataFrame — egenes_df with pval_perm, fdr, fdr_method, significance added.
+    DataFrame — egenes_df with pval_perm, perm_n (null draws per gene; the
+    smallest attainable p is about 1/perm_n), qval_storey, qval_bh, lfdr, pi0,
+    fdr, fdr_method, significance added. All three values are written (lfdr is
+    NaN when fewer than fdr.LFDR_MIN_GENES genes were tested); only fdr and
+    significance follow call_rule.
     """
     from .qtl import fdr as fdr_module
     from .utils import build_tss_lookup
@@ -797,25 +835,50 @@ def calibrate_egenes_storey(
             sym_map = dict(zip(gene_info_df['gene_id'].astype(str),
                                gene_info_df['gene_symbol'].astype(str)))
 
-        pval_perm = _calibrate_pvalues_loop(
+        fits = _calibrate_pvalues_loop(
             egenes_df, genomecache, pheno_mat, gene_idx,
             covariates, kinship_loco,
             tss_map, sym_map, _scan_local, _window_mb,
             n_perms, use_rint, z_mat, valid_mask, seed,
         )
+        pval_perm = fits['pval_perm']
+    else:
+        fits = None
 
     out = egenes_df.copy()
     pv = pval_perm if isinstance(pval_perm, pd.Series) else pd.Series(pval_perm)
     out["pval_perm"] = out[gene_col].map(pv)
+    if fits is not None:
+        for col in ("beta_a", "beta_b"):
+            out[col] = out[gene_col].map(fits[col])
+    out["perm_n"] = n_perms
 
-    q_values, pi0 = fdr_module.storey_qvalue(out["pval_perm"].to_numpy())
-    out["fdr"] = q_values
-    out["fdr_method"] = "qvalue"
+    if call_rule not in _CALL_RULES:
+        raise ValueError(f"call_rule must be one of {sorted(_CALL_RULES)}, got {call_rule!r}")
+    pv_arr = out["pval_perm"].to_numpy()
+    q_storey, pi0 = fdr_module.qvalue(pv_arr)
+    q_bh = fdr_module.bh(pv_arr)
+    if int(np.isfinite(pv_arr).sum()) >= fdr_module.LFDR_MIN_GENES:
+        local = fdr_module.lfdr(pv_arr, pi0=pi0)
+    elif call_rule == "lfdr":
+        raise ValueError(
+            f"call_rule 'lfdr' needs at least {fdr_module.LFDR_MIN_GENES} tested genes"
+        )
+    else:
+        local = np.full(len(pv_arr), np.nan)
+    out["qval_storey"] = q_storey
+    out["qval_bh"] = q_bh
+    out["lfdr"] = local
+    out["pi0"] = pi0
+    out["fdr"] = {"qvalue": q_storey, "bh": q_bh, "lfdr": local}[call_rule]
+    out["fdr_method"] = _CALL_RULES[call_rule]
     out["significance"] = np.where(out["fdr"] <= fdr_threshold, "T", "F")
 
     logger.info(
-        "calibrate_egenes_storey: n_genes=%d  pi0=%.4f  n_egenes(fdr<=%.2f)=%d",
-        len(out), pi0, fdr_threshold, int((out["significance"] == "T").sum()),
+        "calibrate_egenes_storey: n_genes=%d  pi0=%.4f  rule=%s  "
+        "n_egenes(fdr<=%.2f)=%d  (storey=%d  bh=%d)",
+        len(out), pi0, call_rule, fdr_threshold, int((out["significance"] == "T").sum()),
+        int((q_storey <= fdr_threshold).sum()), int((q_bh <= fdr_threshold).sum()),
     )
     return out
 
@@ -838,8 +901,9 @@ def call_significant_egenes(
     z_mat: "np.ndarray | None",
     valid_mask: "np.ndarray | None",
     seed: int,
+    call_rule: str = "qvalue",
 ) -> pd.DataFrame:
-    """Call eGenes over every tested gene: Beta calibration, Storey q-value, effects.
+    """Call eGenes over every tested gene: Beta calibration, q-value, effects.
 
     The q-value is estimated from the p-values of all genes with a peak, because
     its pi0 estimate and rank-based error count assume null p-values are uniform
@@ -865,12 +929,13 @@ def call_significant_egenes(
     use_rint       : apply RINT to the phenotype before scanning.
     z_mat, valid_mask : sample-to-strain design matrix and strain validity mask.
     seed           : base seed; each gene derives its own stream from it.
+    call_rule      : 'qvalue' (Storey), 'bh' (Benjamini-Hochberg) or 'lfdr'.
 
     Returns
     -------
     DataFrame with one row per tested gene: the peak columns plus pval_perm,
-    fdr, fdr_method, significance, and beta_<founder> columns filled for
-    significant genes.
+    qval_storey, qval_bh, lfdr, pi0, fdr, fdr_method, significance, and
+    beta_<founder> columns filled for significant genes.
     """
     from .qtl.effects import get_allele_effects
 
@@ -891,6 +956,7 @@ def call_significant_egenes(
         z_mat=z_mat,
         valid_mask=valid_mask,
         seed=seed,
+        call_rule=call_rule,
     )
 
     significant = called[called["significance"] == "T"]
@@ -1324,6 +1390,8 @@ def impute_egene(
     founder_order: Optional[list] = None,
     ref_founder: str = "B6J",
     gene_symbol: str = "",
+    *,
+    use_rint: bool,
 ) -> Optional[pd.DataFrame]:
     """Imputed SNP association scan for one eGene within its LOD-drop CI.
 
@@ -1349,6 +1417,8 @@ def impute_egene(
             are reduced to strain means before the scan.
         founder_order: Canonical founder names; cache founders when None.
         ref_founder: REF founder for the biallelic collapse.
+        use_rint: Rank-inverse normal transform of the phenotype before the
+            SNP scan; must equal the value the haplotype scan used.
         gene_symbol: Display gene name carried into the output.
 
     Returns:
@@ -1385,6 +1455,7 @@ def impute_egene(
         phenotype_id=gene_id,
         gene_symbol=gene_symbol,
         sample_ids=sample_ids,
+        use_rint=use_rint,
     )
     if snp_df is None or snp_df.empty:
         return None
@@ -1414,8 +1485,13 @@ def impute_egene(
             ref_allele = str(arow.get(ref_f, ""))
             f_alleles = {f: str(arow.get(f, "")) for f in f_order}
             valid = {f: a for f, a in f_alleles.items() if a and a != "N"}
-            alt_set = {a for a in valid.values() if a != ref_allele}
-            alt_allele = next(iter(alt_set), "")
+            alt_counts: dict[str, int] = {}
+            for a in valid.values():
+                if a != ref_allele:
+                    alt_counts[a] = alt_counts.get(a, 0) + 1
+            alt_allele = (
+                min(alt_counts, key=lambda a: (-alt_counts[a], a)) if alt_counts else ""
+            )
             ann_rows.append(
                 {
                     "snp": arow["marker"],
@@ -1450,20 +1526,18 @@ def impute_egene(
         ann_df["mac"]       = (_maf_col * _n_col).round().astype("Int64")
         ann_df["ma_sample"] = ann_df["mac"]
         ann_df["effect_size"] = ann_df["snp"].map(_snp_idx["beta_dosage"])
-        # Wald inversion: se = |beta| / |z|, z = sqrt(2·ln10·lod)
+        # the fitted standard error of the dosage effect; where it is missing,
+        # invert the likelihood-ratio statistic: se = |beta| / sqrt(2 ln10 lod)
         _beta_abs = ann_df["snp"].map(_snp_idx["beta_dosage"]).abs()
         _lod_map = ann_df["snp"].map(_snp_idx["lod"]).clip(lower=0.0)
         _z_abs = np.sqrt(2.0 * np.log(10) * _lod_map)
-        ann_df["se_effect_size"] = (_beta_abs / _z_abs.where(_z_abs > 1e-10)).where(
+        _se_wald = (_beta_abs / _z_abs.where(_z_abs > 1e-10)).where(
             _beta_abs > 1e-10, other=np.nan
         )
+        ann_df["se_effect_size"] = ann_df["snp"].map(_snp_idx["se_dosage"]).fillna(_se_wald)
         snp_df = snp_df.merge(ann_df, on="snp", how="left")
-    else:
-        for col in ("ref", "alt", "ref_founders", "alt_founders", "af", "maf",
-                    "mac", "ma_sample", "effect_size", "se_effect_size"):
-            snp_df[col] = pd.NA
 
-    result_df = snp_df[IMPUTED_SNP_COLS].copy()
+    result_df = snp_df.reindex(columns=IMPUTED_SNP_COLS)
     # attach LD payload on the result so impute_egenes can accumulate it
     if _ld_data is not None and _snp_patterns is not None:
         result_df.attrs["_ld"] = _ld_data
@@ -1483,6 +1557,8 @@ def impute_egenes(
     founder_order: Optional[list] = None,
     ref_founder: str = "B6J",
     n_cores: int = 1,
+    *,
+    use_rint: bool,
 ) -> pd.DataFrame:
     """Imputed SNP association scan for every eGene within its LOD-drop CI.
 
@@ -1501,6 +1577,8 @@ def impute_egenes(
         sample_ids: Genotype ID per sample column of phenotype_matrix.
         founder_order: Canonical founder names; cache founders when None.
         ref_founder: REF founder for the biallelic collapse.
+        use_rint: Rank-inverse normal transform of the phenotype before the
+            SNP scan; must equal the value the haplotype scan used.
 
     Returns:
         DataFrame in IMPUTED_SNP_COLS layout (empty with those columns when
@@ -1562,6 +1640,7 @@ def impute_egenes(
                 founder_order=f_order,
                 ref_founder=ref_founder,
                 gene_symbol="" if pd.isna(sym) else str(sym),
+                use_rint=use_rint,
             )
             if result is not None and not result.empty:
                 _ld = result.attrs.get("_ld")
@@ -1576,6 +1655,79 @@ def impute_egenes(
     return pd.concat(frames, ignore_index=True), ld_by_gene
 
 
+def scanned_chromosomes(scan_dir: 'str | os.PathLike[str]') -> list[str]:
+    """Return the unprefixed chromosome labels with a complete per-chromosome scan output.
+
+    A chromosome is complete when ``lod_chr{N}.csv``, ``peak_stats_chr{N}.csv`` and
+    ``timing_chr{N}.json`` all exist, in biological chromosome order.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no ``lod_chr*.csv`` exists.
+    ValueError
+        If any chromosome with a LOD file lacks its peak-statistics or timing file.
+    """
+    from pathlib import Path
+
+    from .utils import chr_sort_key
+
+    directory = Path(scan_dir)
+    chroms = [p.stem[len('lod_chr'):] for p in directory.glob('lod_chr*.csv')]
+    if not chroms:
+        raise FileNotFoundError(f'no lod_chr*.csv in {directory}')
+    expected = {
+        'peak_stats_chr': '.csv',
+        'timing_chr': '.json',
+    }
+    missing = [
+        f'{prefix}{chrom}{ext}'
+        for chrom in chroms
+        for prefix, ext in expected.items()
+        if not (directory / f'{prefix}{chrom}{ext}').exists()
+    ]
+    if missing:
+        raise ValueError(f'incomplete per-chromosome scan output, missing: {", ".join(sorted(missing))}')
+    return sorted(chroms, key=chr_sort_key)
+
+
+def validate_finemap_frames(
+    fm_df: pd.DataFrame,
+    peak_df: pd.DataFrame,
+    input_genes: set[str],
+) -> None:
+    """Check the fine-mapping tables before they are written.
+
+    Every output gene must be one of ``input_genes``; ``(gene_id, variant)`` must be
+    unique in ``fm_df``; ``peak_df`` must hold one row per gene, and only genes
+    present in ``fm_df``.
+
+    Raises
+    ------
+    ValueError
+        Naming the first violated invariant and up to five offending keys.
+    """
+    def _sample(keys: object) -> str:
+        return ', '.join(map(str, list(keys)[:5]))
+
+    fm_genes = set(fm_df['gene_id'].astype(str))
+    unknown = fm_genes - input_genes
+    if unknown:
+        raise ValueError(f'fine-mapping output has genes not in the input: {_sample(unknown)}')
+    dup = fm_df.duplicated(['gene_id', 'variant'], keep=False)
+    if dup.any():
+        keys = fm_df.loc[dup, ['gene_id', 'variant']].drop_duplicates().itertuples(index=False)
+        raise ValueError(f'duplicate (gene_id, variant) rows in fine-mapping output: {_sample(keys)}')
+    peak_dup = peak_df['gene_id'].duplicated(keep=False)
+    if peak_dup.any():
+        raise ValueError(
+            f'peak output has several rows per gene: {_sample(peak_df.loc[peak_dup, "gene_id"].unique())}'
+        )
+    orphan = set(peak_df['gene_id'].astype(str)) - fm_genes
+    if orphan:
+        raise ValueError(f'peak output has genes absent from the per-variant table: {_sample(orphan)}')
+
+
 def finemap_imputed(
     imputed_df: pd.DataFrame,
     out_dir: "Path | str",
@@ -1585,13 +1737,13 @@ def finemap_imputed(
     egene_df: Optional[pd.DataFrame] = None,
     ld_by_gene: Optional[dict] = None,
 ) -> tuple:
-    """Wakefield-ABF credible sets from an imputed SNP scan, written to disk.
+    """ABF-based credible sets from an imputed SNP scan, written to disk.
 
     Args:
         imputed_df: Output of impute_egenes (IMPUTED_SNP_COLS layout).
         out_dir: Directory for eqtl_finemapping{_tag}.csv and
             eqtl_finemapping_peak{_tag}.csv.
-        prior_var: Wakefield prior variance on the standardised effect.
+        prior_var: Prior effect variance on the standardised effect.
         coverage: Credible-set coverage.
         tag: Suffix appended to output filenames.
         egene_df: One row per eGene; supplies ``_FOUNDER_EFFECT_COLS``
@@ -1608,9 +1760,13 @@ def finemap_imputed(
         Tuple (finemapping_df, finemapping_peak_df).
     """
     from pathlib import Path as _Path
-    from .qtl.imputation import fine_map_region
+    from .qtl.imputation import (
+        fine_map_region,
+        format_founder_pattern,
+        ld_group_summary,
+    )
+    from .io.atomic import atomic_write_csv
     from .io.results_io import (
-        _atomic_write_csv,
         build_eqtl_finemapping_df,
         build_eqtl_finemapping_peak_df,
     )
@@ -1634,6 +1790,7 @@ def finemap_imputed(
 
     fm_frames: list = []
     fp_frames: list = []
+    grp_frames: list = []
     for _fm_i, (gid, g) in enumerate(imputed_df.groupby("gene_id", sort=False), 1):
         first = g.iloc[0]
         _sym = first.get("gene_symbol", gid)
@@ -1644,14 +1801,26 @@ def finemap_imputed(
         )
         # build LD groups from per-gene founder-pattern r² when available
         _ld_groups: Optional[dict] = None
+        _patterns: Optional[np.ndarray] = None
         _gene_ld = (ld_by_gene or {}).get(str(gid))
         if _gene_ld is not None:
+            _patterns = np.array(
+                [format_founder_pattern(p) for p in _gene_ld["snp_patterns"]], dtype=object
+            )
             from .qtl.imputation import merge_ld_groups as _merge_ld
             _ld_groups = _merge_ld(
                 rep_patterns=_gene_ld["ld"]["rep_patterns"],
                 r2_matrix=_gene_ld["ld"]["r2_matrix"],
                 snp_patterns=_gene_ld["snp_patterns"],
             )
+
+        eg_row = egene_idx.get(str(gid))
+        _tss_mb: Optional[float] = None
+        if eg_row is not None:
+            for _tc in ("near_tss_mb", "start_mb"):
+                if _tc in eg_row.index and not pd.isna(eg_row[_tc]):
+                    _tss_mb = float(eg_row[_tc])
+                    break
 
         fm_df = fine_map_region(
             lod=g["lod"].to_numpy(dtype=float),
@@ -1662,13 +1831,23 @@ def finemap_imputed(
             ld_groups=_ld_groups,
             prior_var=prior_var,
             coverage=coverage,
+            patterns=_patterns,
+            tss_mb=_tss_mb,
         )
+        if _ld_groups is not None:
+            _grp_df = ld_group_summary(fm_df)
+            if not _grp_df.empty:
+                grp_frames.append(_grp_df.assign(gene_id=str(gid)))
+        else:
+            logger.warning(
+                "finemap_imputed: no LD data for %s; variant-level posteriors only, "
+                "no LD-group row written", _flabel,
+            )
         sym = first.get("gene_symbol", "")
 
         founder_effects: Optional[dict] = None
         sig_values: Optional[dict] = None
         null_vals: Optional[dict] = None
-        eg_row = egene_idx.get(str(gid))
         if eg_row is not None:
             founder_effects = {
                 fc: float(eg_row[fc])
@@ -1690,7 +1869,7 @@ def finemap_imputed(
         _ann_cols = [c for c in (
             "rsid", "ref", "alt", "effect_allele", "other_allele",
             "ref_founders", "alt_founders", "dosage",
-            "af", "maf", "effect_size", "se_effect_size",
+            "af", "maf", "mac", "ma_sample", "effect_size", "se_effect_size",
         ) if c in g.columns]
         if _ann_cols and "snp" in g.columns:
             _cs_snps = set(fm_df[fm_df["in_cs"]]["snp"].tolist()) if "snp" in fm_df.columns else set()
@@ -1718,7 +1897,7 @@ def finemap_imputed(
             continue
         fm_frames.append(result)
         peak_row = build_eqtl_finemapping_peak_df(result)
-        if not peak_row.empty:
+        if not peak_row.empty and float(peak_row["pip"].iloc[0]) > PEAK_PIP_THRESHOLD:
             fp_frames.append(peak_row)
 
     fm_out = (
@@ -1732,16 +1911,33 @@ def finemap_imputed(
         else pd.DataFrame(columns=EQTL_FINEMAPPING_PEAK_COLS)
     )
 
+    validate_finemap_frames(fm_out, fp_out, set(map(str, _fm_genes)))
+
     suffix = f"_{tag}" if tag else ""
     # fm_out intermediate carries _FOUNDER_EFFECT_COLS for build_eqtl_finemapping_peak_df;
     # trim to EQTL_FINEMAPPING_COLS (per-SNP schema) before writing to disk.
-    _atomic_write_csv(fm_out.reindex(columns=EQTL_FINEMAPPING_COLS), out_dir / f"eqtl_finemapping{suffix}.csv")
-    _atomic_write_csv(fp_out, out_dir / f"eqtl_finemapping_peak{suffix}.csv")
+    atomic_write_csv(fm_out.reindex(columns=EQTL_FINEMAPPING_COLS), out_dir / f"eqtl_finemapping{suffix}.csv")
+    atomic_write_csv(fp_out, out_dir / f"eqtl_finemapping_peak{suffix}.csv")
+    grp_out = (
+        pd.concat(grp_frames, ignore_index=True)
+        if grp_frames
+        else pd.DataFrame(columns=EQTL_FINEMAPPING_GROUP_COLS)
+    )
+    atomic_write_csv(
+        grp_out.reindex(columns=EQTL_FINEMAPPING_GROUP_COLS),
+        out_dir / f"eqtl_finemapping_groups{suffix}.csv",
+        float_format="%.6g",
+    )
+    n_fm_genes = fm_out['gene_id'].nunique()
     logger.info(
-        "finemap_imputed: %d CS SNPs across %d eGenes written to %s",
+        "finemap_imputed: %d CS SNPs across %d eGenes written to %s; "
+        "%d of %d eGenes have a lead pip <= %.2f and are not in the peak file",
         len(fm_out),
-        len(fp_out),
+        n_fm_genes,
         out_dir,
+        n_fm_genes - len(fp_out),
+        n_fm_genes,
+        PEAK_PIP_THRESHOLD,
     )
     return fm_out, fp_out
 
@@ -1761,8 +1957,10 @@ def finemap_egenes(
     prior_var: float = 0.04,
     coverage: float = 0.95,
     tag: str = "",
+    *,
+    use_rint: bool,
 ) -> tuple:
-    """Imputed SNP scan plus Wakefield-ABF fine-mapping for every eGene.
+    """Imputed SNP scan plus ABF fine-mapping for every eGene.
 
     Composition of impute_egenes and finemap_imputed.
 
@@ -1779,7 +1977,9 @@ def finemap_egenes(
         sample_ids: Genotype ID per sample column of phenotype_matrix.
         founder_order: Canonical founder names; cache founders when None.
         ref_founder: REF founder for the biallelic collapse.
-        prior_var: Wakefield prior variance.
+        use_rint: Rank-inverse normal transform of the phenotype before the
+            SNP scan; must equal the value the haplotype scan used.
+        prior_var: Prior effect variance.
         coverage: Credible-set coverage.
         tag: Suffix appended to output filenames.
 
@@ -1797,6 +1997,7 @@ def finemap_egenes(
         sample_ids=sample_ids,
         founder_order=founder_order,
         ref_founder=ref_founder,
+        use_rint=use_rint,
     )
     return finemap_imputed(
         imputed, out_dir, prior_var=prior_var, coverage=coverage, tag=tag,

@@ -599,3 +599,60 @@ class TestFindPeaks:
         )
         df = find_peaks(sr, threshold=5.0, allow_multiple=True, min_lod_gap=1.5)
         assert len(df) == 2
+
+
+class TestPeakAtEdge:
+    """peak_at_edge marks a maximum at the first or last locus of a local window."""
+
+    @staticmethod
+    def _scan(tiny_cache, tiny_kinship, tiny_phenotype, tiny_covariates, sample_ids,
+              sample_strain_map, window_mb, scan_window='local'):
+        from mosaiqtl.genotype.kinship import decomp_kinship
+        from mosaiqtl.qtl.scan import scan_multi_gene_lmm
+
+        chrom = tiny_cache.chromosomes[0]
+        return scan_multi_gene_lmm(
+            expr_cache={'g1': np.asarray(tiny_phenotype, dtype=float)},
+            gene_chr_map={'g1': chrom},
+            genomecache=tiny_cache,
+            covariates=tiny_covariates,
+            kinship_decomp=decomp_kinship(tiny_kinship),
+            sample_ids=list(sample_strain_map),
+            use_rint=False,
+            scan_window=scan_window,
+            gene_pos_mb_map={'g1': 50.0},
+            window_mb=window_mb,
+        ), chrom
+
+    def test_flag_matches_window_ends(self, tiny_cache, tiny_kinship, tiny_phenotype,
+                                      tiny_covariates, sample_ids, sample_strain_map):
+        for window_mb in (8.0, 15.0, 60.0):
+            peaks, chrom = self._scan(tiny_cache, tiny_kinship, tiny_phenotype,
+                                      tiny_covariates, sample_ids, sample_strain_map, window_mb)
+            pos = np.asarray(tiny_cache.get_chromosome(chrom)[1])
+            pos = pos[np.abs(pos - 50.0) <= window_mb]
+            row = peaks.iloc[0]
+            expected = bool(row['peak_mb'] in (pos.min(), pos.max()))
+            assert 'peak_at_edge' in peaks.columns
+            assert bool(row['peak_at_edge']) == expected
+
+    def test_single_locus_window_is_at_edge(self, tiny_cache, tiny_kinship, tiny_phenotype,
+                                            tiny_covariates, sample_ids, sample_strain_map):
+        peaks, _ = self._scan(tiny_cache, tiny_kinship, tiny_phenotype, tiny_covariates,
+                              sample_ids, sample_strain_map, 1.0)
+        assert bool(peaks.iloc[0]['peak_at_edge'])
+
+    def test_h2_boundary_flag_is_reported(self, tiny_cache, tiny_kinship, tiny_phenotype,
+                                          tiny_covariates, sample_ids, sample_strain_map):
+        from mosaiqtl.pipeline import PEAK_LOD_COLS
+
+        peaks, _ = self._scan(tiny_cache, tiny_kinship, tiny_phenotype, tiny_covariates,
+                              sample_ids, sample_strain_map, 8.0)
+        assert 'h2_at_boundary' in PEAK_LOD_COLS
+        assert peaks['h2_at_boundary'].dtype == bool
+
+    def test_not_reported_without_a_window(self, tiny_cache, tiny_kinship, tiny_phenotype,
+                                           tiny_covariates, sample_ids, sample_strain_map):
+        peaks, _ = self._scan(tiny_cache, tiny_kinship, tiny_phenotype, tiny_covariates,
+                              sample_ids, sample_strain_map, 8.0, scan_window='cis')
+        assert 'peak_at_edge' not in peaks.columns or peaks['peak_at_edge'].isna().all()

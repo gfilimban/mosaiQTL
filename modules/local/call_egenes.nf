@@ -14,15 +14,18 @@ process CALL_EGENES {
 
     output:
     tuple val(celltype), val(scan_tag),
-          path('*_peak_lod.csv'),
+          path('*_peak_lod_all.csv'),
           path('*_pval_perm.json'),
-          path('*_eqtl_summary.csv')
+          path('*_haplotype_eqtl_summary.csv'),
+          path('*_haplotype_peak_lod.csv')
 
     script:
     def tis    = params.tissue ?: 'run'
     def ct_log = celltype.replaceAll(/\s+/, '_')
     def tag    = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     def rint   = (params.use_rint != null && !params.use_rint) ? 0 : 1
+    def call_rule = params.call_rule ?: 'qvalue'
+    def submission_fdr = params.submission_fdr ?: 0.1
     """
     set -o pipefail
     mkdir -p ${params.output_dir}/logs/${scan_tag}/${ct_log}
@@ -30,13 +33,13 @@ process CALL_EGENES {
         ${peak_lod} ${perm_max_lods} ${phenotypes} ${gene_info} \\
         ${genomecache} ${kinship_loco} ${metadata} \\
         '${celltype}' ${scan_tag} '${params.covariates}' \\
-        ${params.fdr_threshold} ${params.n_perms_cal} ${params.seed} . ${params.tissue} ${rint} \\
+        ${params.fdr_threshold} ${params.n_perms_cal} ${params.seed} . ${params.tissue} ${rint} ${call_rule} ${submission_fdr} \\
         2>&1 | tee ${params.output_dir}/logs/${scan_tag}/${ct_log}/call_egenes.log
     """
 
     stub:
     def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
-    touch ${tag}_peak_lod.csv ${tag}_pval_perm.json ${tag}_eqtl_summary.csv
+    touch ${tag}_peak_lod_all.csv ${tag}_pval_perm.json ${tag}_haplotype_eqtl_summary.csv ${tag}_haplotype_peak_lod.csv
     """
 }

@@ -86,7 +86,7 @@ class TestHaldaneRecomb:
 class TestTransitionMatrix:
     def setup_method(self):
         self.r = 0.1
-        self.T = transition_matrix(self.r, n_founders=8, n_gen=1)
+        self.T = transition_matrix(self.r, n_founders=8)
         self.ns = 36
 
     def test_shape(self):
@@ -100,7 +100,7 @@ class TestTransitionMatrix:
 
     def test_identity_at_r0(self):
         """r=0 → no recombination → transition matrix = identity."""
-        T0 = transition_matrix(0.0, n_founders=8, n_gen=1)
+        T0 = transition_matrix(0.0, n_founders=8)
         np.testing.assert_allclose(T0, np.eye(self.ns), atol=1e-10)
 
 

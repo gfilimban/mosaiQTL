@@ -814,6 +814,7 @@ def scan_multi_gene_lmm(
                 "peak_mb": float(pos_arr[peak_idx]),
                 "peak_lod": float(lod_arr[peak_idx]),
                 "h2": float(h2),
+                "h2_at_boundary": lmm_module.h2_at_boundary(h2),
                 "n_valid": n_valid,
                 "rss0": float(rss0),
                 "rss1": rss1_peak,
@@ -821,6 +822,8 @@ def scan_multi_gene_lmm(
                 "sigma2_e": round(rss0 * (1 - _h2f) / _df, 6) if _ok else float("nan"),
                 "tau2": round(rss0 * _h2f / _df, 6) if _ok else float("nan"),
             }
+            if scan_window == "local":
+                row["peak_at_edge"] = peak_idx in (0, len(lod_arr) - 1)
             for fi, bcol in enumerate(beta_cols):
                 row[bcol] = float(betas_pk[fi]) if fi < len(betas_pk) else float("nan")
             peak_rows.append(row)

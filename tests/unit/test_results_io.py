@@ -360,7 +360,7 @@ def _fm_df(
         "snp": [f"rs{i}" for i in range(n)],
         "lod": rng.uniform(1.0, 6.0, n),
         "z": rng.normal(0, 2, n),
-        "abf": rng.uniform(0.5, 3.0, n),
+        "log_abf": rng.uniform(-1.0, 8.0, n),
         "pip": pip,
         "in_cs": in_cs,
     }
@@ -381,6 +381,15 @@ class TestBuildEqtlFinemappingDf:
         # build_eqtl_finemapping_peak_df can lift founder betas into the peak file.
         # write_eqtl_finemapping trims to EQTL_FINEMAPPING_COLS at write time.
         assert list(df.columns) == EQTL_FINEMAPPING_COLS + _FOUNDER_EFFECT_COLS
+
+    def test_log_abf_is_carried_through_and_pip_stays_linear(self):
+        fm = _fm_df()
+        df = build_eqtl_finemapping_df(
+            fm, "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2
+        )
+        np.testing.assert_array_equal(df["log_abf"], fm.loc[fm["in_cs"], "log_abf"])
+        np.testing.assert_array_equal(df["pip"], fm.loc[fm["in_cs"], "pip"])
+        assert df["pip"].between(0.0, 1.0).all()
 
     def test_only_cs_members_included(self):
         df = build_eqtl_finemapping_df(

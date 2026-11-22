@@ -6,11 +6,10 @@ Layer 1 — interpolate_haplotype_probs():
     linear interpolation preserves the probability simplex: weights are
     non-negative and sum to 1 at every SNP × strain pair.
 
-Layer 2 — collapse_to_dosage() + snp_allele_stats():
+Layer 2 — collapse_to_dosage():
     collapses the (n_snps, n_strains, n_founders) probability tensor to a
     (n_snps, n_strains) expected ALT-allele dosage using a pre-built binary
-    alt_mask (see genotype/snp_db.py::make_alt_mask).  snp_allele_stats()
-    derives allele frequency, MAF, and MAC from the dosage matrix.
+    alt_mask.
 
 primary use: Layers 1–2 of the Sanger fine-mapping stack.  consumers (Layer 2
 biallelic collapse, Layer 3 ABF/SuSiE-RSS) call this function to obtain
@@ -27,6 +26,42 @@ import numpy as np
 from .genomecache import GenomeCache
 
 logger = logging.getLogger("mosaiqtl")
+
+
+def bracket_weights(
+    grid: np.ndarray,
+    query: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    r"""Locate each query position between two adjacent grid markers.
+
+    For a query $x$ with $g_l \le x \le g_{l+1}$ the interpolated value is
+    $(1-t)\,v_l + t\,v_{l+1}$ with $t = (x - g_l)/(g_{l+1} - g_l)$.  Queries
+    outside the grid are clamped to the boundary marker ($t \in \{0, 1\}$),
+    so interpolated probability vectors stay on the simplex.
+
+    Parameters
+    ----------
+    grid : np.ndarray
+        Strictly increasing marker coordinates, shape ``(n_loci,)``,
+        ``n_loci >= 2``.
+    query : np.ndarray
+        Query coordinates in the same unit as ``grid``, shape ``(n_query,)``.
+
+    Returns
+    -------
+    left : np.ndarray
+        Index of the left bracket marker, shape ``(n_query,)``; the right
+        bracket is ``left + 1``.
+    t : np.ndarray
+        Interpolation weight on the right marker in $[0, 1]$.
+    """
+    n_loci = len(grid)
+    idx = np.clip(np.searchsorted(grid, query, side="right"), 1, n_loci - 1)
+    left = idx - 1
+    dx = grid[idx] - grid[left]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        t = np.where(dx > 0, (query - grid[left]) / dx, 0.0)
+    return left, np.clip(t, 0.0, 1.0)
 
 
 def interpolate_haplotype_probs(
@@ -108,18 +143,8 @@ def interpolate_haplotype_probs(
         grid = marker_mb
         query = snp_mb
 
-    # ── find bracket markers for each SNP ────────────────────────────────
-    # idx: index of the right-hand marker; clamp so left = idx-1 is valid
     n_loci = len(grid)
-    idx = np.searchsorted(grid, query, side="right")
-    idx = np.clip(idx, 1, n_loci - 1)
-
-    left = idx - 1
-
-    dx = grid[idx] - grid[left]  # (n_snps,)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        t = np.where(dx > 0, (query - grid[left]) / dx, 0.0)  # (n_snps,)
-    t = np.clip(t, 0.0, 1.0)
+    left, t = bracket_weights(grid, query)
 
     # ── segment loop over marker intervals ───────────────────────────────
     # iterate over the L-1 unique bracket pairs (≤ ~4000) rather than
@@ -199,42 +224,6 @@ def collapse_to_dosage(
         # probs[:, :, f] is (n_snps, n_strains); col[:, np.newaxis] is (n_snps, 1)
         dosage += probs[:, :, f] * col[:, np.newaxis]
     return dosage
-
-
-def snp_allele_stats(
-    dosage: np.ndarray,
-    n_samples: int | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute allele frequency, MAF, and MAC from a dosage matrix.
-
-    All three statistics are computed across strains (axis 1), assuming equal
-    strain weights.  For a proper population-weighted estimate, the caller
-    should pass a pre-weighted dosage matrix.
-
-    Parameters
-    ----------
-    dosage : np.ndarray
-        Float64 array of shape ``(n_snps, n_strains)``; output of
-        :func:`collapse_to_dosage`.
-    n_samples : int or None, optional
-        Total number of biological samples (used for MAC).  When ``None``,
-        ``n_strains`` (``dosage.shape[1]``) is used as a proxy.
-
-    Returns
-    -------
-    af : np.ndarray
-        Shape ``(n_snps,)``.  Mean ALT allele frequency across strains.
-    maf : np.ndarray
-        Shape ``(n_snps,)``.  Minor allele frequency: ``min(af, 1 - af)``.
-    mac : np.ndarray
-        Shape ``(n_snps,)``.  Minor allele count: ``maf × n_samples``,
-        rounded to the nearest integer.
-    """
-    n_eff = n_samples if n_samples is not None else dosage.shape[1]
-    af = dosage.mean(axis=1)  # (n_snps,)
-    maf = np.minimum(af, 1.0 - af)
-    mac = np.round(maf * n_eff).astype(np.int64)
-    return af, maf, mac
 
 
 def _linear_interp_1d(

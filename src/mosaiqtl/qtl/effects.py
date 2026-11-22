@@ -67,9 +67,10 @@ def _locus_fwl(
     xtwx = xt.T @ xt
     try:
         beta_null = np.linalg.solve(xtwx, xt.T @ yt)
-    except np.linalg.LinAlgError:
-        J = h.shape[1]
-        return np.zeros(J), np.zeros((J, J)), 0.0
+    except np.linalg.LinAlgError as exc:
+        raise np.linalg.LinAlgError(
+            'covariate design is singular under the null-model weights'
+        ) from exc
 
     e0 = yt - xt @ beta_null
     rss0 = float(e0 @ e0)
@@ -116,7 +117,10 @@ def get_allele_effects(
     use_rint       : bool   rank-normalize the phenotype before scanning
     method         : str    'fixef' (default) or 'ranef'
         fixef: direct least-squares estimate, matches the scan's own effects
-        ranef: shrunk ridge/BLUP estimate, weighted by signal vs. noise
+        ranef: shrunk ridge/BLUP estimate with prior variance from a moment
+        estimator; se is the posterior standard deviation given the estimated
+        variance components, ci_lo/ci_hi the normal interval from it (below
+        nominal coverage, about 67% in simulation), and p_value is NaN
     h2             : float or None   pre-estimated null h²; re-estimated if None
     founder_names  : list of str or None   defaults to genomecache.founders
 
@@ -229,14 +233,19 @@ def get_allele_effects(
         sigma2 = rss1 / max(n - p - q, 1)
         cov_b = sigma2 * G_pinv
     elif method == "ranef":
-        # shrink toward zero by an amount set from the ratio of residual
-        # noise to estimated true signal (empirical-Bayes ridge penalty)
+        # empirical-Bayes ridge: b ~ N(0, sigma2_a I). The projected score is
+        # c = G b + noise with noise covariance sigma2_e G, so
+        # E[c' G^+ c] = sigma2_a tr(G) + q sigma2_e and the moment estimator
+        # of the prior variance is (signal - q sigma2_e) / tr(G).
         G_pinv = np.linalg.pinv(G, rcond=1e-10)
         b_fix = G_pinv @ c
         rss1 = max(rss0 - float(c @ b_fix), 1e-30)
         sigma2_e = rss1 / max(n - p - q, 1)
         signal = max(rss0 - rss1, 0.0)
-        sigma2_a = max(signal / max(q, 1) / n, sigma2_e * 1e-4)
+        sigma2_a = max(
+            (signal - q * sigma2_e) / max(float(np.trace(G)), 1e-30),
+            sigma2_e * 1e-4,
+        )
         lam = sigma2_e / sigma2_a
         G_ridge = G + lam * np.eye(J)
         try:
@@ -244,7 +253,9 @@ def get_allele_effects(
         except np.linalg.LinAlgError:
             G_r_inv = np.linalg.pinv(G_ridge)
         betas = G_r_inv @ c
-        cov_b = sigma2_e * G_r_inv @ G @ G_r_inv
+        # posterior covariance of b given the data: the prediction-error
+        # variance of the shrunk estimate, sigma2_e (G + lam I)^-1
+        cov_b = sigma2_e * G_r_inv
     else:
         raise ValueError(f"method must be 'fixef' or 'ranef', got {method!r}")
 
@@ -256,8 +267,15 @@ def get_allele_effects(
         b = float(betas[fi])
         s = max(float(se[fi]), 1e-15)
         z = b / s
-        pv = float(2.0 * stats.t.sf(abs(z), df=df))
-        tcrit = float(stats.t.ppf(0.975, df=df))
+        if method == "ranef":
+            # a shrunk estimate is biased by design, so a frequentist test has
+            # no meaning; the interval is the normal posterior interval given
+            # the estimated variance components
+            pv = float("nan")
+            tcrit = float(stats.norm.ppf(0.975))
+        else:
+            pv = float(2.0 * stats.t.sf(abs(z), df=df))
+            tcrit = float(stats.t.ppf(0.975, df=df))
         effects.append(
             FounderEffect(
                 founder=fname,
@@ -323,7 +341,7 @@ def qtl_gxe_lrt(
     J = h_locus.shape[1]
     # 1-way haplotype test: derived from scan LOD at zero cost
     chi2_hap = 2.0 * np.log(10) * max(lod_additive, 0.0)
-    p_hap = float(1.0 - chi2_dist.cdf(chi2_hap, df=J - 1))
+    p_hap = float(chi2_dist.sf(chi2_hap, df=J - 1))
 
     # estimate h² from null model if not provided
     if h2 is None:
@@ -350,7 +368,7 @@ def qtl_gxe_lrt(
 
     lod_gxe = lod_full - lod_additive
     chi2_gxe = 2.0 * np.log(10) * max(lod_gxe, 0.0)
-    p_gxe = float(1.0 - chi2_dist.cdf(chi2_gxe, df=J - 1))
+    p_gxe = float(chi2_dist.sf(chi2_gxe, df=J - 1))
 
     return {
         "chi2_haplotype": float(chi2_hap),

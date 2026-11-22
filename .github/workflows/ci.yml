@@ -73,6 +73,24 @@ jobs:
             --cov-report=term-missing \
             --cov-fail-under=45
 
+  # ── changelog (PRs only) ────────────────────────────────────────────────────
+  changelog:
+    name: CHANGELOG entry
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: require CHANGELOG.md when src/ or workflow/ change
+        run: |
+          changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          if echo "$changed" | grep -qE '^(src|workflow)/' && ! echo "$changed" | grep -qx 'CHANGELOG.md'; then
+            echo '::error::src/ or workflow/ changed without a CHANGELOG.md [Unreleased] entry'
+            exit 1
+          fi
+
   # ── security ────────────────────────────────────────────────────────────────
   security:
     name: bandit

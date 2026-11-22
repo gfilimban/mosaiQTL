@@ -18,7 +18,7 @@ import pandas as pd
 import logging
 from pathlib import Path
 from scipy.stats import chi2 as _chi2
-from ..utils import build_z_matrix, _build_gm_idx, _enrich_scan_df
+from ..utils import build_tss_lookup, build_z_matrix, _build_gm_idx, _enrich_scan_df
 
 logger = logging.getLogger("mosaiqtl")
 
@@ -88,7 +88,8 @@ def select_cis_mediation_pairs(
     peak_mb_col  : egene_table column for peak locus position in Mb
     info_gene_col: gene_info column for gene identifier
     info_chr_col : gene_info column for chromosome
-    info_start_col: gene_info column for TSS / gene start (base-pairs)
+    info_start_col: gene_info column for gene start (base-pairs); the strand-aware TSS
+        uses the ``end`` and ``strand`` columns when present
 
     Returns
     -------
@@ -104,7 +105,9 @@ def select_cis_mediation_pairs(
 
     gi = gene_info.copy()
     gi[info_chr_col] = gi[info_chr_col].astype(str)
-    gi["_tss_mb"] = gi[info_start_col] / 1e6
+    gi["_tss_mb"] = gi[info_gene_col].astype(str).map(
+        build_tss_lookup(gi.rename(columns={info_gene_col: "gene_id", info_start_col: "start"}))
+    )
 
     pairs: list[tuple[str, str, str]] = []
     for _, row in egene_table.iterrows():

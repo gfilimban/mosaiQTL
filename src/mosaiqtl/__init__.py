@@ -69,7 +69,9 @@ from .qtl.ci import CI_COLS, lod_support_interval, ci_scan_multi_gene  # noqa: F
 # per-gene FDR calibration
 from .qtl.fdr import (  # noqa: F401
     beta_calibrate_pvalue,
-    storey_qvalue,
+    bh,
+    lfdr,
+    qvalue,
     calibrate_gene_pvalue,
 )
 

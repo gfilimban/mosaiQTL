@@ -8,7 +8,7 @@ process PERMUTE {
     input:
     path  genomecache
     path  kinship_loco
-    tuple val(celltype), val(scan_tag), path(phenotypes), path(peak_lod), path(metadata), path(gene_tss)
+    tuple val(celltype), val(scan_tag), path(phenotypes), path(peak_lod), path(metadata)
 
     output:
     tuple val(celltype), val(scan_tag),
@@ -17,7 +17,7 @@ process PERMUTE {
           path('*_perm_gev_params.json')
 
     script:
-    def tss_arg = gene_tss.name != 'NO_GENE_TSS' ? gene_tss.name : ''
+    def rint    = params.use_rint ? 1 : 0
     def tis     = params.tissue ?: 'run'
     def tissue_q = "'${params.tissue ?: ''}'"
     def ct_log  = celltype.replaceAll(/\s+/, '_')
@@ -29,7 +29,7 @@ process PERMUTE {
         ${genomecache} ${kinship_loco} ${phenotypes} ${peak_lod} ${metadata} \\
         '${celltype}' ${scan_tag} '${params.covariates}' \\
         ${params.n_perms} ${params.seed} ${params.perm_method} . \\
-        '${params.scan_type}' ${params.window_mb} ${tissue_q} ${tss_arg} \\
+        '${params.scan_type}' ${params.window_mb} ${tissue_q} ${rint} \\
         2>&1 | tee ${params.output_dir}/logs/${scan_tag}/${ct_log}/permute.log
     """
 

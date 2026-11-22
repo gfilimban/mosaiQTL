@@ -3583,6 +3583,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                         kinship_decomp=kinship_decomp,
                         sample_ids=geno_ids_fm,
                         tag=_run_sfx,
+                        use_rint=True,
                     )
                     del _fm_counts
                     results['sanger_finemap'] = (

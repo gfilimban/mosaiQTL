@@ -200,3 +200,28 @@ class TestMakeDesignMatrix:
         df = pd.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0], "c": [5.0, 6.0]})
         X, names = make_design_matrix(df, formula_cols=["a"])
         assert "b" not in names and "c" not in names
+
+
+class TestBuildTssLookup:
+    @staticmethod
+    def _genes():
+        import pandas as pd
+
+        return pd.DataFrame({
+            "gene_id": ["G1", "G2", "G3"],
+            "start": [1_000_000, 5_000_000, 9_000_000],
+            "end": [1_400_000, 5_600_000, 9_500_000],
+            "strand": ["+", "-", None],
+        })
+
+    def test_tss_is_start_on_plus_end_on_minus_start_when_strand_missing(self):
+        from mosaiqtl.utils import build_tss_lookup
+
+        assert build_tss_lookup(self._genes()) == pytest.approx({"G1": 1.0, "G2": 5.6, "G3": 9.0})
+
+    def test_without_strand_every_gene_uses_start(self):
+        from mosaiqtl.utils import build_tss_lookup
+
+        assert build_tss_lookup(self._genes().drop(columns="strand")) == pytest.approx(
+            {"G1": 1.0, "G2": 5.0, "G3": 9.0}
+        )

@@ -90,14 +90,13 @@ workflow {
         .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, stag, gi] })
         .map { ct, lods, peaks, timings, stag, gi -> [ct, stag, lods, peaks, timings, gi] }
 
-    MERGE_RESULTS(merge_in)
+    MERGE_RESULTS(gene_tss, merge_in)
 
     // ── Permutation (per CT, after merge — needs peak_lod for rep gene) ───────
     perm_in = MERGE_RESULTS.out
         .map { ct, stag, lod, peak, stats -> [ct, stag, peak] }
         .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, stag, pheno, m] }, by: [0, 1])
-        .combine(gene_tss)
-        .map { ct, stag, peak, pheno, m, tss -> [ct, stag, pheno, peak, m, tss] }
+        .map { ct, stag, peak, pheno, m -> [ct, stag, pheno, peak, m] }
 
     PERMUTE(gc, kinship, perm_in)
 
@@ -114,7 +113,7 @@ workflow {
     // peak_lod.csv carries null model cols + beta_{founder} cols for egene enrichment
     // use by:[0,1] to join on (ct, stag) composite key so stag is not duplicated
     finemap_base = CALL_EGENES.out
-        .map { ct, stag, peak, pval, summary -> [ct, stag, summary] }
+        .map { ct, stag, peak, pval, summary, hap_peak -> [ct, stag, summary] }
         .join(MERGE_RESULTS.out.map { ct, stag, lod, peak_lod, stats -> [ct, stag, peak_lod] }, by: [0, 1])
         .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, stag, pheno, m] }, by: [0, 1])
         .map { ct, stag, summary, peak_lod, pheno, m -> [ct, stag, summary, peak_lod, pheno, m] }
@@ -129,21 +128,25 @@ workflow {
             }
         }
 
-    FINEMAP_CHR(gc, kinship, sanger_h5, gene_tss, finemap_chr_in)
+    FINEMAP_CHR(gc, kinship, sanger_h5, finemap_chr_in)
 
     finemap_merge_in = FINEMAP_CHR.out
-        .map { ct, stag, chrom, fm, fm_peak -> [ct, stag, fm, fm_peak] }
+        .map { ct, stag, chrom, fm, fm_peak, fm_group, ci -> [ct, stag, fm, fm_peak, fm_group, ci] }
         .groupTuple(by: [0, 1])
 
-    FINEMAP_MERGE(finemap_merge_in)
+    // the call-stage summary is completed with each eGene's support interval
+    finemap_merge_with_summary = finemap_merge_in
+        .join(CALL_EGENES.out.map { ct, stag, peak, pval, summary, hap_peak -> [ct, stag, summary] }, by: [0, 1])
+
+    FINEMAP_MERGE(finemap_merge_with_summary)
 
     // ── Report (all scan visualisations) ─────────────────────────────────────
     report_in = CALL_EGENES.out
-        .map { ct, stag, peak, pval, summary -> [ct, stag, peak, summary, pval] }
+        .map { ct, stag, peak, pval, summary, hap_peak -> [ct, stag, peak, summary, pval] }
         .join(PERMUTE.out.map { ct, stag, perm, perm_chrs, gev -> [ct, stag, perm, perm_chrs] }, by: [0, 1])
         .join(MERGE_RESULTS.out.map { ct, stag, lod, peak, stats -> [ct, stag, lod] }, by: [0, 1])
         .join(ct_ch.map { ct, stag, pheno, gi, m -> [ct, stag, gi] }, by: [0, 1])
-        .join(FINEMAP_MERGE.out.map { ct, stag, fm, fm_peak -> [ct, stag, fm] }, by: [0, 1], remainder: true)
+        .join(FINEMAP_MERGE.out.map { ct, stag, fm, fm_peak, fm_group, ci, hap_summary -> [ct, stag, fm] }, by: [0, 1], remainder: true)
         .filter { it[2] != null }
         .map { ct, stag, peak, summary, pval, perm, perm_chrs, lod_genome, gi, fm ->
                [ct, stag, peak, summary, pval, perm, perm_chrs, gi, lod_genome,

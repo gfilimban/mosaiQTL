@@ -182,7 +182,7 @@ Rather than fitting a full dispersion model at every locus (computationally
 prohibitive), mosaiQTL uses a two-stage scan:
 
 1. **Stage 1:** standard mean eQTL scan → identify loci with mean effects
-2. **Stage 2:** regress out mean effects, then scan Pearson residuals²
+2. **Stage 2:** regress out mean effects, then scan squared Pearson residuals $r_i^2$
    for dispersion signal (Brown-Forsythe-type test)
 
 $$\text{vQTL LOD} = \text{LOD}(\mathbf{e}_i^2 \sim \mathbf{H}_\ell) - \text{LOD}(\mathbf{e}_i^2 \sim \mathbf{X})$$

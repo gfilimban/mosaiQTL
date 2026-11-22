@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -11,13 +9,13 @@ import numpy as np
 import pandas as pd
 from scipy import stats as _sp_stats
 
+from mosaiqtl.io.atomic import atomic_write_csv
 from mosaiqtl.utils import add_chr_prefix
 
 from mosaiqtl.pipeline import (
     _FOUNDER_EFFECT_COLS,
     _SCAN_COLS,
     _SIG_COLS,
-    CS_RESOLVED_PIP_THRESHOLD,
     EQTL_FINEMAPPING_COLS,
     EQTL_FINEMAPPING_PEAK_COLS,
     EQTL_PEAK_COLS,
@@ -124,39 +122,6 @@ def scan_result_to_df(
     return pd.DataFrame({col: values[col] for col in LOD_COLS})
 
 
-def _atomic_write_csv(
-    df: pd.DataFrame,
-    path: "Path | str",
-    float_format: "str | None" = None,
-) -> None:
-    """Write ``df`` to ``path`` atomically: temp file in the same dir, then rename.
-
-    Parameters
-    ----------
-    df:
-        DataFrame to write (no index column).
-    path:
-        Destination CSV path. Parent directory must already exist.
-    float_format:
-        Optional format string passed to ``DataFrame.to_csv``.  Pass
-        ``'%.6g'`` for tables that contain very small floats (e.g.
-        heritability estimates) so they are written in scientific notation
-        rather than rounded to zero.
-    """
-    dest = Path(path)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=dest.parent, prefix=f".{dest.name}.", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w") as fh:
-            df.to_csv(fh, index=False, float_format=float_format)
-        os.replace(tmp_name, dest)
-    except Exception:
-        if os.path.exists(tmp_name):
-            os.remove(tmp_name)
-        raise
-
-
 def build_eqtl_peak_df(
     effects_egenes_df: pd.DataFrame,
     founder_names: list[str],
@@ -240,7 +205,7 @@ def write_eqtl_peak(
     The DataFrame that was written (``pipeline.EQTL_PEAK_COLS`` schema).
     """
     df = build_eqtl_peak_df(effects_egenes_df, founder_names)
-    _atomic_write_csv(df, out_path, float_format='%.6g')
+    atomic_write_csv(df, out_path, float_format='%.6g')
     return df
 
 
@@ -325,7 +290,7 @@ def write_eqtl_stats(
     The DataFrame that was written (``pipeline.EQTL_STATS_COLS`` schema).
     """
     df = build_eqtl_stats_df(chrom_stats, genome_stats)
-    _atomic_write_csv(df, out_path, float_format='%.6g')
+    atomic_write_csv(df, out_path, float_format='%.6g')
     return df
 
 
@@ -473,7 +438,7 @@ def write_eqtl_scan(
     The DataFrame that was written (``pipeline.EQTL_SCAN_COLS`` schema).
     """
     df = build_eqtl_scan_df(scan, genomecache, gene_symbol_map, n_founders)
-    _atomic_write_csv(df, out_path)
+    atomic_write_csv(df, out_path)
     return df
 
 
@@ -505,7 +470,7 @@ def build_eqtl_finemapping_df(
     fm_df:
         Subset of :func:`~qtl.imputation.fine_map_region` output with
         ``in_cs == True``, sorted by PIP descending (the first row is the lead
-        SNP).  Must contain ``snp``, ``lod``, ``pip``; optionally ``pos_mb``.
+        SNP).  Must contain ``snp``, ``lod``, ``pip``, ``log_abf``; optionally ``pos_mb``.
     gene_id:
         ENSMUSG ID (version-stripped) — stable join key.
     chr_:
@@ -541,7 +506,7 @@ def build_eqtl_finemapping_df(
     DataFrame with columns given by ``pipeline.EQTL_FINEMAPPING_COLS``, in
     order.
     """
-    # restrict to CS members; fm_df is already sorted by PIP desc from fine_map_region
+    # restrict to CS members; fm_df is already in lead-first order from fine_map_region
     cs = fm_df[fm_df["in_cs"]].reset_index(drop=True)
     n = len(cs)
 
@@ -558,7 +523,8 @@ def build_eqtl_finemapping_df(
         pos_col = pd.NA
 
     lead_flag = np.full(n, "F", dtype=object)
-    lead_flag[0] = "T"   # first row is highest-PIP SNP (fine_map_region sorts desc)
+    if n:
+        lead_flag[0] = "T"   # first row is the lead variant (fine_map_region row order)
 
     out = pd.DataFrame({
         "variant": cs["snp"].to_numpy(),
@@ -570,6 +536,7 @@ def build_eqtl_finemapping_df(
         "pval_nominal": pval,
         "log10p_nominal": log10p,
         "pip": np.asarray(cs["pip"], dtype=np.float64),
+        "log_abf": np.asarray(cs["log_abf"], dtype=np.float64),
         "pip_method": "ABF",
         "CS": "T",
         "lead_snp": lead_flag,
@@ -599,29 +566,19 @@ def build_eqtl_finemapping_df(
     nm = null_model_values or {}
     for col in _NULL_MODEL_COLS:
         out[col] = nm.get(col, pd.NA)
-    # mac/ma_sample from imputed dosages: maf is dataset-level (48 strains)
-    if "maf" in out.columns:
-        _maf = pd.to_numeric(out["maf"], errors="coerce")
-        out["mac"] = (_maf * 48).round().astype("Int64")
-        _ns = pd.to_numeric(out.get("n_sample", pd.Series(dtype=float)), errors="coerce")
-        if _ns.notna().any():
-            out["ma_sample"] = (_maf * _ns).round().astype("Int64")
-
     _PVAL_COLS = {"pval_perm", "fdr", "pval_nominal"}
     for _pc in _PVAL_COLS:
         if _pc in out.columns:
             out[_pc] = out[_pc].apply(
                 lambda x: f"{x:.3e}" if pd.notna(x) and isinstance(x, float) else x
             )
-    # round remaining float columns to 3 dp
-    for _fc in out.columns:
-        if _fc not in _PVAL_COLS and pd.api.types.is_float_dtype(out[_fc]):
-            out[_fc] = out[_fc].round(3)
 
     # Preserve _FOUNDER_EFFECT_COLS alongside EQTL_FINEMAPPING_COLS so that
     # build_eqtl_finemapping_peak_df can carry them into the peak file.
     # write_eqtl_finemapping trims to EQTL_FINEMAPPING_COLS at write time.
-    return out.reindex(columns=EQTL_FINEMAPPING_COLS + _FOUNDER_EFFECT_COLS).reset_index(drop=True)
+    return out.reindex(
+        columns=EQTL_FINEMAPPING_COLS + _FOUNDER_EFFECT_COLS
+    ).reset_index(drop=True)
 
 
 def write_eqtl_finemapping(
@@ -654,7 +611,7 @@ def write_eqtl_finemapping(
     )
     # trim to EQTL_FINEMAPPING_COLS (per-SNP schema); _FOUNDER_EFFECT_COLS are
     # haplotype-peak properties carried in the intermediate df for the peak builder.
-    _atomic_write_csv(df.reindex(columns=EQTL_FINEMAPPING_COLS), out_path)
+    atomic_write_csv(df.reindex(columns=EQTL_FINEMAPPING_COLS), out_path)
     return df
 
 
@@ -679,9 +636,6 @@ def build_eqtl_finemapping_peak_df(
     in order (one row).
     """
     lead = fm_df[fm_df["lead_snp"] == "T"].drop(columns="lead_snp").copy().reset_index(drop=True)
-    lead["cs_resolved"] = np.where(
-        lead["pip"].ge(CS_RESOLVED_PIP_THRESHOLD), "T", "F"
-    )
     return lead.reindex(columns=EQTL_FINEMAPPING_PEAK_COLS).reset_index(drop=True)
 
 
@@ -699,5 +653,5 @@ def write_eqtl_finemapping_peak(
     (``pipeline.EQTL_FINEMAPPING_PEAK_COLS`` schema).
     """
     df = build_eqtl_finemapping_peak_df(fm_df)
-    _atomic_write_csv(df, out_path)
+    atomic_write_csv(df, out_path)
     return df

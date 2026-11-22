@@ -290,6 +290,35 @@ class TestGetAlleleEffectsRanef:
         assert not np.allclose(b_rn, b_fx, atol=1e-6)
 
 
+class TestRanefInference:
+    def test_ranef_has_no_p_value(
+        self,
+        tiny_cache,
+        tiny_kinship,
+        tiny_strain_phenotype,
+    ):
+        kd, chrom, locus_id = _setup(tiny_cache, tiny_kinship)
+        effects = get_allele_effects(
+            tiny_strain_phenotype, tiny_cache, locus_id, chrom, kd,
+            use_rint=False, method="ranef",
+        )
+        assert all(np.isnan(e.p_value) for e in effects)
+
+    def test_fixef_keeps_test_and_interval(
+        self,
+        tiny_cache,
+        tiny_kinship,
+        tiny_strain_phenotype,
+    ):
+        kd, chrom, locus_id = _setup(tiny_cache, tiny_kinship)
+        effects = get_allele_effects(
+            tiny_strain_phenotype, tiny_cache, locus_id, chrom, kd,
+            use_rint=False, method="fixef",
+        )
+        assert all(np.isfinite(e.p_value) for e in effects)
+        assert all(e.ci_lo < e.estimate < e.ci_hi for e in effects)
+
+
 class TestGetAlleleEffectsZeroReplicateStrains:
     """regression: strains with no valid replicates for a gene must not cause SVD failure.
 
@@ -304,7 +333,7 @@ class TestGetAlleleEffectsZeroReplicateStrains:
         tiny_cache,
         tiny_kinship,
         tiny_phenotype,
-        sample_ids,
+        sample_strain_map,
     ):
         from mosaiqtl.genotype.kinship import decomp_kinship
 
@@ -323,7 +352,7 @@ class TestGetAlleleEffectsZeroReplicateStrains:
             locus_id,
             chrom,
             kd,
-            sample_ids=list(sample_ids),
+            sample_ids=list(sample_strain_map),
             use_rint=False,
             method='fixef',
         )
@@ -336,7 +365,7 @@ class TestGetAlleleEffectsZeroReplicateStrains:
         tiny_cache,
         tiny_kinship,
         tiny_phenotype,
-        sample_ids,
+        sample_strain_map,
     ):
         from mosaiqtl.genotype.kinship import decomp_kinship
 
@@ -353,10 +382,11 @@ class TestGetAlleleEffectsZeroReplicateStrains:
             locus_id,
             chrom,
             kd,
-            sample_ids=list(sample_ids),
+            sample_ids=list(sample_strain_map),
             use_rint=False,
             method='fixef',
         )
+        assert not np.allclose([e.estimate for e in effects], 0.0)
         for e in effects:
             assert np.isfinite(e.estimate), f'non-finite estimate for {e.founder}'
             assert np.isfinite(e.se), f'non-finite SE for {e.founder}'
