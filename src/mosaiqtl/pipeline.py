@@ -287,10 +287,13 @@ EQTL_FINEMAPPING_COLS: list[str] = [
 # group_pip sums to 1 over a gene's groups; in_cs marks the groups in the credible set.
 EQTL_FINEMAPPING_GROUP_COLS: list[str] = ["gene_id", *LD_GROUP_COLS]
 
-# The peak file lists only eGenes whose lead variant has pip above this value, i.e. loci
-# that resolved to one credible variant. Every other eGene stays in the per-variant and
-# LD-group tables.
-PEAK_PIP_THRESHOLD: float = 0.5
+# The peak file lists only eGenes whose lead variant has pip above this value. Under the
+# single-causal-variant model pip is the posterior probability that the variant is the
+# causal one; variants that share a founder allele pattern have identical ABF and split
+# that probability, so a single variant seldom reaches 0.5 in a dense window and 0.25
+# keeps the variants carrying at least a quarter of the posterior. Every other eGene
+# stays in the per-variant and LD-group tables.
+PEAK_PIP_THRESHOLD: float = 0.25
 
 # Sanger fine-mapping peak — one row per resolved eGene (its lead variant).
 # lead_snp dropped (redundant for a single-row-per-gene file);

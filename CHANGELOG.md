@@ -18,8 +18,9 @@ Fixed or Removed, written in the PR that makes it. Releases follow pyproject.tom
   (`imputation.ld_group_summary`; docs/math/12 §LD-Group Summary). `group_pip` sums to 1 per gene.
 - `log_abf` (natural log of the association-over-null approximate Bayes factor) in the fine-mapping tables;
   `pip` stays a linear probability.
-- The fine-mapping peak file lists only eGenes whose lead variant has `pip` > 0.5 (`PEAK_PIP_THRESHOLD`); the
-  log reports how many eGenes the filter left out. The per-variant and LD-group tables keep every eGene.
+- The fine-mapping peak file lists only eGenes whose lead variant has `pip` > 0.25 (`PEAK_PIP_THRESHOLD`); the
+  log reports how many eGenes the filter left out. A 0.5 cut left most chromosomes with almost no peak rows
+  because variants sharing a founder allele pattern have identical ABF and split the posterior. The per-variant and LD-group tables keep every eGene.
 - `beta_a`, `beta_b`: the fitted Beta shape parameters behind `pval_perm`, written to the peak table so each
   p-value can be reproduced from its null; `_calibrate_pvalues_loop` returns them instead of discarding them.
 - `peak_at_edge` in `{tag}_peak_lod.csv`: true when the scan maximum is the first or last locus of a local
