@@ -18,7 +18,7 @@ process FINEMAP_MERGE {
 
     output:
     tuple val(celltype), val(scan_tag),
-          path('*_eqtl_finemapping.csv'),
+          path('*_eqtl_finemapping.csv.gz'),
           path('*_eqtl_finemapping_peak.csv'),
           path('*_eqtl_finemapping_groups.csv'),
           path('*_eqtl_ci.csv'),
@@ -39,6 +39,6 @@ process FINEMAP_MERGE {
     stub:
     def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
-    touch ${tag}_eqtl_finemapping.csv ${tag}_eqtl_finemapping_peak.csv ${tag}_eqtl_finemapping_groups.csv ${tag}_eqtl_ci.csv ${tag}_haplotype_eqtl_summary.csv
+    touch ${tag}_eqtl_finemapping.csv.gz ${tag}_eqtl_finemapping_peak.csv ${tag}_eqtl_finemapping_groups.csv ${tag}_eqtl_ci.csv ${tag}_haplotype_eqtl_summary.csv
     """
 }

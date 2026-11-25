@@ -3,6 +3,8 @@ Format: [Keep a Changelog](https://keepachangelog.com). One line per user-visibl
 Fixed or Removed, written in the PR that makes it. Releases follow pyproject.toml and are tagged vX.Y.Z.
 
 ## [Unreleased]
+
+## [0.7.3] — 2026-11-25
 ### Changed
 - `calibrate_egenes_storey` is renamed `calibrate_egenes`: the call is no longer tied to the Storey q-value.
 - eGene calling defaults to Benjamini-Hochberg (`call_rule='bh'`, `--call-rule bh`, `params.call_rule: 'bh'`) at
@@ -15,6 +17,8 @@ Fixed or Removed, written in the PR that makes it. Releases follow pyproject.tom
   eQTL peak, eQTL stats and LD-group tables at six; the `float_format` argument and `CSV_FLOAT_FORMAT` are removed)
   and writes every boolean column (`is_egene`, `peak_at_edge`, `h2_at_boundary`, `ci_truncated`, `in_cs`) as `T`/`F`
   instead of `True`/`False`. Read them with `true_values=['T'], false_values=['F']`.
+- The merged fine-mapping table is written gzip-compressed as `{tag}_eqtl_finemapping.csv.gz` (per-chromosome parts
+  stay plain CSV); `atomic_write_csv` and `atomic_concat_csv` compress any destination ending in `.gz`.
 
 ## [0.7.2] — 2026-11-22
 ### Added

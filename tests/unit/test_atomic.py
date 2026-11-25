@@ -1,6 +1,7 @@
 """Tests for mosaiqtl.io.atomic: complete-or-absent output files."""
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 
@@ -102,6 +103,24 @@ class TestAtomicConcatCsv:
         n_lines = atomic.atomic_concat_csv([a, b], dest, ['gene_id', 'lod'])
         assert n_lines == 3
         assert dest.read_text() == 'gene_id,lod\ng1,1\ng2,2\ng3,3\n'
+
+    def test_gz_destination_is_compressed_and_round_trips(self, tmp_path: Path) -> None:
+        a = self._part(tmp_path, 'a.csv', 'gene_id,lod\ng1,1\ng2,2\n')
+        b = self._part(tmp_path, 'b.csv', 'gene_id,lod\ng3,3\n')
+        dest = tmp_path / 'merged.csv.gz'
+        assert atomic.atomic_concat_csv([a, b], dest, ['gene_id', 'lod']) == 3
+        assert dest.read_bytes()[:2] == b'\x1f\x8b'
+        with gzip.open(dest, 'rt', newline='') as fh:
+            assert fh.read() == 'gene_id,lod\ng1,1\ng2,2\ng3,3\n'
+        assert pd.read_csv(dest)['gene_id'].tolist() == ['g1', 'g2', 'g3']
+        assert _no_temp_files(tmp_path)
+
+    def test_gz_output_is_deterministic(self, tmp_path: Path) -> None:
+        a = self._part(tmp_path, 'a.csv', 'gene_id,lod\ng1,1\n')
+        first, second = tmp_path / 'one.csv.gz', tmp_path / 'two.csv.gz'
+        atomic.atomic_concat_csv([a], first, ['gene_id', 'lod'])
+        atomic.atomic_concat_csv([a], second, ['gene_id', 'lod'])
+        assert first.read_bytes() == second.read_bytes()
 
     def test_header_only_parts_give_header_only_file(self, tmp_path: Path) -> None:
         a = self._part(tmp_path, 'a.csv', 'gene_id,lod\n')

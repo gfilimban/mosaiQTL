@@ -8,6 +8,8 @@ for a downstream stage or a ``-resume`` to mistake for a finished output.
 """
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import os
 import tempfile
@@ -51,14 +53,26 @@ def _encode_booleans(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _atomic_write(path: 'Path | str', write: Callable[[IO[str]], None]) -> None:
-    """Run ``write`` on a temporary sibling file, fsync it, then rename it to ``path``."""
+    """Run ``write`` on a temporary sibling file, fsync it, then rename it to ``path``.
+
+    A destination ending in ``.gz`` is gzip-compressed as it is written (fixed header
+    timestamp, so equal content gives equal bytes); ``write`` always sees a text handle.
+    """
     dest = Path(path)
     fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=f'.{dest.name}.', suffix='.tmp')
     try:
-        with os.fdopen(fd, 'w') as fh:
-            write(fh)
-            fh.flush()
-            os.fsync(fh.fileno())
+        if dest.suffix == '.gz':
+            with os.fdopen(fd, 'wb') as raw:
+                with gzip.GzipFile(fileobj=raw, mode='wb', mtime=0) as gz:
+                    with io.TextIOWrapper(gz, encoding='utf-8', newline='') as fh:
+                        write(fh)
+                raw.flush()
+                os.fsync(raw.fileno())
+        else:
+            with os.fdopen(fd, 'w') as fh:
+                write(fh)
+                fh.flush()
+                os.fsync(fh.fileno())
         os.replace(tmp_name, dest)
     except BaseException:
         if os.path.exists(tmp_name):

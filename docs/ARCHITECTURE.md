@@ -1,4 +1,4 @@
-# docs/ARCHITECTURE.md — mosaiQTL v0.7.2
+# docs/ARCHITECTURE.md — mosaiQTL v0.7.3
 # Multiomics haplotype-based QTL mapping for CC/DO mice (mm39)
 # Statistical model: LMM scan (primary) | NB-GLMM (experimental; not in CLI/Nextflow)
 # Full citations: docs/REFERENCES.md
@@ -424,7 +424,7 @@ Stage 5 — bootstrap CI
                               L-mode: computed inside ±window_mb of the strand-aware TSS)
 
 Stage 6 — finemap_egenes
-  → {tag}_eqtl_finemapping.csv       credible-set SNPs (EQTL_FINEMAPPING_COLS)
+  → {tag}_eqtl_finemapping.csv.gz    credible-set SNPs (EQTL_FINEMAPPING_COLS), gzip-compressed at merge
   → {tag}_eqtl_finemapping_peak.csv  lead SNP per eGene (EQTL_FINEMAPPING_PEAK_COLS)
 
 Stage 7 — report (eqtl_peak + eqtl_stats)

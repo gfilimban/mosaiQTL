@@ -30,7 +30,7 @@ What each Nextflow output file contains and what every column means. The column 
 | `{tag}_pval_perm.json` | tested gene | `gene_id` → `pval_perm` | `run_call_egenes.py` |
 | `{tag}_eqtl_summary.csv` | eGene (`significance == 'T'`) | `EGENE_SUMMARY_COLS` | `run_call_egenes.py` |
 | `{tag}_eqtl_ci.csv` | eGene | `CI_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
-| `{tag}_eqtl_finemapping.csv` | credible-set member × eGene | `EQTL_FINEMAPPING_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
+| `{tag}_eqtl_finemapping.csv.gz` | credible-set member × eGene | `EQTL_FINEMAPPING_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
 | `{tag}_eqtl_finemapping_peak.csv` | eGene whose lead variant has `pip` > `PEAK_PIP_THRESHOLD` (0.25), as its lead variant | `EQTL_FINEMAPPING_PEAK_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
 | `{tag}_eqtl_finemapping_groups.csv` | LD group × eGene (all groups, including those outside the credible set) | `EQTL_FINEMAPPING_GROUP_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
 
