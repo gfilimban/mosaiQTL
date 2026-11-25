@@ -13,6 +13,9 @@ What each Nextflow output file contains and what every column means. The column 
 - Files are in `{output_dir}/{celltype}/{scan_tag}/core/`; `{tag}` is `{tissue}_{celltype}_{scan_tag}`
   (tissue omitted when empty).
 - Every file is written atomically: complete or absent.
+- Floats are written at full precision (the shortest string that round-trips). Boolean columns are written as `T`
+  or `F` (empty when missing); read them with `pd.read_csv(..., true_values=['T'], false_values=['F'])`. Below,
+  "`True`" in a bool column's description means `T`.
 - Significance is estimated over all tested genes; no gene is selected by LOD first.
 - "Founder" columns have one entry per founder of the population (e.g. the eight CC/DO founders AJ, B6J, …),
   in the founder order of the genotype cache.
@@ -27,7 +30,7 @@ What each Nextflow output file contains and what every column means. The column 
 | `{tag}_pval_perm.json` | tested gene | `gene_id` → `pval_perm` | `run_call_egenes.py` |
 | `{tag}_eqtl_summary.csv` | eGene (`significance == 'T'`) | `EGENE_SUMMARY_COLS` | `run_call_egenes.py` |
 | `{tag}_eqtl_ci.csv` | eGene | `CI_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
-| `{tag}_eqtl_finemapping.csv` | credible-set member × eGene | `EQTL_FINEMAPPING_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
+| `{tag}_eqtl_finemapping.csv.gz` | credible-set member × eGene | `EQTL_FINEMAPPING_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
 | `{tag}_eqtl_finemapping_peak.csv` | eGene whose lead variant has `pip` > `PEAK_PIP_THRESHOLD` (0.25), as its lead variant | `EQTL_FINEMAPPING_PEAK_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
 | `{tag}_eqtl_finemapping_groups.csv` | LD group × eGene (all groups, including those outside the credible set) | `EQTL_FINEMAPPING_GROUP_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
 
@@ -50,6 +53,7 @@ Origin: **ci** = support-interval scan; **scan** = LMM scan; **annot** = gene an
 | `peak_locus` | Marker ID of the highest-LOD locus | str | scan |
 | `peak_mb` | Position of the highest-LOD locus | Mb | scan |
 | `cis_dist_mb` | `peak_mb − near_tss_mb` (else `peak_mb − start_mb`). Signed by strand: negative is upstream and positive downstream of the TSS on both strands. In the fine-mapping files, the same quantity for the gene | Mb | annot |
+| `cis_dist_gene_tss_mb` | `peak_mb` minus the gene's most upstream transcript TSS (smallest `start` on +, largest `end` on −), signed like `cis_dist_mb`. The anchor depends only on the gene, so the value is comparable across cell types; NaN when the gene has no transcript in `gene_tss` | Mb | annot |
 | `peak_lod` | LOD at the peak locus | LOD | scan |
 | `peak_at_edge` | The maximum is the first or last locus of the scan window, so the true maximum may lie outside it and the peak position, support interval and fine-mapping window are truncated. The haplotype LOD profile is smooth over megabases, so a short window often puts its maximum at an end. Written for local windows; `pval_perm` is unaffected because its null is scanned over the same window | bool | scan |
 | `h2` | Null heritability fitted for this gene on its LOCO kinship | [0, 1] | scan |
@@ -72,7 +76,7 @@ Origin: **ci** = support-interval scan; **scan** = LMM scan; **annot** = gene an
 | `lfdr` | Local false discovery rate: posterior probability the gene is null, $\hat\pi_0 f_0(p)/\hat f(p)$ from a probit-scale density of `pval_perm` over all tested genes; NaN when fewer than 10 genes were tested | [0, 1] | call |
 | `pi0` | Estimated null fraction used by `qval_storey` and `lfdr`; one value per table | [0, 1] | call |
 | `fdr` | The value selected by the call rule (`qval_storey`, `qval_bh` or `lfdr`) | [0, 1] | call |
-| `fdr_method` | Call rule used: `qvalue`, `BH` or `lfdr` | str | call |
+| `fdr_method` | Call rule used: `BH` (default), `qvalue` or `lfdr`; a gene is also required to have `peak_lod` above the permutation LOD threshold to be called | str | call |
 | `significance` | `T` when `fdr` ≤ the FDR threshold, else `F` | `T`/`F` | call |
 | `in_r_egenes` | Gene also called in an external reference (validation only) | bool | – |
 | `variant` | Variant ID (SPDI) | str | fm |

@@ -1,10 +1,12 @@
 # Fine-mapping peak table
 
-One row per resolved eGene: an eGene whose lead variant has a posterior inclusion probability (`pip`) above 0.5, and
-that row is the lead variant. Such a gene has a single variant that dominates its credible set. Every other eGene
+One row per resolved eGene: an eGene whose lead variant has a posterior inclusion probability (`pip`) above 0.25
+(`PEAK_PIP_THRESHOLD`), and that row is the lead variant. Such a gene has one variant that carries a large share of
+its credible set. Every other eGene
 stays in the per-variant and LD-group fine-mapping tables. Variant-level columns describe that lead variant; the
 gene-level significance columns repeat the values from the [eQTL summary](eqtl_summary.md); the `effect_{founder}`
-columns are the per-founder haplotype effects at the haplotype peak, one column per founder. The
+columns are the per-founder haplotype effects at the haplotype peak (the `beta_{founder}` values of the
+[haplotype peak LOD table](haplotype_peak_lod.md)). The
 [output schema](../output_schema.md) gives the full conventions.
 
 | Column | Type | Unit | Meaning |
@@ -23,8 +25,8 @@ columns are the per-founder haplotype effects at the haplotype peak, one column 
 | `CS` | str | – | `T` for credible-set members |
 | `pip_method` | str | – | Fine-mapping method (`ABF`) |
 | `lod` | float | LOD | LOD of the variant |
-| `pval_nominal` | float | p | One-degree-of-freedom $\chi^2$ p-value of the variant LOD |
-| `log10p_nominal` | float | – | $-\log_{10}$ `pval_nominal` |
+| `pval_nominal` | float | p | One-degree-of-freedom $\chi^2$ p-value of the variant LOD (2 ln 10 · `lod`); written to 4 significant figures |
+| `log10p_nominal` | float | – | $-\log_{10}$ `pval_nominal`, from the unrounded p-value |
 | `pval_perm` | float | p | Per-gene p-value of the window's peak LOD |
 | `qval_storey` | float | q | Storey q-value across all tested genes |
 | `qval_bh` | float | q | Benjamini–Hochberg adjusted `pval_perm` across all tested genes |
@@ -33,23 +35,23 @@ columns are the per-founder haplotype effects at the haplotype peak, one column 
 | `fdr` | float | [0, 1] | The value selected by the call rule |
 | `fdr_method` | str | – | Call rule used: `qvalue`, `BH` or `lfdr` |
 | `significance` | str | – | `T` when `fdr` is at or below the FDR threshold, otherwise `F` |
-| `effect_allele` | str | – | Allele coded as the dosage predictor |
-| `other_allele` | str | – | Complement of `effect_allele` |
+| `effect_allele` | str | – | Allele coded as the dosage predictor; the alternative allele (`alt`) |
+| `other_allele` | str | – | Complement of `effect_allele`; the reference allele (`ref`) |
 | `ref_founders` | str | – | Comma-joined founders carrying the reference allele |
 | `alt_founders` | str | – | Comma-joined founders carrying the alternative allele |
-| `dosage` | bool | – | `T` if the genotype is imputed from haplotype probabilities, `F` for hard calls |
-| `af` | float | [0, 1] | Mean imputed dosage of the effect allele over the gene's scanned strains; replicates are counted individually |
+| `dosage` | str | – | `T` if the genotype is imputed from haplotype probabilities, `F` for hard calls; the pipeline writes `T` |
+| `af` | float | [0, 1] | Mean imputed dosage of the effect allele over the scanned samples; a strain with several samples counts once per sample |
 | `maf` | float | [0, 1] | Minor allele frequency, $\min(\mathrm{af},1-\mathrm{af})$ |
-| `mac` | int | – | Minor allele count, $\mathrm{round}(\mathrm{maf}\times n_{\mathrm{sample}})$ |
+| `mac` | int | – | Minor allele count, $\mathrm{round}(\mathrm{maf}\times n_{\mathrm{sample}})$, rounding halves to even |
 | `ma_sample` | int | – | Same value as `mac` |
-| `effect_size` | float | phenotype units | Dosage regression slope |
-| `se_effect_size` | float | phenotype units | Standard error of `effect_size` |
+| `effect_size` | float | phenotype units | Slope of the phenotype on the effect-allele dosage (0–1) |
+| `se_effect_size` | float | phenotype units | Standard error of `effect_size`; \|`effect_size`\| / \|z\| when the regression gives none |
 | `hap_peak_variant` | str | – | Marker ID of the haplotype-scan peak the interval was built around |
 | `hap_peak_pos` | int | bp | Position of that haplotype-scan peak |
 | `hap_peak_lod` | float | LOD | LOD of that haplotype-scan peak |
-| `ci_lo_bp` | int | bp | Lower bound of the fine-mapping region: contiguous loci within 1.5 LOD of the peak, clamped to the scan window |
+| `ci_lo_bp` | int | bp | Lower bound of the fine-mapping region: contiguous loci within 1.5 LOD of the peak, clamped to the scan window; `ci_lo` of the eQTL summary in bp |
 | `ci_hi_bp` | int | bp | Upper bound of the fine-mapping region, as for `ci_lo_bp` |
-| `h2_null_chr` | float | [0, 1] | Leave-one-chromosome-out null heritability on the gene's chromosome |
-| `sd_phenotype` | float | phenotype units | $\sqrt{\mathrm{RSS}_0/(n-1)}$ |
-| `n_sample` | int | – | Strains in the null fit |
-| `effect_AJ`, `effect_B6J`, `effect_129S1J`, `effect_NODJ`, `effect_NZOJ`, `effect_CASTJ`, `effect_PWKJ`, `effect_WSBJ` | float | phenotype units | Per-founder haplotype effect at the haplotype peak, one column per founder (the eight CC founders shown); sums to about 0 |
+| `h2_null_chr` | float | [10⁻⁶, 1 − 10⁻⁶] | Leave-one-chromosome-out null heritability on the gene's chromosome; equals `h2` of the eQTL summary |
+| `sd_phenotype` | float | phenotype units | $\sqrt{\mathrm{RSS}_0/(n-1)}$, with $\mathrm{RSS}_0$ and $n$ = `n_sample` from the haplotype peak LOD table |
+| `n_sample` | int | samples | Pseudobulk samples in the null fit (`n_valid` of the haplotype peak LOD table) |
+| `effect_AJ`, `effect_B6J`, `effect_129S1J`, `effect_NODJ`, `effect_NZOJ`, `effect_CASTJ`, `effect_PWKJ`, `effect_WSBJ` | float | phenotype units | Per-founder haplotype effect at the haplotype peak, one column per founder (the eight CC founders shown); the eight values sum to 0 |

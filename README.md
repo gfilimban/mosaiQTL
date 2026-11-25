@@ -5,7 +5,7 @@ depends on which of the 8 founder haplotypes a strain carries near it, using a l
 leave-one-chromosome-out (LOCO) kinship. It was built for single-nucleus pseudobulk data from the Collaborative
 Cross (CC lines, founders and F1s; mm39) and calls eGenes, founder effects and fine-mapped variants.
 
-> **Status — v0.7.2.** The Gaussian LMM is the validated production model, run by the Nextflow workflow and the
+> **Status — v0.7.3.** The Gaussian LMM is the validated production model, run by the Nextflow workflow and the
 > CLI. The negative-binomial GLMM (`qtl/nb.py`) is experimental and available from the Python API only.
 
 ## How it works
@@ -49,7 +49,7 @@ Copy `config/default_params.yaml` and set at least:
 | `sanger_alleles` | Founder SNP alleles (HDF5); fine-mapping is skipped when absent |
 | `scan_type`, `window_mb` | `L` (local, default) with a ±1 Mb window; `C` chromosome-wide; `G` genome-wide |
 | `covariates` | Fixed effects, default `sex,dataset` |
-| `call_rule`, `fdr_threshold` | `qvalue` (default), `bh` or `lfdr`; eGene cut, default 0.05 |
+| `call_rule`, `fdr_threshold` | `bh` (default), `qvalue` or `lfdr`; q-value cut, default 0.05. A called eGene must also have a peak LOD above the permutation LOD threshold |
 
 The genome cache and LOCO kinship are built on the first run (`ref/igvf_cache.h5`, `ref/igvf_kinship_loco.h5`)
 and reused afterwards. Every run writes a Nextflow trace to `<output_dir>/logs/trace.txt`.
@@ -77,7 +77,7 @@ Every column is described in [`docs/output_schema.md`](docs/output_schema.md).
 | `*_haplotype_eqtl_summary.csv` | eGene calls: calibrated p-value, q-values (Storey, BH), $\hat\pi_0$, significance |
 | `*_perm_max_lods.csv`, `*_perm_gev_params.json` | Permutation null and GEV threshold (quality control) |
 | `*_eqtl_ci.csv` | 1.5-LOD support interval per eGene |
-| `*_eqtl_finemapping.csv` | Per-variant fine-mapping: PIP, credible set, Bayes factor, founder alleles |
+| `*_eqtl_finemapping.csv.gz` | Per-variant fine-mapping (gzip-compressed; `pd.read_csv` reads it directly): PIP, credible set, Bayes factor, founder alleles |
 | `*_eqtl_finemapping_groups.csv` | One row per founder-pattern group: group PIP, variants, span |
 | `*_eqtl_finemapping_peak.csv` | Lead variant per eGene (lead PIP > 0.25) |
 | `*_eqtl_stats.csv`, `*.png` | Run summary and figures |

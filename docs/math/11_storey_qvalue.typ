@@ -4,7 +4,7 @@
 = Per-Gene Beta-Approximated Permutation p-values and Storey q-values
 <per-gene-beta-approximated-permutation-p-values-and-storey-q-values>
 #strong[Module:] `qtl/fdr.py` (`calibrate_gene_pvalue`, `beta_calibrate_pvalue`, `qvalue`, `bh`),
-`qtl/permutation.py` (`draw_parametric_null_batch`), `pipeline.py` (`calibrate_egenes_storey`,
+`qtl/permutation.py` (`draw_parametric_null_batch`), `pipeline.py` (`calibrate_egenes`,
 `call_significant_egenes`); Nextflow `CALL_EGENES` → `workflow/scripts/run_call_egenes.py`
 #strong[miQTL parallel:] none --- miQTL uses BH-FDR on genome-wide max-LOD; this design follows the
 FastQTL/tensorQTL/GTEx precedent instead (see §0).
@@ -253,9 +253,11 @@ current pipeline drops this saving to keep the q-value valid.
   `permutation.draw_parametric_null_batch` and `lmm.scan_chromosome_batch` directly, not
   `run_threshold_scans`. It is LMM-only and returns #mi(`(p_{\text{adj},g}, \hat{a}, \hat{b}, \hat{h}^2_g)`);.
   `beta_calibrate_pvalue` returns #mi(`(p_{\text{adj},g}, \hat{a}, \hat{b})`);.
-- `pipeline.py::_SIG_COLS`: `pval_perm` populated from §3\'s output; `fdr` from §4\'s q-value;
-  `fdr_method` is `'qvalue'` (no longer hardcoded `'BH'`); `significance` gated on #mi(`\hat q \le`); `fdr_threshold`
-  instead of the raw `peak_lod` threshold (`calibrate_egenes_storey`).
+- `pipeline.py::_SIG_COLS`: `pval_perm` populated from §3\'s output; `fdr` is the q-value chosen by `call_rule`
+  (`'bh'` by default, `'qvalue'` for §4's Storey q-value, `'lfdr'`); `fdr_method` records the rule;
+  `significance` requires #mi(`\hat q \le`); `fdr_threshold` and `peak_lod` above the genome-wide permutation LOD
+  threshold. All three q-values are computed over every tested gene; the LOD gate applies to the call only
+  (`calibrate_egenes`).
 - `pipeline.py::call_significant_egenes`: calibrates all tested genes, applies Storey, then computes
   founder effects for significant genes only. `run_call_egenes.py` writes `{tag}_peak_lod.csv` (with
   `is_egene`), `{tag}_pval_perm.json` and `{tag}_eqtl_summary.csv` (significant eGenes only).

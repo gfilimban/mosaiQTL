@@ -88,6 +88,7 @@ PEAK_LOD_COLS: list[str] = [
     "peak_locus",
     "peak_mb",
     "cis_dist_mb",
+    "cis_dist_gene_tss_mb",
     "peak_lod",
     "peak_at_edge",
     "h2",
@@ -109,6 +110,7 @@ EGENE_SUMMARY_COLS: list[str] = [
     "peak_locus",
     "peak_mb",
     "cis_dist_mb",
+    "cis_dist_gene_tss_mb",
     "peak_lod",
     "peak_at_edge",
     "ci_lo",
@@ -376,7 +378,7 @@ __all__ = [
     "EQTL_STATS_COLS",
     "IMPUTED_SNP_COLS",
     "call_egenes",
-    "calibrate_egenes_storey",
+    "calibrate_egenes",
     "call_significant_egenes",
     "enrich_peak_lod",
     "finalize_egene_summary",
@@ -408,6 +410,9 @@ def enrich_peak_lod(
     ``gene_tss_df``. ``cis_dist_mb = peak_mb - near_tss_mb`` where a transcript
     TSS exists, else ``peak_mb - start_mb``, multiplied by -1 for minus-strand
     genes so that negative always means upstream of the TSS.
+    ``cis_dist_gene_tss_mb`` is the same signed distance measured from one fixed
+    TSS per gene, the most upstream transcript TSS in ``gene_tss_df``, so it does
+    not change with the peak and is comparable across cell types.
 
     Parameters
     ----------
@@ -424,9 +429,15 @@ def enrich_peak_lod(
     -------
     pd.DataFrame
         ``peak_lod_df`` enriched with ``gene_symbol``, ``start_mb``,
-        ``near_tss_mb`` and ``cis_dist_mb`` (where data is available).
+        ``near_tss_mb``, ``cis_dist_mb`` and ``cis_dist_gene_tss_mb`` (where data
+        is available).
     """
-    from .utils import build_tss_lookup, nearest_transcript_tss_mb, strip_gene_version
+    from .utils import (
+        build_tss_lookup,
+        gene_tss_anchor,
+        nearest_transcript_tss_mb,
+        strip_gene_version,
+    )
 
     key = strip_gene_version(peak_lod_df['gene_id'])
     gi = gene_info_df.assign(gene_id=strip_gene_version(gene_info_df['gene_id']))
@@ -448,6 +459,10 @@ def enrich_peak_lod(
         return out
     if gene_tss_df is not None:
         out['near_tss_mb'] = nearest_transcript_tss_mb(out, gene_tss_df)
+        fixed = gene_tss_anchor(gene_tss_df).reindex(key.to_numpy())
+        out['cis_dist_gene_tss_mb'] = (
+            (out['peak_mb'].to_numpy() - fixed['tss_mb'].to_numpy()) * fixed['sign'].to_numpy()
+        )
     anchor = out['near_tss_mb'] if 'near_tss_mb' in out.columns else None
     if 'start_mb' in out.columns:
         anchor = out['start_mb'] if anchor is None else anchor.fillna(out['start_mb'])
@@ -556,19 +571,19 @@ def attach_support_interval(summary_df: pd.DataFrame, ci_df: pd.DataFrame) -> pd
 
 
 def select_submission_genes(peak_df: pd.DataFrame, fdr_max: float) -> pd.DataFrame:
-    r"""Rows of the calibrated peak table whose selected FDR is at or below ``fdr_max``.
+    r"""Rows of the calibrated peak table whose Benjamini-Hochberg q-value is at or below ``fdr_max``.
 
     The calibration and the q-values are computed over every tested gene before this
-    selection, so $\hat\pi_0$ and ``fdr`` do not depend on it. Choosing ``fdr_max`` above
-    the eGene calling threshold keeps genes that were not called but are plausible
-    eQTLs. Genes with a missing ``fdr`` are dropped.
+    selection, so ``qval_bh`` does not depend on it, whatever the eGene call rule is.
+    Choosing ``fdr_max`` above the eGene calling threshold keeps genes that were not
+    called but are plausible eQTLs. Genes with a missing ``qval_bh`` are dropped.
 
     Parameters
     ----------
-    peak_df : peak table carrying the calibration block, including ``fdr``.
-    fdr_max : largest ``fdr`` kept.
+    peak_df : peak table carrying the calibration block, including ``qval_bh``.
+    fdr_max : largest ``qval_bh`` kept.
     """
-    return peak_df.loc[peak_df["fdr"] <= fdr_max].copy()
+    return peak_df.loc[peak_df["qval_bh"] <= fdr_max].copy()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -587,7 +602,7 @@ def call_egenes(
     A raw threshold comparison is cheap but treats every gene as though it
     shares one null distribution, which is not statistically valid for a
     final FDR call. Genes cleared here are candidates for the expensive
-    per-gene Beta+Storey calibration in calibrate_egenes_storey(), which
+    per-gene Beta+Storey calibration in calibrate_egenes(), which
     produces the real significance call; this function alone is not a
     final eGene list.
 
@@ -721,7 +736,7 @@ def _calibrate_pvalues_loop(
     )
 
 
-def calibrate_egenes_storey(
+def calibrate_egenes(
     egenes_df: pd.DataFrame,
     pval_perm: "dict[str, float] | pd.Series | None" = None,
     gene_col: str = "gene_id",
@@ -739,9 +754,10 @@ def calibrate_egenes_storey(
     z_mat: "np.ndarray | None" = None,
     valid_mask: "np.ndarray | None" = None,
     seed: int = 1,
-    call_rule: str = "qvalue",
+    call_rule: str = "bh",
+    lod_threshold: "float | None" = None,
 ) -> pd.DataFrame:
-    """eGene calling: per-gene Beta calibration + Storey q-value FDR.
+    """eGene calling: per-gene Beta calibration, FDR over all tested genes, LOD gate.
 
     Accepts either pre-computed per-gene p-values (``pval_perm``) or the scan
     inputs needed to compute them on the fly.  The q-value is estimated over
@@ -781,9 +797,12 @@ def calibrate_egenes_storey(
     z_mat          : (n_samples, n_strains) sample-to-strain design matrix.
     valid_mask     : (n_strains,) bool mask.
     seed           : base RNG seed; each gene derives its own stream.
-    call_rule      : 'qvalue' (Storey), 'bh' (Benjamini-Hochberg) or 'lfdr'
-                     (local false discovery rate); selects which value is
-                     written to fdr and thresholded.
+    call_rule      : 'bh' (Benjamini-Hochberg, default), 'qvalue' (Storey) or
+                     'lfdr' (local false discovery rate); selects which value
+                     is written to fdr and thresholded.
+    lod_threshold  : permutation LOD threshold. When given, a gene is called
+                     significant only if fdr <= fdr_threshold and peak_lod is
+                     above it; the q-values still use every tested gene.
 
     Returns
     -------
@@ -791,7 +810,7 @@ def calibrate_egenes_storey(
     smallest attainable p is about 1/perm_n), qval_storey, qval_bh, lfdr, pi0,
     fdr, fdr_method, significance added. All three values are written (lfdr is
     NaN when fewer than fdr.LFDR_MIN_GENES genes were tested); only fdr and
-    significance follow call_rule.
+    significance follow call_rule and lod_threshold.
     """
     from .qtl import fdr as fdr_module
     from .utils import build_tss_lookup
@@ -872,12 +891,17 @@ def calibrate_egenes_storey(
     out["pi0"] = pi0
     out["fdr"] = {"qvalue": q_storey, "bh": q_bh, "lfdr": local}[call_rule]
     out["fdr_method"] = _CALL_RULES[call_rule]
-    out["significance"] = np.where(out["fdr"] <= fdr_threshold, "T", "F")
+    called = (out["fdr"] <= fdr_threshold).to_numpy()
+    n_fdr = int(called.sum())
+    if lod_threshold is not None:
+        called = called & (out["peak_lod"] > lod_threshold).to_numpy()
+    out["significance"] = np.where(called, "T", "F")
 
     logger.info(
-        "calibrate_egenes_storey: n_genes=%d  pi0=%.4f  rule=%s  "
-        "n_egenes(fdr<=%.2f)=%d  (storey=%d  bh=%d)",
-        len(out), pi0, call_rule, fdr_threshold, int((out["significance"] == "T").sum()),
+        "calibrate_egenes: n_genes=%d  pi0=%.4f  rule=%s  "
+        "fdr<=%.2f: %d  significant (lod>%s): %d  (storey=%d  bh=%d)",
+        len(out), pi0, call_rule, fdr_threshold, n_fdr,
+        "-" if lod_threshold is None else f"{lod_threshold:.3f}", int(called.sum()),
         int((q_storey <= fdr_threshold).sum()), int((q_bh <= fdr_threshold).sum()),
     )
     return out
@@ -901,9 +925,10 @@ def call_significant_egenes(
     z_mat: "np.ndarray | None",
     valid_mask: "np.ndarray | None",
     seed: int,
-    call_rule: str = "qvalue",
+    call_rule: str = "bh",
+    lod_threshold: "float | None" = None,
 ) -> pd.DataFrame:
-    """Call eGenes over every tested gene: Beta calibration, q-value, effects.
+    """Call eGenes over every tested gene: Beta calibration, FDR, LOD gate, effects.
 
     The q-value is estimated from the p-values of all genes with a peak, because
     its pi0 estimate and rank-based error count assume null p-values are uniform
@@ -924,12 +949,14 @@ def call_significant_egenes(
     sample_ids     : genotype-level ID of each column of pheno_mat.
     stag           : scan tag giving the locus window (C or Lw<window>).
     gene_info_df   : annotation table with gene_id and gene_symbol / coordinates.
-    fdr_threshold  : q-value cutoff.
+    fdr_threshold  : FDR cutoff on the value the call rule selects.
     n_perms        : parametric null draws per gene.
     use_rint       : apply RINT to the phenotype before scanning.
     z_mat, valid_mask : sample-to-strain design matrix and strain validity mask.
     seed           : base seed; each gene derives its own stream from it.
-    call_rule      : 'qvalue' (Storey), 'bh' (Benjamini-Hochberg) or 'lfdr'.
+    call_rule      : 'bh' (Benjamini-Hochberg, default), 'qvalue' (Storey) or 'lfdr'.
+    lod_threshold  : permutation LOD threshold a significant gene's peak LOD must
+        exceed; ``None`` applies the FDR cutoff alone.
 
     Returns
     -------
@@ -941,7 +968,7 @@ def call_significant_egenes(
 
     tested = (peak_df.dropna(subset=["gene_id", "chr", "peak_lod"])
               .reset_index(drop=True))
-    called = calibrate_egenes_storey(
+    called = calibrate_egenes(
         tested,
         fdr_threshold=fdr_threshold,
         genomecache=genomecache,
@@ -957,6 +984,7 @@ def call_significant_egenes(
         valid_mask=valid_mask,
         seed=seed,
         call_rule=call_rule,
+        lod_threshold=lod_threshold,
     )
 
     significant = called[called["significance"] == "T"]
@@ -1926,7 +1954,6 @@ def finemap_imputed(
     atomic_write_csv(
         grp_out.reindex(columns=EQTL_FINEMAPPING_GROUP_COLS),
         out_dir / f"eqtl_finemapping_groups{suffix}.csv",
-        float_format="%.6g",
     )
     n_fm_genes = fm_out['gene_id'].nunique()
     logger.info(

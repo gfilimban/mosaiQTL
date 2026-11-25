@@ -3,6 +3,28 @@ Format: [Keep a Changelog](https://keepachangelog.com). One line per user-visibl
 Fixed or Removed, written in the PR that makes it. Releases follow pyproject.toml and are tagged vX.Y.Z.
 
 ## [Unreleased]
+### Added
+- `cis_dist_gene_tss_mb` in `{tag}_peak_lod.csv` and the eGene summary: signed distance from the peak to one fixed
+  TSS per gene, the most upstream transcript TSS in `gene_tss` (`utils.gene_tss_anchor`). Unlike `cis_dist_mb`, whose
+  anchor is the transcript TSS nearest the peak, it does not change with the peak and is comparable across cell types.
+### Changed
+- `FINEMAP_CHR` uses the `process_ultra` label (16 CPUs, 128 GB, 12 h).
+
+## [0.7.3] — 2026-11-25
+### Changed
+- `calibrate_egenes_storey` is renamed `calibrate_egenes`: the call is no longer tied to the Storey q-value.
+- eGene calling defaults to Benjamini-Hochberg (`call_rule='bh'`, `--call-rule bh`, `params.call_rule: 'bh'`) at
+  `fdr_threshold` 0.05, and a gene is `significance` 'T' / `is_egene` only if its peak LOD also exceeds the
+  permutation (GEV) LOD threshold (`lod_threshold` on `calibrate_egenes` and `call_significant_egenes`). The
+  q-values are still computed over every tested gene; the LOD gate applies to the call only.
+- `{tag}_haplotype_peak_lod.csv` keeps the tested genes with `qval_bh` <= `submission_fdr` (0.1), whatever the call
+  rule; `{tag}_peak_lod_all.csv` carries `qval_bh`, `qval_storey` and `lfdr` for every tested gene.
+- `atomic_write_csv` writes floats at full precision (it capped most tables at nine significant digits, and the
+  eQTL peak, eQTL stats and LD-group tables at six; the `float_format` argument and `CSV_FLOAT_FORMAT` are removed)
+  and writes every boolean column (`is_egene`, `peak_at_edge`, `h2_at_boundary`, `ci_truncated`, `in_cs`) as `T`/`F`
+  instead of `True`/`False`. Read them with `true_values=['T'], false_values=['F']`.
+- The merged fine-mapping table is written gzip-compressed as `{tag}_eqtl_finemapping.csv.gz` (per-chromosome parts
+  stay plain CSV); `atomic_write_csv` and `atomic_concat_csv` compress any destination ending in `.gz`.
 
 ## [0.7.2] — 2026-11-22
 ### Added

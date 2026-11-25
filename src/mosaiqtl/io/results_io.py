@@ -136,7 +136,7 @@ def build_eqtl_peak_df(
     Parameters
     ----------
     effects_egenes_df:
-        One row per eGene, produced by merging ``pipeline.calibrate_egenes_storey``
+        One row per eGene, produced by merging ``pipeline.calibrate_egenes``
         output (adds ``pval_perm``/``fdr``/``fdr_method``/``significance``) with
         ``allele_effects.csv`` (``pipeline.ALLELE_EFFECTS_BASE_COLS`` +
         ``beta_{founder}`` columns) on ``gene_id`` — the same merge pattern
@@ -205,7 +205,7 @@ def write_eqtl_peak(
     The DataFrame that was written (``pipeline.EQTL_PEAK_COLS`` schema).
     """
     df = build_eqtl_peak_df(effects_egenes_df, founder_names)
-    atomic_write_csv(df, out_path, float_format='%.6g')
+    atomic_write_csv(df, out_path)
     return df
 
 
@@ -290,7 +290,7 @@ def write_eqtl_stats(
     The DataFrame that was written (``pipeline.EQTL_STATS_COLS`` schema).
     """
     df = build_eqtl_stats_df(chrom_stats, genome_stats)
-    atomic_write_csv(df, out_path, float_format='%.6g')
+    atomic_write_csv(df, out_path)
     return df
 
 

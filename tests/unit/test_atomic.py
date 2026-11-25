@@ -1,6 +1,7 @@
 """Tests for mosaiqtl.io.atomic: complete-or-absent output files."""
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 
@@ -24,10 +25,24 @@ class TestAtomicCsv:
         pd.testing.assert_frame_equal(pd.read_csv(dest), df)
         assert _no_temp_files(tmp_path)
 
-    def test_float_format_keeps_small_values(self, tmp_path: Path) -> None:
+    def test_floats_keep_every_digit(self, tmp_path: Path) -> None:
         dest = tmp_path / 'p.csv'
-        atomic_write_csv(pd.DataFrame({'p': [1.234567891234e-12]}), dest)
-        assert pd.read_csv(dest)['p'][0] == pytest.approx(1.23456789e-12, rel=1e-8)
+        vals = [1.234567891234e-12, 123.456789012345, 0.1 + 0.2]
+        atomic_write_csv(pd.DataFrame({'p': vals}), dest)
+        assert pd.read_csv(dest, float_precision='round_trip')['p'].tolist() == vals
+
+    def test_booleans_written_as_t_f(self, tmp_path: Path) -> None:
+        dest = tmp_path / 'b.csv'
+        df = pd.DataFrame({
+            'a': [True, False],
+            'b': pd.array([True, None], dtype='boolean'),
+            'c': pd.Series([False, None], dtype=object),
+        })
+        atomic_write_csv(df, dest)
+        assert dest.read_text().splitlines() == ['a,b,c', 'T,T,F', 'F,,']
+        back = pd.read_csv(dest, true_values=['T'], false_values=['F'])
+        assert back['a'].tolist() == [True, False]
+        assert df['a'].dtype == bool
 
     def test_header_only_frame_is_parseable(self, tmp_path: Path) -> None:
         dest = tmp_path / 'empty.csv'
@@ -88,6 +103,24 @@ class TestAtomicConcatCsv:
         n_lines = atomic.atomic_concat_csv([a, b], dest, ['gene_id', 'lod'])
         assert n_lines == 3
         assert dest.read_text() == 'gene_id,lod\ng1,1\ng2,2\ng3,3\n'
+
+    def test_gz_destination_is_compressed_and_round_trips(self, tmp_path: Path) -> None:
+        a = self._part(tmp_path, 'a.csv', 'gene_id,lod\ng1,1\ng2,2\n')
+        b = self._part(tmp_path, 'b.csv', 'gene_id,lod\ng3,3\n')
+        dest = tmp_path / 'merged.csv.gz'
+        assert atomic.atomic_concat_csv([a, b], dest, ['gene_id', 'lod']) == 3
+        assert dest.read_bytes()[:2] == b'\x1f\x8b'
+        with gzip.open(dest, 'rt', newline='') as fh:
+            assert fh.read() == 'gene_id,lod\ng1,1\ng2,2\ng3,3\n'
+        assert pd.read_csv(dest)['gene_id'].tolist() == ['g1', 'g2', 'g3']
+        assert _no_temp_files(tmp_path)
+
+    def test_gz_output_is_deterministic(self, tmp_path: Path) -> None:
+        a = self._part(tmp_path, 'a.csv', 'gene_id,lod\ng1,1\n')
+        first, second = tmp_path / 'one.csv.gz', tmp_path / 'two.csv.gz'
+        atomic.atomic_concat_csv([a], first, ['gene_id', 'lod'])
+        atomic.atomic_concat_csv([a], second, ['gene_id', 'lod'])
+        assert first.read_bytes() == second.read_bytes()
 
     def test_header_only_parts_give_header_only_file(self, tmp_path: Path) -> None:
         a = self._part(tmp_path, 'a.csv', 'gene_id,lod\n')

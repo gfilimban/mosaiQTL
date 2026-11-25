@@ -5,7 +5,7 @@ Usage: python run_call_egenes.py <peak_lod.csv> <perm_max_lods.csv>
            <metadata.csv> <celltype> <scan_tag>
            <covariates> <fdr_threshold> <n_perms_cal> <seed>
            <output_dir> [tissue] [use_rint:0|1]  (default 1)
-           [call_rule:qvalue|bh|lfdr]  (default qvalue)
+           [call_rule:bh|qvalue|lfdr]  (default bh)
            [submission_fdr]  (default 0.1)
 
 use_rint must match the value used during the scan — allele effects are
@@ -14,14 +14,15 @@ Set to 0 when the scan ran without RINT (Gaussian phenotypes).  NB-GLMM path
 does not use this flag.
 
 <perm_max_lods.csv> is the genome-wide max-LOD null written by PERMUTE; it
-supplies the reference LOD threshold that is logged for QC.
+supplies the permutation LOD threshold a significant eGene's peak LOD must exceed.
 <peak_lod.csv> is read only; outputs are always new files.
-Every gene with a peak is calibrated and enters the Storey q-value; founder
-effects are computed for significant genes only.
+Every gene with a peak is calibrated and enters the q-values; a gene is an eGene when
+the call-rule q-value is at most fdr_threshold and its peak LOD exceeds the permutation
+threshold. Founder effects are computed for eGenes only.
 Writes:
   {tag}_peak_lod_all.csv — all tested genes with is_egene, pval_perm, qval_storey, qval_bh, lfdr, pi0, fdr
   {tag}_pval_perm.json   — per-gene calibrated p-values {gene_id: float}
-  {tag}_haplotype_peak_lod.csv — the rows of {tag}_peak_lod_all.csv with fdr <= submission_fdr
+  {tag}_haplotype_peak_lod.csv — the rows of {tag}_peak_lod_all.csv with qval_bh <= submission_fdr
   {tag}_haplotype_eqtl_summary.csv — significant eGenes only, with founder effects + q-value;
     the support-interval columns are added by FINEMAP_MERGE
 All four are written (empty / header-only) when no gene has a peak.
@@ -53,7 +54,7 @@ def main() -> None:
     out            = Path(sys.argv[14])
     tissue         = sys.argv[15] if len(sys.argv) > 15 else ''
     use_rint       = sys.argv[16] != '0' if len(sys.argv) > 16 else True
-    call_rule      = sys.argv[17] if len(sys.argv) > 17 else 'qvalue'
+    call_rule      = sys.argv[17] if len(sys.argv) > 17 else 'bh'
     submission_fdr = float(sys.argv[18]) if len(sys.argv) > 18 else 0.1
 
     tag  = f'{tissue}_{celltype}_{stag}' if tissue else f'{celltype}_{stag}'
@@ -90,7 +91,7 @@ def main() -> None:
     if threshold is None:
         threshold = float(np.quantile(max_lods[np.isfinite(max_lods)], 0.95))
         log.warning('GEV fit failed — empirical 95th: %.3f', threshold)
-    log.info('reference genome-wide LOD threshold (QC only): %.3f', threshold)
+    log.info('reference genome-wide LOD threshold: %.3f', threshold)
 
     # ── gene info (symbol map + TSS for calibration window) ───────────────────
     gene_info_df = pd.read_csv(gene_info_path, dtype={'gene_id': str})
@@ -153,6 +154,7 @@ def main() -> None:
         valid_mask=valid_mask,
         seed=seed,
         call_rule=call_rule,
+        lod_threshold=threshold,
     )
     significant_df = called_df[called_df['significance'] == 'T']
 
@@ -182,7 +184,7 @@ def main() -> None:
 
     submission_df = select_submission_genes(peak_out_df, submission_fdr)
     atomic_write_csv(submission_df, submission_out)
-    log.info('wrote %s (%d of %d tested genes with fdr <= %g)', submission_out,
+    log.info('wrote %s (%d of %d tested genes with qval_bh <= %g)', submission_out,
              len(submission_df), len(peak_out_df), submission_fdr)
 
     final_df = finalize_egene_summary(significant_df, n_founders=len(gc.founders))

@@ -1,4 +1,4 @@
-# docs/ARCHITECTURE.md — mosaiQTL v0.7.2
+# docs/ARCHITECTURE.md — mosaiQTL v0.7.3
 # Multiomics haplotype-based QTL mapping for CC/DO mice (mm39)
 # Statistical model: LMM scan (primary) | NB-GLMM (experimental; not in CLI/Nextflow)
 # Full citations: docs/REFERENCES.md
@@ -76,7 +76,7 @@ src/mosaiqtl/
     celltypes.py       Cross-cell-type comparison plots
     compare.py, finemap.py, locus.py, validation.py   R-vs-Python, fine-mapping, locus, validation plots
   pipeline.py          Output schemas (*_COLS); discover → characterize → resolve;
-                       call_egenes, calibrate_egenes_storey, call_significant_egenes,
+                       call_egenes, calibrate_egenes, call_significant_egenes,
                        impute_egenes, finemap_imputed, finemap_egenes
   utils.py             RINT, Z-matrix, align_samples, chr_sort_key, build_tss_lookup
   cli.py               Click CLI (build-kinship, inspect-cache, scan-chr, merge-scan, permute,
@@ -270,7 +270,7 @@ genome-wide GEV threshold (§5.4) is logged as a QC reference only. Founder effe
 `call-egenes` (CLI `calibrate` likewise calibrates only genes above the genome-wide threshold);
 not used by the Nextflow path.
 
-**Stage 2 — `calibrate_egenes_storey`:** Per-gene p-values from `calibrate_gene_pvalue`
+**Stage 2 — `calibrate_egenes`:** Per-gene p-values from `calibrate_gene_pvalue`
 → `beta_calibrate_pvalue` (per-gene Beta-approximated null, FastQTL-style) are fed into
 `qvalue` [Storey 2002] over every row passed in, to estimate $\pi_0$ (proportion of
 true null genes; $\lambda$ grid 0.05–0.95, df-3 smoothing spline evaluated at the largest
@@ -424,7 +424,7 @@ Stage 5 — bootstrap CI
                               L-mode: computed inside ±window_mb of the strand-aware TSS)
 
 Stage 6 — finemap_egenes
-  → {tag}_eqtl_finemapping.csv       credible-set SNPs (EQTL_FINEMAPPING_COLS)
+  → {tag}_eqtl_finemapping.csv.gz    credible-set SNPs (EQTL_FINEMAPPING_COLS), gzip-compressed at merge
   → {tag}_eqtl_finemapping_peak.csv  lead SNP per eGene (EQTL_FINEMAPPING_PEAK_COLS)
 
 Stage 7 — report (eqtl_peak + eqtl_stats)

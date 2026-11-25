@@ -8,6 +8,8 @@ for a downstream stage or a ``-resume`` to mistake for a finished output.
 """
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import os
 import tempfile
@@ -15,30 +17,62 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import IO, Any
 
+import numpy as np
 import pandas as pd
 
 __all__ = [
     'atomic_concat_csv', 'atomic_write_csv', 'atomic_write_json', 'atomic_write_text',
-    'CSV_FLOAT_FORMAT',
+    'CSV_TRUE', 'CSV_FALSE',
 ]
 
 _COPY_BLOCK = 1 << 20
 
-# Nine significant digits keep a megabase coordinate to the base pair and a
-# probability to nine digits, at roughly half the width of the 17-digit default
-# repr; small p-values stay in scientific notation instead of rounding to zero.
-CSV_FLOAT_FORMAT = '%.9g'
+CSV_TRUE = 'T'
+CSV_FALSE = 'F'
+
+
+def _is_boolean_column(col: pd.Series) -> bool:
+    """True for a bool or nullable-boolean column, or an object column whose non-missing cells are all bool."""
+    if pd.api.types.is_bool_dtype(col):
+        return True
+    if col.dtype != object:
+        return False
+    cells = col.dropna()
+    return len(cells) > 0 and bool(cells.map(lambda v: isinstance(v, (bool, np.bool_))).all())
+
+
+def _encode_booleans(df: pd.DataFrame) -> pd.DataFrame:
+    """Return ``df`` with every boolean column as ``'T'``/``'F'`` strings (missing stays empty)."""
+    cols = [c for c in df.columns if _is_boolean_column(df[c])]
+    if not cols:
+        return df
+    out = df.copy(deep=False)
+    for c in cols:
+        out[c] = df[c].map({True: CSV_TRUE, False: CSV_FALSE})
+    return out
 
 
 def _atomic_write(path: 'Path | str', write: Callable[[IO[str]], None]) -> None:
-    """Run ``write`` on a temporary sibling file, fsync it, then rename it to ``path``."""
+    """Run ``write`` on a temporary sibling file, fsync it, then rename it to ``path``.
+
+    A destination ending in ``.gz`` is gzip-compressed as it is written (fixed header
+    timestamp, so equal content gives equal bytes); ``write`` always sees a text handle.
+    """
     dest = Path(path)
     fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=f'.{dest.name}.', suffix='.tmp')
     try:
-        with os.fdopen(fd, 'w') as fh:
-            write(fh)
-            fh.flush()
-            os.fsync(fh.fileno())
+        if dest.suffix == '.gz':
+            with os.fdopen(fd, 'wb') as raw:
+                with gzip.GzipFile(fileobj=raw, mode='wb', mtime=0) as gz:
+                    with io.TextIOWrapper(gz, encoding='utf-8', newline='') as fh:
+                        write(fh)
+                raw.flush()
+                os.fsync(raw.fileno())
+        else:
+            with os.fdopen(fd, 'w') as fh:
+                write(fh)
+                fh.flush()
+                os.fsync(fh.fileno())
         os.replace(tmp_name, dest)
     except BaseException:
         if os.path.exists(tmp_name):
@@ -46,12 +80,13 @@ def _atomic_write(path: 'Path | str', write: Callable[[IO[str]], None]) -> None:
         raise
 
 
-def atomic_write_csv(
-    df: pd.DataFrame,
-    path: 'Path | str',
-    float_format: str = CSV_FLOAT_FORMAT,
-) -> None:
+def atomic_write_csv(df: pd.DataFrame, path: 'Path | str') -> None:
     r"""Write ``df`` to ``path`` as CSV (header, no index) atomically.
+
+    Floats are written at full precision (the shortest string that round-trips), so
+    coordinates, probabilities and small p-values lose no digits. Boolean columns are
+    written as ``'T'``/``'F'``; read them back with ``true_values=['T']`` and
+    ``false_values=['F']``.
 
     Parameters
     ----------
@@ -59,11 +94,9 @@ def atomic_write_csv(
         Table to write.
     path:
         Destination; the parent directory must exist.
-    float_format:
-        ``%``-style format for float cells. Pass ``'%.6g'`` where six significant
-        digits suffice.
     """
-    _atomic_write(path, lambda fh: df.to_csv(fh, index=False, float_format=float_format))
+    encoded = _encode_booleans(df)
+    _atomic_write(path, lambda fh: encoded.to_csv(fh, index=False))
 
 
 def atomic_concat_csv(
