@@ -738,6 +738,24 @@ class TestEnrichPeakLodTss:
         assert out["cis_dist_mb"].iloc[0] == pytest.approx(0.005)
         assert out["start_mb"].iloc[0] == pytest.approx(1.1)
 
+    def test_fixed_gene_tss_distance_ignores_which_transcript_is_nearest(self):
+        tss = pd.DataFrame({
+            "gene_id": ["ENSMUSG1.5", "ENSMUSG1.5", "ENSMUSG2.1", "ENSMUSG2.1"],
+            "start": [1_000_000, 1_000_000, 5_000_000, 5_030_000],
+            "end": [1_095_000, 1_050_000, 5_100_000, 5_100_000],
+            "strand": ["-", "-", "+", "+"],
+        })
+        out = pipeline.enrich_peak_lod(self._peaks(["ENSMUSG1", "ENSMUSG2"]), self._gene_info(), tss)
+        assert out["near_tss_mb"].tolist() == pytest.approx([1.095, 5.03])
+        assert out["cis_dist_gene_tss_mb"].tolist() == pytest.approx([0.005, 0.02])
+        moved = self._peaks(["ENSMUSG1", "ENSMUSG2"]).assign(peak_mb=[1.04, 5.0])
+        shifted = pipeline.enrich_peak_lod(moved, self._gene_info(), tss)
+        assert shifted["cis_dist_gene_tss_mb"].tolist() == pytest.approx([0.055, 0.0])
+
+    def test_fixed_gene_tss_distance_absent_without_transcript_table(self):
+        out = pipeline.enrich_peak_lod(self._peaks(["ENSMUSG1", "ENSMUSG2"]), self._gene_info())
+        assert "cis_dist_gene_tss_mb" not in out.columns
+
     def test_gene_absent_from_gene_tss_falls_back_to_gene_info(self):
         tss = pd.DataFrame({
             "gene_id": ["ENSMUSG1"], "start": [1_000_000], "end": [1_100_000], "strand": ["-"],

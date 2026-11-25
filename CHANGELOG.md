@@ -3,6 +3,12 @@ Format: [Keep a Changelog](https://keepachangelog.com). One line per user-visibl
 Fixed or Removed, written in the PR that makes it. Releases follow pyproject.toml and are tagged vX.Y.Z.
 
 ## [Unreleased]
+### Added
+- `cis_dist_gene_tss_mb` in `{tag}_peak_lod.csv` and the eGene summary: signed distance from the peak to one fixed
+  TSS per gene, the most upstream transcript TSS in `gene_tss` (`utils.gene_tss_anchor`). Unlike `cis_dist_mb`, whose
+  anchor is the transcript TSS nearest the peak, it does not change with the peak and is comparable across cell types.
+### Changed
+- `FINEMAP_CHR` uses the `process_ultra` label (16 CPUs, 128 GB, 12 h).
 
 ## [0.7.3] — 2026-11-25
 ### Changed

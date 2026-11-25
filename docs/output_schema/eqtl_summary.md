@@ -16,6 +16,7 @@ for the full conventions.
 | `peak_locus` | str | – | Marker ID of the highest-LOD locus |
 | `peak_mb` | float | Mb | Position of the highest-LOD locus |
 | `cis_dist_mb` | float | Mb | `peak_mb` − `near_tss_mb` (or − `start_mb` when no transcript TSS is available); signed by the gene's strand: negative is upstream and positive downstream of the TSS on both strands |
+| `cis_dist_gene_tss_mb` | float | Mb | `peak_mb` minus the gene's most upstream transcript TSS (fixed per gene, same sign convention); NaN without a `gene_tss` entry |
 | `peak_lod` | float | LOD | LOD at the peak locus against the covariate-only null |
 | `peak_at_edge` | bool | – | `True` when the maximum is the first or last locus of the window; the true maximum may lie outside it, so the peak position and support interval are truncated |
 | `ci_lo` | float | Mb | Lower bound of the 1.5-LOD support interval: the contiguous run of loci within 1.5 LOD of the peak, clamped to the scan window; added by `FINEMAP_MERGE` |

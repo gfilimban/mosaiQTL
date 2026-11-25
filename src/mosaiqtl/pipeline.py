@@ -88,6 +88,7 @@ PEAK_LOD_COLS: list[str] = [
     "peak_locus",
     "peak_mb",
     "cis_dist_mb",
+    "cis_dist_gene_tss_mb",
     "peak_lod",
     "peak_at_edge",
     "h2",
@@ -109,6 +110,7 @@ EGENE_SUMMARY_COLS: list[str] = [
     "peak_locus",
     "peak_mb",
     "cis_dist_mb",
+    "cis_dist_gene_tss_mb",
     "peak_lod",
     "peak_at_edge",
     "ci_lo",
@@ -408,6 +410,9 @@ def enrich_peak_lod(
     ``gene_tss_df``. ``cis_dist_mb = peak_mb - near_tss_mb`` where a transcript
     TSS exists, else ``peak_mb - start_mb``, multiplied by -1 for minus-strand
     genes so that negative always means upstream of the TSS.
+    ``cis_dist_gene_tss_mb`` is the same signed distance measured from one fixed
+    TSS per gene, the most upstream transcript TSS in ``gene_tss_df``, so it does
+    not change with the peak and is comparable across cell types.
 
     Parameters
     ----------
@@ -424,9 +429,15 @@ def enrich_peak_lod(
     -------
     pd.DataFrame
         ``peak_lod_df`` enriched with ``gene_symbol``, ``start_mb``,
-        ``near_tss_mb`` and ``cis_dist_mb`` (where data is available).
+        ``near_tss_mb``, ``cis_dist_mb`` and ``cis_dist_gene_tss_mb`` (where data
+        is available).
     """
-    from .utils import build_tss_lookup, nearest_transcript_tss_mb, strip_gene_version
+    from .utils import (
+        build_tss_lookup,
+        gene_tss_anchor,
+        nearest_transcript_tss_mb,
+        strip_gene_version,
+    )
 
     key = strip_gene_version(peak_lod_df['gene_id'])
     gi = gene_info_df.assign(gene_id=strip_gene_version(gene_info_df['gene_id']))
@@ -448,6 +459,10 @@ def enrich_peak_lod(
         return out
     if gene_tss_df is not None:
         out['near_tss_mb'] = nearest_transcript_tss_mb(out, gene_tss_df)
+        fixed = gene_tss_anchor(gene_tss_df).reindex(key.to_numpy())
+        out['cis_dist_gene_tss_mb'] = (
+            (out['peak_mb'].to_numpy() - fixed['tss_mb'].to_numpy()) * fixed['sign'].to_numpy()
+        )
     anchor = out['near_tss_mb'] if 'near_tss_mb' in out.columns else None
     if 'start_mb' in out.columns:
         anchor = out['start_mb'] if anchor is None else anchor.fillna(out['start_mb'])

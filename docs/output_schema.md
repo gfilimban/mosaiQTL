@@ -53,6 +53,7 @@ Origin: **ci** = support-interval scan; **scan** = LMM scan; **annot** = gene an
 | `peak_locus` | Marker ID of the highest-LOD locus | str | scan |
 | `peak_mb` | Position of the highest-LOD locus | Mb | scan |
 | `cis_dist_mb` | `peak_mb − near_tss_mb` (else `peak_mb − start_mb`). Signed by strand: negative is upstream and positive downstream of the TSS on both strands. In the fine-mapping files, the same quantity for the gene | Mb | annot |
+| `cis_dist_gene_tss_mb` | `peak_mb` minus the gene's most upstream transcript TSS (smallest `start` on +, largest `end` on −), signed like `cis_dist_mb`. The anchor depends only on the gene, so the value is comparable across cell types; NaN when the gene has no transcript in `gene_tss` | Mb | annot |
 | `peak_lod` | LOD at the peak locus | LOD | scan |
 | `peak_at_edge` | The maximum is the first or last locus of the scan window, so the true maximum may lie outside it and the peak position, support interval and fine-mapping window are truncated. The haplotype LOD profile is smooth over megabases, so a short window often puts its maximum at an end. Written for local windows; `pval_perm` is unaffected because its null is scanned over the same window | bool | scan |
 | `h2` | Null heritability fitted for this gene on its LOCO kinship | [0, 1] | scan |

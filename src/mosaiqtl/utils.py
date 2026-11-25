@@ -121,6 +121,43 @@ def nearest_transcript_tss_mb(
     return best.reindex(peak_df.index)
 
 
+def gene_tss_anchor(gene_tss_df: "pd.DataFrame") -> "pd.DataFrame":
+    """Most upstream strand-aware TSS (Mb) of each gene, keyed on unversioned gene_id.
+
+    The anchor is the smallest ``start`` over a ``+`` gene's transcripts and the
+    largest ``end`` over a ``-`` gene's, so it depends only on the gene and is the
+    same in every cell type and for every peak.
+
+    Parameters
+    ----------
+    gene_tss_df :
+        One row per transcript: ``gene_id``, ``start``, ``end`` (bp) and ``strand``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Indexed by unversioned ``gene_id`` with ``tss_mb`` and ``sign`` (-1 for
+        ``-`` strand genes, else 1).
+    """
+    import numpy as np
+    import pandas as pd
+
+    minus = gene_tss_df["strand"].astype(str).eq("-").to_numpy()
+    tx = pd.DataFrame(
+        {
+            "key": strip_gene_version(gene_tss_df["gene_id"]).to_numpy(),
+            "pos": np.where(minus, gene_tss_df["end"], gene_tss_df["start"]).astype(float) / 1e6,
+            "minus": minus,
+        }
+    )
+    grouped = tx.groupby("key")
+    tss = np.where(grouped["minus"].first(), grouped["pos"].max(), grouped["pos"].min())
+    return pd.DataFrame(
+        {"tss_mb": tss, "sign": np.where(grouped["minus"].first(), -1.0, 1.0)},
+        index=grouped["pos"].min().index,
+    )
+
+
 def rint(x):
     """rank-based inverse normal transformation (Blom formula).
 

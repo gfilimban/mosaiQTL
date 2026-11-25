@@ -1,6 +1,6 @@
 process FINEMAP_CHR {
 
-    label 'process_medium'
+    label 'process_ultra'
     tag   "${celltype}:chr${chrom}"
 
     input:

@@ -26,6 +26,7 @@ See the [output schema](../output_schema.md) for the shared conventions.
 | `peak_locus` | str | – | Marker ID of the highest-LOD locus |
 | `peak_mb` | float | Mb | Position of the highest-LOD locus |
 | `cis_dist_mb` | float | Mb | `peak_mb` − `near_tss_mb` (− `start_mb` when no transcript TSS is available), signed by strand: negative is upstream and positive downstream of the TSS on both strands; within ±`window_mb` |
+| `cis_dist_gene_tss_mb` | float | Mb | `peak_mb` minus the gene's most upstream transcript TSS (fixed per gene, same sign convention); NaN without a `gene_tss` entry |
 | `peak_lod` | float | LOD | LOD at the peak locus, $\mathrm{LOD}=\tfrac{n}{2}\log_{10}(\mathrm{RSS}_0/\mathrm{RSS}_1)$ with $n$ = `n_valid` |
 | `peak_at_edge` | bool | – | `True` when the maximum is the first or last locus of the window; the true maximum may lie outside it, so the peak position and support interval are truncated |
 | `h2` | float | [10⁻⁶, 1 − 10⁻⁶] | Null heritability, fitted by maximum likelihood (ML) on the gene's leave-one-chromosome-out (LOCO) kinship; fixed for both models |
