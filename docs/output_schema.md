@@ -13,6 +13,9 @@ What each Nextflow output file contains and what every column means. The column 
 - Files are in `{output_dir}/{celltype}/{scan_tag}/core/`; `{tag}` is `{tissue}_{celltype}_{scan_tag}`
   (tissue omitted when empty).
 - Every file is written atomically: complete or absent.
+- Floats are written at full precision (the shortest string that round-trips). Boolean columns are written as `T`
+  or `F` (empty when missing); read them with `pd.read_csv(..., true_values=['T'], false_values=['F'])`. Below,
+  "`True`" in a bool column's description means `T`.
 - Significance is estimated over all tested genes; no gene is selected by LOD first.
 - "Founder" columns have one entry per founder of the population (e.g. the eight CC/DO founders AJ, B6J, …),
   in the founder order of the genotype cache.
@@ -72,7 +75,7 @@ Origin: **ci** = support-interval scan; **scan** = LMM scan; **annot** = gene an
 | `lfdr` | Local false discovery rate: posterior probability the gene is null, $\hat\pi_0 f_0(p)/\hat f(p)$ from a probit-scale density of `pval_perm` over all tested genes; NaN when fewer than 10 genes were tested | [0, 1] | call |
 | `pi0` | Estimated null fraction used by `qval_storey` and `lfdr`; one value per table | [0, 1] | call |
 | `fdr` | The value selected by the call rule (`qval_storey`, `qval_bh` or `lfdr`) | [0, 1] | call |
-| `fdr_method` | Call rule used: `qvalue`, `BH` or `lfdr` | str | call |
+| `fdr_method` | Call rule used: `BH` (default), `qvalue` or `lfdr`; a gene is also required to have `peak_lod` above the permutation LOD threshold to be called | str | call |
 | `significance` | `T` when `fdr` ≤ the FDR threshold, else `F` | `T`/`F` | call |
 | `in_r_egenes` | Gene also called in an external reference (validation only) | bool | – |
 | `variant` | Variant ID (SPDI) | str | fm |

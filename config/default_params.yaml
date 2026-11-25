@@ -32,8 +32,8 @@ n_perms:              1000    # genome-wide permutations for GEV threshold
 n_perms_cal:          1000    # per-eGene permutations for Beta-calibrated p-values (Storey FDR)
 perm_method:          'parametric'   # permutation method passed to run_threshold_scans
 fdr_threshold:        0.05    # FDR threshold for eGene calling
-submission_fdr:       0.1     # haplotype_peak_lod.csv keeps tested genes with fdr <= this; calibration and q-values use all tested genes
-call_rule:            'qvalue'  # 'qvalue' (Storey), 'bh' (Benjamini-Hochberg) or 'lfdr' (local FDR) over all tested genes
+submission_fdr:       0.1     # haplotype_peak_lod.csv keeps tested genes with qval_bh <= this; calibration and q-values use all tested genes
+call_rule:            'bh'      # 'bh' (Benjamini-Hochberg), 'qvalue' (Storey) or 'lfdr' (local FDR) over all tested genes; an eGene also needs peak LOD above the permutation threshold
 seed:                 42
 
 # ── fine-mapping ─────────────────────────────────────────────────────────────

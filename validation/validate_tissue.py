@@ -206,7 +206,7 @@ from mosaiqtl.io.results_io import (
 from mosaiqtl.io.anndata_io import load_expression_h5 as _load_expression_h5
 from mosaiqtl.qtl.scan import scan_multi_gene_lmm as _scan_multi_gene_lmm
 from mosaiqtl.pipeline import (
-    calibrate_egenes_storey, cap_egene_ci,
+    calibrate_egenes, cap_egene_ci,
     call_egenes, finalize_egene_summary, finemap_egenes,
     prepare_egenes_for_finemap,
     LOD_COLS, ALLELE_EFFECTS_BASE_COLS, PEAK_LOD_COLS, EGENE_SUMMARY_COLS,
@@ -3138,7 +3138,7 @@ def run(data_dir: Path, out_dir: Path, sections: set[int],
                 del _kin_raw
                 import gc as _gc; _gc.collect()
                 if _pval_perm:
-                    egenes_df = calibrate_egenes_storey(egenes_df, _pval_perm, fdr_threshold=0.05)
+                    egenes_df = calibrate_egenes(egenes_df, _pval_perm, fdr_threshold=0.05)
                     log.info('[Storey] done  significant(q<=0.05)=%d / %d',
                              int((egenes_df['significance'] == 'T').sum()), len(egenes_df))
 

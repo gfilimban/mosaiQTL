@@ -1170,9 +1170,9 @@ def calibrate(
               help="pval_perm.csv from `calibrate`; adds Storey q-values and significance.")
 @click.option("--fdr", default=0.05, show_default=True, type=float,
               help="FDR threshold for significance='T'.")
-@click.option("--call-rule", default="qvalue", show_default=True,
-              type=click.Choice(["qvalue", "bh", "lfdr"]),
-              help="Value thresholded by --fdr: Storey q-value, Benjamini-Hochberg "
+@click.option("--call-rule", default="bh", show_default=True,
+              type=click.Choice(["bh", "qvalue", "lfdr"]),
+              help="Value thresholded by --fdr: Benjamini-Hochberg, Storey q-value "
                    "or local false discovery rate, over all tested genes.")
 @click.option("--output", required=True, type=click.Path(path_type=Path),
               help="Output eqtl_summary CSV path.")
@@ -1198,7 +1198,7 @@ def call_egenes_cmd(
 
     from .pipeline import (
         EGENE_SUMMARY_COLS,
-        calibrate_egenes_storey,
+        calibrate_egenes,
         call_egenes,
         finalize_egene_summary,
     )
@@ -1237,7 +1237,7 @@ def call_egenes_cmd(
     if pval_perm is not None:
         pv = pd.read_csv(pval_perm, dtype={"gene_id": str}).dropna(subset=["pval_perm"])
         if not pv.empty:
-            egenes = calibrate_egenes_storey(
+            egenes = calibrate_egenes(
                 egenes, dict(zip(pv["gene_id"], pv["pval_perm"])),
                 fdr_threshold=fdr, call_rule=call_rule,
             )
@@ -1513,9 +1513,9 @@ def finemap(
               help="Local scan half-window, recorded in eqtl_stats when --scan-type L.")
 @click.option("--fdr", default=0.05, show_default=True, type=float,
               help="FDR threshold recorded in eqtl_stats and applied to the --call-rule value.")
-@click.option("--call-rule", default="qvalue", show_default=True,
-              type=click.Choice(["qvalue", "bh", "lfdr"]),
-              help="Value thresholded by --fdr: Storey q-value, Benjamini-Hochberg or local false discovery rate.")
+@click.option("--call-rule", default="bh", show_default=True,
+              type=click.Choice(["bh", "qvalue", "lfdr"]),
+              help="Value thresholded by --fdr: Benjamini-Hochberg, Storey q-value or local false discovery rate.")
 @click.option("--suffix", required=True, help="Run suffix for output names.")
 @click.option("--output-dir", required=True, type=click.Path(path_type=Path),
               help="Directory for eqtl_peak_{suffix}.csv and eqtl_stats_{suffix}.csv.")
@@ -1552,7 +1552,7 @@ def report(
     from .genotype.cc import display_founders
     from .io.atomic import atomic_write_csv
     from .io.results_io import write_eqtl_peak, write_eqtl_stats
-    from .pipeline import EQTL_FINEMAPPING_COLS, calibrate_egenes_storey
+    from .pipeline import EQTL_FINEMAPPING_COLS, calibrate_egenes
     from .utils import git_hash
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1565,7 +1565,7 @@ def report(
     if pval_perm is not None and sub.get("pval_perm", pd.Series(dtype=float)).isna().all():
         pv = pd.read_csv(pval_perm, dtype={"gene_id": str}).dropna(subset=["pval_perm"])
         if not pv.empty:
-            sub = calibrate_egenes_storey(
+            sub = calibrate_egenes(
                 sub, dict(zip(pv["gene_id"], pv["pval_perm"])),
                 fdr_threshold=fdr, call_rule=call_rule,
             )

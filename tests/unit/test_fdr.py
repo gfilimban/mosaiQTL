@@ -367,12 +367,15 @@ class TestCallSignificantEgenes:
         assert (has_effects == is_sig).all()
 
     def test_q_values_use_every_tested_gene(self):
-        """Storey q-values are computed over the full tested set, not a subset."""
-        from mosaiqtl.qtl.fdr import qvalue
+        """The q-values are computed over the full tested set, not a subset."""
+        from mosaiqtl.qtl.fdr import bh, qvalue
 
         out, _ = self._run()
-        q, _ = qvalue(out["pval_perm"].to_numpy())
-        np.testing.assert_allclose(out["fdr"].to_numpy(), q)
+        pv = out["pval_perm"].to_numpy()
+        np.testing.assert_allclose(out["fdr"].to_numpy(), bh(pv))
+        np.testing.assert_allclose(out["qval_bh"].to_numpy(), bh(pv))
+        q, _ = qvalue(pv)
+        np.testing.assert_allclose(out["qval_storey"].to_numpy(), q)
 
 
 class TestCalibrateChromosomeCache:

@@ -24,7 +24,7 @@ process CALL_EGENES {
     def ct_log = celltype.replaceAll(/\s+/, '_')
     def tag    = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     def rint   = (params.use_rint != null && !params.use_rint) ? 0 : 1
-    def call_rule = params.call_rule ?: 'qvalue'
+    def call_rule = params.call_rule ?: 'bh'
     def submission_fdr = params.submission_fdr ?: 0.1
     """
     set -o pipefail

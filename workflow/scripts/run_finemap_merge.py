@@ -44,7 +44,8 @@ def main() -> None:
         log.info('merged %d parts -> %s (%d rows)', len(parts), dest.name, n_lines)
 
     summary = pd.read_csv(summary_in, dtype={'gene_id': str})
-    ci = pd.read_csv(out / f'{tag}_eqtl_ci.csv', dtype={'gene_id': str})
+    ci = pd.read_csv(out / f'{tag}_eqtl_ci.csv', dtype={'gene_id': str},
+                     true_values=['T'], false_values=['F'])
     final = attach_support_interval(summary, ci)
     summary_out = out / f'{tag}_haplotype_eqtl_summary.csv'
     atomic_write_csv(final, summary_out)

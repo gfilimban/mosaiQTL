@@ -49,7 +49,7 @@ Copy `config/default_params.yaml` and set at least:
 | `sanger_alleles` | Founder SNP alleles (HDF5); fine-mapping is skipped when absent |
 | `scan_type`, `window_mb` | `L` (local, default) with a ±1 Mb window; `C` chromosome-wide; `G` genome-wide |
 | `covariates` | Fixed effects, default `sex,dataset` |
-| `call_rule`, `fdr_threshold` | `qvalue` (default), `bh` or `lfdr`; eGene cut, default 0.05 |
+| `call_rule`, `fdr_threshold` | `bh` (default), `qvalue` or `lfdr`; q-value cut, default 0.05. A called eGene must also have a peak LOD above the permutation LOD threshold |
 
 The genome cache and LOCO kinship are built on the first run (`ref/igvf_cache.h5`, `ref/igvf_kinship_loco.h5`)
 and reused afterwards. Every run writes a Nextflow trace to `<output_dir>/logs/trace.txt`.

@@ -24,10 +24,24 @@ class TestAtomicCsv:
         pd.testing.assert_frame_equal(pd.read_csv(dest), df)
         assert _no_temp_files(tmp_path)
 
-    def test_float_format_keeps_small_values(self, tmp_path: Path) -> None:
+    def test_floats_keep_every_digit(self, tmp_path: Path) -> None:
         dest = tmp_path / 'p.csv'
-        atomic_write_csv(pd.DataFrame({'p': [1.234567891234e-12]}), dest)
-        assert pd.read_csv(dest)['p'][0] == pytest.approx(1.23456789e-12, rel=1e-8)
+        vals = [1.234567891234e-12, 123.456789012345, 0.1 + 0.2]
+        atomic_write_csv(pd.DataFrame({'p': vals}), dest)
+        assert pd.read_csv(dest, float_precision='round_trip')['p'].tolist() == vals
+
+    def test_booleans_written_as_t_f(self, tmp_path: Path) -> None:
+        dest = tmp_path / 'b.csv'
+        df = pd.DataFrame({
+            'a': [True, False],
+            'b': pd.array([True, None], dtype='boolean'),
+            'c': pd.Series([False, None], dtype=object),
+        })
+        atomic_write_csv(df, dest)
+        assert dest.read_text().splitlines() == ['a,b,c', 'T,T,F', 'F,,']
+        back = pd.read_csv(dest, true_values=['T'], false_values=['F'])
+        assert back['a'].tolist() == [True, False]
+        assert df['a'].dtype == bool
 
     def test_header_only_frame_is_parseable(self, tmp_path: Path) -> None:
         dest = tmp_path / 'empty.csv'

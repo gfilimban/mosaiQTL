@@ -369,11 +369,11 @@ class TestResolve:
         assert isinstance(rr.conditional_scan, dict)
 
 
-# ── calibrate_egenes_storey ───────────────────────────────────────────────────
+# ── calibrate_egenes ───────────────────────────────────────────────────
 
 
 class TestCalibrateEgenesStorey:
-    """calibrate_egenes_storey: Storey q-value significance block (SWE-09)."""
+    """calibrate_egenes: Storey q-value significance block (SWE-09)."""
 
     @staticmethod
     def _egenes_df(n_genes=8):
@@ -389,80 +389,81 @@ class TestCalibrateEgenesStorey:
 
     def test_sig_cols_present(self):
         """Output contains pval_perm, fdr, fdr_method, significance columns."""
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+        from mosaiqtl.pipeline import calibrate_egenes
 
         df = self._egenes_df()
         pval_perm = {f"g{i}": 0.01 * (i + 1) for i in range(len(df))}
-        out = calibrate_egenes_storey(df, pval_perm)
+        out = calibrate_egenes(df, pval_perm)
         for col in ("pval_perm", "fdr", "fdr_method", "significance"):
             assert col in out.columns, f"missing {col!r}"
 
-    def test_fdr_method_is_qvalue(self):
-        """fdr_method column is always the string 'qvalue'."""
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+    def test_default_rule_is_bh(self):
+        """The default call rule is Benjamini-Hochberg."""
+        from mosaiqtl.pipeline import calibrate_egenes
 
         df = self._egenes_df()
         pval_perm = {f"g{i}": 0.05 for i in range(len(df))}
-        out = calibrate_egenes_storey(df, pval_perm)
-        assert (out["fdr_method"] == "qvalue").all()
+        out = calibrate_egenes(df, pval_perm)
+        assert (out["fdr_method"] == "BH").all()
+        np.testing.assert_allclose(out["fdr"], out["qval_bh"])
 
     def test_fdr_in_unit_interval(self):
         """All q-values are in [0, 1]."""
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+        from mosaiqtl.pipeline import calibrate_egenes
 
         df = self._egenes_df(n_genes=20)
         rng = np.random.default_rng(0)
         pval_perm = {f"g{i}": float(p) for i, p in enumerate(rng.uniform(0, 1, 20))}
-        out = calibrate_egenes_storey(df, pval_perm)
+        out = calibrate_egenes(df, pval_perm)
         assert out["fdr"].between(0.0, 1.0).all()
 
     def test_significance_t_f_only(self):
         """significance column contains only 'T' or 'F'."""
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+        from mosaiqtl.pipeline import calibrate_egenes
 
         df = self._egenes_df()
         pval_perm = {f"g{i}": 0.01 if i < 3 else 0.8 for i in range(len(df))}
-        out = calibrate_egenes_storey(df, pval_perm)
+        out = calibrate_egenes(df, pval_perm)
         assert set(out["significance"].unique()).issubset({"T", "F"})
 
     def test_low_pval_becomes_significant(self):
         """Genes with very small p-values are called significant (fdr ≤ 0.05)."""
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+        from mosaiqtl.pipeline import calibrate_egenes
 
         n = 50
         df = self._egenes_df(n_genes=n)
         # first 10 genes have tiny p-values; rest are near-null
         pval_perm = {f"g{i}": 1e-6 if i < 10 else 0.9 for i in range(n)}
-        out = calibrate_egenes_storey(df, pval_perm, fdr_threshold=0.05)
+        out = calibrate_egenes(df, pval_perm, fdr_threshold=0.05)
         n_sig = (out["significance"] == "T").sum()
         assert n_sig >= 5, f"expected ≥5 significant genes, got {n_sig}"
 
     def test_high_pval_not_significant(self):
         """Genes with p ≈ 1 are not called significant."""
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+        from mosaiqtl.pipeline import calibrate_egenes
 
         df = self._egenes_df(n_genes=10)
         pval_perm = {f"g{i}": 0.99 for i in range(10)}
-        out = calibrate_egenes_storey(df, pval_perm)
+        out = calibrate_egenes(df, pval_perm)
         assert (out["significance"] == "F").all()
 
     def test_row_count_preserved(self):
         """Output has exactly the same number of rows as input."""
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+        from mosaiqtl.pipeline import calibrate_egenes
 
         n = 12
         df = self._egenes_df(n_genes=n)
         pval_perm = {f"g{i}": 0.1 for i in range(n)}
-        out = calibrate_egenes_storey(df, pval_perm)
+        out = calibrate_egenes(df, pval_perm)
         assert len(out) == n
 
     def test_perm_n_records_null_draws(self):
         """perm_n carries the per-gene null draw count on every row."""
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+        from mosaiqtl.pipeline import calibrate_egenes
 
         df = self._egenes_df(n_genes=6)
         pval_perm = {f"g{i}": 0.1 for i in range(6)}
-        out = calibrate_egenes_storey(df, pval_perm, n_perms=777)
+        out = calibrate_egenes(df, pval_perm, n_perms=777)
         assert (out["perm_n"] == 777).all()
 
 
@@ -470,18 +471,18 @@ class TestCalibrateEgenesStorey:
 
 
 class TestStoreyFdrEndToEnd:
-    """Full chain: calibrate_gene_pvalue → calibrate_egenes_storey (SWE-09).
+    """Full chain: calibrate_gene_pvalue → calibrate_egenes (SWE-09).
 
     Uses tiny_cache + tiny_kinship fixtures so no external data is needed.
     Runs calibrate_gene_pvalue on a small set of fabricated genes, pools
-    their Beta-calibrated p-values, and feeds them into calibrate_egenes_storey
+    their Beta-calibrated p-values, and feeds them into calibrate_egenes
     to get final q-value significance calls.
     """
 
     def test_full_chain_runs_and_gives_valid_output(
         self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tiny_strain_covariates
     ):
-        """End-to-end: calibrate_gene_pvalue → calibrate_egenes_storey.
+        """End-to-end: calibrate_gene_pvalue → calibrate_egenes.
 
         Two fabricated genes: one with a genuinely high peak LOD (signal),
         one with a near-zero LOD (noise).  After going through the full
@@ -491,7 +492,7 @@ class TestStoreyFdrEndToEnd:
         import pandas as pd
         from mosaiqtl.genotype.kinship import decomp_kinship
         from mosaiqtl.qtl.fdr import calibrate_gene_pvalue
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+        from mosaiqtl.pipeline import calibrate_egenes
 
         kd = decomp_kinship(tiny_kinship)
         c0 = list(tiny_cache.chromosomes)[0]
@@ -526,7 +527,7 @@ class TestStoreyFdrEndToEnd:
             }
         )
 
-        out = calibrate_egenes_storey(egenes_df, pval_perm)
+        out = calibrate_egenes(egenes_df, pval_perm)
 
         # structural checks
         assert len(out) == len(genes)
@@ -562,7 +563,7 @@ class TestImputation:
 
 
 class TestCallRule:
-    """calibrate_egenes_storey: call_rule selects fdr and significance."""
+    """calibrate_egenes: call_rule selects fdr and significance."""
 
     @staticmethod
     def _inputs():
@@ -575,40 +576,40 @@ class TestCallRule:
         return df, pv
 
     def test_both_adjusted_values_and_pi0_are_always_written(self):
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+        from mosaiqtl.pipeline import calibrate_egenes
 
         df, pv = self._inputs()
-        out = calibrate_egenes_storey(df, pv)
+        out = calibrate_egenes(df, pv)
         for col in ("qval_storey", "qval_bh", "lfdr", "pi0"):
             assert col in out.columns
 
     def test_lfdr_rule_thresholds_the_local_rate(self):
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+        from mosaiqtl.pipeline import calibrate_egenes
 
         df, pv = self._inputs()
-        out = calibrate_egenes_storey(df, pv, call_rule="lfdr")
+        out = calibrate_egenes(df, pv, call_rule="lfdr")
         assert (out["fdr_method"] == "lfdr").all()
         assert np.allclose(out["fdr"], out["lfdr"])
         assert ((out["lfdr"] <= 0.05) == (out["significance"] == "T")).all()
 
     def test_lfdr_rule_needs_enough_genes(self):
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+        from mosaiqtl.pipeline import calibrate_egenes
 
         df, pv = self._inputs()
         small = df.iloc[:5].copy()
         with pytest.raises(ValueError, match="lfdr"):
-            calibrate_egenes_storey(small, pv, call_rule="lfdr")
-        out = calibrate_egenes_storey(small, pv)
+            calibrate_egenes(small, pv, call_rule="lfdr")
+        out = calibrate_egenes(small, pv)
         assert out["lfdr"].isna().all()
 
     def test_bh_rule_does_not_call_the_late_genes(self):
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+        from mosaiqtl.pipeline import calibrate_egenes
 
         df, pv = self._inputs()
         # pi0 is about 0.14 here, so a 0.2 cutoff lies above the largest Storey
         # q-value (pi0 * p_(m)) and every gene passes it; BH keeps the late genes out.
-        storey = calibrate_egenes_storey(df, pv, fdr_threshold=0.2, call_rule="qvalue")
-        bh = calibrate_egenes_storey(df, pv, fdr_threshold=0.2, call_rule="bh")
+        storey = calibrate_egenes(df, pv, fdr_threshold=0.2, call_rule="qvalue")
+        bh = calibrate_egenes(df, pv, fdr_threshold=0.2, call_rule="bh")
         late = bh["gene_id"].str.startswith("h")
         assert storey["pi0"].iloc[0] < 0.2
         assert (storey["significance"] == "T").all()
@@ -617,11 +618,39 @@ class TestCallRule:
         assert (storey["fdr_method"] == "qvalue").all()
 
     def test_unknown_rule_raises(self):
-        from mosaiqtl.pipeline import calibrate_egenes_storey
+        from mosaiqtl.pipeline import calibrate_egenes
 
         df, pv = self._inputs()
         with pytest.raises(ValueError, match="call_rule"):
-            calibrate_egenes_storey(df, pv, call_rule="bonferroni")
+            calibrate_egenes(df, pv, call_rule="bonferroni")
+
+    def test_lod_threshold_gates_significance_but_not_the_qvalues(self):
+        from mosaiqtl.pipeline import calibrate_egenes
+
+        df, pv = self._inputs()
+        free = calibrate_egenes(df, pv)
+        gated = calibrate_egenes(df, pv, lod_threshold=3.0)
+        np.testing.assert_array_equal(gated["qval_bh"], free["qval_bh"])
+        np.testing.assert_array_equal(gated["qval_storey"], free["qval_storey"])
+        passes_fdr = gated["fdr"] <= 0.05
+        above = gated["peak_lod"] > 3.0
+        assert ((gated["significance"] == "T") == (passes_fdr & above)).all()
+        assert (gated["significance"] == "T").sum() < (free["significance"] == "T").sum()
+
+    def test_lod_equal_to_threshold_is_not_significant(self):
+        from mosaiqtl.pipeline import calibrate_egenes
+
+        df, pv = self._inputs()
+        thr = float(df["peak_lod"].iloc[10])
+        out = calibrate_egenes(df, pv, lod_threshold=thr)
+        assert out["significance"].iloc[10] == "F"
+
+    def test_everything_below_the_threshold_is_not_called(self):
+        from mosaiqtl.pipeline import calibrate_egenes
+
+        df, pv = self._inputs()
+        out = calibrate_egenes(df, pv, lod_threshold=1e6)
+        assert (out["significance"] == "F").all()
 
 
 class TestRintThreading:
@@ -832,7 +861,15 @@ class TestSupportIntervalAndSubmission:
         assert len(out) == 0 and "ci_lo" in out.columns
 
     def test_select_submission_genes_threshold_and_nan(self):
-        peak = pd.DataFrame({"gene_id": list("abcd"), "fdr": [0.1, 0.1000001, np.nan, 0.0]})
+        peak = pd.DataFrame(
+            {"gene_id": list("abcd"), "qval_bh": [0.1, 0.1000001, np.nan, 0.0]}
+        )
         assert pipeline.select_submission_genes(peak, 0.1)["gene_id"].tolist() == ["a", "d"]
+
+    def test_select_submission_genes_ignores_the_call_rule_column(self):
+        peak = pd.DataFrame(
+            {"gene_id": list("ab"), "qval_bh": [0.05, 0.5], "fdr": [0.9, 0.01]}
+        )
+        assert pipeline.select_submission_genes(peak, 0.1)["gene_id"].tolist() == ["a"]
 
 
