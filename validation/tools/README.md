@@ -12,6 +12,7 @@ Not imported by the package; add `validation/tools/` to `sys.path` before import
 | `report.py` | Generate `docs/VALIDATION_STATUS.md` from phase output CSVs |
 | `check_mediation_h2_approx.py` | Empirical check: fixed-h2 vs per-mediator-h2 in mediation scan |
 | `scan_weight_qtl.py` | Weight QTL experiment: test whether cis-locus explains body/tissue weight |
+| `csv_to_tsv.py` | Convert pipeline output `.csv` / `.csv.gz` tables to `.tsv` / `.tsv.gz` beside the originals; verified, atomic, sources untouched |
 
 ## Run patterns
 
@@ -26,4 +27,8 @@ conda run -n bioinfo python validation/tools/build_allele_dir.py
 
 # Generate validation status report
 conda run -n bioinfo python validation/tools/report.py
+
+# Convert pipeline outputs CSV -> TSV (writes X.tsv next to X.csv; never touches the CSV)
+conda run -n bioinfo python validation/tools/csv_to_tsv.py -r --dry-run <output_dir>   # preview
+conda run -n bioinfo python validation/tools/csv_to_tsv.py -r <output_dir>             # convert
 ```
