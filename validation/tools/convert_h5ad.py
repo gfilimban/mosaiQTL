@@ -587,8 +587,12 @@ def convert_celltype(h5ad_path: pathlib.Path, celltype: str,
                      min_counts: int = 10,
                      min_count: int = 5,
                      min_valid_samples: int = 50,
-                     celltype_col: str | None = None) -> None:
+                     celltype_col: str | None = None) -> pd.DataFrame:
     """Cell-type conversion: subsets pb h5ad; writes counts_lognorm.h5 + exp_gene_info_{ct}.csv.
+
+    Returns the excluded (sample, CT) table, also written to excluded_samples_{ct}.tsv
+    (sample_id, genotype, dataset, psbulk_counts, psbulk_cells, reason, celltype_skipped);
+    written even when the whole cell type is skipped for too few valid samples.
 
     celltype_col: explicit obs column override — see _detect_celltype_col(). Must match
         the same override passed to init_celltypes() for a given --out (the gene universe
@@ -655,10 +659,32 @@ def convert_celltype(h5ad_path: pathlib.Path, celltype: str,
                  n_excluded, adata.n_obs, n_zero,
                  min_counts, n_lowlib, min_cells, n_lowcel)
 
+    # ── per-sample exclusion report: which samples were dropped and why ──────
+    ct_dir = out_root / ct
+    ct_dir.mkdir(parents=True, exist_ok=True)
+    reason = pd.Series('', index=adata.obs.index)
+    reason[lib_sizes == 0] = 'zero_counts'
+    low_lib = (lib_sizes > 0) & (lib_sizes < min_counts)
+    reason[low_lib] = f'psbulk_counts<{min_counts}'
+    low_cel = (cell_counts < min_cells) & (lib_sizes > 0)
+    reason[low_cel] = np.where(low_lib[low_cel],
+                               f'psbulk_counts<{min_counts};psbulk_cells<{min_cells}',
+                               f'psbulk_cells<{min_cells}')
+    report_cols = [c for c in ('sample_id', 'genotype', 'dataset', 'psbulk_counts',
+                               'psbulk_cells') if c in adata.obs.columns]
+    exclusions = adata.obs.loc[~valid_mask, report_cols].copy()
+    exclusions.insert(0, 'celltype', celltype)
+    exclusions['reason'] = reason[~valid_mask].values
+    exclusions['celltype_skipped'] = n_valid < min_valid_samples
+    exclusions = exclusions.sort_values('sample_id').reset_index(drop=True)
+    excl_path = ct_dir / f'excluded_samples_{ct}.tsv'
+    exclusions.to_csv(excl_path, sep='\t', index=False)
+    log.info('writing %s  (%d excluded of %d samples)', excl_path, len(exclusions), adata.n_obs)
+
     if n_valid < min_valid_samples:
         log.warning('  SKIPPING %s=%r — only %d valid samples (< min_valid_samples=%d)',
                     ct_col, celltype, n_valid, min_valid_samples)
-        return
+        return exclusions
 
     X_all = adata.X if not hasattr(adata.X, 'toarray') else adata.X.toarray()
     X_all = X_all.astype(np.float32)
@@ -682,9 +708,6 @@ def convert_celltype(h5ad_path: pathlib.Path, celltype: str,
     obs_valid = adata.obs.loc[valid_mask, meta_cols].copy()
     obs_valid['_sort'] = obs_valid['genotype'].astype(str).map(_strain_sort_key)
     obs_valid = obs_valid.sort_values(['_sort', 'sample_id']).drop(columns='_sort')
-
-    ct_dir = out_root / ct
-    ct_dir.mkdir(parents=True, exist_ok=True)
 
     # ── CT-specific bookkeeping added onto the shared _cpm_filter report ─────
     ct_stats['n_samples_valid'] = n_valid
@@ -718,6 +741,7 @@ def convert_celltype(h5ad_path: pathlib.Path, celltype: str,
              n_valid, adata.n_vars, out_root.parent)
     for ds, grp in obs_valid.groupby('dataset', sort=True, observed=True):
         log.info('  dataset=%-12s  %d samples', ds, len(grp))
+    return exclusions
 
 
 def main() -> None:
@@ -806,16 +830,24 @@ def main() -> None:
         # init shared outputs from the CT pb h5ad (deduplicated metadata + gene set)
         # do NOT call convert() here — that expects one obs per sample (bulk h5ad)
         init_celltypes(args.h5ad, out, args.tissue, celltype_col=args.celltype_col)
+        all_exclusions = []
         for ct in all_cts:
             if ct.lower() in exclude:
                 log.info('skipping excluded cell type %r', ct)
                 continue
-            convert_celltype(args.h5ad, ct, ct_root, args.tissue,
-                             min_cells=args.min_cells,
-                             min_counts=args.min_counts,
-                             min_count=args.min_count,
-                             min_valid_samples=args.min_valid_samples,
-                             celltype_col=args.celltype_col)
+            all_exclusions.append(
+                convert_celltype(args.h5ad, ct, ct_root, args.tissue,
+                                 min_cells=args.min_cells,
+                                 min_counts=args.min_counts,
+                                 min_count=args.min_count,
+                                 min_valid_samples=args.min_valid_samples,
+                                 celltype_col=args.celltype_col))
+        if all_exclusions:
+            summary = pd.concat(all_exclusions, ignore_index=True)
+            summary_path = ct_root / 'excluded_samples_all.tsv'
+            summary.to_csv(summary_path, sep='\t', index=False)
+            log.info('writing %s  (%d excluded (sample, %s) pairs)',
+                     summary_path, len(summary), ct_col)
     elif args.celltype is not None:
         ct_root = out / _ct_root_name
         convert_celltype(args.h5ad, args.celltype, ct_root, args.tissue,
