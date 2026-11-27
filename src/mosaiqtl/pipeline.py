@@ -480,7 +480,7 @@ def enrich_peak_lod(
 def prepare_egenes_for_finemap(egenes_df: pd.DataFrame) -> pd.DataFrame:
     """Rename raw scan columns to the names expected by :func:`finemap_egenes`.
 
-    ``peak_lod.csv`` carries raw scan column names (``h2``, ``n_valid``,
+    ``peak_lod.tsv`` carries raw scan column names (``h2``, ``n_valid``,
     ``rss0``).  The fine-mapping pipeline reads ``h2_null_chr``, ``n_sample``,
     and ``sd_phenotype``.  This function adds the aliased columns when the
     source columns are present and the target columns are absent.
@@ -488,8 +488,8 @@ def prepare_egenes_for_finemap(egenes_df: pd.DataFrame) -> pd.DataFrame:
     Parameters
     ----------
     egenes_df :
-        eGene DataFrame, typically loaded from a merged ``peak_lod.csv`` or
-        ``eqtl_summary.csv``.
+        eGene DataFrame, typically loaded from a merged ``peak_lod.tsv`` or
+        ``eqtl_summary.tsv``.
 
     Returns
     -------
@@ -1686,13 +1686,13 @@ def impute_egenes(
 def scanned_chromosomes(scan_dir: 'str | os.PathLike[str]') -> list[str]:
     """Return the unprefixed chromosome labels with a complete per-chromosome scan output.
 
-    A chromosome is complete when ``lod_chr{N}.csv``, ``peak_stats_chr{N}.csv`` and
+    A chromosome is complete when ``lod_chr{N}.tsv``, ``peak_stats_chr{N}.tsv`` and
     ``timing_chr{N}.json`` all exist, in biological chromosome order.
 
     Raises
     ------
     FileNotFoundError
-        If no ``lod_chr*.csv`` exists.
+        If no ``lod_chr*.tsv`` exists.
     ValueError
         If any chromosome with a LOD file lacks its peak-statistics or timing file.
     """
@@ -1701,11 +1701,11 @@ def scanned_chromosomes(scan_dir: 'str | os.PathLike[str]') -> list[str]:
     from .utils import chr_sort_key
 
     directory = Path(scan_dir)
-    chroms = [p.stem[len('lod_chr'):] for p in directory.glob('lod_chr*.csv')]
+    chroms = [p.stem[len('lod_chr'):] for p in directory.glob('lod_chr*.tsv')]
     if not chroms:
-        raise FileNotFoundError(f'no lod_chr*.csv in {directory}')
+        raise FileNotFoundError(f'no lod_chr*.tsv in {directory}')
     expected = {
-        'peak_stats_chr': '.csv',
+        'peak_stats_chr': '.tsv',
         'timing_chr': '.json',
     }
     missing = [
@@ -1769,8 +1769,8 @@ def finemap_imputed(
 
     Args:
         imputed_df: Output of impute_egenes (IMPUTED_SNP_COLS layout).
-        out_dir: Directory for eqtl_finemapping{_tag}.csv and
-            eqtl_finemapping_peak{_tag}.csv.
+        out_dir: Directory for eqtl_finemapping{_tag}.tsv and
+            eqtl_finemapping_peak{_tag}.tsv.
         prior_var: Prior effect variance on the standardised effect.
         coverage: Credible-set coverage.
         tag: Suffix appended to output filenames.
@@ -1781,7 +1781,7 @@ def finemap_imputed(
             ``sd_phenotype``, ``cis_dist_mb``).
             These are broadcast to every credible-set row for the matching
             ``gene_id``.  Missing rows are filled with ``pd.NA``.
-            Accepts ``eqtl_peak.csv`` (``effect_`` prefix) directly; also
+            Accepts ``eqtl_peak.tsv`` (``effect_`` prefix) directly; also
             accepts a DataFrame with ``beta_`` prefix (renamed on the fly).
 
     Returns:
@@ -1793,7 +1793,7 @@ def finemap_imputed(
         format_founder_pattern,
         ld_group_summary,
     )
-    from .io.atomic import atomic_write_csv
+    from .io.atomic import atomic_write_table
     from .io.results_io import (
         build_eqtl_finemapping_df,
         build_eqtl_finemapping_peak_df,
@@ -1944,16 +1944,16 @@ def finemap_imputed(
     suffix = f"_{tag}" if tag else ""
     # fm_out intermediate carries _FOUNDER_EFFECT_COLS for build_eqtl_finemapping_peak_df;
     # trim to EQTL_FINEMAPPING_COLS (per-SNP schema) before writing to disk.
-    atomic_write_csv(fm_out.reindex(columns=EQTL_FINEMAPPING_COLS), out_dir / f"eqtl_finemapping{suffix}.csv")
-    atomic_write_csv(fp_out, out_dir / f"eqtl_finemapping_peak{suffix}.csv")
+    atomic_write_table(fm_out.reindex(columns=EQTL_FINEMAPPING_COLS), out_dir / f"eqtl_finemapping{suffix}.tsv")
+    atomic_write_table(fp_out, out_dir / f"eqtl_finemapping_peak{suffix}.tsv")
     grp_out = (
         pd.concat(grp_frames, ignore_index=True)
         if grp_frames
         else pd.DataFrame(columns=EQTL_FINEMAPPING_GROUP_COLS)
     )
-    atomic_write_csv(
+    atomic_write_table(
         grp_out.reindex(columns=EQTL_FINEMAPPING_GROUP_COLS),
-        out_dir / f"eqtl_finemapping_groups{suffix}.csv",
+        out_dir / f"eqtl_finemapping_groups{suffix}.tsv",
     )
     n_fm_genes = fm_out['gene_id'].nunique()
     logger.info(

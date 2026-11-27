@@ -14,7 +14,7 @@ What each Nextflow output file contains and what every column means. The column 
   (tissue omitted when empty).
 - Every file is written atomically: complete or absent.
 - Floats are written at full precision (the shortest string that round-trips). Boolean columns are written as `T`
-  or `F` (empty when missing); read them with `pd.read_csv(..., true_values=['T'], false_values=['F'])`. Below,
+  or `F` (empty when missing); read them with `mosaiqtl.io.tables.read_table`. Below,
   "`True`" in a bool column's description means `T`.
 - Significance is estimated over all tested genes; no gene is selected by LOD first.
 - "Founder" columns have one entry per founder of the population (e.g. the eight CC/DO founders AJ, B6J, …),
@@ -22,17 +22,21 @@ What each Nextflow output file contains and what every column means. The column 
 
 ## Files
 
+Tables are tab-separated (`.tsv`; the fine-mapping table is `.tsv.gz`). Read them with
+`mosaiqtl.io.tables.read_table` or `pd.read_csv(path, sep='\t', true_values=['T'], false_values=['F'])`; a default
+`pd.read_csv` returns a single column.
+
 | File | One row per | Columns | Written by |
 |---|---|---|---|
-| `{tag}_lod_genome.csv` | gene × locus in the window | `LOD_COLS` | `run_merge.py` |
-| `{tag}_peak_lod.csv` | tested gene | `PEAK_LOD_COLS`, `beta_{founder}`; after calling also `is_egene` and the calibration block (`pval_perm`, `beta_a`, `beta_b`, `perm_n`, `qval_storey`, `qval_bh`, `pi0`, `fdr`, `fdr_method`) | `run_merge.py`, then `run_call_egenes.py` |
-| `{tag}_scan_stats.csv` | chromosome | `chr`, `n_genes`, `elapsed_s` | `run_merge.py` |
+| `{tag}_lod_genome.tsv` | gene × locus in the window | `LOD_COLS` | `run_merge.py` |
+| `{tag}_peak_lod.tsv` | tested gene | `PEAK_LOD_COLS`, `beta_{founder}`; after calling also `is_egene` and the calibration block (`pval_perm`, `beta_a`, `beta_b`, `perm_n`, `qval_storey`, `qval_bh`, `pi0`, `fdr`, `fdr_method`) | `run_merge.py`, then `run_call_egenes.py` |
+| `{tag}_scan_stats.tsv` | chromosome | `chr`, `n_genes`, `elapsed_s` | `run_merge.py` |
 | `{tag}_pval_perm.json` | tested gene | `gene_id` → `pval_perm` | `run_call_egenes.py` |
-| `{tag}_eqtl_summary.csv` | eGene (`significance == 'T'`) | `EGENE_SUMMARY_COLS` | `run_call_egenes.py` |
-| `{tag}_eqtl_ci.csv` | eGene | `CI_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
-| `{tag}_eqtl_finemapping.csv.gz` | credible-set member × eGene | `EQTL_FINEMAPPING_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
-| `{tag}_eqtl_finemapping_peak.csv` | eGene whose lead variant has `pip` > `PEAK_PIP_THRESHOLD` (0.25), as its lead variant | `EQTL_FINEMAPPING_PEAK_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
-| `{tag}_eqtl_finemapping_groups.csv` | LD group × eGene (all groups, including those outside the credible set) | `EQTL_FINEMAPPING_GROUP_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
+| `{tag}_eqtl_summary.tsv` | eGene (`significance == 'T'`) | `EGENE_SUMMARY_COLS` | `run_call_egenes.py` |
+| `{tag}_eqtl_ci.tsv` | eGene | `CI_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
+| `{tag}_eqtl_finemapping.tsv.gz` | credible-set member × eGene | `EQTL_FINEMAPPING_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
+| `{tag}_eqtl_finemapping_peak.tsv` | eGene whose lead variant has `pip` > `PEAK_PIP_THRESHOLD` (0.25), as its lead variant | `EQTL_FINEMAPPING_PEAK_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
+| `{tag}_eqtl_finemapping_groups.tsv` | LD group × eGene (all groups, including those outside the credible set) | `EQTL_FINEMAPPING_GROUP_COLS` | `run_finemap.py`, merged by `run_finemap_merge.py` |
 
 `in_r_egenes` is in `EGENE_SUMMARY_COLS` but is filled only by validation scripts.
 

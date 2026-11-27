@@ -769,7 +769,7 @@ class TestScannedChromosomes:
     @staticmethod
     def _write(directory, chroms, skip=()):
         for c in chroms:
-            for name in (f"lod_chr{c}.csv", f"peak_stats_chr{c}.csv", f"timing_chr{c}.json"):
+            for name in (f"lod_chr{c}.tsv", f"peak_stats_chr{c}.tsv", f"timing_chr{c}.json"):
                 if name not in skip:
                     (directory / name).write_text("x\n")
 
@@ -778,8 +778,8 @@ class TestScannedChromosomes:
         assert pipeline.scanned_chromosomes(tmp_path) == ["1", "2", "10", "X"]
 
     def test_missing_peak_file_names_it(self, tmp_path):
-        self._write(tmp_path, ["1", "2"], skip={"peak_stats_chr2.csv"})
-        with pytest.raises(ValueError, match="peak_stats_chr2.csv"):
+        self._write(tmp_path, ["1", "2"], skip={"peak_stats_chr2.tsv"})
+        with pytest.raises(ValueError, match="peak_stats_chr2.tsv"):
             pipeline.scanned_chromosomes(tmp_path)
 
     def test_missing_timing_file_names_it(self, tmp_path):

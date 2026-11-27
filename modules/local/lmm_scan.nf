@@ -15,8 +15,8 @@ process LMM_SCAN {
 
     output:
     tuple val(celltype), val(chrom),
-          path("lod_chr${chrom}.csv"),
-          path("peak_stats_chr${chrom}.csv"),
+          path("lod_chr${chrom}.tsv"),
+          path("peak_stats_chr${chrom}.tsv"),
           path("timing_chr${chrom}.json")
 
     script:
@@ -45,6 +45,6 @@ process LMM_SCAN {
 
     stub:
     """
-    touch lod_chr${chrom}.csv peak_stats_chr${chrom}.csv timing_chr${chrom}.json
+    touch lod_chr${chrom}.tsv peak_stats_chr${chrom}.tsv timing_chr${chrom}.json
     """
 }

@@ -63,7 +63,7 @@ def regional_plot(
     Parameters
     ----------
     fm_df : pd.DataFrame
-        Full finemapping table (``eqtl_finemapping.csv``).
+        Full finemapping table (``eqtl_finemapping.tsv.gz``).
     gene_id : str
         Ensembl gene ID to plot.
     ax : plt.Axes, optional
@@ -184,7 +184,7 @@ def locus_finemap_panel(
     Parameters
     ----------
     fm_df : pd.DataFrame
-        Full finemapping table (``eqtl_finemapping.csv``).
+        Full finemapping table (``eqtl_finemapping.tsv.gz``).
     gene_id : str
         Ensembl gene ID.
     lod_positions : np.ndarray
@@ -323,7 +323,7 @@ def haplotype_snp_comparison(
     Parameters
     ----------
     fm_peak_df : pd.DataFrame
-        One-row-per-eGene peak table (``eqtl_finemapping_peak.csv``).
+        One-row-per-eGene peak table (``eqtl_finemapping_peak.tsv``).
     gene_id : str
         Ensembl gene ID.
     founder_betas : np.ndarray
@@ -413,7 +413,7 @@ def egene_resolution(
     Parameters
     ----------
     fm_peak_df : pd.DataFrame
-        One-row-per-eGene peak table (``eqtl_finemapping_peak.csv``).
+        One-row-per-eGene peak table (``eqtl_finemapping_peak.tsv``).
     ax : plt.Axes, optional
         Axes to draw on; created at (5, 4.5) if not provided.
     min_pip : float
@@ -468,7 +468,7 @@ def cs_size_distribution(
     Parameters
     ----------
     fm_df : pd.DataFrame
-        Full finemapping table (``eqtl_finemapping.csv``).
+        Full finemapping table (``eqtl_finemapping.tsv.gz``).
     ax : plt.Axes, optional
         Axes to draw on; created at (5, 3.5) if not provided.
     max_cs_size : int

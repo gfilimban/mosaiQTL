@@ -1,9 +1,9 @@
 # Haplotype peak LOD table
 
-`{tissue}_{celltype}_{scan_tag}_haplotype_peak_lod.csv`, written by `CALL_EGENES` (`run_call_egenes.py`).
+`{tissue}_{celltype}_{scan_tag}_haplotype_peak_lod.tsv`, written by `CALL_EGENES` (`run_call_egenes.py`).
 
 One row per gene whose Benjamini-Hochberg q-value (`qval_bh`) is at or below `params.submission_fdr` (default 0.1).
-This is a filtered copy of `{tag}_peak_lod_all.csv`, which holds every tested gene. Calibration and the q-values are
+This is a filtered copy of `{tag}_peak_lod_all.tsv`, which holds every tested gene. Calibration and the q-values are
 computed over all tested genes before the filter, so `pi0`, `qval_*` and `fdr` do not depend on it. The file
 therefore holds the called eGenes (`is_egene` = `True`: `fdr` ≤ `params.fdr_threshold` and `peak_lod` above the
 permutation LOD threshold) and the genes that fall short of either condition (`is_egene` = `False`). The called eGenes, with support intervals, are in the

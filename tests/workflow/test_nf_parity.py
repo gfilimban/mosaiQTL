@@ -184,7 +184,7 @@ def _suffix_covered(writes_pattern: str, nf_globs: list[str]) -> bool:
             if fnmatch.fnmatch(cw, ng) or fnmatch.fnmatch(cw_plain, ns_plain):
                 return True
             # Substring: the fixed part of the writes pattern appears in the NF glob
-            # (handles lod_chr{c}.csv matching lod_chr${chrom}.csv)
+            # (handles lod_chr{c}.tsv matching lod_chr${chrom}.tsv)
             fixed_part = re.sub(r'\*', '', cw_plain)
             if fixed_part and fixed_part in ng:
                 return True
@@ -264,8 +264,8 @@ _OUTPUT_SCRIPTS = [
 # Explicit output mapping for lmm_scan (no docstring "Writes:" section).
 # Each (writes_pattern, nf_glob) pair must match structurally.
 _LMM_EXPLICIT = [
-    (r'lod_chr{chrom}.csv',          r'lod_chr${chrom}.csv'),
-    (r'peak_stats_chr{chrom}.csv',   r'peak_stats_chr${chrom}.csv'),
+    (r'lod_chr{chrom}.tsv',          r'lod_chr${chrom}.tsv'),
+    (r'peak_stats_chr{chrom}.tsv',   r'peak_stats_chr${chrom}.tsv'),
     (r'timing_chr{chrom}.json',      r'timing_chr${chrom}.json'),
 ]
 

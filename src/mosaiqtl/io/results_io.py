@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as _sp_stats
 
-from mosaiqtl.io.atomic import atomic_write_csv
+from mosaiqtl.io.atomic import atomic_write_table
 from mosaiqtl.utils import add_chr_prefix
 
 from mosaiqtl.pipeline import (
@@ -138,14 +138,14 @@ def build_eqtl_peak_df(
     effects_egenes_df:
         One row per eGene, produced by merging ``pipeline.calibrate_egenes``
         output (adds ``pval_perm``/``fdr``/``fdr_method``/``significance``) with
-        ``allele_effects.csv`` (``pipeline.ALLELE_EFFECTS_BASE_COLS`` +
+        ``allele_effects.tsv`` (``pipeline.ALLELE_EFFECTS_BASE_COLS`` +
         ``beta_{founder}`` columns) on ``gene_id`` — the same merge pattern
         already used for plotting in validate_tissue.py. Must contain at
         least: gene_id, gene_symbol, chr, peak_mb, peak_lod, h2, n_valid,
         rss0, pval_perm, fdr, fdr_method, significance, and one
         ``beta_{founder}`` column per entry in ``founder_names``.
         ``cis_dist_mb`` is carried through when present (e.g. joined from
-        ``peak_lod.csv``); NaN otherwise.
+        ``peak_lod.tsv``); NaN otherwise.
     founder_names:
         Display founder names (e.g. from ``_display_founders``) identifying
         the ``beta_{founder}`` columns to rename to ``effect_{founder}``.
@@ -196,7 +196,7 @@ def write_eqtl_peak(
     founder_names: list[str],
     out_path: "Path | str",
 ) -> pd.DataFrame:
-    """Build the ``_eqtl_peak.csv`` table and write it atomically.
+    """Build the ``_eqtl_peak.tsv`` table and write it atomically.
 
     See ``build_eqtl_peak_df`` for the field-population rules.
 
@@ -205,7 +205,7 @@ def write_eqtl_peak(
     The DataFrame that was written (``pipeline.EQTL_PEAK_COLS`` schema).
     """
     df = build_eqtl_peak_df(effects_egenes_df, founder_names)
-    atomic_write_csv(df, out_path)
+    atomic_write_table(df, out_path)
     return df
 
 
@@ -213,7 +213,7 @@ def build_eqtl_stats_df(
     chrom_stats: "list[dict]",
     genome_stats: "dict | None" = None,
 ) -> pd.DataFrame:
-    """Assemble the ``_eqtl_stats.csv`` table (per-chr + genome-wide rows).
+    """Assemble the ``_eqtl_stats.tsv`` table (per-chr + genome-wide rows).
 
     Parameters
     ----------
@@ -281,7 +281,7 @@ def write_eqtl_stats(
     genome_stats: "dict | None",
     out_path: "Path | str",
 ) -> pd.DataFrame:
-    """Build the ``_eqtl_stats.csv`` table and write it atomically.
+    """Build the ``_eqtl_stats.tsv`` table and write it atomically.
 
     See ``build_eqtl_stats_df`` for the input dict shapes.
 
@@ -290,7 +290,7 @@ def write_eqtl_stats(
     The DataFrame that was written (``pipeline.EQTL_STATS_COLS`` schema).
     """
     df = build_eqtl_stats_df(chrom_stats, genome_stats)
-    atomic_write_csv(df, out_path)
+    atomic_write_table(df, out_path)
     return df
 
 
@@ -429,7 +429,7 @@ def write_eqtl_scan(
     gene_symbol_map: "dict[str, str] | None" = None,
     n_founders: int = 7,
 ) -> pd.DataFrame:
-    """Build the ``_eqtl_scan.csv`` table and write it atomically.
+    """Build the ``_eqtl_scan.tsv`` table and write it atomically.
 
     See ``build_eqtl_scan_df`` for field-population rules and NaN columns.
 
@@ -438,7 +438,7 @@ def write_eqtl_scan(
     The DataFrame that was written (``pipeline.EQTL_SCAN_COLS`` schema).
     """
     df = build_eqtl_scan_df(scan, genomecache, gene_symbol_map, n_founders)
-    atomic_write_csv(df, out_path)
+    atomic_write_table(df, out_path)
     return df
 
 
@@ -477,7 +477,7 @@ def build_eqtl_finemapping_df(
         Chromosome string (e.g. ``'8'``).
     hap_peak_pos:
         Integer bp position of the GigaMUGA haplotype peak — back-link to
-        ``_eqtl_peak.csv``.
+        ``_eqtl_peak.tsv``.
     hap_peak_variant:
         GigaMUGA locus ID of the haplotype peak.
     hap_peak_lod:
@@ -596,7 +596,7 @@ def write_eqtl_finemapping(
     founder_effects: "dict[str, float] | None" = None,
     sig_values: "dict[str, object] | None" = None,
 ) -> pd.DataFrame:
-    """Build the ``_eqtl_finemapping.csv`` table and write it atomically.
+    """Build the ``_eqtl_finemapping.tsv`` table and write it atomically.
 
     See ``build_eqtl_finemapping_df`` for field-population rules.
 
@@ -611,7 +611,7 @@ def write_eqtl_finemapping(
     )
     # trim to EQTL_FINEMAPPING_COLS (per-SNP schema); _FOUNDER_EFFECT_COLS are
     # haplotype-peak properties carried in the intermediate df for the peak builder.
-    atomic_write_csv(df.reindex(columns=EQTL_FINEMAPPING_COLS), out_path)
+    atomic_write_table(df.reindex(columns=EQTL_FINEMAPPING_COLS), out_path)
     return df
 
 
@@ -643,7 +643,7 @@ def write_eqtl_finemapping_peak(
     fm_df: pd.DataFrame,
     out_path: "Path | str",
 ) -> pd.DataFrame:
-    """Build the ``_eqtl_finemapping_peak.csv`` table and write it atomically.
+    """Build the ``_eqtl_finemapping_peak.tsv`` table and write it atomically.
 
     See ``build_eqtl_finemapping_peak_df`` for field-population rules.
 
@@ -653,5 +653,5 @@ def write_eqtl_finemapping_peak(
     (``pipeline.EQTL_FINEMAPPING_PEAK_COLS`` schema).
     """
     df = build_eqtl_finemapping_peak_df(fm_df)
-    atomic_write_csv(df, out_path)
+    atomic_write_table(df, out_path)
     return df

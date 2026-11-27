@@ -33,7 +33,7 @@ def main() -> None:
     from mosaiqtl.genotype.genomecache import GenomeCache
     from mosaiqtl.genotype.kinship import load_kinship_decomp
     from mosaiqtl.io.anndata_io import load_expression_h5
-    from mosaiqtl.io.atomic import atomic_write_csv, atomic_write_json
+    from mosaiqtl.io.atomic import atomic_write_json, atomic_write_table
     from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
     from mosaiqtl.pipeline import ALLELE_EFFECTS_BASE_COLS, LOD_COLS, PEAK_LOD_COLS, SCAN_TYPE_TO_WINDOW
     from mosaiqtl.qtl.scan import scan_multi_gene_lmm
@@ -54,17 +54,17 @@ def main() -> None:
 
     pheno_mat, gene_ids, sample_ids = load_expression_h5(pheno_path, genes_wanted)
 
-    lod_csv  = out / f'lod_chr{chrom}.csv'
-    lod_part = out / f'.lod_chr{chrom}.csv.part'
-    peak_csv = out / f'peak_stats_chr{chrom}.csv'
+    lod_tsv  = out / f'lod_chr{chrom}.tsv'
+    lod_part = out / f'.lod_chr{chrom}.tsv.part'
+    peak_tsv = out / f'peak_stats_chr{chrom}.tsv'
 
     log.info('START chr%s: %d genes  scan=%s  window_mb=%.1f  samples=%d',
              chrom, len(gene_ids), scan_window, window_mb, len(sample_ids))
 
     if len(gene_ids) == 0:
         log.warning('no genes for chr%s', chrom)
-        atomic_write_csv(pd.DataFrame(columns=LOD_COLS), lod_csv)
-        atomic_write_csv(pd.DataFrame(columns=PEAK_LOD_COLS), peak_csv)
+        atomic_write_table(pd.DataFrame(columns=LOD_COLS), lod_tsv)
+        atomic_write_table(pd.DataFrame(columns=PEAK_LOD_COLS), peak_tsv)
         atomic_write_json({'chr': chrom, 'n_genes': 0, 'elapsed_s': 0.0}, out / f'timing_chr{chrom}.json')
         return
 
@@ -104,15 +104,15 @@ def main() -> None:
         gene_meta=gene_meta,
     )
     if lod_part.exists():
-        lod_part.replace(lod_csv)
+        lod_part.replace(lod_tsv)
     else:
-        atomic_write_csv(pd.DataFrame(columns=LOD_COLS), lod_csv)
+        atomic_write_table(pd.DataFrame(columns=LOD_COLS), lod_tsv)
 
     # include beta_{founder} cols alongside PEAK_LOD_COLS so run_finemap.py
-    # can enrich egenes_df from peak_lod.csv without a separate file
+    # can enrich egenes_df from peak_lod.tsv without a separate file
     _beta_cols = [c for c in peak_stats.columns if c.startswith('beta_')]
     present = [c for c in PEAK_LOD_COLS if c in peak_stats.columns] + _beta_cols
-    atomic_write_csv(peak_stats[present], peak_csv)
+    atomic_write_table(peak_stats[present], peak_tsv)
 
     elapsed = time.perf_counter() - t0
     _, peak_heap = tracemalloc.get_traced_memory()

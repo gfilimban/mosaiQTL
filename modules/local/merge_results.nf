@@ -4,19 +4,19 @@ process MERGE_RESULTS {
     tag   "${celltype}"
 
     publishDir { "${params.output_dir}/${celltype.replaceAll(/\s+/, '_')}/${scan_tag}/core" }, mode: 'copy',
-               saveAs: { fn -> fn.endsWith('_peak_lod.csv') ? null : fn }
+               saveAs: { fn -> fn.endsWith('_peak_lod.tsv') ? null : fn }
 
     input:
     path  gene_tss
     tuple val(celltype), val(scan_tag),
-          path(lod_csvs), path(peak_stats_csvs), path(timing_jsons),
+          path(lod_tables), path(peak_stats_tables), path(timing_jsons),
           path(gene_info)
 
     output:
     tuple val(celltype), val(scan_tag),
-          path('*_lod_genome.csv'),
-          path('*_peak_lod.csv'),
-          path('*_scan_stats.csv')
+          path('*_lod_genome.tsv'),
+          path('*_peak_lod.tsv'),
+          path('*_scan_stats.tsv')
 
     script:
     def tis    = params.tissue ?: 'run'
@@ -34,6 +34,6 @@ process MERGE_RESULTS {
     stub:
     def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
-    touch ${tag}_lod_genome.csv ${tag}_peak_lod.csv ${tag}_scan_stats.csv
+    touch ${tag}_lod_genome.tsv ${tag}_peak_lod.tsv ${tag}_scan_stats.tsv
     """
 }

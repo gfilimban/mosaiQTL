@@ -15,9 +15,9 @@ Shared setup (once per genotype cache):
 Per cell type:
   scan-chr        replicate-aware LMM scan of one chromosome (run per chromosome)
   merge-scan      per-chromosome outputs → lod / allele_effects / peak_lod tables
-  permute         permutation null → perm_max_lods*.csv + threshold.csv
-  calibrate       per-gene calibrated permutation p-values → pval_perm.csv
-  call-egenes     LOD gate + Storey q-values → eqtl_summary.csv
+  permute         permutation null → perm_max_lods*.tsv + threshold.tsv
+  calibrate       per-gene calibrated permutation p-values → pval_perm.tsv
+  call-egenes     LOD gate + Storey q-values → eqtl_summary.tsv
   characterise    1.5-LOD support intervals → ci + eqtl_peak_ci tables
   impute          imputed SNP association scan inside each interval (optional)
   finemap         ABF credible sets from the imputed scan (optional)
@@ -206,22 +206,23 @@ def _pick_median_h2_gene(
     return rep_gene, h2_med
 
 
-def _median_h2_gene_from_effects(allele_effects_csv: Path) -> "tuple[str, str, float]":
+def _median_h2_gene_from_effects(allele_effects_tsv: Path) -> "tuple[str, str, float]":
     """Return (gene_id, gene_symbol, median_h²) for the gene whose h² is closest to the median.
 
     Uses the per-gene null-model h² already estimated during the scan, so the
     representative gene is drawn from every scanned gene rather than a sample.
     """
     import numpy as np
-    import pandas as pd
 
-    head = pd.read_csv(allele_effects_csv, nrows=0).columns
+    from .io.tables import read_table
+
+    head = read_table(allele_effects_tsv, nrows=0).columns
     cols = ["gene_id", "h2"] + (["gene_symbol"] if "gene_symbol" in head else [])
-    eff = pd.read_csv(allele_effects_csv, usecols=cols, dtype={"gene_id": str})
+    eff = read_table(allele_effects_tsv, usecols=cols, dtype={"gene_id": str})
     eff = eff.dropna(subset=["h2"]).reset_index(drop=True)
     if eff.empty:
         raise click.ClickException(
-            f"{allele_effects_csv} has no finite h2 values; cannot pick a representative gene."
+            f"{allele_effects_tsv} has no finite h2 values; cannot pick a representative gene."
         )
     h2_med = float(eff["h2"].median())
     best = eff.iloc[int(np.argmin(np.abs(eff["h2"].to_numpy() - h2_med)))]
@@ -254,28 +255,29 @@ def _split_cols(spec: str) -> "list[str]":
 def _genome_wide_threshold(perm_dir: Path) -> Optional[float]:
     """Return the genome-wide LOD threshold for a `permute` output directory.
 
-    Reads the genome_wide row of threshold.csv; when that file is absent, fits a
-    95th-percentile GEV to perm_max_lods.csv. A threshold of exactly 0.0 means
+    Reads the genome_wide row of threshold.tsv; when that file is absent, fits a
+    95th-percentile GEV to perm_max_lods.tsv. A threshold of exactly 0.0 means
     the null was all-zeros and is reported as None (invalid).
     """
     import pandas as pd
 
+    from .io.tables import read_table
     from .qtl.thresholds import get_gev_thresholds
 
-    thr_csv = perm_dir / "threshold.csv"
+    thr_tsv = perm_dir / "threshold.tsv"
     thr: Optional[float] = None
-    if thr_csv.exists():
-        thr_df = pd.read_csv(thr_csv)
+    if thr_tsv.exists():
+        thr_df = read_table(thr_tsv)
         gw = thr_df[thr_df["chr"].astype(str) == "genome_wide"]
         if not gw.empty and pd.notna(gw.iloc[0]["threshold"]):
             thr = float(gw.iloc[0]["threshold"])
     else:
-        perm_csv = perm_dir / "perm_max_lods.csv"
-        if not perm_csv.exists():
+        perm_tsv = perm_dir / "perm_max_lods.tsv"
+        if not perm_tsv.exists():
             raise click.ClickException(
-                f"neither threshold.csv nor perm_max_lods.csv found in {perm_dir}"
+                f"neither threshold.tsv nor perm_max_lods.tsv found in {perm_dir}"
             )
-        thr, _ = get_gev_thresholds(pd.read_csv(perm_csv)["max_lod"].values, percentile=0.95)
+        thr, _ = get_gev_thresholds(read_table(perm_tsv)["max_lod"].values, percentile=0.95)
     if thr is not None and thr == 0.0:
         return None
     return thr
@@ -339,7 +341,7 @@ def _write_scan_provenance(
     chrs_scanned: "list[str]",
     n_genes: Optional[int],
 ) -> None:
-    """Write sample_breakdown.csv + scan_info.json describing the scanned sample set.
+    """Write sample_breakdown.tsv + scan_info.json describing the scanned sample set.
 
     Strains are listed founders → F1s/CC in canonical order, then any remaining
     strain names in natural order; dataset_breakdown is added only when the
@@ -352,12 +354,13 @@ def _write_scan_provenance(
     from natsort import natsorted
 
     from .genotype.cc import STRAIN_ORDER
+    from .io.atomic import atomic_write_table
     from .utils import git_hash
 
     req = {"sample_id", "genotype"}
     if not req.issubset(meta_df.columns):
         logger.warning(
-            "metadata missing columns %s; scan_info.json/sample_breakdown.csv skipped",
+            "metadata missing columns %s; scan_info.json/sample_breakdown.tsv skipped",
             sorted(req - set(meta_df.columns)),
         )
         return
@@ -378,7 +381,7 @@ def _write_scan_provenance(
         rows.append(row)
     cols = ["strain", "n_samples"] + (["dataset_breakdown"] if multi_dataset else [])
     output_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows, columns=cols).to_csv(output_dir / "sample_breakdown.csv", index=False)
+    atomic_write_table(pd.DataFrame(rows, columns=cols), output_dir / "sample_breakdown.tsv")
 
     info = {
         "mosaiqtl_version": pkg_version("mosaiqtl"),
@@ -397,13 +400,13 @@ def _write_scan_provenance(
         },
     }
     (output_dir / "scan_info.json").write_text(json.dumps(info, indent=2))
-    logger.info("scan_info.json + sample_breakdown.csv written (%d strains)", len(strains))
+    logger.info("scan_info.json + sample_breakdown.tsv written (%d strains)", len(strains))
 
 
 def _egene_context(
-    summary_csv: Path,
+    summary_tsv: Path,
 ) -> "tuple[pd.DataFrame, Optional[pd.DataFrame], dict[str, float]]":
-    """Load eqtl_summary.csv → (eGenes, gene_meta, {gene_id: peak_mb}).
+    """Load eqtl_summary.tsv → (eGenes, gene_meta, {gene_id: peak_mb}).
 
     gene_meta carries the display/diagnostic columns joined into every
     per-eGene follow-up scan's output, with the main scan's peak renamed to
@@ -412,7 +415,9 @@ def _egene_context(
     """
     import pandas as pd
 
-    egenes = pd.read_csv(summary_csv, dtype={"chr": str, "gene_id": str})
+    from .io.tables import read_table
+
+    egenes = read_table(summary_tsv, dtype={"chr": str, "gene_id": str})
     if egenes.empty:
         return egenes, None, {}
     gm_cols = [
@@ -453,11 +458,13 @@ def _load_expression_for(
     return expr, geno_ids, cov
 
 
-def _ci_bp(ci_csv: Path) -> "pd.DataFrame":
+def _ci_bp(ci_tsv: Path) -> "pd.DataFrame":
     """ci table (Mb bounds) → DataFrame[gene_id, ci_lo_bp, ci_hi_bp] in integer bp."""
     import pandas as pd
 
-    ci = pd.read_csv(ci_csv, dtype={"gene_id": str})
+    from .io.tables import read_table
+
+    ci = read_table(ci_tsv, dtype={"gene_id": str})
     if ci.empty or not {"ci_lo", "ci_hi"}.issubset(ci.columns):
         return pd.DataFrame(columns=["gene_id", "ci_lo_bp", "ci_hi_bp"])
     ci = ci[["gene_id", "ci_lo", "ci_hi"]].copy()
@@ -480,11 +487,11 @@ def _gev_row(chrom: str, max_lods: "np.ndarray") -> dict:
 
 
 def _perm_chr_files(perm_dir: Path) -> "list[tuple[str, Path]]":
-    """[(chrom, perm_max_lods_chr{c}.csv)] in chromosome order."""
+    """[(chrom, perm_max_lods_chr{c}.tsv)] in chromosome order."""
     from .utils import chr_sort_key
 
     pairs = [(p.stem.replace("perm_max_lods_chr", ""), p)
-             for p in perm_dir.glob("perm_max_lods_chr*.csv")]
+             for p in perm_dir.glob("perm_max_lods_chr*.tsv")]
     return sorted(pairs, key=lambda cp: chr_sort_key(cp[0]))
 
 
@@ -541,14 +548,14 @@ def build_kinship(cache: Path, output: Path, verbose: bool) -> None:
 @click.option("--kinship", required=True, type=click.Path(exists=True, path_type=Path),
               help="LOCO kinship HDF5 from `build-kinship`.")
 @click.option("--output-dir", required=True, type=click.Path(path_type=Path),
-              help="Directory for cache_info.csv, haplotype_probs.csv, kinship_summary.csv.")
+              help="Directory for cache_info.tsv, haplotype_probs.tsv, kinship_summary.tsv.")
 @click.option("--verbose", is_flag=True, default=False)
 def inspect_cache(cache: Path, kinship: Path, output_dir: Path, verbose: bool) -> None:
     """Genotype-cache and kinship QC tables (independent of cell type and scan type).
 
-    cache_info.csv lists loci per chromosome; haplotype_probs.csv exports the
+    cache_info.tsv lists loci per chromosome; haplotype_probs.tsv exports the
     founder probabilities of every genotype at five evenly spaced loci on
-    chr8 (or the first chromosome when chr8 is absent); kinship_summary.csv
+    chr8 (or the first chromosome when chr8 is absent); kinship_summary.tsv
     summarises each LOCO kinship matrix (diagonal / off-diagonal means and
     eigenvalue range).
     """
@@ -556,12 +563,15 @@ def inspect_cache(cache: Path, kinship: Path, output_dir: Path, verbose: bool) -
     import numpy as np
     import pandas as pd
 
+    from .io.atomic import atomic_write_table
+
     gc = _load_cache(cache)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     n_loci = {c: len(gc.get_chromosome(c)[0]) for c in gc.chromosomes}
-    pd.DataFrame([{"chr": c, "n_loci": n} for c, n in n_loci.items()]).to_csv(
-        output_dir / "cache_info.csv", index=False
+    atomic_write_table(
+        pd.DataFrame([{"chr": c, "n_loci": n} for c, n in n_loci.items()]),
+        output_dir / "cache_info.tsv",
     )
     logger.info(
         "cache: %d chromosomes  total loci=%d  founders=%d  genotypes=%d",
@@ -581,7 +591,7 @@ def inspect_cache(cache: Path, kinship: Path, output_dir: Path, verbose: bool) -
             row: dict = {"chr": probe_chr, "locus": lids[li], "genotype": gtype}
             row.update(dict(zip(founder_cols, probs[li, si, :].tolist())))
             hap_rows.append(row)
-    pd.DataFrame(hap_rows).to_csv(output_dir / "haplotype_probs.csv", index=False)
+    atomic_write_table(pd.DataFrame(hap_rows), output_dir / "haplotype_probs.tsv")
     del probs
 
     kin_rows: list[dict] = []
@@ -598,7 +608,7 @@ def inspect_cache(cache: Path, kinship: Path, output_dir: Path, verbose: bool) -
                 "max_eig": float(kd["values"].max()),
             }
         )
-    pd.DataFrame(kin_rows).to_csv(output_dir / "kinship_summary.csv", index=False)
+    atomic_write_table(pd.DataFrame(kin_rows), output_dir / "kinship_summary.tsv")
     logger.info("inspect-cache: tables written to %s", output_dir)
 
 
@@ -633,7 +643,7 @@ def inspect_cache(cache: Path, kinship: Path, output_dir: Path, verbose: bool) -
 @click.option("--covariates", default="sex,dataset", show_default=True,
               help="Comma-separated metadata columns used as fixed-effect covariates.")
 @click.option("--output-dir", required=True, type=click.Path(path_type=Path),
-              help="Directory for lod_chr{c}.csv and effects_chr{c}.csv.")
+              help="Directory for lod_chr{c}.tsv and effects_chr{c}.tsv.")
 @click.option("--verbose", is_flag=True, default=False)
 def scan_chr(
     cache: Path,
@@ -651,9 +661,9 @@ def scan_chr(
 ) -> None:
     """Replicate-aware LMM haplotype scan of one chromosome with its LOCO kinship.
 
-    Writes the per-locus LOD profile of every scanned gene (lod_chr{c}.csv,
+    Writes the per-locus LOD profile of every scanned gene (lod_chr{c}.tsv,
     LOD_COLS) and one peak row per gene with its null-model h², residual
-    diagnostics and founder effects at the peak (effects_chr{c}.csv,
+    diagnostics and founder effects at the peak (effects_chr{c}.tsv,
     ALLELE_EFFECTS_BASE_COLS + beta_{founder}). `merge-scan` combines the
     per-chromosome files into the genome-wide outputs.
     """
@@ -662,14 +672,16 @@ def scan_chr(
     import pandas as pd
 
     from .genotype.cc import display_founders
+    from .io.atomic import atomic_write_table
+    from .io.tables import read_table
     from .pipeline import ALLELE_EFFECTS_BASE_COLS, LOD_COLS
     from .qtl.scan import scan_multi_gene_lmm
     from .utils import build_z_matrix
 
     chrom = str(chrom)
     output_dir.mkdir(parents=True, exist_ok=True)
-    lod_out = output_dir / f"lod_chr{chrom}.csv"
-    eff_out = output_dir / f"effects_chr{chrom}.csv"
+    lod_out = output_dir / f"lod_chr{chrom}.tsv"
+    eff_out = output_dir / f"effects_chr{chrom}.tsv"
 
     gc = _load_cache(cache)
     disp = display_founders(list(gc.founders))
@@ -677,8 +689,8 @@ def scan_chr(
 
     def _write_empty(reason: str) -> None:
         logger.info("scan-chr chr%s: %s — writing header-only outputs", chrom, reason)
-        pd.DataFrame(columns=LOD_COLS).to_csv(lod_out, index=False)
-        pd.DataFrame(columns=eff_cols).to_csv(eff_out, index=False)
+        atomic_write_table(pd.DataFrame(columns=LOD_COLS), lod_out)
+        atomic_write_table(pd.DataFrame(columns=eff_cols), eff_out)
 
     gi = pd.read_csv(gene_info, dtype={"chr": str, "gene_id": str})
     ch_genes = gi if scan_type == "G" else gi[gi["chr"] == chrom]
@@ -739,7 +751,7 @@ def scan_chr(
         logger.warning("scan-chr: --gene-info has no start column; scanning chr-wide (cis)")
         scan_window = "cis"
 
-    raw_lod = output_dir / f".lod_chr{chrom}.raw.csv"
+    raw_lod = output_dir / f".lod_chr{chrom}.raw.tsv"
     logger.info(
         "scan-chr chr%s: %d genes  %d samples  (%s mode)", chrom, len(expr), len(sids), scan_type
     )
@@ -763,21 +775,21 @@ def scan_chr(
     sym_map = dict(zip(gene_meta["gene_id"], gene_meta["gene_symbol"]))
     first = True
     if raw_lod.exists():
-        for chunk in pd.read_csv(
+        for chunk in read_table(
             raw_lod, dtype={"chr": str, "gene_id": str}, chunksize=1_000_000
         ):
             chunk["gene_symbol"] = chunk["gene_id"].map(sym_map)
             chunk.reindex(columns=LOD_COLS).to_csv(
-                lod_out, mode="w" if first else "a", header=first, index=False
+                lod_out, sep="\t", mode="w" if first else "a", header=first, index=False
             )
             first = False
         raw_lod.unlink()
     if first:
-        pd.DataFrame(columns=LOD_COLS).to_csv(lod_out, index=False)
+        atomic_write_table(pd.DataFrame(columns=LOD_COLS), lod_out)
 
     if not peaks.empty:
         peaks["start_mb"] = peaks["gene_id"].map({g: round(t, 3) for g, t in tss_map.items()})
-    peaks.reindex(columns=eff_cols).to_csv(eff_out, index=False)
+    atomic_write_table(peaks.reindex(columns=eff_cols), eff_out)
     logger.info("scan-chr chr%s: %d gene peaks → %s", chrom, len(peaks), eff_out)
 
 
@@ -787,7 +799,7 @@ def scan_chr(
 @main.command("merge-scan")
 @click.option("--scan-dir", required=True,
               type=click.Path(exists=True, file_okay=False, path_type=Path),
-              help="Directory holding lod_chr*.csv / effects_chr*.csv from `scan-chr`.")
+              help="Directory holding lod_chr*.tsv / effects_chr*.tsv from `scan-chr`.")
 @click.option("--gene-tss", default=None, type=click.Path(exists=True, path_type=Path),
               help="Transcript TSS table (gene_name, start, end, strand); adds near_tss_mb.")
 @click.option("--metadata", required=True, type=click.Path(exists=True, path_type=Path),
@@ -802,7 +814,7 @@ def scan_chr(
 @click.option("--suffix", required=True,
               help="Run suffix for output names, e.g. glutamatergic_neuron_Lw1.")
 @click.option("--output-dir", required=True, type=click.Path(path_type=Path),
-              help="Directory for lod_/allele_effects_/peak_lod_{suffix}.csv + provenance.")
+              help="Directory for lod_/allele_effects_/peak_lod_{suffix}.tsv + provenance.")
 @click.option("--verbose", is_flag=True, default=False)
 def merge_scan(
     scan_dir: Path,
@@ -818,42 +830,44 @@ def merge_scan(
 ) -> None:
     """Combine per-chromosome scan outputs into genome-wide result tables.
 
-    lod_{suffix}.csv concatenates every chromosome's LOD profile (streamed,
-    never held in memory). allele_effects_{suffix}.csv keeps each gene's
-    highest-LOD peak row; peak_lod_{suffix}.csv adds near_tss_mb (transcript
+    lod_{suffix}.tsv concatenates every chromosome's LOD profile (streamed,
+    never held in memory). allele_effects_{suffix}.tsv keeps each gene's
+    highest-LOD peak row; peak_lod_{suffix}.tsv adds near_tss_mb (transcript
     TSS nearest the peak) and cis_dist_mb (peak − near_tss_mb, falling back
     to the gene's own TSS when no transcript TSS is known).
     """
     _setup_logging(verbose)
     import pandas as pd
 
+    from .io.atomic import atomic_write_table
+    from .io.tables import read_table
     from .pipeline import LOD_COLS, PEAK_LOD_COLS
     from .utils import chr_sort_key, compute_near_tss_mb
 
     def _chr_of(p: Path, prefix: str) -> str:
         return p.stem[len(prefix):]
 
-    lod_files = sorted(scan_dir.glob("lod_chr*.csv"),
+    lod_files = sorted(scan_dir.glob("lod_chr*.tsv"),
                        key=lambda p: chr_sort_key(_chr_of(p, "lod_chr")))
-    eff_files = sorted(scan_dir.glob("effects_chr*.csv"),
+    eff_files = sorted(scan_dir.glob("effects_chr*.tsv"),
                        key=lambda p: chr_sort_key(_chr_of(p, "effects_chr")))
     if not eff_files:
-        raise click.ClickException(f"no effects_chr*.csv files in {scan_dir}")
+        raise click.ClickException(f"no effects_chr*.tsv files in {scan_dir}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    lod_out = output_dir / f"lod_{suffix}.csv"
+    lod_out = output_dir / f"lod_{suffix}.tsv"
     first = True
     for f in lod_files:
-        for chunk in pd.read_csv(f, dtype={"chr": str, "gene_id": str}, chunksize=1_000_000):
+        for chunk in read_table(f, dtype={"chr": str, "gene_id": str}, chunksize=1_000_000):
             chunk.reindex(columns=LOD_COLS).to_csv(
-                lod_out, mode="w" if first else "a", header=first, index=False
+                lod_out, sep="\t", mode="w" if first else "a", header=first, index=False
             )
             first = False
     if first:
-        pd.DataFrame(columns=LOD_COLS).to_csv(lod_out, index=False)
+        atomic_write_table(pd.DataFrame(columns=LOD_COLS), lod_out)
 
     eff = pd.concat(
-        [pd.read_csv(f, dtype={"chr": str, "gene_id": str}) for f in eff_files],
+        [read_table(f, dtype={"chr": str, "gene_id": str}) for f in eff_files],
         ignore_index=True,
     )
     eff = (
@@ -862,7 +876,7 @@ def merge_scan(
         .sort_index()
         .reset_index(drop=True)
     )
-    eff.to_csv(output_dir / f"allele_effects_{suffix}.csv", index=False)
+    atomic_write_table(eff, output_dir / f"allele_effects_{suffix}.tsv")
 
     peak = eff[[c for c in eff.columns if not c.startswith("beta_")]].copy()
     if gene_tss is not None and not peak.empty:
@@ -874,7 +888,9 @@ def merge_scan(
         ).round(6)
     else:
         peak["cis_dist_mb"] = (peak["peak_mb"] - peak["start_mb"]).round(6)
-    peak.reindex(columns=PEAK_LOD_COLS).to_csv(output_dir / f"peak_lod_{suffix}.csv", index=False)
+    atomic_write_table(
+        peak.reindex(columns=PEAK_LOD_COLS), output_dir / f"peak_lod_{suffix}.tsv"
+    )
 
     chrs_scanned = (
         [_chr_of(f, "effects_chr") for f in eff_files] if chrs == "all" else _split_cols(chrs)
@@ -900,7 +916,7 @@ def merge_scan(
 @click.option("--metadata", required=True, type=click.Path(exists=True, path_type=Path),
               help="Sample metadata CSV with sample_id and genotype columns.")
 @click.option("--allele-effects", default=None, type=click.Path(exists=True, path_type=Path),
-              help="allele_effects_{suffix}.csv from `merge-scan`. When given and --gene "
+              help="allele_effects_{suffix}.tsv from `merge-scan`. When given and --gene "
               "is omitted, the representative gene is the scanned gene whose null-model "
               "h² is closest to the median h² of the whole scan.")
 @click.option("--gene", default=None,
@@ -923,7 +939,7 @@ def merge_scan(
 @click.option("--seed", default=1, show_default=True, type=int,
               help="Seed for the phenotype permutations.")
 @click.option("--output", required=True, type=click.Path(path_type=Path),
-              help="Output directory; writes perm_max_lods*.csv + threshold.csv.")
+              help="Output directory; writes perm_max_lods*.tsv + threshold.tsv.")
 @click.option("--verbose", is_flag=True, default=False)
 def permute(
     cache: Path,
@@ -943,9 +959,9 @@ def permute(
 ) -> None:
     """Permutation null of the genome-wide max LOD → GEV threshold.
 
-    One representative gene (median h²) is permuted; perm_max_lods.csv holds
-    the genome-wide max-LOD null, perm_max_lods_chr{c}.csv each chromosome's
-    null, and threshold.csv the GEV 95th-percentile thresholds (genome_wide
+    One representative gene (median h²) is permuted; perm_max_lods.tsv holds
+    the genome-wide max-LOD null, perm_max_lods_chr{c}.tsv each chromosome's
+    null, and threshold.tsv the GEV 95th-percentile thresholds (genome_wide
     row drives eGene calling).
     """
     _setup_logging(verbose)
@@ -955,6 +971,7 @@ def permute(
     import numpy as np
     import pandas as pd
 
+    from .io.atomic import atomic_write_table
     from .qtl.permutation import generate_null_outcomes, run_threshold_scans
     from .qtl.thresholds import get_gev_thresholds
 
@@ -1010,10 +1027,10 @@ def permute(
     )
 
     output.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"max_lod": max_lods}).to_csv(output / "perm_max_lods.csv", index=False)
+    atomic_write_table(pd.DataFrame({"max_lod": max_lods}), output / "perm_max_lods.tsv")
     for chrom, lods in chr_null_lods.items():
-        pd.DataFrame({"max_lod": lods}).to_csv(
-            output / f"perm_max_lods_chr{chrom}.csv", index=False
+        atomic_write_table(
+            pd.DataFrame({"max_lod": lods}), output / f"perm_max_lods_chr{chrom}.tsv"
         )
     thr, _ = get_gev_thresholds(max_lods, percentile=0.95)
     if thr is not None and thr == 0.0:
@@ -1037,7 +1054,7 @@ def permute(
             {"chr": str(chrom), "threshold": chr_thr, "perm_gene": perm_gene_label,
              "h2_median": None, "n_perms": int(np.isfinite(lods).sum())}
         )
-    pd.DataFrame(thr_rows).to_csv(output / "threshold.csv", index=False)
+    atomic_write_table(pd.DataFrame(thr_rows), output / "threshold.tsv")
     logger.info("permute: results written to %s", output)
 
 
@@ -1050,10 +1067,10 @@ def permute(
 @click.option("--kinship", required=True, type=click.Path(exists=True, path_type=Path),
               help="LOCO kinship HDF5 from `build-kinship`.")
 @click.option("--peak-lod", required=True, type=click.Path(exists=True, path_type=Path),
-              help="peak_lod_{suffix}.csv from `merge-scan`.")
+              help="peak_lod_{suffix}.tsv from `merge-scan`.")
 @click.option("--perm-dir", required=True,
               type=click.Path(exists=True, file_okay=False, path_type=Path),
-              help="Directory written by `permute` (threshold.csv).")
+              help="Directory written by `permute` (threshold.tsv).")
 @click.option("--phenotypes", required=True, type=click.Path(exists=True, path_type=Path),
               help="counts_lognorm.h5 — log-normalised expression.")
 @click.option("--metadata", required=True, type=click.Path(exists=True, path_type=Path),
@@ -1067,7 +1084,7 @@ def permute(
 @click.option("--window-mb", default=1.0, show_default=True, type=float,
               help="Half-window in Mb for --scan-type L.")
 @click.option("--output", "output_path", required=True, type=click.Path(path_type=Path),
-              help="Output pval_perm.csv path.")
+              help="Output pval_perm.tsv path.")
 @click.option("--verbose", is_flag=True, default=False)
 def calibrate(
     cache: Path,
@@ -1095,22 +1112,24 @@ def calibrate(
     import pandas as pd
 
     from .genotype.kinship import calc_kinship
+    from .io.atomic import atomic_write_table
+    from .io.tables import read_table
     from .qtl.fdr import calibrate_gene_pvalue
     from .utils import build_z_matrix
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     empty = pd.DataFrame(columns=["gene_id", "pval_perm"])
 
-    peaks = pd.read_csv(peak_lod, dtype={"chr": str, "gene_id": str})
+    peaks = read_table(peak_lod, dtype={"chr": str, "gene_id": str})
     gw_thr = _genome_wide_threshold(perm_dir)
     if gw_thr is None:
         logger.warning("calibrate: no valid genome-wide threshold — writing empty pval_perm")
-        empty.to_csv(output_path, index=False)
+        atomic_write_table(empty, output_path)
         return
     egenes = peaks[peaks["peak_lod"] > gw_thr]
     if egenes.empty:
         logger.warning("calibrate: no genes passed the LOD gate — writing empty pval_perm")
-        empty.to_csv(output_path, index=False)
+        atomic_write_table(empty, output_path)
         return
     logger.info("calibrate: threshold=%.3f  %d genes to calibrate", gw_thr, len(egenes))
 
@@ -1150,7 +1169,7 @@ def calibrate(
         )
         rows.append({"gene_id": gid, "pval_perm": float(p_adj)})
 
-    pd.DataFrame(rows, columns=["gene_id", "pval_perm"]).to_csv(output_path, index=False)
+    atomic_write_table(pd.DataFrame(rows, columns=["gene_id", "pval_perm"]), output_path)
     logger.info("calibrate: %d genes → %s", len(rows), output_path)
 
 
@@ -1159,15 +1178,15 @@ def calibrate(
 
 @main.command("call-egenes")
 @click.option("--peak-lod", required=True, type=click.Path(exists=True, path_type=Path),
-              help="peak_lod_{suffix}.csv from `merge-scan`.")
+              help="peak_lod_{suffix}.tsv from `merge-scan`.")
 @click.option("--perm-dir", required=True,
               type=click.Path(exists=True, file_okay=False, path_type=Path),
-              help="Directory written by `permute` (threshold.csv + perm_max_lods.csv).")
+              help="Directory written by `permute` (threshold.tsv + perm_max_lods.tsv).")
 @click.option("--allele-effects", default=None, type=click.Path(exists=True, path_type=Path),
-              help="allele_effects_{suffix}.csv; fills positional columns absent from "
+              help="allele_effects_{suffix}.tsv; fills positional columns absent from "
               "--peak-lod.")
 @click.option("--pval-perm", default=None, type=click.Path(exists=True, path_type=Path),
-              help="pval_perm.csv from `calibrate`; adds Storey q-values and significance.")
+              help="pval_perm.tsv from `calibrate`; adds Storey q-values and significance.")
 @click.option("--fdr", default=0.05, show_default=True, type=float,
               help="FDR threshold for significance='T'.")
 @click.option("--call-rule", default="bh", show_default=True,
@@ -1175,7 +1194,7 @@ def calibrate(
               help="Value thresholded by --fdr: Benjamini-Hochberg, Storey q-value "
                    "or local false discovery rate, over all tested genes.")
 @click.option("--output", required=True, type=click.Path(path_type=Path),
-              help="Output eqtl_summary CSV path.")
+              help="Output eqtl_summary TSV path.")
 @click.option("--verbose", is_flag=True, default=False)
 def call_egenes_cmd(
     peak_lod: Path,
@@ -1196,6 +1215,8 @@ def call_egenes_cmd(
     _setup_logging(verbose)
     import pandas as pd
 
+    from .io.atomic import atomic_write_table
+    from .io.tables import read_table
     from .pipeline import (
         EGENE_SUMMARY_COLS,
         calibrate_egenes,
@@ -1204,16 +1225,16 @@ def call_egenes_cmd(
     )
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    peaks = pd.read_csv(peak_lod, dtype={"chr": str, "gene_id": str})
+    peaks = read_table(peak_lod, dtype={"chr": str, "gene_id": str})
     thr = _genome_wide_threshold(perm_dir)
     if thr is None or peaks.empty:
         logger.warning("call-egenes: no valid threshold or no peaks — writing empty summary")
-        pd.DataFrame(columns=EGENE_SUMMARY_COLS).to_csv(output, index=False)
+        atomic_write_table(pd.DataFrame(columns=EGENE_SUMMARY_COLS), output)
         return
 
     eff: Optional[pd.DataFrame] = None
     if allele_effects is not None:
-        eff = pd.read_csv(
+        eff = read_table(
             allele_effects,
             usecols=["gene_id", "gene_symbol", "chr", "peak_locus", "peak_mb", "peak_lod", "h2"],
             dtype={"chr": str, "gene_id": str},
@@ -1231,11 +1252,11 @@ def call_egenes_cmd(
         "call-egenes: genome-wide threshold=%.3f → %d / %d genes", thr, len(egenes), len(peaks)
     )
     if egenes.empty:
-        pd.DataFrame(columns=EGENE_SUMMARY_COLS).to_csv(output, index=False)
+        atomic_write_table(pd.DataFrame(columns=EGENE_SUMMARY_COLS), output)
         return
 
     if pval_perm is not None:
-        pv = pd.read_csv(pval_perm, dtype={"gene_id": str}).dropna(subset=["pval_perm"])
+        pv = read_table(pval_perm, dtype={"gene_id": str}).dropna(subset=["pval_perm"])
         if not pv.empty:
             egenes = calibrate_egenes(
                 egenes, dict(zip(pv["gene_id"], pv["pval_perm"])),
@@ -1249,12 +1270,12 @@ def call_egenes_cmd(
                 len(egenes),
             )
 
-    perm_csv = perm_dir / "perm_max_lods.csv"
-    if perm_csv.exists():
-        egenes["perm_n"] = len(pd.read_csv(perm_csv))
+    perm_tsv = perm_dir / "perm_max_lods.tsv"
+    if perm_tsv.exists():
+        egenes["perm_n"] = len(read_table(perm_tsv))
         egenes["perm_chr"] = str(peaks.loc[peaks["peak_lod"].idxmax(), "chr"])
 
-    finalize_egene_summary(egenes).to_csv(output, index=False)
+    atomic_write_table(finalize_egene_summary(egenes), output)
     logger.info("call-egenes: %d eGenes → %s", len(egenes), output)
 
 
@@ -1263,7 +1284,7 @@ def call_egenes_cmd(
 
 @main.command("characterise")
 @click.option("--egenes", required=True, type=click.Path(exists=True, path_type=Path),
-              help="eqtl_summary CSV from `call-egenes`.")
+              help="eqtl_summary TSV from `call-egenes`.")
 @click.option("--phenotypes", required=True, type=click.Path(exists=True, path_type=Path),
               help="counts_lognorm.h5 — log-normalised expression (genes × samples).")
 @click.option("--kinship", required=True, type=click.Path(exists=True, path_type=Path),
@@ -1276,7 +1297,7 @@ def call_egenes_cmd(
               help="Comma-separated metadata columns used as fixed-effect covariates.")
 @click.option("--suffix", required=True, help="Run suffix for output names.")
 @click.option("--output-dir", required=True, type=click.Path(path_type=Path),
-              help="Directory for ci_{suffix}.csv and eqtl_peak_ci_{suffix}.csv.")
+              help="Directory for ci_{suffix}.tsv and eqtl_peak_ci_{suffix}.tsv.")
 @click.option("--verbose", is_flag=True, default=False)
 def characterise(
     egenes: Path,
@@ -1292,28 +1313,29 @@ def characterise(
     """1.5-LOD support interval of every eGene → ci + eqtl_peak_ci tables.
 
     Each eGene's chromosome is rescanned with its LOCO kinship and the
-    support interval is taken around its main-scan peak. ci_{suffix}.csv
-    holds the interval in Mb (CI_COLS); eqtl_peak_ci_{suffix}.csv is one row
+    support interval is taken around its main-scan peak. ci_{suffix}.tsv
+    holds the interval in Mb (CI_COLS); eqtl_peak_ci_{suffix}.tsv is one row
     per eGene with the peak position and the interval in bp, the input to
     `impute` and `report`.
     """
     _setup_logging(verbose)
     import pandas as pd
 
+    from .io.atomic import atomic_write_table
     from .pipeline import CI_COLS
     from .qtl.ci import ci_scan_multi_gene
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    ci_out = output_dir / f"ci_{suffix}.csv"
-    peak_out = output_dir / f"eqtl_peak_ci_{suffix}.csv"
+    ci_out = output_dir / f"ci_{suffix}.tsv"
+    peak_out = output_dir / f"eqtl_peak_ci_{suffix}.tsv"
     pre_cols = ["gene_id", "gene_symbol", "chr", "peak_mb", "peak_lod", "peak_locus"]
     peak_cols = pre_cols + ["pos", "lod", "variant", "ci_lo_bp", "ci_hi_bp"]
 
     eg, gene_meta, peak_mb_map = _egene_context(egenes)
     if eg.empty:
         logger.info("characterise: no eGenes — writing header-only outputs")
-        pd.DataFrame(columns=CI_COLS).to_csv(ci_out, index=False)
-        pd.DataFrame(columns=peak_cols).to_csv(peak_out, index=False)
+        atomic_write_table(pd.DataFrame(columns=CI_COLS), ci_out)
+        atomic_write_table(pd.DataFrame(columns=peak_cols), peak_out)
         return
 
     expr, geno_ids, cov = _load_expression_for(
@@ -1336,7 +1358,7 @@ def characterise(
     del expr
     if ci_df.empty:
         logger.warning("characterise: no support intervals computed")
-        pd.DataFrame(columns=CI_COLS).to_csv(ci_out, index=False)
+        atomic_write_table(pd.DataFrame(columns=CI_COLS), ci_out)
     else:
         logger.info(
             "characterise: %d intervals  median width=%.2f Mb",
@@ -1349,7 +1371,7 @@ def characterise(
     pre["lod"] = pre["peak_lod"]
     pre["variant"] = pre["peak_locus"]
     pre = pre.merge(_ci_bp(ci_out), on="gene_id", how="left")
-    pre[peak_cols].to_csv(peak_out, index=False)
+    atomic_write_table(pre[peak_cols], peak_out)
     logger.info("characterise: %s written (%d eGenes)", peak_out.name, len(pre))
 
 
@@ -1358,7 +1380,7 @@ def characterise(
 
 @main.command("impute")
 @click.option("--egenes", required=True, type=click.Path(exists=True, path_type=Path),
-              help="eqtl_peak_ci_{suffix}.csv from `characterise`.")
+              help="eqtl_peak_ci_{suffix}.tsv from `characterise`.")
 @click.option("--phenotypes", required=True, type=click.Path(exists=True, path_type=Path),
               help="counts_lognorm.h5 — log-normalised expression.")
 @click.option("--kinship", required=True, type=click.Path(exists=True, path_type=Path),
@@ -1377,7 +1399,7 @@ def characterise(
               help="Rank-inverse normal transform of each phenotype; must match the haplotype scan.")
 @click.option("--suffix", required=True, help="Run suffix for output names.")
 @click.option("--output-dir", required=True, type=click.Path(path_type=Path),
-              help="Directory for imputed_snps_{suffix}.csv.")
+              help="Directory for imputed_snps_{suffix}.tsv.")
 @click.option("--verbose", is_flag=True, default=False)
 def impute(
     egenes: Path,
@@ -1398,18 +1420,20 @@ def impute(
     Founder alleles at every SNP in the interval are combined with the
     haplotype probabilities into per-strain allele dosages, and each SNP is
     tested with the eGene's LOCO kinship. eGenes without an interval are
-    skipped. Output: imputed_snps_{suffix}.csv (IMPUTED_SNP_COLS), the input
+    skipped. Output: imputed_snps_{suffix}.tsv (IMPUTED_SNP_COLS), the input
     to `finemap`.
     """
     _setup_logging(verbose)
     import pandas as pd
 
+    from .io.atomic import atomic_write_table
+    from .io.tables import read_table
     from .pipeline import IMPUTED_SNP_COLS, impute_egenes
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    out = output_dir / f"imputed_snps_{suffix}.csv"
+    out = output_dir / f"imputed_snps_{suffix}.tsv"
 
-    eg = pd.read_csv(egenes, dtype={"chr": str, "gene_id": str})
+    eg = read_table(egenes, dtype={"chr": str, "gene_id": str})
     required = {"gene_id", "chr", "pos", "lod", "variant", "ci_lo_bp", "ci_hi_bp"}
     missing = required - set(eg.columns)
     if missing:
@@ -1418,7 +1442,7 @@ def impute(
         )
     if eg.empty:
         logger.info("impute: no eGenes — writing header-only output")
-        pd.DataFrame(columns=IMPUTED_SNP_COLS).to_csv(out, index=False)
+        atomic_write_table(pd.DataFrame(columns=IMPUTED_SNP_COLS), out)
         return
 
     mat, found, sids = _load_phenotypes_h5(phenotypes, eg["gene_id"].tolist())
@@ -1435,7 +1459,7 @@ def impute(
         ref_founder=ref_founder,
         use_rint=use_rint,
     )
-    imputed.to_csv(out, index=False)
+    atomic_write_table(imputed, out)
     logger.info(
         "impute: %d SNPs across %d eGenes → %s",
         len(imputed),
@@ -1449,14 +1473,14 @@ def impute(
 
 @main.command("finemap")
 @click.option("--imputed", required=True, type=click.Path(exists=True, path_type=Path),
-              help="imputed_snps_{suffix}.csv from `impute`.")
+              help="imputed_snps_{suffix}.tsv from `impute`.")
 @click.option("--prior-var", default=0.04, show_default=True, type=float,
               help="Prior variance of the standardised SNP effect (ABF).")
 @click.option("--coverage", default=0.95, show_default=True, type=float,
               help="Credible-set coverage.")
 @click.option("--suffix", required=True, help="Run suffix for output names.")
 @click.option("--output-dir", required=True, type=click.Path(path_type=Path),
-              help="Directory for eqtl_finemapping[_peak]_{suffix}.csv.")
+              help="Directory for eqtl_finemapping[_peak]_{suffix}.tsv.")
 @click.option("--verbose", is_flag=True, default=False)
 def finemap(
     imputed: Path,
@@ -1468,16 +1492,16 @@ def finemap(
 ) -> None:
     """Approximate-Bayes-factor credible sets from the imputed SNP scan.
 
-    Writes eqtl_finemapping_{suffix}.csv (every credible-set SNP with its
-    posterior inclusion probability) and eqtl_finemapping_peak_{suffix}.csv
+    Writes eqtl_finemapping_{suffix}.tsv (every credible-set SNP with its
+    posterior inclusion probability) and eqtl_finemapping_peak_{suffix}.tsv
     (the lead SNP of each eGene).
     """
     _setup_logging(verbose)
-    import pandas as pd
 
+    from .io.tables import read_table
     from .pipeline import finemap_imputed
 
-    imp = pd.read_csv(imputed, dtype={"chr": str, "gene_id": str})
+    imp = read_table(imputed, dtype={"chr": str, "gene_id": str})
     fm, fp = finemap_imputed(
         imp, output_dir, prior_var=prior_var, coverage=coverage, tag=suffix
     )
@@ -1489,24 +1513,24 @@ def finemap(
 
 @main.command("report")
 @click.option("--egenes", required=True, type=click.Path(exists=True, path_type=Path),
-              help="eqtl_summary CSV from `call-egenes`.")
+              help="eqtl_summary TSV from `call-egenes`.")
 @click.option("--allele-effects", required=True, type=click.Path(exists=True, path_type=Path),
-              help="allele_effects_{suffix}.csv from `merge-scan` (founder betas at peaks).")
+              help="allele_effects_{suffix}.tsv from `merge-scan` (founder betas at peaks).")
 @click.option("--ci", required=True, type=click.Path(exists=True, path_type=Path),
-              help="eqtl_peak_ci_{suffix}.csv from `characterise` (ci_lo_bp / ci_hi_bp).")
+              help="eqtl_peak_ci_{suffix}.tsv from `characterise` (ci_lo_bp / ci_hi_bp).")
 @click.option("--finemapping", default=None, type=click.Path(exists=True, path_type=Path),
-              help="eqtl_finemapping_{suffix}.csv from `finemap`; schema-checked and "
+              help="eqtl_finemapping_{suffix}.tsv from `finemap`; schema-checked and "
               "published with the submission tables.")
 @click.option("--pval-perm", default=None, type=click.Path(exists=True, path_type=Path),
-              help="pval_perm.csv from `calibrate`; recomputes Storey q-values when the "
+              help="pval_perm.tsv from `calibrate`; recomputes Storey q-values when the "
               "eGene table does not already carry them.")
 @click.option("--perm-dir", required=True,
               type=click.Path(exists=True, file_okay=False, path_type=Path),
-              help="Directory written by `permute` (perm_max_lods.csv + per-chr files).")
+              help="Directory written by `permute` (perm_max_lods.tsv + per-chr files).")
 @click.option("--cache", required=True, type=click.Path(exists=True, path_type=Path),
               help="GenomeCache HDF5 (founder names for the effect columns).")
 @click.option("--peak-lod", default=None, type=click.Path(exists=True, path_type=Path),
-              help="peak_lod_{suffix}.csv; when given, also draws genome_summary_{suffix}.png.")
+              help="peak_lod_{suffix}.tsv; when given, also draws genome_summary_{suffix}.png.")
 @click.option("--scan-type", default="L", show_default=True, type=_SCAN_TYPES,
               help=_SCAN_TYPE_HELP)
 @click.option("--window-mb", default=1.0, show_default=True, type=float,
@@ -1518,7 +1542,7 @@ def finemap(
               help="Value thresholded by --fdr: Benjamini-Hochberg, Storey q-value or local false discovery rate.")
 @click.option("--suffix", required=True, help="Run suffix for output names.")
 @click.option("--output-dir", required=True, type=click.Path(path_type=Path),
-              help="Directory for eqtl_peak_{suffix}.csv and eqtl_stats_{suffix}.csv.")
+              help="Directory for eqtl_peak_{suffix}.tsv and eqtl_stats_{suffix}.tsv.")
 @click.option("--verbose", is_flag=True, default=False)
 def report(
     egenes: Path,
@@ -1539,53 +1563,54 @@ def report(
 ) -> None:
     """Submission tables: per-eGene eqtl_peak and run-level eqtl_stats.
 
-    eqtl_peak_{suffix}.csv joins each eGene with its founder effects and
-    support interval. eqtl_stats_{suffix}.csv has one row per chromosome
+    eqtl_peak_{suffix}.tsv joins each eGene with its founder effects and
+    support interval. eqtl_stats_{suffix}.tsv has one row per chromosome
     (permutation threshold, GEV parameters, eGene count) and one genome row
     (genome-wide GEV fit, FDR threshold, scan window, code version). With
     --finemapping, the credible-set table is checked against
-    EQTL_FINEMAPPING_COLS and written as eqtl_finemapping_{suffix}.csv here.
+    EQTL_FINEMAPPING_COLS and written as eqtl_finemapping_{suffix}.tsv here.
     """
     _setup_logging(verbose)
     import pandas as pd
 
     from .genotype.cc import display_founders
-    from .io.atomic import atomic_write_csv
+    from .io.atomic import atomic_write_table
     from .io.results_io import write_eqtl_peak, write_eqtl_stats
+    from .io.tables import read_table
     from .pipeline import EQTL_FINEMAPPING_COLS, calibrate_egenes
     from .utils import git_hash
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    eg = pd.read_csv(egenes, dtype={"chr": str, "gene_id": str})
+    eg = read_table(egenes, dtype={"chr": str, "gene_id": str})
     if eg.empty:
         logger.info("report: no eGenes — nothing to write")
         return
 
     sub = eg.copy()
     if pval_perm is not None and sub.get("pval_perm", pd.Series(dtype=float)).isna().all():
-        pv = pd.read_csv(pval_perm, dtype={"gene_id": str}).dropna(subset=["pval_perm"])
+        pv = read_table(pval_perm, dtype={"gene_id": str}).dropna(subset=["pval_perm"])
         if not pv.empty:
             sub = calibrate_egenes(
                 sub, dict(zip(pv["gene_id"], pv["pval_perm"])),
                 fdr_threshold=fdr, call_rule=call_rule,
             )
-    eff = pd.read_csv(allele_effects, dtype={"gene_id": str})
+    eff = read_table(allele_effects, dtype={"gene_id": str})
     beta_cols = [c for c in eff.columns if c.startswith("beta_")]
     if beta_cols:
         sub = sub.merge(eff[["gene_id"] + beta_cols], on="gene_id", how="left")
-    ci_df = pd.read_csv(ci, dtype={"gene_id": str})
+    ci_df = read_table(ci, dtype={"gene_id": str})
     if not {"ci_lo_bp", "ci_hi_bp"}.issubset(ci_df.columns):
         raise click.ClickException(f"--ci {ci} has no ci_lo_bp/ci_hi_bp columns.")
     sub = sub.merge(ci_df[["gene_id", "ci_lo_bp", "ci_hi_bp"]], on="gene_id", how="left")
 
     gc = _load_cache(cache)
-    peak_path = output_dir / f"eqtl_peak_{suffix}.csv"
+    peak_path = output_dir / f"eqtl_peak_{suffix}.tsv"
     write_eqtl_peak(sub, display_founders(list(gc.founders)), peak_path)
     logger.info("report: %s written (%d eGenes)", peak_path.name, len(sub))
 
     chr_stats: list[dict] = []
     for ch, pf in _perm_chr_files(perm_dir):
-        row = _gev_row(ch, pd.read_csv(pf)["max_lod"].values)
+        row = _gev_row(ch, read_table(pf)["max_lod"].values)
         row["n_egenes"] = int((sub["chr"].astype(str) == ch).sum())
         chr_stats.append(row)
     gw_stats: dict = {
@@ -1595,24 +1620,24 @@ def report(
         "scan_window_mb": window_mb if scan_type == "L" else None,
         "git_hash": git_hash(),
     }
-    perm_csv = perm_dir / "perm_max_lods.csv"
-    if perm_csv.exists():
-        gw = _gev_row("genome", pd.read_csv(perm_csv)["max_lod"].values)
+    perm_tsv = perm_dir / "perm_max_lods.tsv"
+    if perm_tsv.exists():
+        gw = _gev_row("genome", read_table(perm_tsv)["max_lod"].values)
         gw_stats.update({k: v for k, v in gw.items() if k != "chr"})
-    stats_path = output_dir / f"eqtl_stats_{suffix}.csv"
+    stats_path = output_dir / f"eqtl_stats_{suffix}.tsv"
     write_eqtl_stats(chr_stats, gw_stats, stats_path)
     logger.info("report: %s written (%d chr rows + genome row)", stats_path.name, len(chr_stats))
 
     if finemapping is not None:
-        fm = pd.read_csv(finemapping, dtype={"chr": str, "gene_id": str})
+        fm = read_table(finemapping, dtype={"chr": str, "gene_id": str})
         missing = [c for c in EQTL_FINEMAPPING_COLS if c not in fm.columns]
         if missing:
             raise click.ClickException(
                 f"--finemapping {finemapping} is missing columns {missing}."
             )
-        fm_path = output_dir / f"eqtl_finemapping_{suffix}.csv"
+        fm_path = output_dir / f"eqtl_finemapping_{suffix}.tsv"
         if fm_path.resolve() != finemapping.resolve():
-            atomic_write_csv(fm[EQTL_FINEMAPPING_COLS], fm_path)
+            atomic_write_table(fm[EQTL_FINEMAPPING_COLS], fm_path)
         n_fm = fm["gene_id"].nunique() if not fm.empty else 0
         logger.info("report: %s — %d credible-set SNPs, %d / %d eGenes fine-mapped",
                     fm_path.name, len(fm), n_fm, len(sub))
@@ -1626,7 +1651,7 @@ def report(
         from .qtl.thresholds import load_per_chr_thresholds
         from .viz.genome import genome_summary
 
-        peaks = pd.read_csv(peak_lod, dtype={"chr": str, "gene_id": str})
+        peaks = read_table(peak_lod, dtype={"chr": str, "gene_id": str})
         is_egene = peaks["gene_id"].isin(set(sub["gene_id"]))
         fig = genome_summary(peaks, is_egene, thr_by_chr=load_per_chr_thresholds(perm_dir))
         fig.savefig(output_dir / f"genome_summary_{suffix}.png", bbox_inches="tight", dpi=300)
@@ -1642,7 +1667,7 @@ def _followup_options(fn: Callable[..., Any]) -> Callable[..., Any]:
     opts = [
         click.option("--egenes", required=True,
                      type=click.Path(exists=True, path_type=Path),
-                     help="eqtl_summary CSV from `call-egenes`."),
+                     help="eqtl_summary TSV from `call-egenes`."),
         click.option("--phenotypes", required=True,
                      type=click.Path(exists=True, path_type=Path),
                      help="counts_lognorm.h5 — log-normalised expression."),
@@ -1655,7 +1680,7 @@ def _followup_options(fn: Callable[..., Any]) -> Callable[..., Any]:
         click.option("--covariates", default="sex,dataset", show_default=True,
                      help="Comma-separated covariate columns from metadata."),
         click.option("--output", required=True, type=click.Path(path_type=Path),
-                     help="Output CSV path."),
+                     help="Output TSV path."),
         click.option("--verbose", is_flag=True, default=False),
     ]
     for opt in reversed(opts):
@@ -1690,13 +1715,14 @@ def scan_mi(
     _setup_logging(verbose)
     import pandas as pd
 
+    from .io.atomic import atomic_write_table
     from .qtl.mi import scan_multi_gene_mi
 
     output.parent.mkdir(parents=True, exist_ok=True)
     eg, gene_meta, peak_mb_map = _egene_context(egenes)
     if eg.empty:
         logger.info("scan-mi: no eGenes — writing empty output")
-        pd.DataFrame().to_csv(output, index=False)
+        atomic_write_table(pd.DataFrame(), output)
         return
     expr, geno_ids, cov = _load_expression_for(
         phenotypes, metadata, eg["gene_id"].tolist(), _split_cols(covariates)
@@ -1716,7 +1742,7 @@ def scan_mi(
         gene_meta=gene_meta,
     )
     if df.empty:
-        pd.DataFrame().to_csv(output, index=False)
+        atomic_write_table(pd.DataFrame(), output)
     logger.info("scan-mi: %d eGenes scanned → %s", len(chr_map), output)
 
 
@@ -1748,13 +1774,14 @@ def mediate(
     _setup_logging(verbose)
     import pandas as pd
 
+    from .io.atomic import atomic_write_table
     from .qtl.mediation import mediation_scan_multi_outcome, select_cis_mediation_pairs
 
     output.parent.mkdir(parents=True, exist_ok=True)
     eg, gene_meta, _ = _egene_context(egenes)
     if len(eg) < 2 or not {"chr", "peak_mb"}.issubset(eg.columns):
         logger.info("mediate: need >= 2 eGenes with chr/peak_mb — writing empty output")
-        pd.DataFrame().to_csv(output, index=False)
+        atomic_write_table(pd.DataFrame(), output)
         return
     gi = pd.read_csv(gene_info, dtype={"chr": str, "gene_id": str})
     gi_eg = gi[gi["gene_id"].isin(set(eg["gene_id"].dropna()))]
@@ -1763,7 +1790,7 @@ def mediate(
     )
     logger.info("mediate: %d (outcome, mediator) pairs", len(pairs))
     if not pairs:
-        pd.DataFrame().to_csv(output, index=False)
+        atomic_write_table(pd.DataFrame(), output)
         return
     by_outcome: dict[str, list[tuple[str, str]]] = {}
     for outcome, mediator, ch in pairs:
@@ -1781,7 +1808,7 @@ def mediate(
         gene_meta=gene_meta,
     )
     if df.empty:
-        pd.DataFrame().to_csv(output, index=False)
+        atomic_write_table(pd.DataFrame(), output)
     logger.info("mediate: %d outcomes tested → %s", len(by_outcome), output)
 
 
@@ -1805,13 +1832,14 @@ def assess_stability(
     _setup_logging(verbose)
     import pandas as pd
 
+    from .io.atomic import atomic_write_table
     from .qtl.instability import instability_scan_multi_gene
 
     output.parent.mkdir(parents=True, exist_ok=True)
     eg, gene_meta, peak_mb_map = _egene_context(egenes)
     if eg.empty:
         logger.info("assess-stability: no eGenes — writing empty output")
-        pd.DataFrame().to_csv(output, index=False)
+        atomic_write_table(pd.DataFrame(), output)
         return
     expr, geno_ids, cov = _load_expression_for(
         phenotypes, metadata, eg["gene_id"].tolist(), _split_cols(covariates)
@@ -1830,7 +1858,7 @@ def assess_stability(
         gene_meta=gene_meta,
     )
     if df.empty:
-        pd.DataFrame().to_csv(output, index=False)
+        atomic_write_table(pd.DataFrame(), output)
     logger.info("assess-stability: %d eGenes scanned → %s", len(chr_map), output)
 
 

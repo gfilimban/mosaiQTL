@@ -16,6 +16,7 @@ import logging
 from pathlib import Path
 
 from ..genotype.interpolation import bracket_weights
+from ..io.tables import read_table
 from ..utils import _build_gm_idx, _enrich_scan_df
 
 logger = logging.getLogger("mosaiqtl")
@@ -462,7 +463,7 @@ def snp_scan_multi_gene(
     founder_col_map : dict {founder_name: allele_code} or None
     peak_only       : bool  when True (default) output one peak-SNP row per gene;
                      when False output all SNPs on the gene's chromosome
-    output_path     : Path or None  stream CSV here; None accumulates in RAM
+    output_path     : Path or None  stream a TSV here; None accumulates in RAM
     gene_meta       : DataFrame keyed by 'gene_id' (the identity key; carries
                      gene_symbol and any other display columns) — extra
                      columns joined into each row
@@ -530,7 +531,7 @@ def snp_scan_multi_gene(
                     )
                 _df = _enrich_scan_df(_df, gene_id, _gm_idx, _id_cols, _data_cols)
                 if output_path is not None:
-                    _df.to_csv(output_path, mode="a", header=_first, index=False)
+                    _df.to_csv(output_path, sep="\t", mode="a", header=_first, index=False)
                     _first = False
                 else:
                     _buf.append(_df)
@@ -540,7 +541,7 @@ def snp_scan_multi_gene(
     gc.collect()
     if output_path is not None:
         return (
-            pd.read_csv(output_path)
+            read_table(output_path)
             if output_path.exists() and not _first
             else pd.DataFrame()
         )

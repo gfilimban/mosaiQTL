@@ -529,7 +529,7 @@ def pick_rep_gene(
 
     peak_lod_df must carry the columns written by PEAK_LOD_COLS: gene_id, chr,
     start_mb, h2.  h² is written by the scan engine (scan_h2lmm /
-    scan_multi_gene) and is present in every peak_lod.csv.
+    scan_multi_gene) and is present in every peak_lod.tsv.
 
     The returned position is the gene's ``start_mb``, the strand-aware TSS the scan
     itself anchored its window on, so the local null window coincides with the

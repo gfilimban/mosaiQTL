@@ -12,6 +12,7 @@ from pathlib import Path
 
 from ..genotype import kinship as kin_module
 from . import lmm as lmm_module
+from ..io.tables import read_table
 from ..utils import rint, _build_gm_idx, _enrich_scan_df
 from .scan import ScanResult, _resolve_z
 
@@ -231,7 +232,7 @@ def scan_multi_gene_mi(
     window_mb      : float  half-window in Mb for local scan (default 10.0)
     peak_only      : bool   when True (default) output one peak-locus row per gene;
                      when False output all scanned loci (full per-locus profile)
-    output_path    : Path or None  stream CSV here; None accumulates in RAM
+    output_path    : Path or None  stream a TSV here; None accumulates in RAM
     gene_meta      : DataFrame keyed by 'gene_id' (the identity key; carries
                      gene_symbol and any other display columns) — extra
                      columns joined into each row
@@ -306,7 +307,7 @@ def scan_multi_gene_mi(
                 )
             _df = _enrich_scan_df(_df, gene_id, _gm_idx, _id_cols, _data_cols)
             if output_path is not None:
-                _df.to_csv(output_path, mode='a', header=_first, index=False)
+                _df.to_csv(output_path, sep='\t', mode='a', header=_first, index=False)
                 _first = False
             else:
                 _buf.append(_df)
@@ -316,7 +317,7 @@ def scan_multi_gene_mi(
     gc.collect()
     if output_path is not None:
         return (
-            pd.read_csv(output_path)
+            read_table(output_path)
             if output_path.exists() and not _first
             else pd.DataFrame()
         )

@@ -67,20 +67,20 @@ and reused afterwards. Every run writes a Nextflow trace to `<output_dir>/logs/t
 
 ## Outputs
 
-Files are named `{tissue}_{celltype}_{scan_tag}_…` (for example `gastroc_type_ii_myonucleus_Lw1_peak_lod.csv`).
+Files are named `{tissue}_{celltype}_{scan_tag}_…` (for example `gastroc_type_ii_myonucleus_Lw1_peak_lod.tsv`).
 Every column is described in [`docs/output_schema.md`](docs/output_schema.md).
 
 | File | Contents |
 |---|---|
-| `*_peak_lod.csv` | Per gene: peak locus, LOD, $h^2$, founder effects, cis distance, `is_egene` |
-| `*_lod_genome.csv` | LOD at every scanned locus |
-| `*_haplotype_eqtl_summary.csv` | eGene calls: calibrated p-value, q-values (Storey, BH), $\hat\pi_0$, significance |
-| `*_perm_max_lods.csv`, `*_perm_gev_params.json` | Permutation null and GEV threshold (quality control) |
-| `*_eqtl_ci.csv` | 1.5-LOD support interval per eGene |
-| `*_eqtl_finemapping.csv.gz` | Per-variant fine-mapping (gzip-compressed; `pd.read_csv` reads it directly): PIP, credible set, Bayes factor, founder alleles |
-| `*_eqtl_finemapping_groups.csv` | One row per founder-pattern group: group PIP, variants, span |
-| `*_eqtl_finemapping_peak.csv` | Lead variant per eGene (lead PIP > 0.25) |
-| `*_eqtl_stats.csv`, `*.png` | Run summary and figures |
+| `*_peak_lod.tsv` | Per gene: peak locus, LOD, $h^2$, founder effects, cis distance, `is_egene` |
+| `*_lod_genome.tsv` | LOD at every scanned locus |
+| `*_haplotype_eqtl_summary.tsv` | eGene calls: calibrated p-value, q-values (Storey, BH), $\hat\pi_0$, significance |
+| `*_perm_max_lods.tsv`, `*_perm_gev_params.json` | Permutation null and GEV threshold (quality control) |
+| `*_eqtl_ci.tsv` | 1.5-LOD support interval per eGene |
+| `*_eqtl_finemapping.tsv.gz` | Per-variant fine-mapping (gzip-compressed; `mosaiqtl.io.tables.read_table` reads it directly): PIP, credible set, Bayes factor, founder alleles |
+| `*_eqtl_finemapping_groups.tsv` | One row per founder-pattern group: group PIP, variants, span |
+| `*_eqtl_finemapping_peak.tsv` | Lead variant per eGene (lead PIP > 0.25) |
+| `*_eqtl_stats.tsv`, `*.png` | Run summary and figures |
 
 ## Command line and Python API
 

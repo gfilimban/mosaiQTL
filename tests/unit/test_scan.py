@@ -394,7 +394,7 @@ class TestScanMultiGene:
         )
         assert isinstance(results["gene_a"], ScanResult)
 
-    def test_output_dir_writes_per_chr_csv(
+    def test_output_dir_writes_per_chr_tsv(
         self, tiny_cache, tiny_kinship, tiny_strain_phenotype, tmp_path
     ):
         from mosaiqtl.genotype.kinship import decomp_kinship
@@ -422,9 +422,9 @@ class TestScanMultiGene:
             output_dir=tmp_path,
         )
         ch = tiny_cache.chromosomes[0]
-        out = tmp_path / f"lod_chr{ch}.csv"
+        out = tmp_path / f"lod_chr{ch}.tsv"
         assert out.exists(), f"expected {out.name}"
-        df = pd.read_csv(out)
+        df = pd.read_csv(out, sep="\t")
         assert set(df.columns) >= {"gene_id", "chr", "locus", "pos_mb", "lod"}
         assert set(df["gene_id"].unique()) == {"gene_a", "gene_b"}
         assert (df["lod"] >= 0).all()

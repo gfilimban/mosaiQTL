@@ -1,14 +1,15 @@
 """thresholds — genome-wide significance thresholds from permutation nulls.
 
 Fits a GEV to the per-permutation max-LOD distribution and reads
-per-chromosome null CSVs to produce FWER-controlled LOD thresholds.
+per-chromosome null tables to produce FWER-controlled LOD thresholds.
 """
 
 import numpy as np
-import pandas as pd
 import logging
 from pathlib import Path
 from scipy.stats import genextreme
+
+from mosaiqtl.io.tables import read_table
 
 logger = logging.getLogger('mosaiqtl')
 
@@ -90,19 +91,19 @@ def load_per_chr_thresholds(
 ) -> 'dict[str, float | None]':
     """load per-chromosome null distributions and return GEV thresholds.
 
-    reads ``perm_max_lods_chr{chrom}.csv`` files written by
+    reads ``perm_max_lods_chr{chrom}.tsv`` files written by
     :func:`~mosaiqtl.qtl.permutation.run_threshold_scans`, fits a GEV to
     each chromosome's max-LOD null, and returns per-chromosome FWER
     thresholds at *percentile*.
 
-    useful when ``threshold.csv`` was written with only a ``genome_wide``
+    useful when ``threshold.tsv`` was written with only a ``genome_wide``
     summary row (checkpointed scans) and per-chromosome bars are needed for
     diagnostic plots.
 
     parameters
     ----------
     perm_dir :
-        directory containing ``perm_max_lods_chr*.csv`` files (typically
+        directory containing ``perm_max_lods_chr*.tsv`` files (typically
         the ``core/`` subdirectory of a scan output).
     percentile :
         significance percentile; default ``0.95`` (5% FWER).
@@ -114,10 +115,10 @@ def load_per_chr_thresholds(
     """
     perm_dir = Path(perm_dir)
     result: 'dict[str, float | None]' = {}
-    for pf in sorted(perm_dir.glob('perm_max_lods_chr*.csv')):
+    for pf in sorted(perm_dir.glob('perm_max_lods_chr*.tsv')):
         chrom = pf.stem.replace('perm_max_lods_chr', '')
         try:
-            nulls = pd.read_csv(pf)['max_lod'].values
+            nulls = read_table(pf)['max_lod'].values
             thr, _ = get_gev_thresholds(nulls, percentile=percentile)
             result[chrom] = thr
         except Exception:

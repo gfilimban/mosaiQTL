@@ -110,7 +110,7 @@ workflow {
     CALL_EGENES(gc, kinship, call_in)
 
     // ── Fine-mapping (parallel by chr — 20 FINEMAP_CHR jobs per CT) ─────────
-    // peak_lod.csv carries null model cols + beta_{founder} cols for egene enrichment
+    // peak_lod.tsv carries null model cols + beta_{founder} cols for egene enrichment
     // use by:[0,1] to join on (ct, stag) composite key so stag is not duplicated
     finemap_base = CALL_EGENES.out
         .map { ct, stag, peak, pval, summary, hap_peak -> [ct, stag, summary] }

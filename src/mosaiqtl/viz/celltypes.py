@@ -22,6 +22,7 @@ import pandas as pd
 import seaborn as sns
 
 from ..genotype.cc import FOUNDER_ORDER
+from ..io.tables import read_table
 from ._theme import FONT_STACK, INK, MUTED
 from .compare import (
     lod_scatter as _cmp_scatter,
@@ -84,8 +85,8 @@ def resolve_ct_scan_dir(data_dir: Path, ct: str, scan_tag: str) -> Path:
 
     Layout: ``data_dir/celltypes/<safe_ct>/<scan_tag>/`` — this is the
     scan-tag ROOT, holding ``core/``, ``extended/``, and ``plots/``
-    subdirectories. Scan CSVs (``peak_lod.csv``, ``allele_effects.csv``,
-    ``lod.csv``, ``threshold.csv``) live under ``<returned path>/core/``;
+    subdirectories. Scan tables (``peak_lod.tsv``, ``allele_effects.tsv``,
+    ``lod.tsv``, ``threshold.tsv``) live under ``<returned path>/core/``;
     callers that read those files must append ``'core'`` themselves — this
     function does not, so that the same returned path also serves as the
     base for ``<returned path>/plots/``.
@@ -111,9 +112,9 @@ def resolve_ct_scan_dir(data_dir: Path, ct: str, scan_tag: str) -> Path:
 def ct_filename_suffix(token: Optional[str], scan_tag: str) -> str:
     """Filename suffix identifying a cell type (or whole-tissue) + scan config.
 
-    Mirrors the run-writer's own ``_sfx()`` convention: every core scan CSV
+    Mirrors the run-writer's own ``_sfx()`` convention: every core scan table
     (``lod``/``peak_lod``/``allele_effects``/``threshold``) is written as
-    ``<base>_<suffix>.csv`` so a copied-out file keeps its run identity.
+    ``<base>_<suffix>.tsv`` so a copied-out file keeps its run identity.
     *token* here is always an already-sanitised cell-type directory name (as
     returned by :func:`discover_cell_types`), never a raw label — no further
     sanitisation is applied.
@@ -136,8 +137,8 @@ def ct_filename_suffix(token: Optional[str], scan_tag: str) -> str:
 def discover_cell_types(celltypes_dir: Path, scan_tag: str) -> list[str]:
     """Auto-discover cell type names under the standard directory layout.
 
-    Scans for ``celltypes_dir/<name>/<scan_tag>/core/peak_lod_<name>_<scan_tag>.csv``
-    — scan CSVs write into the ``core/`` subdirectory of the scan-tag directory
+    Scans for ``celltypes_dir/<name>/<scan_tag>/core/peak_lod_<name>_<scan_tag>.tsv``
+    — scan tables write into the ``core/`` subdirectory of the scan-tag directory
     (sibling to ``extended/`` and ``plots/``), not directly under it, and carry
     a ``_<celltype>_<scan_tag>`` filename suffix (see :func:`ct_filename_suffix`).
 
@@ -160,7 +161,7 @@ def discover_cell_types(celltypes_dir: Path, scan_tag: str) -> list[str]:
     for sub in sorted(celltypes_dir.iterdir()):
         if sub.is_dir() and sub.name != "compare":
             _sfx = ct_filename_suffix(sub.name, scan_tag)
-            if (sub / scan_tag / "core" / f"peak_lod_{_sfx}.csv").exists():
+            if (sub / scan_tag / "core" / f"peak_lod_{_sfx}.tsv").exists():
                 cts.append(sub.name)
     return cts
 
@@ -255,12 +256,12 @@ def load_peak_lod(
     path: Path,
     suffix: Optional[str] = None,
 ) -> Optional[pd.DataFrame]:
-    """Load a peak-LOD CSV; rename ``peak_lod`` → ``peak_lod_<suffix>``.
+    """Load a peak-LOD table; rename ``peak_lod`` → ``peak_lod_<suffix>``.
 
     Parameters
     ----------
     path :
-        Path to the CSV file (typically ``peak_lod.csv``).
+        Path to the TSV file (typically ``peak_lod.tsv``).
     suffix :
         When provided, renames the ``peak_lod`` column to ``peak_lod_<suffix>``
         to allow safe column-wise merges between sources.
@@ -274,7 +275,7 @@ def load_peak_lod(
         logger.warning("missing: %s", path)
         return None
     try:
-        df = pd.read_csv(path)
+        df = read_table(path)
         if suffix and "peak_lod" in df.columns:
             df = df.rename(columns={"peak_lod": f"peak_lod_{suffix}"})
         return df
@@ -284,12 +285,12 @@ def load_peak_lod(
 
 
 def load_allele_effects(path: Path) -> Optional[pd.DataFrame]:
-    """Load an allele-effects CSV.
+    """Load an allele-effects table.
 
     Parameters
     ----------
     path :
-        Path to the CSV (typically ``allele_effects.csv``).
+        Path to the TSV (typically ``allele_effects.tsv``).
 
     Returns
     -------
@@ -300,22 +301,22 @@ def load_allele_effects(path: Path) -> Optional[pd.DataFrame]:
         logger.warning("missing: %s", path)
         return None
     try:
-        return pd.read_csv(path)
+        return read_table(path)
     except Exception as exc:
         logger.warning("could not read %s: %s", path, exc)
         return None
 
 
 def load_gene_lod(path: Path, gene: str) -> Optional[pd.DataFrame]:
-    """Load a LOD profile CSV and filter to a single gene.
+    """Load a LOD profile table and filter to a single gene.
 
-    Streams the file in 1 M-row chunks to handle multi-GB ``lod.csv``
+    Streams the file in 1 M-row chunks to handle multi-GB ``lod.tsv``
     files without materialising the full matrix.
 
     Parameters
     ----------
     path :
-        Path to the LOD profile CSV.
+        Path to the LOD profile TSV.
     gene :
         Gene name to extract.
 
@@ -330,7 +331,7 @@ def load_gene_lod(path: Path, gene: str) -> Optional[pd.DataFrame]:
         return None
     try:
         chunks: list[pd.DataFrame] = []
-        for chunk in pd.read_csv(path, chunksize=1_000_000):
+        for chunk in read_table(path, chunksize=1_000_000):
             if "gene_symbol" in chunk.columns:
                 hit = chunk[chunk["gene_symbol"] == gene]
                 if not hit.empty:
@@ -344,15 +345,15 @@ def load_gene_lod(path: Path, gene: str) -> Optional[pd.DataFrame]:
 
 
 def load_threshold(path: Path) -> Optional[float]:
-    """Read the genome-wide FWER threshold from a ``threshold_<suffix>.csv`` file.
+    """Read the genome-wide FWER threshold from a ``threshold_<suffix>.tsv`` file.
 
     Parameters
     ----------
     path :
-        Path to the threshold CSV file (e.g. ``core/threshold_whole_C.csv`` —
+        Path to the threshold TSV file (e.g. ``core/threshold_whole_C.tsv`` —
         build with :func:`ct_filename_suffix`). Takes the full path directly,
         matching :func:`load_peak_lod`/:func:`load_allele_effects`, rather than
-        hardcoding a bare ``threshold.csv`` name internally.
+        hardcoding a bare ``threshold.tsv`` name internally.
 
     Returns
     -------
@@ -362,7 +363,7 @@ def load_threshold(path: Path) -> Optional[float]:
     if not path.exists():
         return None
     try:
-        df = pd.read_csv(path)
+        df = read_table(path)
         if "chr" in df.columns:
             row = df[df["chr"] == "genome_wide"]
             if not row.empty:
@@ -413,17 +414,17 @@ def ct_vs_whole_lod_scatter(
         Optional gene name to highlight on every scatter.
     """
     whole_df = load_peak_lod(
-        whole_py_data / f"peak_lod_{ct_filename_suffix(None, scan_tag)}.csv",
+        whole_py_data / f"peak_lod_{ct_filename_suffix(None, scan_tag)}.tsv",
         suffix="whole",
     )
     if whole_df is None:
-        logger.warning("ct_vs_whole_lod_scatter: whole-tissue peak_lod.csv not found")
+        logger.warning("ct_vs_whole_lod_scatter: whole-tissue peak_lod.tsv not found")
         return
 
     for ct in cell_types:
         try:
             ct_df = load_peak_lod(
-                ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.csv",
+                ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.tsv",
                 suffix=ct,
             )
             if ct_df is None:
@@ -454,19 +455,19 @@ def ct_vs_whole_lod_scatter(
                 _w = merged["peak_lod_whole"]
                 _c = merged[f"peak_lod_{ct}"]
                 _quadrants = {
-                    "shared_egenes_vs_whole.csv": merged[
+                    "shared_egenes_vs_whole.tsv": merged[
                         (_w >= threshold) & (_c >= threshold)
                     ].sort_values(f"peak_lod_{ct}", ascending=False),
-                    "ct_specific_egenes.csv": merged[
+                    "ct_specific_egenes.tsv": merged[
                         (_w < threshold) & (_c >= threshold)
                     ].sort_values(f"peak_lod_{ct}", ascending=False),
-                    "whole_specific_egenes.csv": merged[
+                    "whole_specific_egenes.tsv": merged[
                         (_w >= threshold) & (_c < threshold)
                     ].sort_values("peak_lod_whole", ascending=False),
                 }
                 for fname, df_q in _quadrants.items():
                     out_csv = ct_dirs[ct] / fname
-                    df_q[_cols].to_csv(out_csv, index=False)
+                    df_q[_cols].to_csv(out_csv, sep="\t", index=False)
                     logger.info(
                         "ct_vs_whole_lod_scatter %s: %d genes → %s",
                         ct,
@@ -501,11 +502,11 @@ def ct_vs_whole_effects_scatter(
         suffixed CSVs to read via :func:`ct_filename_suffix`.
     """
     whole_eff = load_allele_effects(
-        whole_py_data / f"allele_effects_{ct_filename_suffix(None, scan_tag)}.csv"
+        whole_py_data / f"allele_effects_{ct_filename_suffix(None, scan_tag)}.tsv"
     )
     if whole_eff is None:
         logger.warning(
-            "ct_vs_whole_effects_scatter: whole-tissue allele_effects.csv not found"
+            "ct_vs_whole_effects_scatter: whole-tissue allele_effects.tsv not found"
         )
         return
 
@@ -514,7 +515,7 @@ def ct_vs_whole_effects_scatter(
     for ct in cell_types:
         try:
             ct_eff = load_allele_effects(
-                ct_dirs[ct] / f"allele_effects_{ct_filename_suffix(ct, scan_tag)}.csv"
+                ct_dirs[ct] / f"allele_effects_{ct_filename_suffix(ct, scan_tag)}.tsv"
             )
             if ct_eff is None:
                 continue
@@ -598,7 +599,7 @@ def ct_lod_profile_overlay(
         suffixed CSVs to read via :func:`ct_filename_suffix`.
     """
     whole_peak = load_peak_lod(
-        whole_py_data / f"peak_lod_{ct_filename_suffix(None, scan_tag)}.csv"
+        whole_py_data / f"peak_lod_{ct_filename_suffix(None, scan_tag)}.tsv"
     )
     peak_chr: Optional[str] = None
     if whole_peak is not None and "gene_symbol" in whole_peak.columns:
@@ -625,13 +626,13 @@ def ct_lod_profile_overlay(
         return df["pos_mb"].values, df["lod"].values
 
     whole_trace = _get_trace(
-        whole_py_data / f"lod_{ct_filename_suffix(None, scan_tag)}.csv"
+        whole_py_data / f"lod_{ct_filename_suffix(None, scan_tag)}.tsv"
     )
 
     ct_traces: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for ct in cell_types:
         try:
-            tr = _get_trace(ct_dirs[ct] / f"lod_{ct_filename_suffix(ct, scan_tag)}.csv")
+            tr = _get_trace(ct_dirs[ct] / f"lod_{ct_filename_suffix(ct, scan_tag)}.tsv")
             if tr is not None:
                 ct_traces[ct] = tr
             else:
@@ -732,7 +733,7 @@ def ct_pairwise_lod_scatter(
     """
     ct_frames: dict[str, Optional[pd.DataFrame]] = {
         ct: load_peak_lod(
-            ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.csv", suffix=ct
+            ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.tsv", suffix=ct
         )
         for ct in cell_types
     }
@@ -779,19 +780,19 @@ def ct_pairwise_lod_scatter(
                 _x = merged[f"peak_lod_{x_ct}"]
                 _y = merged[f"peak_lod_{y_ct}"]
                 _quadrants = {
-                    (x_ct, f"shared_egenes_vs_{safe_ct(y_ct)}.csv"): merged[
+                    (x_ct, f"shared_egenes_vs_{safe_ct(y_ct)}.tsv"): merged[
                         (_x >= threshold) & (_y >= threshold)
                     ].sort_values(f"peak_lod_{x_ct}", ascending=False),
-                    (x_ct, f"specific_egenes_vs_{safe_ct(y_ct)}.csv"): merged[
+                    (x_ct, f"specific_egenes_vs_{safe_ct(y_ct)}.tsv"): merged[
                         (_x >= threshold) & (_y < threshold)
                     ].sort_values(f"peak_lod_{x_ct}", ascending=False),
-                    (y_ct, f"specific_egenes_vs_{safe_ct(x_ct)}.csv"): merged[
+                    (y_ct, f"specific_egenes_vs_{safe_ct(x_ct)}.tsv"): merged[
                         (_x < threshold) & (_y >= threshold)
                     ].sort_values(f"peak_lod_{y_ct}", ascending=False),
                 }
                 for (owner_ct, fname), df_q in _quadrants.items():
                     out_csv = ct_dirs[owner_ct] / fname
-                    df_q[_cols].to_csv(out_csv, index=False)
+                    df_q[_cols].to_csv(out_csv, sep="\t", index=False)
                     logger.info(
                         "ct_pairwise_lod_scatter %s/%s: %d genes → %s",
                         x_ct,
@@ -877,7 +878,7 @@ def ct_pairwise_effects_scatter(
     """
     ct_effects: dict[str, Optional[pd.DataFrame]] = {
         ct: load_allele_effects(
-            ct_dirs[ct] / f"allele_effects_{ct_filename_suffix(ct, scan_tag)}.csv"
+            ct_dirs[ct] / f"allele_effects_{ct_filename_suffix(ct, scan_tag)}.tsv"
         )
         for ct in cell_types
     }
@@ -984,7 +985,7 @@ def ct_lod_distributions(
         suffixed CSVs to read via :func:`ct_filename_suffix`.
     """
     whole_df = load_peak_lod(
-        whole_py_data / f"peak_lod_{ct_filename_suffix(None, scan_tag)}.csv",
+        whole_py_data / f"peak_lod_{ct_filename_suffix(None, scan_tag)}.tsv",
         suffix="whole",
     )
     whole_lods: Optional[np.ndarray] = (
@@ -996,7 +997,7 @@ def ct_lod_distributions(
     for ct in cell_types:
         try:
             ct_df = load_peak_lod(
-                ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.csv",
+                ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.tsv",
                 suffix=ct,
             )
             if ct_df is None:
@@ -1041,7 +1042,7 @@ def ct_lod_distributions(
         for i, ct in enumerate(cell_types):
             try:
                 ct_df = load_peak_lod(
-                    ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.csv",
+                    ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.tsv",
                     suffix=ct,
                 )
                 if ct_df is None:
@@ -1111,9 +1112,9 @@ def ct_cis_distance_comparison(
         """Return the TSS column name present in df (near_tss_mb preferred)."""
         return "near_tss_mb" if "near_tss_mb" in df.columns else "start_mb"
 
-    w_path = whole_py_data / f"peak_lod_{ct_filename_suffix(None, scan_tag)}.csv"
+    w_path = whole_py_data / f"peak_lod_{ct_filename_suffix(None, scan_tag)}.tsv"
     if w_path.exists():
-        _wdf = pd.read_csv(w_path)
+        _wdf = read_table(w_path)
         _wtss = _tss_col(_wdf)
         if {_wtss, "peak_mb", "peak_lod"}.issubset(_wdf.columns):
             _wdf = _wdf.dropna(subset=[_wtss, "peak_mb", "peak_lod"])
@@ -1124,10 +1125,10 @@ def ct_cis_distance_comparison(
             )
 
     for ct in cell_types:
-        ct_path = ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.csv"
+        ct_path = ct_dirs[ct] / f"peak_lod_{ct_filename_suffix(ct, scan_tag)}.tsv"
         if not ct_path.exists():
             continue
-        _cdf = pd.read_csv(ct_path)
+        _cdf = read_table(ct_path)
         _ctss = _tss_col(_cdf)
         if not {_ctss, "peak_mb", "peak_lod"}.issubset(_cdf.columns):
             continue
@@ -1177,7 +1178,7 @@ def compare_scan_types(
         Scan-tag labels to compare pairwise (e.g. ``['C', 'L_w1']``).
     scan_dirs :
         Mapping from scan tag to its ``core/`` output directory (holding
-        ``peak_lod.csv`` / ``allele_effects.csv`` for that scan run).
+        ``peak_lod.tsv`` / ``allele_effects.tsv`` for that scan run).
     out_dir :
         Output directory for comparison plots and quadrant CSVs.
     threshold :
@@ -1187,11 +1188,11 @@ def compare_scan_types(
     """
     prefix = safe_ct(entity_label)
     tag_frames: dict[str, Optional[pd.DataFrame]] = {
-        tag: load_peak_lod(scan_dirs[tag] / "peak_lod.csv", suffix=tag)
+        tag: load_peak_lod(scan_dirs[tag] / "peak_lod.tsv", suffix=tag)
         for tag in scan_tags
     }
     tag_effects: dict[str, Optional[pd.DataFrame]] = {
-        tag: load_allele_effects(scan_dirs[tag] / "allele_effects.csv")
+        tag: load_allele_effects(scan_dirs[tag] / "allele_effects.tsv")
         for tag in scan_tags
     }
 
@@ -1249,19 +1250,19 @@ def compare_scan_types(
                 _x = merged[f"peak_lod_{x_tag}"]
                 _y = merged[f"peak_lod_{y_tag}"]
                 _quadrants = {
-                    f"{prefix}_{x_tag}_vs_{y_tag}_shared_egenes.csv": merged[
+                    f"{prefix}_{x_tag}_vs_{y_tag}_shared_egenes.tsv": merged[
                         (_x >= threshold) & (_y >= threshold)
                     ].sort_values(f"peak_lod_{x_tag}", ascending=False),
-                    f"{prefix}_{x_tag}_vs_{y_tag}_{x_tag}_specific_egenes.csv": merged[
+                    f"{prefix}_{x_tag}_vs_{y_tag}_{x_tag}_specific_egenes.tsv": merged[
                         (_x >= threshold) & (_y < threshold)
                     ].sort_values(f"peak_lod_{x_tag}", ascending=False),
-                    f"{prefix}_{x_tag}_vs_{y_tag}_{y_tag}_specific_egenes.csv": merged[
+                    f"{prefix}_{x_tag}_vs_{y_tag}_{y_tag}_specific_egenes.tsv": merged[
                         (_x < threshold) & (_y >= threshold)
                     ].sort_values(f"peak_lod_{y_tag}", ascending=False),
                 }
                 for fname, df_q in _quadrants.items():
                     out_csv = out_dir / fname
-                    df_q[_cols].to_csv(out_csv, index=False)
+                    df_q[_cols].to_csv(out_csv, sep="\t", index=False)
                     logger.info(
                         "compare_scan_types %s %s/%s: %d genes -> %s",
                         entity_label,

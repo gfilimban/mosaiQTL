@@ -21,14 +21,15 @@ import numpy as np
 import pandas as pd
 
 __all__ = [
-    'atomic_concat_csv', 'atomic_write_csv', 'atomic_write_json', 'atomic_write_text',
-    'CSV_TRUE', 'CSV_FALSE',
+    'atomic_concat_table', 'atomic_write_table', 'atomic_write_json', 'atomic_write_text',
+    'TABLE_TRUE', 'TABLE_FALSE',
 ]
 
 _COPY_BLOCK = 1 << 20
+_SEP = '\t'
 
-CSV_TRUE = 'T'
-CSV_FALSE = 'F'
+TABLE_TRUE = 'T'
+TABLE_FALSE = 'F'
 
 
 def _is_boolean_column(col: pd.Series) -> bool:
@@ -48,7 +49,7 @@ def _encode_booleans(df: pd.DataFrame) -> pd.DataFrame:
         return df
     out = df.copy(deep=False)
     for c in cols:
-        out[c] = df[c].map({True: CSV_TRUE, False: CSV_FALSE})
+        out[c] = df[c].map({True: TABLE_TRUE, False: TABLE_FALSE})
     return out
 
 
@@ -80,8 +81,8 @@ def _atomic_write(path: 'Path | str', write: Callable[[IO[str]], None]) -> None:
         raise
 
 
-def atomic_write_csv(df: pd.DataFrame, path: 'Path | str') -> None:
-    r"""Write ``df`` to ``path`` as CSV (header, no index) atomically.
+def atomic_write_table(df: pd.DataFrame, path: 'Path | str') -> None:
+    r"""Write ``df`` to ``path`` as a tab-separated table (header, no index) atomically.
 
     Floats are written at full precision (the shortest string that round-trips), so
     coordinates, probabilities and small p-values lose no digits. Boolean columns are
@@ -96,15 +97,15 @@ def atomic_write_csv(df: pd.DataFrame, path: 'Path | str') -> None:
         Destination; the parent directory must exist.
     """
     encoded = _encode_booleans(df)
-    _atomic_write(path, lambda fh: encoded.to_csv(fh, index=False))
+    _atomic_write(path, lambda fh: encoded.to_csv(fh, sep=_SEP, index=False))
 
 
-def atomic_concat_csv(
+def atomic_concat_table(
     parts: Sequence['Path | str'],
     path: 'Path | str',
     columns: Sequence[str],
 ) -> int:
-    r"""Concatenate CSV ``parts`` into ``path`` byte-for-byte, atomically.
+    r"""Concatenate tab-separated ``parts`` into ``path`` byte-for-byte, atomically.
 
     Each part must start with the same header and end with a newline; the header
     is written once, so no row is ever fused to its neighbour. Parts are copied in
@@ -131,7 +132,7 @@ def atomic_concat_csv(
         If a part is empty, lacks a final newline, or its header differs from the
         first part's.
     """
-    header = ','.join(columns) + '\n'
+    header = _SEP.join(columns) + '\n'
     n_lines = 0
 
     def write(fh: IO[str]) -> None:

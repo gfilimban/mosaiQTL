@@ -1,9 +1,9 @@
 """Sanger SNP fine-mapping — called by Nextflow FINEMAP process.
 
-Usage: python run_finemap.py <eqtl_summary.csv> <cache.h5> <kinship.h5>
+Usage: python run_finemap.py <eqtl_summary.tsv> <cache.h5> <kinship.h5>
            <phenotypes.h5> <metadata.csv> <celltype>
            <scan_tag> <covariates> <output_dir>
-           <sanger_alleles.h5|-> <peak_lod.csv|-> <tissue|-> <chrom|->
+           <sanger_alleles.h5|-> <peak_lod.tsv|-> <tissue|-> <chrom|->
            <scan_type> <window_mb> <use_rint 1|0>
 
 A '-' marks an absent optional argument.
@@ -14,10 +14,10 @@ SNPs inside that interval are imputed from founder alleles and fine-mapped
 with approximate Bayes factor credible sets.
 sanger_alleles.h5 is optional; header-only fine-mapping outputs are written when absent.
 Writes:
-  {tag}_eqtl_finemapping.csv      — credible-set SNPs per eGene
-  {tag}_eqtl_finemapping_peak.csv — credible-set lead SNP per eGene
-  {tag}_eqtl_finemapping_groups.csv — one row per LD group per eGene (group PIP, credible-set flag)
-  {tag}_eqtl_ci.csv              — 1.5-LOD support interval per eGene (Mb, with ci_truncated);
+  {tag}_eqtl_finemapping.tsv      — credible-set SNPs per eGene
+  {tag}_eqtl_finemapping_peak.tsv — credible-set lead SNP per eGene
+  {tag}_eqtl_finemapping_groups.tsv — one row per LD group per eGene (group PIP, credible-set flag)
+  {tag}_eqtl_ci.tsv              — 1.5-LOD support interval per eGene (Mb, with ci_truncated);
                                     written whether or not sanger_alleles.h5 is present
 """
 import sys, logging
@@ -34,7 +34,7 @@ def main() -> None:
     (egene_arg, cache_arg, kinship_arg, pheno_arg, meta_arg, celltype, stag, covariates, out_arg,
      sanger_arg, peak_lod_arg, tissue_arg, chrom_arg, scan_type, window_arg, rint_arg) = sys.argv[1:]
 
-    egene_csv, cache_path, kinship_path, pheno_path, meta_path, out = (
+    egene_tsv, cache_path, kinship_path, pheno_path, meta_path, out = (
         Path(a) for a in (egene_arg, cache_arg, kinship_arg, pheno_arg, meta_arg, out_arg)
     )
     sanger_path, peak_lod_path = (
@@ -48,32 +48,33 @@ def main() -> None:
     tag      = f'{tissue}_{celltype}_{stag}' if tissue else f'{celltype}_{stag}'
     chr_sfx  = f'_chr{chrom_filter}' if chrom_filter else ''
     out.mkdir(parents=True, exist_ok=True)
-    fm_out      = out / f'{tag}{chr_sfx}_eqtl_finemapping.csv'
-    fm_peak_out = out / f'{tag}{chr_sfx}_eqtl_finemapping_peak.csv'
-    fm_group_out = out / f'{tag}{chr_sfx}_eqtl_finemapping_groups.csv'
-    ci_out     = out / f'{tag}{chr_sfx}_eqtl_ci.csv'
+    fm_out      = out / f'{tag}{chr_sfx}_eqtl_finemapping.tsv'
+    fm_peak_out = out / f'{tag}{chr_sfx}_eqtl_finemapping_peak.tsv'
+    fm_group_out = out / f'{tag}{chr_sfx}_eqtl_finemapping_groups.tsv'
+    ci_out     = out / f'{tag}{chr_sfx}_eqtl_ci.tsv'
 
-    from mosaiqtl.io.atomic import atomic_write_csv
+    from mosaiqtl.io.atomic import atomic_write_table
+    from mosaiqtl.io.tables import read_table
     from mosaiqtl.pipeline import (
         CI_COLS, EQTL_FINEMAPPING_COLS, EQTL_FINEMAPPING_GROUP_COLS,
         EQTL_FINEMAPPING_PEAK_COLS, prepare_egenes_for_finemap,
     )
     from mosaiqtl.utils import add_chr_prefix, strip_chr_prefix
 
-    egenes_df = pd.read_csv(egene_csv, dtype={'gene_id': str, 'chr': str})
+    egenes_df = read_table(egene_tsv, dtype={'gene_id': str, 'chr': str})
     egenes_df['chr'] = strip_chr_prefix(egenes_df['chr'])
     if chrom_filter:
         egenes_df = egenes_df[egenes_df['chr'] == chrom_filter].reset_index(drop=True)
         log.info('chr filter: %s  →  %d eGenes', chrom_filter, len(egenes_df))
 
-    # enrich egenes_df with null model cols + founder betas from peak_lod.csv
-    # (peak_lod.csv carries beta_{founder} cols written by run_lmm_scan_chr.py)
+    # enrich egenes_df with null model cols + founder betas from peak_lod.tsv
+    # (peak_lod.tsv carries beta_{founder} cols written by run_lmm_scan_chr.py)
     if peak_lod_path is not None and peak_lod_path.exists():
-        aux = pd.read_csv(peak_lod_path, dtype={'gene_id': str})
+        aux = read_table(peak_lod_path, dtype={'gene_id': str})
         extra = [c for c in aux.columns if c not in egenes_df.columns and c != 'gene_id']
         if extra:
             egenes_df = egenes_df.merge(aux[['gene_id'] + extra], on='gene_id', how='left')
-            log.info('enriched egenes_df from peak_lod.csv: +%d cols', len(extra))
+            log.info('enriched egenes_df from peak_lod.tsv: +%d cols', len(extra))
 
     egenes_df = prepare_egenes_for_finemap(egenes_df)
 
@@ -81,10 +82,10 @@ def main() -> None:
              tag, len(egenes_df), sanger_path or 'none')
     if len(egenes_df) == 0:
         log.info('no eGenes on this chromosome — writing header-only outputs')
-        atomic_write_csv(pd.DataFrame(columns=CI_COLS), ci_out)
-        atomic_write_csv(pd.DataFrame(columns=EQTL_FINEMAPPING_COLS), fm_out)
-        atomic_write_csv(pd.DataFrame(columns=EQTL_FINEMAPPING_PEAK_COLS), fm_peak_out)
-        atomic_write_csv(pd.DataFrame(columns=EQTL_FINEMAPPING_GROUP_COLS), fm_group_out)
+        atomic_write_table(pd.DataFrame(columns=CI_COLS), ci_out)
+        atomic_write_table(pd.DataFrame(columns=EQTL_FINEMAPPING_COLS), fm_out)
+        atomic_write_table(pd.DataFrame(columns=EQTL_FINEMAPPING_PEAK_COLS), fm_peak_out)
+        atomic_write_table(pd.DataFrame(columns=EQTL_FINEMAPPING_GROUP_COLS), fm_group_out)
         return
 
     from mosaiqtl.genotype.genomecache import GenomeCache
@@ -138,12 +139,12 @@ def main() -> None:
         gene_meta=egenes_df[['gene_id', 'gene_symbol']],
     )
     del expr_cache
-    atomic_write_csv(ci_df.assign(chr=add_chr_prefix(ci_df['chr'].astype(str)))[CI_COLS], ci_out)
+    atomic_write_table(ci_df.assign(chr=add_chr_prefix(ci_df['chr'].astype(str)))[CI_COLS], ci_out)
     if ci_df.empty or sanger_path is None:
         log.warning('no support intervals or no sanger_alleles.h5 — writing header-only fine-mapping outputs')
-        atomic_write_csv(pd.DataFrame(columns=EQTL_FINEMAPPING_COLS), fm_out)
-        atomic_write_csv(pd.DataFrame(columns=EQTL_FINEMAPPING_PEAK_COLS), fm_peak_out)
-        atomic_write_csv(pd.DataFrame(columns=EQTL_FINEMAPPING_GROUP_COLS), fm_group_out)
+        atomic_write_table(pd.DataFrame(columns=EQTL_FINEMAPPING_COLS), fm_out)
+        atomic_write_table(pd.DataFrame(columns=EQTL_FINEMAPPING_PEAK_COLS), fm_peak_out)
+        atomic_write_table(pd.DataFrame(columns=EQTL_FINEMAPPING_GROUP_COLS), fm_group_out)
         return
 
     _ci_mb = ci_df[['gene_id', 'ci_lo', 'ci_hi']].copy()
@@ -184,9 +185,9 @@ def main() -> None:
         sample_ids=geno_ids,
         use_rint=use_rint,
     )
-    (out / 'eqtl_finemapping.csv').rename(fm_out)
-    (out / 'eqtl_finemapping_peak.csv').rename(fm_peak_out)
-    (out / 'eqtl_finemapping_groups.csv').rename(fm_group_out)
+    (out / 'eqtl_finemapping.tsv').rename(fm_out)
+    (out / 'eqtl_finemapping_peak.tsv').rename(fm_peak_out)
+    (out / 'eqtl_finemapping_groups.tsv').rename(fm_group_out)
     log.info('wrote %s + %s + %s (%d eGenes)', fm_out, fm_peak_out, fm_group_out, len(fm_peak_df))
 
 

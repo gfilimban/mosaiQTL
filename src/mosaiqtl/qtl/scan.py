@@ -384,7 +384,7 @@ def scan_multi_gene(
     eigendecomposition) is done once and reused for every gene on that
     chromosome, rather than repeating it per gene.
 
-    when output_dir is set, a per-chromosome LOD file (lod_chr{ch}.csv) is
+    when output_dir is set, a per-chromosome LOD file (lod_chr{ch}.tsv) is
     written as soon as that chromosome finishes. this keeps peak memory
     bounded to one chromosome's worth of results rather than the whole genome.
 
@@ -408,7 +408,7 @@ def scan_multi_gene(
     scan_window      : str   'genome' | 'cis' | 'local'  (default 'genome')
     gene_pos_mb_map  : dict[str, float] | None   TSS in Mb; required for 'local'
     window_mb        : float   half-window for local mode (default 10.0)
-    output_dir       : Path | None   write lod_chr{ch}.csv per chromosome
+    output_dir       : Path | None   write lod_chr{ch}.tsv per chromosome
     model            : str   'additive' (default) or 'full'
 
     returns
@@ -547,7 +547,7 @@ def scan_multi_gene(
 
         # write per-chr CSV and release row buffers immediately
         if output_dir is not None and _chr_gene:
-            _lod_path = Path(output_dir) / f"lod_chr{chrom}.csv"
+            _lod_path = Path(output_dir) / f"lod_chr{chrom}.tsv"
             _chr_df: dict = {
                 "gene_id": _chr_gene,
                 "gene_symbol": (
@@ -560,7 +560,7 @@ def scan_multi_gene(
                 "pos_mb": _chr_pos,
                 "lod": _chr_lod,
             }
-            pd.DataFrame(_chr_df).to_csv(_lod_path, index=False)
+            pd.DataFrame(_chr_df).to_csv(_lod_path, index=False, sep="\t")
             logger.info(
                 "scan_multi_gene: chr%s (%d/%d)  n_genes=%d  n_rows=%d  elapsed=%.1fs → %s",
                 chrom,
@@ -844,7 +844,7 @@ def scan_multi_gene_lmm(
 
         if lod_path is not None and _lod_rows:
             pd.DataFrame(_lod_rows).to_csv(
-                lod_path, mode="a", header=_lod_first, index=False
+                lod_path, mode="a", header=_lod_first, index=False, sep="\t"
             )
             _lod_first = False
         del _lod_rows

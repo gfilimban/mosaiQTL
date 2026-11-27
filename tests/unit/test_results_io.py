@@ -21,6 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "src"))
 
+from mosaiqtl.io.tables import read_table
 from mosaiqtl.io.results_io import (
     build_eqtl_finemapping_df,
     build_eqtl_finemapping_peak_df,
@@ -301,9 +302,9 @@ class TestBuildEqtlScanDf:
 
 
 class TestWriteEqtlScan:
-    """write_eqtl_scan: atomically writes EQTL_SCAN_COLS CSV."""
+    """write_eqtl_scan: atomically writes EQTL_SCAN_COLS TSV."""
 
-    def test_writes_csv_file(self, tmp_path, tiny_cache):
+    def test_writes_tsv_file(self, tmp_path, tiny_cache):
         """Output file exists and is non-empty after a successful write."""
         from mosaiqtl.io.results_io import write_eqtl_scan
         from mosaiqtl.models.records import ScanResult
@@ -316,7 +317,7 @@ class TestWriteEqtlScan:
             pos_mb=pos,
             chr="1",
         )
-        out = tmp_path / "eqtl_scan.csv"
+        out = tmp_path / "eqtl_scan.tsv"
         write_eqtl_scan({"g1": sr}, tiny_cache, out)
         assert out.exists()
         assert out.stat().st_size > 0
@@ -335,9 +336,9 @@ class TestWriteEqtlScan:
             pos_mb=pos,
             chr="1",
         )
-        out = tmp_path / "eqtl_scan.csv"
+        out = tmp_path / "eqtl_scan.tsv"
         write_eqtl_scan({"g1": sr}, tiny_cache, out)
-        reloaded = pd.read_csv(out)
+        reloaded = read_table(out)
         assert list(reloaded.columns) == EQTL_SCAN_COLS
 
 
@@ -487,12 +488,12 @@ class TestBuildEqtlFinemappingDf:
 
 class TestWriteEqtlFinemapping:
     def test_file_created_and_schema_correct(self, tmp_path):
-        out = tmp_path / "finemapping.csv"
+        out = tmp_path / "finemapping.tsv"
         write_eqtl_finemapping(
             _fm_df(), "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2, out
         )
         assert out.exists()
-        assert list(pd.read_csv(out).columns) == EQTL_FINEMAPPING_COLS
+        assert list(read_table(out).columns) == EQTL_FINEMAPPING_COLS
 
 
 # ── build_eqtl_finemapping_peak_df ───────────────────────────────────────────
@@ -572,7 +573,7 @@ class TestWriteEqtlFinemappingPeak:
         fm_built = build_eqtl_finemapping_df(
             _fm_df(n_cs=2), "ENSMUSG0001", "8", 100_200_000, "UNC1234", 5.2
         )
-        out = tmp_path / "finemapping_peak.csv"
+        out = tmp_path / "finemapping_peak.tsv"
         write_eqtl_finemapping_peak(fm_built, out)
         assert out.exists()
-        assert list(pd.read_csv(out).columns) == EQTL_FINEMAPPING_PEAK_COLS
+        assert list(read_table(out).columns) == EQTL_FINEMAPPING_PEAK_COLS

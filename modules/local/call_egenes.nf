@@ -9,15 +9,15 @@ process CALL_EGENES {
     path  genomecache
     path  kinship_loco
     tuple val(celltype), val(scan_tag),
-          path(peak_lod, stageAs: 'merged_peak_lod.input.csv'), path(perm_max_lods),
+          path(peak_lod, stageAs: 'merged_peak_lod.input.tsv'), path(perm_max_lods),
           path(phenotypes), path(gene_info), path(metadata)
 
     output:
     tuple val(celltype), val(scan_tag),
-          path('*_peak_lod_all.csv'),
+          path('*_peak_lod_all.tsv'),
           path('*_pval_perm.json'),
-          path('*_haplotype_eqtl_summary.csv'),
-          path('*_haplotype_peak_lod.csv')
+          path('*_haplotype_eqtl_summary.tsv'),
+          path('*_haplotype_peak_lod.tsv')
 
     script:
     def tis    = params.tissue ?: 'run'
@@ -40,6 +40,6 @@ process CALL_EGENES {
     stub:
     def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
-    touch ${tag}_peak_lod_all.csv ${tag}_pval_perm.json ${tag}_haplotype_eqtl_summary.csv ${tag}_haplotype_peak_lod.csv
+    touch ${tag}_peak_lod_all.tsv ${tag}_pval_perm.json ${tag}_haplotype_eqtl_summary.tsv ${tag}_haplotype_peak_lod.tsv
     """
 }

@@ -1,6 +1,6 @@
 """eGene calling + FDR — called by Nextflow CALL_EGENES process.
 
-Usage: python run_call_egenes.py <peak_lod.csv> <perm_max_lods.csv>
+Usage: python run_call_egenes.py <peak_lod.tsv> <perm_max_lods.tsv>
            <phenotypes.h5> <gene_info.csv> <cache.h5> <kinship.h5>
            <metadata.csv> <celltype> <scan_tag>
            <covariates> <fdr_threshold> <n_perms_cal> <seed>
@@ -13,17 +13,17 @@ estimated on the same transformed phenotype so betas remain on the scan scale.
 Set to 0 when the scan ran without RINT (Gaussian phenotypes).  NB-GLMM path
 does not use this flag.
 
-<perm_max_lods.csv> is the genome-wide max-LOD null written by PERMUTE; it
+<perm_max_lods.tsv> is the genome-wide max-LOD null written by PERMUTE; it
 supplies the permutation LOD threshold a significant eGene's peak LOD must exceed.
-<peak_lod.csv> is read only; outputs are always new files.
+<peak_lod.tsv> is read only; outputs are always new files.
 Every gene with a peak is calibrated and enters the q-values; a gene is an eGene when
 the call-rule q-value is at most fdr_threshold and its peak LOD exceeds the permutation
 threshold. Founder effects are computed for eGenes only.
 Writes:
-  {tag}_peak_lod_all.csv — all tested genes with is_egene, pval_perm, qval_storey, qval_bh, lfdr, pi0, fdr
+  {tag}_peak_lod_all.tsv — all tested genes with is_egene, pval_perm, qval_storey, qval_bh, lfdr, pi0, fdr
   {tag}_pval_perm.json   — per-gene calibrated p-values {gene_id: float}
-  {tag}_haplotype_peak_lod.csv — the rows of {tag}_peak_lod_all.csv with qval_bh <= submission_fdr
-  {tag}_haplotype_eqtl_summary.csv — significant eGenes only, with founder effects + q-value;
+  {tag}_haplotype_peak_lod.tsv — the rows of {tag}_peak_lod_all.tsv with qval_bh <= submission_fdr
+  {tag}_haplotype_eqtl_summary.tsv — significant eGenes only, with founder effects + q-value;
     the support-interval columns are added by FINEMAP_MERGE
 All four are written (empty / header-only) when no gene has a peak.
 """
@@ -38,8 +38,8 @@ log = logging.getLogger(__name__)
 
 
 def main() -> None:
-    peak_lod_csv   = Path(sys.argv[1])
-    perm_csv       = Path(sys.argv[2])
+    peak_lod_tsv   = Path(sys.argv[1])
+    perm_tsv       = Path(sys.argv[2])
     pheno_path     = Path(sys.argv[3])
     gene_info_path = Path(sys.argv[4])
     cache_path     = Path(sys.argv[5])
@@ -63,8 +63,9 @@ def main() -> None:
     from mosaiqtl.genotype.genomecache import GenomeCache
     from mosaiqtl.genotype.kinship import kinship_from_decomp, load_kinship_decomp
     from mosaiqtl.io.anndata_io import load_expression_h5
-    from mosaiqtl.io.atomic import atomic_write_csv, atomic_write_json
+    from mosaiqtl.io.atomic import atomic_write_json, atomic_write_table
     from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
+    from mosaiqtl.io.tables import read_table
     from mosaiqtl.pipeline import (
         EGENE_SUMMARY_COLS, call_significant_egenes, finalize_egene_summary,
         select_submission_genes,
@@ -72,13 +73,13 @@ def main() -> None:
     from mosaiqtl.qtl.thresholds import get_gev_thresholds
     from mosaiqtl.utils import add_chr_prefix, build_z_matrix, strip_chr_prefix
 
-    peak_out   = out / f'{tag}_peak_lod_all.csv'
+    peak_out   = out / f'{tag}_peak_lod_all.tsv'
     pval_out    = out / f'{tag}_pval_perm.json'
-    summary_out = out / f'{tag}_haplotype_eqtl_summary.csv'
-    submission_out = out / f'{tag}_haplotype_peak_lod.csv'
-    if peak_out.resolve() == peak_lod_csv.resolve():
+    summary_out = out / f'{tag}_haplotype_eqtl_summary.tsv'
+    submission_out = out / f'{tag}_haplotype_peak_lod.tsv'
+    if peak_out.resolve() == peak_lod_tsv.resolve():
         raise ValueError(
-            f'output {peak_out} would overwrite input {peak_lod_csv}; '
+            f'output {peak_out} would overwrite input {peak_lod_tsv}; '
             'stage the input peak_lod under a different name'
         )
 
@@ -86,7 +87,7 @@ def main() -> None:
              tag, fdr_threshold, n_perms_cal, seed)
 
     # ── threshold ──────────────────────────────────────────────────────────────
-    max_lods = pd.read_csv(perm_csv)['max_lod'].to_numpy()
+    max_lods = read_table(perm_tsv)['max_lod'].to_numpy()
     threshold, _ = get_gev_thresholds(max_lods)
     if threshold is None:
         threshold = float(np.quantile(max_lods[np.isfinite(max_lods)], 0.95))
@@ -99,17 +100,17 @@ def main() -> None:
         gene_info_df = gene_info_df.rename(columns={'gene': 'gene_id'})
 
     # ── tested genes: every gene with a peak enters calibration ───────────────
-    peak_df   = pd.read_csv(peak_lod_csv, dtype={'gene_id': str, 'chr': str})
+    peak_df   = read_table(peak_lod_tsv, dtype={'gene_id': str, 'chr': str})
     peak_df['chr'] = strip_chr_prefix(peak_df['chr'])
     tested_df = peak_df.dropna(subset=['gene_id', 'chr', 'peak_lod'])
     log.info('%d / %d genes tested', len(tested_df), len(peak_df))
     if len(tested_df) == 0:
         empty_peak = peak_df.assign(is_egene=False)
         empty_peak['chr'] = add_chr_prefix(empty_peak['chr'])
-        atomic_write_csv(empty_peak, peak_out)
-        atomic_write_csv(empty_peak.iloc[0:0], submission_out)
+        atomic_write_table(empty_peak, peak_out)
+        atomic_write_table(empty_peak.iloc[0:0], submission_out)
         atomic_write_json({}, pval_out)
-        atomic_write_csv(pd.DataFrame(columns=EGENE_SUMMARY_COLS), summary_out)
+        atomic_write_table(pd.DataFrame(columns=EGENE_SUMMARY_COLS), summary_out)
         log.info('no tested genes — wrote empty %s outputs', tag)
         return
 
@@ -163,7 +164,7 @@ def main() -> None:
                          called_df['pval_perm'].astype(float)))
     atomic_write_json(pval_perm, pval_out)
 
-    # ── annotate full peak_lod with is_egene flag → updated peak_lod.csv ─────
+    # ── annotate full peak_lod with is_egene flag → updated peak_lod.tsv ─────
     significant_ids = set(significant_df['gene_id'].astype(str))
     peak_df = peak_df.copy()
     peak_df['is_egene'] = peak_df['gene_id'].astype(str).isin(significant_ids)
@@ -178,12 +179,12 @@ def main() -> None:
     )
     peak_out_df = peak_df.copy()
     peak_out_df['chr'] = add_chr_prefix(peak_out_df['chr'])
-    atomic_write_csv(peak_out_df, peak_out)
+    atomic_write_table(peak_out_df, peak_out)
     log.info('wrote %s (%d genes, %d eGenes)', peak_out, len(peak_df),
              peak_df['is_egene'].sum())
 
     submission_df = select_submission_genes(peak_out_df, submission_fdr)
-    atomic_write_csv(submission_df, submission_out)
+    atomic_write_table(submission_df, submission_out)
     log.info('wrote %s (%d of %d tested genes with qval_bh <= %g)', submission_out,
              len(submission_df), len(peak_out_df), submission_fdr)
 
@@ -191,7 +192,7 @@ def main() -> None:
     summary_df = final_df.copy()
     if 'chr' in summary_df.columns:
         summary_df['chr'] = add_chr_prefix(summary_df['chr'])
-    atomic_write_csv(summary_df, summary_out)
+    atomic_write_table(summary_df, summary_out)
     log.info('wrote %s (%d eGenes)', summary_out, len(final_df))
 
 

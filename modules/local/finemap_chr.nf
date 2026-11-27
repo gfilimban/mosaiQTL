@@ -12,10 +12,10 @@ process FINEMAP_CHR {
 
     output:
     tuple val(celltype), val(scan_tag), val(chrom),
-          path('*_eqtl_finemapping.csv'),
-          path('*_eqtl_finemapping_peak.csv'),
-          path('*_eqtl_finemapping_groups.csv'),
-          path('*_eqtl_ci.csv')
+          path('*_eqtl_finemapping.tsv'),
+          path('*_eqtl_finemapping_peak.tsv'),
+          path('*_eqtl_finemapping_groups.tsv'),
+          path('*_eqtl_ci.tsv')
 
     script:
     def sanger  = sanger_alleles.name != 'NO_SANGER' ? sanger_alleles.name : '-'
@@ -38,6 +38,6 @@ process FINEMAP_CHR {
     stub:
     def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
-    touch ${tag}_chr${chrom}_eqtl_finemapping.csv ${tag}_chr${chrom}_eqtl_finemapping_peak.csv ${tag}_chr${chrom}_eqtl_finemapping_groups.csv ${tag}_chr${chrom}_eqtl_ci.csv
+    touch ${tag}_chr${chrom}_eqtl_finemapping.tsv ${tag}_chr${chrom}_eqtl_finemapping_peak.tsv ${tag}_chr${chrom}_eqtl_finemapping_groups.tsv ${tag}_chr${chrom}_eqtl_ci.tsv
     """
 }

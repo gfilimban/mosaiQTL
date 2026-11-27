@@ -1,16 +1,16 @@
 """Run-level summary stats + scan visualisations — called by Nextflow REPORT process.
 
-Usage: python run_report.py <peak_lod.csv> <eqtl_summary.csv> <pval_perm.json>
-           <perm_max_lods.csv> <gene_info.csv> <lod_genome.csv>
+Usage: python run_report.py <peak_lod.tsv> <eqtl_summary.tsv> <pval_perm.json>
+           <perm_max_lods.tsv> <gene_info.csv> <lod_genome.tsv>
            <kinship_loco.h5> <genomecache.h5>
            <celltype> <scan_tag> <output_dir> [gtf_path|-] [tissue]
 
-Per-chromosome perm files {tag}_perm_max_lods_chr*.csv must be staged alongside
-<perm_max_lods.csv> in the same directory (Nextflow handles this automatically
+Per-chromosome perm files {tag}_perm_max_lods_chr*.tsv must be staged alongside
+<perm_max_lods.tsv> in the same directory (Nextflow handles this automatically
 when they appear as a path input in the calling process).
 
 Writes:
-  {tag}_eqtl_stats.csv                     — per-chr + genome-wide GEV params
+  {tag}_eqtl_stats.tsv                     — per-chr + genome-wide GEV params
   {tag}_genome_summary{_share}.png          — Manhattan + eGene count per chr
   {tag}_genome_diagnostic{_share}.png       — GEV thresholds + scan stats panel
   {tag}_loci_per_chr{_share}.png            — loci count per chromosome
@@ -77,12 +77,13 @@ def _load_lod_subset(
     (bare chromosome strings). Memory is bounded by one chunk plus the retained
     rows, independent of the number of genes or loci scanned.
     """
+    from mosaiqtl.io.tables import read_table
     from mosaiqtl.utils import strip_chr_prefix
-    cols = list(pd.read_csv(path, nrows=0).columns)
+    cols = list(read_table(path, nrows=0).columns)
     locus_col = 'locus' if 'locus' in cols else 'pos_mb'
     loci_by_chr: dict[str, set] = {}
     kept = []
-    for chunk in pd.read_csv(
+    for chunk in read_table(
         path,
         dtype={'gene_id': str, 'chr': str, 'pos_mb': 'float32', 'lod': 'float32'},
         chunksize=chunksize,
@@ -100,9 +101,10 @@ def _load_lod_subset(
 
 def _finemap_gene_ids(path: Path, chunksize: int = 1_000_000) -> set:
     """Distinct gene_ids in the fine-mapping table, read as a stream of chunks."""
+    from mosaiqtl.io.tables import read_table
     ids: set = set()
-    for chunk in pd.read_csv(path, usecols=['gene_id'], dtype={'gene_id': str},
-                             chunksize=chunksize):
+    for chunk in read_table(path, usecols=['gene_id'], dtype={'gene_id': str},
+                            chunksize=chunksize):
         ids.update(chunk['gene_id'].unique())
     return ids
 
@@ -115,27 +117,28 @@ def _load_finemap_subset(
     Memory is bounded by one chunk plus the retained rows, independent of how
     many eGenes were fine-mapped.
     """
+    from mosaiqtl.io.tables import read_table
     from mosaiqtl.utils import strip_chr_prefix
     kept = []
-    for chunk in pd.read_csv(path, dtype={'gene_id': str, 'chr': str}, chunksize=chunksize):
+    for chunk in read_table(path, dtype={'gene_id': str, 'chr': str}, chunksize=chunksize):
         sel = chunk[chunk['gene_id'].isin(want_ids)]
         if not sel.empty:
             kept.append(sel)
         del chunk, sel
     if not kept:
-        return pd.DataFrame(columns=list(pd.read_csv(path, nrows=0).columns))
+        return pd.DataFrame(columns=list(read_table(path, nrows=0).columns))
     fm_df = pd.concat(kept, ignore_index=True)
     fm_df['chr'] = strip_chr_prefix(fm_df['chr'])
     return fm_df
 
 
 def main() -> None:
-    peak_lod_csv   = Path(sys.argv[1])
-    egene_csv      = Path(sys.argv[2])
+    peak_lod_tsv   = Path(sys.argv[1])
+    egene_tsv      = Path(sys.argv[2])
     pval_perm_json = Path(sys.argv[3])
-    perm_csv       = Path(sys.argv[4])
+    perm_tsv       = Path(sys.argv[4])
     gene_info_path = Path(sys.argv[5])
-    lod_genome_csv = Path(sys.argv[6])
+    lod_genome_tsv = Path(sys.argv[6])
     kinship_path   = Path(sys.argv[7])
     cache_path     = Path(sys.argv[8])
     celltype       = sys.argv[9]
@@ -156,6 +159,7 @@ def main() -> None:
     from mosaiqtl.genotype.cc import FOUNDER_ORDER, display_founders as _display_founders
     from mosaiqtl.io.atomic import atomic_write_json
     from mosaiqtl.io.results_io import write_eqtl_stats
+    from mosaiqtl.io.tables import read_table
     from mosaiqtl.utils import chr_sort_key, git_hash, strip_chr_prefix
     from mosaiqtl.viz.effects import effects_per_chr, genome_effects_grid
     from mosaiqtl.viz.genome import (
@@ -168,15 +172,15 @@ def main() -> None:
     from mosaiqtl.viz.haplotypes import kinship_distribution, kinship_heatmap, prob_heatmap
 
     # ── load dataframes ────────────────────────────────────────────────────────
-    peak_df   = pd.read_csv(peak_lod_csv,   dtype={'gene_id': str, 'chr': str})
-    egenes_df = pd.read_csv(egene_csv,      dtype={'gene_id': str, 'chr': str})
+    peak_df   = read_table(peak_lod_tsv,   dtype={'gene_id': str, 'chr': str})
+    egenes_df = read_table(egene_tsv,      dtype={'gene_id': str, 'chr': str})
     for _df in (peak_df, egenes_df):
         _df['chr'] = strip_chr_prefix(_df['chr'])
 
     if 'significance' in egenes_df.columns and egenes_df['significance'].notna().any():
         egenes_df = egenes_df[egenes_df['significance'] == 'T']
 
-    # founder betas live in peak_lod.csv; the eGene summary schema carries none
+    # founder betas live in peak_lod.tsv; the eGene summary schema carries none
     _beta_extra = [c for c in peak_df.columns
                    if c.startswith('beta_') and c not in egenes_df.columns]
     if _beta_extra:
@@ -197,7 +201,7 @@ def main() -> None:
         fm_panel_df = (_fm_eg.sort_values('peak_lod', ascending=False)
                        .groupby('chr', sort=False).head(FINEMAP_PANELS_PER_CHR))
         want_ids.update(fm_panel_df['gene_id'])
-    lod_df, n_loci_by_chr = _load_lod_subset(lod_genome_csv, want_ids)
+    lod_df, n_loci_by_chr = _load_lod_subset(lod_genome_tsv, want_ids)
     # gene_symbol is a per-gene attribute; take it from peak_df so the LOD table
     # need not carry it
     lod_df['gene_symbol'] = lod_df['gene_id'].astype(str).map(
@@ -210,7 +214,7 @@ def main() -> None:
     # ── permutation files ──────────────────────────────────────────────────────
     prefix    = f'{tag}_perm_max_lods_chr'
     chr_files = sorted(
-        perm_csv.parent.glob(f'{prefix}*.csv'),
+        perm_tsv.parent.glob(f'{prefix}*.tsv'),
         key=lambda p: chr_sort_key(p.stem[len(prefix):]),
     )
     perm_by_chr:  dict[str, np.ndarray] = {}
@@ -219,7 +223,7 @@ def main() -> None:
 
     for pf in chr_files:
         chrom = pf.stem[len(prefix):]
-        ml    = pd.read_csv(pf)['max_lod'].to_numpy()
+        ml    = read_table(pf)['max_lod'].to_numpy()
         perm_by_chr[chrom] = ml
         row = _gev_row(chrom, ml)
         row.update({
@@ -230,7 +234,7 @@ def main() -> None:
         chrom_stats.append(row)
         thr_by_chr[chrom] = row['lod_threshold']
 
-    genome_max_lods = pd.read_csv(perm_csv)['max_lod'].to_numpy()
+    genome_max_lods = read_table(perm_tsv)['max_lod'].to_numpy()
     genome_row      = _gev_row('genome', genome_max_lods)
     genome_row.update({
         'tissue': tissue, 'celltype': celltype,
@@ -240,8 +244,8 @@ def main() -> None:
     })
     genome_thr: 'float | None' = genome_row['lod_threshold']
 
-    # ── eqtl_stats.csv ────────────────────────────────────────────────────────
-    stats_path = out / f'{tag}_eqtl_stats.csv'
+    # ── eqtl_stats.tsv ────────────────────────────────────────────────────────
+    stats_path = out / f'{tag}_eqtl_stats.tsv'
     write_eqtl_stats(chrom_stats, genome_row, stats_path)
     log.info('wrote %s', stats_path.name)
 
@@ -464,7 +468,7 @@ def main() -> None:
         except Exception as exc:
             log.warning('locus_panels_per_chr: %s', exc)
 
-    # ── 20. finemap locus panels per eGene (requires merged eqtl_finemapping.csv) ──
+    # ── 20. finemap locus panels per eGene (requires merged eqtl_finemapping.tsv.gz) ──
     if finemap_arg != '-' and Path(finemap_arg).exists() and len(fm_panel_df) > 0:
         try:
             from mosaiqtl.viz.finemap import locus_finemap_panel

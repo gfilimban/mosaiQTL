@@ -12,8 +12,8 @@ process PERMUTE {
 
     output:
     tuple val(celltype), val(scan_tag),
-          path('*_perm_max_lods.csv'),
-          path('*_perm_max_lods_chr*.csv'),
+          path('*_perm_max_lods.tsv'),
+          path('*_perm_max_lods_chr*.tsv'),
           path('*_perm_gev_params.json')
 
     script:
@@ -36,6 +36,6 @@ process PERMUTE {
     stub:
     def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
-    touch ${tag}_perm_max_lods.csv ${tag}_perm_max_lods_chr1.csv ${tag}_perm_gev_params.json
+    touch ${tag}_perm_max_lods.tsv ${tag}_perm_max_lods_chr1.tsv ${tag}_perm_gev_params.json
     """
 }

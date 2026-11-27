@@ -15,6 +15,7 @@ import pandas as pd
 import logging
 from pathlib import Path
 
+from ..io.tables import read_table
 from ..utils import _build_gm_idx, _enrich_scan_df
 
 logger = logging.getLogger('mosaiqtl')
@@ -203,7 +204,7 @@ def ci_scan_multi_gene(
     sample_ids     : list[str] or None  genotype-level strain IDs (for replicate-aware path)
     use_rint       : bool  apply rank-normal transform before scanning
     lod_drop       : float  LOD units below peak that define the interval (default 1.5)
-    output_path    : Path or None  stream CSV here row-by-row; None accumulates in RAM
+    output_path    : Path or None  stream a TSV here row-by-row; None accumulates in RAM
     gene_meta      : DataFrame with a 'gene_id' column — extra columns (gene_symbol, …)
                      joined into each output row
     gene_pos_mb_map: dict {gene_id: float} or None  strand-aware TSS in Mb; genes absent
@@ -310,7 +311,7 @@ def ci_scan_multi_gene(
                 }])
                 _df = _enrich_scan_df(_df, gene_id, _gm_idx, _id_cols, _data_cols)
                 if output_path is not None:
-                    _df.to_csv(output_path, mode='a', header=_first, index=False)
+                    _df.to_csv(output_path, sep='\t', mode='a', header=_first, index=False)
                     _first = False
                 else:
                     _buf.append(_df)
@@ -322,7 +323,7 @@ def ci_scan_multi_gene(
     gc.collect()
     if output_path is not None:
         return (
-            pd.read_csv(output_path)
+            read_table(output_path)
             if output_path.exists() and not _first
             else pd.DataFrame(columns=CI_COLS)
         )

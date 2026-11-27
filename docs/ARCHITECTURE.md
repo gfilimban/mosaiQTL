@@ -252,8 +252,8 @@ falls back to the empirical 0.95 quantile. This threshold is a QC reference; eGe
 significance comes from §6.
 
 Per-chromosome GEV params are written to `{tag}_perm_gev_params.json` by `run_permute.py`
-(not read downstream); `eqtl_stats.csv` refits `get_gev_thresholds` on each
-`perm_max_lods_chr{c}.csv` (`results_io.build_gev_row`).
+(not read downstream); `eqtl_stats.tsv` refits `get_gev_thresholds` on each
+`perm_max_lods_chr{c}.tsv` (`results_io.build_gev_row`).
 
 ---
 
@@ -404,32 +404,32 @@ Input
   metadata.csv               sample_id + strain + sex + dataset (+ optional covariates)
 
 Stage 1 — scan_multi_gene (per chromosome)
-  → lod_chr{c}.csv           (gene × locus LOD profiles; n_loci per chr)
-  → peak_lod_chr{c}.csv      (peak LOD + allele effects + h2 per gene per chr)
+  → lod_chr{c}.tsv           (gene × locus LOD profiles; n_loci per chr)
+  → peak_lod_chr{c}.tsv      (peak LOD + allele effects + h2 per gene per chr)
 
 Stage 2 — merge_results
-  → peak_lod.csv             (genome-wide peak per gene; chr always str)
+  → peak_lod.tsv             (genome-wide peak per gene; chr always str)
 
 Stage 3 — permute (run_threshold_scans)
-  → perm_max_lods.csv + perm_max_lods_chr{c}.csv
+  → perm_max_lods.tsv + perm_max_lods_chr{c}.tsv
   → perm_gev_params.json
 
 Stage 4 — call_egenes
-  → eqtl_summary.csv         (eGenes: gene_id + gene_symbol + peak_mb + peak_lod + h2
+  → eqtl_summary.tsv         (eGenes: gene_id + gene_symbol + peak_mb + peak_lod + h2
                                 + perm_n + perm_chr + chi2_haplotype + p_haplotype
                                 + pval_perm + storey_q + fdr_method)
 
 Stage 5 — bootstrap CI
-  → bootstrap_ci.csv         (contiguous 1.5-LOD support interval per eGene: ci_lo/ci_hi, ci_truncated;
+  → bootstrap_ci.tsv         (contiguous 1.5-LOD support interval per eGene: ci_lo/ci_hi, ci_truncated;
                               L-mode: computed inside ±window_mb of the strand-aware TSS)
 
 Stage 6 — finemap_egenes
-  → {tag}_eqtl_finemapping.csv.gz    credible-set SNPs (EQTL_FINEMAPPING_COLS), gzip-compressed at merge
-  → {tag}_eqtl_finemapping_peak.csv  lead SNP per eGene (EQTL_FINEMAPPING_PEAK_COLS)
+  → {tag}_eqtl_finemapping.tsv.gz    credible-set SNPs (EQTL_FINEMAPPING_COLS), gzip-compressed at merge
+  → {tag}_eqtl_finemapping_peak.tsv  lead SNP per eGene (EQTL_FINEMAPPING_PEAK_COLS)
 
 Stage 7 — report (eqtl_peak + eqtl_stats)
-  → {tag}_eqtl_peak.csv      EQTL_PEAK_COLS: haplotype peak per eGene (IGVF submission)
-  → {tag}_eqtl_stats.csv     EQTL_STATS_COLS: GEV params + significance per eGene
+  → {tag}_eqtl_peak.tsv      EQTL_PEAK_COLS: haplotype peak per eGene (IGVF submission)
+  → {tag}_eqtl_stats.tsv     EQTL_STATS_COLS: GEV params + significance per eGene
 ```
 
 **Output column schemas** (all defined in `pipeline.py`; never redefine inline):
@@ -474,7 +474,7 @@ the logic.
 
 **Parity test:** `config/parity_chr19_params.yaml` — chr19, scan_type=L, window_mb=1.0,
 type_ii_myonucleus, gastroc, next dataset. VT command and NF pipeline outputs must agree
-on eqtl_summary.csv, permutation threshold, and bootstrap CI before any multi-chr run.
+on eqtl_summary.tsv, permutation threshold, and bootstrap CI before any multi-chr run.
 
 ---
 
@@ -593,7 +593,7 @@ so the contiguous 1.5-LOD interval contains the peak and never exceeds the scan 
 
 ## 16. KEY OUTPUT FILES
 
-**`eqtl_summary.csv`** — one row per significant eGene
+**`eqtl_summary.tsv`** — one row per significant eGene
 
 | Column | Meaning |
 |---|---|
@@ -608,15 +608,15 @@ so the contiguous 1.5-LOD interval contains the peak and never exceeds the scan 
 | `cis_dist_mb` | Signed distance from TSS to peak (Mb; positive = downstream) |
 | `near_tss_mb` | Physical distance to nearest TSS (unsigned Mb) |
 
-**`{tag}_eqtl_finemapping_peak.csv`** — lead Sanger SNP per eGene (IGVF submission)
+**`{tag}_eqtl_finemapping_peak.tsv`** — lead Sanger SNP per eGene (IGVF submission)
 
 Key columns: `variant` (SPDI), `chr`, `pos` (integer bp, GRCm39), `ref_founders`,
 `alt_founders`, `PIP`, `PIP_method`, `CS`, `effect_{founder}` × 8, `pval_perm`, `fdr`.
 
-**`perm_max_lods.csv` / `perm_max_lods_chr{N}.csv`** — permutation null
+**`perm_max_lods.tsv` / `perm_max_lods_chr{N}.tsv`** — permutation null
 
 Columns: `max_lod` per permutation replicate. Per-chromosome files used in
-`calibrate_gene_pvalue` and GEV fitting in `eqtl_stats.csv`.
+`calibrate_gene_pvalue` and GEV fitting in `eqtl_stats.tsv`.
 
 ---
 

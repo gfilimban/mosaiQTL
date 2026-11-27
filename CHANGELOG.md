@@ -3,7 +3,20 @@ Format: [Keep a Changelog](https://keepachangelog.com). One line per user-visibl
 Fixed or Removed, written in the PR that makes it. Releases follow pyproject.toml and are tagged vX.Y.Z.
 
 ## [Unreleased]
+### Changed
+- **Breaking:** every table the pipeline writes is tab-separated with a `.tsv` extension (`lod_chr*.tsv`,
+  `{tag}_peak_lod.tsv`, `{tag}_peak_lod_all.tsv`, `{tag}_haplotype_peak_lod.tsv`, `{tag}_eqtl_summary.tsv`,
+  `perm_max_lods.tsv`, `threshold_*.tsv`, `{tag}_eqtl_stats.tsv`, the fine-mapping tables, and the cell-type
+  comparison tables); the merged fine-mapping table is `{tag}_eqtl_finemapping.tsv.gz`. Inputs under `ref/`
+  (`gene_info`, metadata, `gene_tss`, GigaMUGA, maps) stay CSV. Run into a new output directory, or convert existing
+  outputs with `validation/tools/csv_to_tsv.py`. A default `pd.read_csv` on a `.tsv` returns one column: use
+  `mosaiqtl.io.tables.read_table` (tab separator, `T`/`F` booleans, gzip by extension).
+- `atomic_write_csv` and `atomic_concat_csv` are renamed `atomic_write_table` and `atomic_concat_table`;
+  `CSV_TRUE` and `CSV_FALSE` are renamed `TABLE_TRUE` and `TABLE_FALSE`.
 ### Added
+- `validation/tools/convert_h5ad.py` writes `excluded_samples_{celltype}.tsv` per cell type (and
+  `excluded_samples_all.tsv` with `--all_celltypes`): each sample dropped by the `min_counts`/`min_cells` gate with
+  its pseudobulk counts, cells and reason, and whether the whole cell type was skipped for too few valid samples.
 - `cis_dist_gene_tss_mb` in `{tag}_peak_lod.csv` and the eGene summary: signed distance from the peak to one fixed
   TSS per gene, the most upstream transcript TSS in `gene_tss` (`utils.gene_tss_anchor`). Unlike `cis_dist_mb`, whose
   anchor is the transcript TSS nearest the peak, it does not change with the peak and is comparable across cell types.

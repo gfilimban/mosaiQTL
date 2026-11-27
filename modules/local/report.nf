@@ -3,7 +3,7 @@ process REPORT {
     label 'process_high'
     tag   "${celltype}"
 
-    publishDir { "${params.output_dir}/${celltype.replaceAll(/\s+/, '_')}/${scan_tag}/core"  }, mode: 'copy', pattern: '*.csv'
+    publishDir { "${params.output_dir}/${celltype.replaceAll(/\s+/, '_')}/${scan_tag}/core"  }, mode: 'copy', pattern: '*.tsv'
     publishDir { "${params.output_dir}/${celltype.replaceAll(/\s+/, '_')}/${scan_tag}/plots" }, mode: 'copy', pattern: '*.png'
 
     input:
@@ -15,11 +15,11 @@ process REPORT {
           path(pval_perm_json), path(perm_max_lods),
           path(perm_max_lods_chrs),
           path(gene_info), path(lod_genome),
-          path(finemap_csv)
+          path(finemap_tsv)
 
     output:
     tuple val(celltype), val(scan_tag),
-          path('*_eqtl_stats.csv'),
+          path('*_eqtl_stats.tsv'),
           path('*_genome_summary.png'),
           path('*_genome_summary_share.png'),
           path('*_genome_diagnostic.png'),
@@ -48,7 +48,7 @@ process REPORT {
 
     script:
     def gtf_arg = gtf.name != 'NO_GTF' ? gtf.name : '-'
-    def fm_arg  = finemap_csv.name != 'NO_FINEMAP' ? finemap_csv.name : '-'
+    def fm_arg  = finemap_tsv.name != 'NO_FINEMAP' ? finemap_tsv.name : '-'
     def tis     = params.tissue ?: 'run'
     def ct_log  = celltype.replaceAll(/\s+/, '_')
     def tag     = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
@@ -65,7 +65,7 @@ process REPORT {
     stub:
     def tag = params.tissue ? "${params.tissue}_${celltype}_${scan_tag}" : "${celltype}_${scan_tag}"
     """
-    touch ${tag}_eqtl_stats.csv \\
+    touch ${tag}_eqtl_stats.tsv \\
           ${tag}_genome_summary.png ${tag}_genome_summary_share.png \\
           ${tag}_genome_diagnostic.png ${tag}_genome_diagnostic_share.png \\
           ${tag}_perm_distribution.png ${tag}_perm_distribution_share.png \\

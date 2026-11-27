@@ -1,7 +1,7 @@
 """Permutation threshold scan — called by Nextflow PERMUTE process.
 
 Usage: python run_permute.py <cache.h5> <kinship.h5> <phenotypes.h5>
-           <peak_lod.csv> <metadata.csv> <celltype>
+           <peak_lod.tsv> <metadata.csv> <celltype>
            <scan_tag> <covariates>
            <n_perms> <seed> <perm_method> <output_dir>
            <scan_type> <window_mb> <tissue> <use_rint 1|0>
@@ -14,11 +14,11 @@ Usage: python run_permute.py <cache.h5> <kinship.h5> <phenotypes.h5>
 <window_mb>: half-window in Mb around TSS; required for scan_type=L; pass 0 otherwise.
 
 Representative gene is selected by pick_rep_gene() from mosaiqtl.qtl.permutation:
-  median h² across all genes (or chromosome-restricted for L mode) from peak_lod.csv.
-  h² is the LMM heritability written to peak_lod.csv by scan_multi_gene; using the
+  median h² across all genes (or chromosome-restricted for L mode) from peak_lod.tsv.
+  h² is the LMM heritability written to peak_lod.tsv by scan_multi_gene; using the
   median-h² gene keeps the null LOD distribution representative of the gene population.
 
-Writes: {tag}_perm_max_lods.csv, {tag}_perm_max_lods_chr{c}.csv, {tag}_perm_gev_params.json
+Writes: {tag}_perm_max_lods.tsv, {tag}_perm_max_lods_chr{c}.tsv, {tag}_perm_gev_params.json
 """
 import sys, logging, time
 import numpy as np
@@ -35,7 +35,7 @@ def main() -> None:
      n_perms_arg, seed_arg, perm_method, out_arg, scan_type, window_arg, tissue,
      rint_arg) = sys.argv[1:]
 
-    cache_path, kinship_path, pheno_path, peak_lod_csv, meta_path, out = (
+    cache_path, kinship_path, pheno_path, peak_lod_tsv, meta_path, out = (
         Path(a) for a in (cache_arg, kinship_arg, pheno_arg, peak_lod_arg, meta_arg, out_arg)
     )
     n_perms, seed = int(n_perms_arg), int(seed_arg)
@@ -47,8 +47,9 @@ def main() -> None:
     from mosaiqtl.genotype.genomecache import GenomeCache
     from mosaiqtl.genotype.kinship import load_kinship_decomp
     from mosaiqtl.io.anndata_io import load_expression_h5
-    from mosaiqtl.io.atomic import atomic_write_csv, atomic_write_json
+    from mosaiqtl.io.atomic import atomic_write_json, atomic_write_table
     from mosaiqtl.io.covariates import build_cov_array, build_sample_geno_map
+    from mosaiqtl.io.tables import read_table
     from mosaiqtl.qtl.permutation import generate_null_outcomes, pick_rep_gene, run_threshold_scans
     from mosaiqtl.qtl.thresholds import get_gev_thresholds
     from mosaiqtl.utils import build_z_matrix, strip_chr_prefix
@@ -57,7 +58,7 @@ def main() -> None:
              tag, n_perms, seed, perm_method, scan_type)
     t0 = time.perf_counter()
 
-    peak_df     = pd.read_csv(peak_lod_csv, dtype={'chr': str})
+    peak_df     = read_table(peak_lod_tsv, dtype={'chr': str})
     peak_df['chr'] = strip_chr_prefix(peak_df['chr'])
     rep_id, rep_chr, rep_tss_mb, h2_med = pick_rep_gene(peak_df, chrom=None)
 
@@ -112,11 +113,11 @@ def main() -> None:
         use_rint=use_rint,
     )
 
-    atomic_write_csv(pd.DataFrame({'max_lod': max_lods}), out / f'{tag}_perm_max_lods.csv')
+    atomic_write_table(pd.DataFrame({'max_lod': max_lods}), out / f'{tag}_perm_max_lods.tsv')
 
     gev_params: dict = {}
     for chrom, lods in sorted(chr_null_lods.items()):
-        atomic_write_csv(pd.DataFrame({'max_lod': lods}), out / f'{tag}_perm_max_lods_chr{chrom}.csv')
+        atomic_write_table(pd.DataFrame({'max_lod': lods}), out / f'{tag}_perm_max_lods_chr{chrom}.tsv')
         threshold, params = get_gev_thresholds(np.array(lods))
         if params is not None:
             gev_params[chrom] = params
